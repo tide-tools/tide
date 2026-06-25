@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from ..arc.stream import StreamError
-from . import edit_gate, session_start
+from . import edit_gate, role_gate, session_start
 
 # settings.json location + the exact commands/matcher we install.
 CLAUDE_DIRNAME = ".claude"
@@ -38,6 +38,8 @@ PRE_TOOL_USE_EVENT = "PreToolUse"
 SESSION_START_CMD = "tide hook session-start"
 EDIT_GATE_CMD = "tide hook edit-gate"
 EDIT_MATCHER = "Edit|Write|MultiEdit"
+ROLE_GATE_CMD = "tide hook role-gate"
+ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
 
 
 class InstallError(StreamError):
@@ -120,6 +122,21 @@ def merge_pre_tool_use(hooks: dict) -> bool:
     return True
 
 
+def merge_role_gate(hooks: dict) -> bool:
+    """Append the PreToolUse role-gate entry to *hooks*; return whether it changed.
+
+    Adds a matcher-scoped group (``Write|Edit|NotebookEdit|Bash``) that enforces
+    the orchestrator/worker role split. No-op when already wired.
+    """
+    groups = hooks.setdefault(PRE_TOOL_USE_EVENT, [])
+    if _command_present(groups, ROLE_GATE_CMD):
+        return False
+    groups.append(
+        {"matcher": ROLE_GATE_MATCHER, HOOKS_KEY: [_hook_block(ROLE_GATE_CMD)]}
+    )
+    return True
+
+
 def merge_hooks(data: dict) -> List[str]:
     """Merge both tide hook entries into a settings *data* dict; return notes.
 
@@ -137,6 +154,10 @@ def merge_hooks(data: dict) -> List[str]:
     if merge_pre_tool_use(hooks):
         notes.append(
             "{0} [{1}] → {2}".format(PRE_TOOL_USE_EVENT, EDIT_MATCHER, EDIT_GATE_CMD)
+        )
+    if merge_role_gate(hooks):
+        notes.append(
+            "{0} [{1}] → {2}".format(PRE_TOOL_USE_EVENT, ROLE_GATE_MATCHER, ROLE_GATE_CMD)
         )
     return notes
 
@@ -195,3 +216,9 @@ def register_hook_group(subparsers) -> None:
 
     eg = hsub.add_parser("edit-gate", help="PreToolUse: block edits with no open arc")
     eg.set_defaults(func=edit_gate.cmd_edit_gate, _cmd="hook edit-gate")
+
+    rg = hsub.add_parser(
+        "role-gate",
+        help="PreToolUse: deny orchestrator from doing worker-work (Write/Edit/mutating Bash)",
+    )
+    rg.set_defaults(func=role_gate.cmd_role_gate, _cmd="hook role-gate")
