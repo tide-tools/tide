@@ -248,6 +248,23 @@ def close(
         leftovers = placeholders.find_in_file(doc)
         if leftovers:
             raise StreamError(placeholders.refuse_message(doc.name, ref, leftovers))
+
+    # Worktree gate (11-arc-worktree-isolation): land the arc branch before sealing.
+    # Gated so non-git projects and arcs without a branch are a pure no-op.
+    from . import worktree as _wt  # lazy: avoid import cycle at module load
+    if _wt.is_git_repo(root) and _wt.has_worktree(root, entry):
+        if not force:
+            result = _wt.land(root, entry)
+            if result.conflict:
+                raise StreamError(
+                    "cannot close arc {0!r}: {1} "
+                    "(resolve the conflict, then close)".format(ref, result.detail)
+                )
+            _wt.remove(root, entry)
+        else:
+            # force (supersede path) — discard the worktree without landing.
+            _wt.remove(root, entry)
+
     fields.set_field(passport_path(entry), "status", "done")
     closed = entry.parent / "__{0}__".format(entry.name)
     entry.rename(closed)

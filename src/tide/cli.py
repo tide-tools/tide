@@ -182,13 +182,16 @@ def _register_verify(sub) -> None:
 
 def _register_arc(sub) -> None:
     # U3: real arc-stream verbs (new/new-goal/open/resume/close/reopen/supersede).
+    # 11-arc-worktree-isolation: adds work/land verbs via worktree.register.
     # TODO(U4): tide.arc.candidate is a separate top-level group; status is U8.
     from .arc.board import cmd_status as arc_status
     from .arc.stream import register as register_stream
+    from .arc.worktree import register as register_worktree
 
-    p = sub.add_parser("arc", help="work stream: new/open/close/reopen/supersede")
+    p = sub.add_parser("arc", help="work stream: new/open/close/reopen/supersede/work/land")
     asub = p.add_subparsers(dest="arc_cmd")
     register_stream(asub)
+    register_worktree(asub)
     sp = asub.add_parser("status", help="render the STREAM board")
     sp.set_defaults(func=arc_status, _cmd="arc status")
 
