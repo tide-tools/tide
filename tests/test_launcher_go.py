@@ -357,3 +357,118 @@ def test_cli_go_resume_dirty_go_anyway_reaches_launch(tmp_control_home, monkeypa
     assert rc == 0
     out = capsys.readouterr().out
     assert "LAUNCHED" in out  # gate let it through to the launch
+
+
+# --- role-by-place ----------------------------------------------------------
+
+def test_resolve_role_control_home_is_orchestrator(tmp_control_home):
+    d = go.resolve_role(tmp_control_home)
+    assert d.role == go.ROLE_ORCHESTRATOR
+    assert d.env_role == "orchestrator"
+    assert d.root == tmp_control_home
+    assert d.reason == "control-home detected"
+    assert d.is_orchestrator
+
+
+def test_resolve_role_project_is_project_manager(tmp_project):
+    d = go.resolve_role(tmp_project)
+    assert d.role == go.ROLE_PROJECT_MANAGER
+    assert d.env_role == "worker"
+    assert d.root == tmp_project
+    assert d.reason == "project {0}".format(tmp_project.name)
+    assert not d.is_orchestrator
+
+
+def test_resolve_role_non_tide_dir_errors(tmp_path):
+    import pytest
+
+    with pytest.raises(go.GoError):
+        go.resolve_role(tmp_path / "nowhere")
+
+
+def test_resolve_role_force_orchestrator_from_project(tmp_project):
+    # --orchestrator forces the head even from a plain project dir
+    d = go.resolve_role(tmp_project, force_orchestrator=True)
+    assert d.role == go.ROLE_ORCHESTRATOR
+    assert d.env_role == "orchestrator"
+    assert d.reason == "--orchestrator forced"
+
+
+def test_render_role_line():
+    d = go.RoleDecision("project-manager", "worker", Path("/x/demo"), "project demo")
+    assert go.render_role(d) == "role: project-manager (project demo)"
+
+
+def test_project_manager_resume_seed_points_at_project_orientation():
+    out = go.build_resume_seed("a", "## Where we are\nx", is_orchestrator=False)
+    assert "project's manager" in out
+    assert "tide context show" in out
+    assert "MIGRATE.md" not in out  # not the head pointer
+
+
+def test_project_orientation_seed_carries_the_triad(tmp_project):
+    text = go.project_orientation_seed(tmp_project)
+    assert "WORKER session scoped to THIS project" in text
+    assert "read first" in text  # the context.render_enter triad
+    assert "open arcs" in text
+
+
+# --- role-by-place CLI dry-run ---------------------------------------------
+
+def test_cli_go_project_dir_dry_run_shows_project_manager(tmp_project, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_project, "01-thread", goal="proj work")
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["go", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "role: project-manager (project {0})".format(tmp_project.name) in out
+    assert "plain project session" in out  # role-aware just-chat label
+
+
+def test_cli_go_orchestrator_flag_forces_head_from_project(tmp_project, monkeypatch, capsys):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["go", "-O", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "role: orchestrator (--orchestrator forced)" in out
+
+
+def test_cli_go_non_tide_dir_errors(tmp_path, monkeypatch, capsys):
+    from tide import cli
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.chdir(bare)
+    rc = cli.main(["go", "--dry-run"])
+    assert rc == 1  # GoError → tide: … nonzero
+    err = capsys.readouterr().err
+    assert "not inside a tide project" in err
+
+
+def test_cli_go_control_home_launch_carries_orchestrator_env(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_control_home, "01-thread")
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+    rc = cli.main(["go", "--mode", "new", "--pick", "0", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "TIDE_ROLE: orchestrator" in out
+
+
+def test_cli_go_project_launch_carries_worker_env(tmp_project, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_project, "01-thread", goal="proj work")
+    monkeypatch.chdir(tmp_project)
+    # new → just-chat (project orientation seed), dry-run shows TIDE_ROLE worker
+    rc = cli.main(["go", "--mode", "new", "--pick", "0", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "TIDE_ROLE: worker" in out
+    assert "plain project session" in out
