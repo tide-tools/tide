@@ -134,8 +134,26 @@ def resolve_role(start: Path, *, force_orchestrator: bool = False) -> RoleDecisi
 
 
 def render_role(d: RoleDecision) -> str:
-    """The one-line role banner shown on entry / in ``--dry-run`` (``role: X (why)``)."""
+    """The one-line role line (``role: X (why)``) — composed into the header banner."""
     return "role: {0} ({1})".format(d.role, d.reason)
+
+
+# Front-door banner: a calm titled header the human sees on EVERY entry. House
+# mono-mood — a quiet title, a hairline, then the role line. Indented to a steady
+# left margin so the menus below sit under the same edge.
+FRONT_DOOR_TITLE = "tide · go"
+_HAIRLINE = "─" * 44
+
+
+def render_header(d: RoleDecision) -> str:
+    """The front-door header: titled banner + hairline + the role line (pure)."""
+    return "\n".join(
+        [
+            "  {0}".format(FRONT_DOOR_TITLE),
+            "  {0}".format(_HAIRLINE),
+            "  {0}".format(render_role(d)),
+        ]
+    )
 
 
 # --- handoff inspection (pure-ish reads) -----------------------------------
@@ -238,17 +256,21 @@ def resumable_threads(root: Path) -> List[Thread]:
                 out.append(Thread(arc, arc.name, ref, KIND_CONTINUE, handoff, summary))
                 continue
         # no handoff, or a non-continue/non-close mode → raise it raw from the cursor
-        out.append(Thread(arc, arc.name, ref, KIND_RAW, None, goal or "(no goal set)"))
+        out.append(Thread(arc, arc.name, ref, KIND_RAW, None, goal or "(no goal yet)"))
     return out
 
 
 def render_resume_menu(threads: List[Thread]) -> str:
-    """The numbered resume pick-list, or an empty-state note steering to ``new``."""
+    """The numbered resume pick-list (column-aligned), or an empty-state note → ``new``."""
     if not threads:
-        return "(no resumable threads — start fresh: 'tide go --mode new')"
-    lines = ["Resume — pick a thread to pick back up:"]
+        return "  Resume — (no resumable threads; start fresh: 'tide go --mode new')"
+    name_w = max(len(t.name) for t in threads)
+    lines = ["  Resume — pick up a thread"]
     for i, t in enumerate(threads, start=1):
-        lines.append("  {0}) {1}  [{2}]  {3}".format(i, t.name, t.kind, t.summary))
+        tag = "[{0}]".format(t.kind)
+        lines.append(
+            "    {0}) {1}  {2}  {3}".format(i, t.name.ljust(name_w), tag.ljust(10), t.summary)
+        )
     return "\n".join(lines)
 
 
@@ -266,11 +288,12 @@ def render_new_menu(arcs: List[Path], root: Path, *, is_orchestrator: bool = Tru
     a project-scoped session for a project-manager.
     """
     chat_kind = "plain head session" if is_orchestrator else "plain project session"
-    lines = ["New — start fresh:"]
-    lines.append("  0) {0} (no arc — {1})".format(JUST_CHAT, chat_kind))
+    name_w = max([len(JUST_CHAT)] + [len(a.name) for a in arcs])
+    lines = ["  New — start fresh"]
+    lines.append("    0) {0}  {1}".format(JUST_CHAT.ljust(name_w), chat_kind))
     for i, arc in enumerate(arcs, start=1):
-        goal = _goal_line(arc) or "(no goal set)"
-        lines.append("  {0}) {1}  {2}".format(i, arc.name, goal))
+        goal = _goal_line(arc) or "(no goal yet)"
+        lines.append("    {0}) {1}  {2}".format(i, arc.name.ljust(name_w), goal))
     return "\n".join(lines)
 
 
@@ -424,20 +447,20 @@ def inflight_signals(root: Path) -> InFlight:
 
 
 def render_inflight(s: InFlight) -> str:
-    """One short block: ``clean`` line, or the in-flight signals that are present."""
+    """One short, calm block: a ``clean`` line, or the signals still in flight."""
     if s.clean:
-        return "in-flight check: clean (no unmerged deltas / running contracts / drift)"
-    lines = ["⚠ in-flight check — work still being processed:"]
+        return "  in-flight check: clean — nothing to merge, no drift"
+    lines = ["  in-flight check — ⚠ work still being processed:"]
     if s.unmerged:
-        lines.append("  unmerged deltas: {0}".format(", ".join(s.unmerged)))
+        lines.append("    unmerged deltas: {0}".format(", ".join(s.unmerged)))
     if s.contracts:
         lines.append(
-            "  running/output contracts: {0}".format(
+            "    running/output contracts: {0}".format(
                 ", ".join("{0} [{1}]".format(a, st) for a, st in s.contracts)
             )
         )
     if s.drift:
-        lines.append("  drift: {0}".format(", ".join(s.drift)))
+        lines.append("    drift: {0}".format(", ".join(s.drift)))
     return "\n".join(lines)
 
 
@@ -556,9 +579,8 @@ def _resolve_mode(args, dry_run: bool) -> Optional[str]:
         return mode
     if dry_run:
         return None
-    print("tide go — back into tide.")
     try:
-        ans = input("Вернуться к прошлой работе или начать новую? [r/n] ").strip().lower()
+        ans = input("  resume prior work or start new? [r/n] ").strip().lower()
     except EOFError:
         ans = ""
     return "resume" if ans.startswith("r") else "new"
@@ -649,7 +671,8 @@ def cmd_go(args) -> int:
     in-flight gate + ``tide terminal`` (one launch path).
     """
     decision = resolve_role(Path.cwd(), force_orchestrator=bool(getattr(args, "orchestrator", False)))
-    print(render_role(decision))
+    print(render_header(decision))
+    print()  # a calm blank line between the banner and what follows
     dry_run = bool(getattr(args, "dry_run", False))
     mode = _resolve_mode(args, dry_run)
 

@@ -472,3 +472,35 @@ def test_cli_go_project_launch_carries_worker_env(tmp_project, monkeypatch, caps
     out = capsys.readouterr().out
     assert "TIDE_ROLE: worker" in out
     assert "plain project session" in out
+
+
+# --- front-door presentation ------------------------------------------------
+
+def test_render_header_is_a_titled_banner():
+    d = go.RoleDecision("orchestrator", "orchestrator", Path("/x"), "control-home detected")
+    header = go.render_header(d)
+    assert "tide · go" in header               # the titled banner
+    assert "─" in header                       # the hairline rule
+    assert "role: orchestrator (control-home detected)" in header
+
+
+def test_resume_menu_columns_are_aligned():
+    # two threads of different name length → the kind tag column lines up
+    t1 = go.Thread(Path("/a"), "01-short", "short", go.KIND_CONTINUE, Path("/h"), "go on")
+    t2 = go.Thread(Path("/b"), "02-a-much-longer-name", "x", go.KIND_RAW, None, "raw one")
+    menu = go.render_resume_menu([t1, t2])
+    col1 = menu.splitlines()[1].index("[continue]")
+    col2 = menu.splitlines()[2].index("[raw]")
+    assert col1 == col2  # aligned regardless of name length
+
+
+def test_cli_go_prints_front_door_banner(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_control_home, "01-thread")
+    monkeypatch.chdir(tmp_control_home)
+    rc = cli.main(["go", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "tide · go" in out                  # the human sees the door banner
+    assert "in-flight check: clean" in out     # calm clean line
