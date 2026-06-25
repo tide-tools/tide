@@ -123,13 +123,13 @@ def resolve_role(start: Path, *, force_orchestrator: bool = False) -> RoleDecisi
         return RoleDecision(ROLE_ORCHESTRATOR, ENV_ROLE_ORCHESTRATOR, root, "--orchestrator forced")
     if paths.is_control_home(tide_root):
         return RoleDecision(
-            ROLE_ORCHESTRATOR, ENV_ROLE_ORCHESTRATOR, tide_root, "control-home detected"
+            ROLE_ORCHESTRATOR, ENV_ROLE_ORCHESTRATOR, tide_root, "control-home"
         )
     return RoleDecision(
         ROLE_PROJECT_MANAGER,
         ENV_ROLE_WORKER,
         tide_root,
-        "project {0}".format(tide_root.name),
+        tide_root.name,
     )
 
 
@@ -447,10 +447,10 @@ def inflight_signals(root: Path) -> InFlight:
 
 
 def render_inflight(s: InFlight) -> str:
-    """One short, calm block: a ``clean`` line, or the signals still in flight."""
+    """One short, calm block: ``in-flight: none`` when clear, else the live signals."""
     if s.clean:
-        return "  in-flight check: clean — nothing to merge, no drift"
-    lines = ["  in-flight check — ⚠ work still being processed:"]
+        return "  in-flight: none"
+    lines = ["  in-flight: ⚠ work still being processed:"]
     if s.unmerged:
         lines.append("    unmerged deltas: {0}".format(", ".join(s.unmerged)))
     if s.contracts:

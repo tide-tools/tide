@@ -258,7 +258,7 @@ def test_inflight_detects_running_contract(tmp_control_home):
 
 def test_render_inflight_clean_and_dirty():
     clean = go.InFlight([], [], [])
-    assert "clean" in go.render_inflight(clean)
+    assert "none" in go.render_inflight(clean)
     dirty = go.InFlight(["__99-x__"], [("01-y", "output")], ["02-z"])
     text = go.render_inflight(dirty)
     assert "unmerged deltas: __99-x__" in text
@@ -305,7 +305,7 @@ def test_cli_go_dry_run_overview_shows_inflight_check(tmp_control_home, monkeypa
     rc = cli.main(["go", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "in-flight check" in out
+    assert "in-flight:" in out
     assert "__99-old__" in out  # the offender is surfaced in the overview
 
 
@@ -320,7 +320,7 @@ def test_cli_go_resume_dry_run_prints_inflight_then_launches(tmp_control_home, m
     rc = cli.main(["go", "--mode", "resume", "--pick", "1", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "in-flight check: clean" in out  # gate shown under dry-run
+    assert "in-flight: none" in out  # gate shown under dry-run
     assert "command:" in out               # still proceeds to the terminal dry-run
 
 
@@ -366,7 +366,7 @@ def test_resolve_role_control_home_is_orchestrator(tmp_control_home):
     assert d.role == go.ROLE_ORCHESTRATOR
     assert d.env_role == "orchestrator"
     assert d.root == tmp_control_home
-    assert d.reason == "control-home detected"
+    assert d.reason == "control-home"
     assert d.is_orchestrator
 
 
@@ -375,7 +375,7 @@ def test_resolve_role_project_is_project_manager(tmp_project):
     assert d.role == go.ROLE_PROJECT_MANAGER
     assert d.env_role == "worker"
     assert d.root == tmp_project
-    assert d.reason == "project {0}".format(tmp_project.name)
+    assert d.reason == tmp_project.name
     assert not d.is_orchestrator
 
 
@@ -395,8 +395,8 @@ def test_resolve_role_force_orchestrator_from_project(tmp_project):
 
 
 def test_render_role_line():
-    d = go.RoleDecision("project-manager", "worker", Path("/x/demo"), "project demo")
-    assert go.render_role(d) == "role: project-manager (project demo)"
+    d = go.RoleDecision("project-manager", "worker", Path("/x/demo"), "demo")
+    assert go.render_role(d) == "role: project-manager (demo)"
 
 
 def test_project_manager_resume_seed_points_at_project_orientation():
@@ -423,7 +423,7 @@ def test_cli_go_project_dir_dry_run_shows_project_manager(tmp_project, monkeypat
     rc = cli.main(["go", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "role: project-manager (project {0})".format(tmp_project.name) in out
+    assert "role: project-manager ({0})".format(tmp_project.name) in out
     assert "plain project session" in out  # role-aware just-chat label
 
 
@@ -477,11 +477,11 @@ def test_cli_go_project_launch_carries_worker_env(tmp_project, monkeypatch, caps
 # --- front-door presentation ------------------------------------------------
 
 def test_render_header_is_a_titled_banner():
-    d = go.RoleDecision("orchestrator", "orchestrator", Path("/x"), "control-home detected")
+    d = go.RoleDecision("orchestrator", "orchestrator", Path("/x"), "control-home")
     header = go.render_header(d)
     assert "tide · go" in header               # the titled banner
     assert "─" in header                       # the hairline rule
-    assert "role: orchestrator (control-home detected)" in header
+    assert "role: orchestrator (control-home)" in header
 
 
 def test_resume_menu_columns_are_aligned():
@@ -503,4 +503,4 @@ def test_cli_go_prints_front_door_banner(tmp_control_home, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "tide · go" in out                  # the human sees the door banner
-    assert "in-flight check: clean" in out     # calm clean line
+    assert "in-flight: none" in out            # calm clean line
