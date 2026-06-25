@@ -32,6 +32,34 @@ def test_new_candidate_writes_body(tmp_project):
     assert "batch the writes" in path.read_text(encoding="utf-8")
 
 
+def test_new_candidate_body_falls_back_to_title(tmp_project):
+    # fix F6: with no explicit body, the full title text is persisted in the body
+    # (not just encoded into the slug) so the idea survives.
+    path = candidate.new_candidate(tmp_project, "batch the writes on flush")
+    text = path.read_text(encoding="utf-8")
+    assert "batch the writes on flush" in text
+    # and the placeholder is NOT used when we have real text
+    assert "<one line" not in text
+
+
+def test_new_candidate_caps_long_slug_keeps_idea_in_body(tmp_project):
+    # fix F6: a pasted idea must not become a 200-char filename; the slug is a
+    # short capped handle while the full idea lives in the body.
+    long_idea = (
+        "polish the settings screen with spring animations and a haptic tap "
+        "when the user toggles dark mode on slow devices"
+    )
+    path = candidate.new_candidate(tmp_project, long_idea)
+    # slug stem is short (NN- prefix + capped slug)
+    stem_slug = path.stem.split("-", 1)[1]
+    assert len(stem_slug) <= 48
+    # full idea preserved in the body
+    assert long_idea in path.read_text(encoding="utf-8")
+    # the file is still a valid candidate (re-discoverable on the board)
+    items = candidate.list_candidates(tmp_project)
+    assert items and items[0]["path"] == path
+
+
 def test_candidate_counter_is_separate_from_arc_stream(tmp_project):
     # An arc consumes 01 in the work stream; the candidate still starts at 01.
     stream.new_arc(tmp_project, "real-arc")
@@ -123,3 +151,15 @@ def test_promote_into_goal_substream(tmp_project):
 def test_promote_unknown_key_raises(tmp_project):
     with pytest.raises(candidate.CandidateError):
         candidate.promote(tmp_project, "ghost")
+
+
+def test_promoted_candidate_leaves_the_open_backlog(tmp_project):
+    # fix F6: once promoted, a candidate must not be re-advertised on the board.
+    candidate.new_candidate(tmp_project, "batch-writes")
+    candidate.new_candidate(tmp_project, "ship-it")
+    candidate.promote(tmp_project, "batch-writes")
+    items = candidate.list_candidates(tmp_project)
+    slugs = [it["slug"] for it in items]
+    assert "batch-writes" not in slugs  # gone from the backlog
+    assert "ship-it" in slugs  # untouched candidate still listed
+    assert "batch-writes" not in candidate.render_list(tmp_project)

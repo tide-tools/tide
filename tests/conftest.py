@@ -8,9 +8,36 @@ build their integration + e2e tests on top of it.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
+
+# A leftover ``<…>`` scaffold span (mirrors tide.placeholders._ANGLE) — used by
+# ``strip_placeholders`` below to fill in a passport before close, the test-side
+# equivalent of a worker finishing the doc so the F5 close guard passes.
+_PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
+
+
+def strip_placeholders(*paths: Path) -> None:
+    """Fill in F5 scaffold placeholders in docs so the close placeholder-guard passes.
+
+    Drops the ``# supersedes:`` hint comment and replaces every ``<…>`` angle-bracket
+    placeholder with filler text — exactly what a worker does before close. Missing
+    files are skipped. Operates on arc.md / goal docs / contract.md alike.
+    """
+    for path in paths:
+        p = Path(path)
+        if not p.is_file():
+            continue
+        lines = [
+            ln
+            for ln in p.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("# supersedes:")
+        ]
+        text = _PLACEHOLDER_RE.sub("filled in", "\n".join(lines))
+        p.write_text(text + "\n", encoding="utf-8")
+
 
 CANON_MD_TEMPLATE = """# CANON.md — {name}
 

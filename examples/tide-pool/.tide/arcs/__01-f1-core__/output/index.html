@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tide Pool</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07171f; overflow: hidden; }
+    * { box-sizing: border-box; }
+    #game { position: relative; width: 100vw; height: 100vh; }
+    #pool { display: block; width: 100%; height: 100%; cursor: pointer; touch-action: manipulation; }
+
+    /* Counter HUD */
+    #hud {
+      position: absolute;
+      top: 22px; left: 24px;
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #e8fbff;
+      pointer-events: none;
+      user-select: none;
+      text-shadow: 0 1px 12px rgba(0, 40, 60, 0.55);
+    }
+    #count {
+      font-size: clamp(40px, 9vw, 92px);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      transition: transform 90ms ease-out;
+      display: inline-block;
+    }
+    #count.bump { transform: scale(1.16); }
+    #label {
+      font-size: clamp(12px, 2.4vw, 17px);
+      font-weight: 600;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      opacity: 0.62;
+      margin-top: 4px;
+    }
+    #hint {
+      position: absolute;
+      bottom: 26px; left: 0; right: 0;
+      text-align: center;
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #cdeef6;
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      opacity: 0.5;
+      pointer-events: none;
+      user-select: none;
+      transition: opacity 600ms ease;
+    }
+    #hint.gone { opacity: 0; }
+  </style>
+</head>
+<body>
+  <div id="game">
+    <canvas id="pool"></canvas>
+    <div id="hud">
+      <div id="count">0</div>
+      <div id="label">plankton</div>
+    </div>
+    <div id="hint">tap the pool to wake the plankton</div>
+  </div>
+
+  <script>
+    // Tide Pool — cozy idle/clicker. Features arrive via tide arcs.
+    // Arc 01 (f1-core): click the pool -> spawn a plankton, bump the counter, juicy feedback.
+    'use strict';
+
+    (function () {
+      const canvas = document.getElementById('pool');
+      const ctx = canvas.getContext('2d');
+      const countEl = document.getElementById('count');
+      const hintEl = document.getElementById('hint');
+
+      const MAX_PLANKTON = 240;   // live-particle cap for perf; counter keeps climbing past it
+      const PLANKTON_HUES = [165, 175, 150, 190, 95];
+
+      let W = 0, H = 0, DPR = 1;
+      let count = 0;
+
+      const plankton = [];  // drifting particles
+      const ripples = [];   // expanding click rings
+
+      function resize() {
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        W = canvas.clientWidth;
+        H = canvas.clientHeight;
+        canvas.width = Math.round(W * DPR);
+        canvas.height = Math.round(H * DPR);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+      window.addEventListener('resize', resize);
+
+      // ---- spawning ---------------------------------------------------------
+      function spawnPlankton(x, y) {
+        const hue = PLANKTON_HUES[(Math.random() * PLANKTON_HUES.length) | 0];
+        plankton.push({
+          x, y,
+          homeX: x, homeY: y,
+          vx: (Math.random() - 0.5) * 0.35,
+          vy: (Math.random() - 0.5) * 0.35,
+          r: 2.6 + Math.random() * 2.8,
+          hue,
+          scale: 0,                 // pop-in: starts at 0, eases up to ~1
+          phase: Math.random() * Math.PI * 2,
+          bob: 0.4 + Math.random() * 0.8,
+          glow: 0.5 + Math.random() * 0.5,
+        });
+        // retire the oldest live particle once we hit the cap (counter still climbs)
+        if (plankton.length > MAX_PLANKTON) plankton.shift();
+      }
+
+      function spawnRipple(x, y) {
+        ripples.push({ x, y, r: 6, max: 70 + Math.random() * 30, alpha: 0.55 });
+      }
+
+      function bumpCounter() {
+        count += 1;
+        countEl.textContent = count.toLocaleString();
+        countEl.classList.remove('bump');
+        // force reflow so the scale animation re-triggers on every click
+        void countEl.offsetWidth;
+        countEl.classList.add('bump');
+      }
+
+      let hintHidden = false;
+      function handleClick(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        spawnRipple(x, y);
+        // a small cluster reads as one satisfying "pop"; the counter still only +1 per click
+        spawnPlankton(x, y);
+        spawnPlankton(x + (Math.random() - 0.5) * 14, y + (Math.random() - 0.5) * 14);
+        bumpCounter();
+        if (!hintHidden) { hintEl.classList.add('gone'); hintHidden = true; }
+      }
+
+      canvas.addEventListener('pointerdown', function (e) {
+        handleClick(e.clientX, e.clientY);
+      });
+
+      // ---- ambient background ----------------------------------------------
+      function drawWater(t) {
+        // soft vertical teal gradient
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, '#0d3340');
+        g.addColorStop(0.5, '#0f4a59');
+        g.addColorStop(1, '#0a2a36');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        // gentle caustic light blobs drifting across the pool
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const bands = 4;
+        for (let i = 0; i < bands; i++) {
+          const phase = t * 0.00018 + i * 1.7;
+          const cx = W * (0.5 + 0.42 * Math.sin(phase));
+          const cy = H * (0.5 + 0.36 * Math.cos(phase * 0.8 + i));
+          const rad = Math.max(W, H) * (0.32 + 0.06 * Math.sin(t * 0.0006 + i));
+          const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+          rg.addColorStop(0, 'rgba(120, 230, 220, 0.06)');
+          rg.addColorStop(1, 'rgba(120, 230, 220, 0)');
+          ctx.fillStyle = rg;
+          ctx.fillRect(0, 0, W, H);
+        }
+        ctx.restore();
+
+        // faint vignette to feel cozy/contained
+        ctx.save();
+        const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.72);
+        vg.addColorStop(0, 'rgba(0,0,0,0)');
+        vg.addColorStop(1, 'rgba(2, 14, 20, 0.55)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+
+      // ---- main loop --------------------------------------------------------
+      function frame(t) {
+        drawWater(t);
+
+        // ripples
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = ripples.length - 1; i >= 0; i--) {
+          const rp = ripples[i];
+          rp.r += (rp.max - rp.r) * 0.08 + 0.6;
+          rp.alpha *= 0.94;
+          if (rp.alpha < 0.02 || rp.r >= rp.max - 0.5) { ripples.splice(i, 1); continue; }
+          ctx.beginPath();
+          ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(170, 245, 240,' + rp.alpha + ')';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // plankton
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < plankton.length; i++) {
+          const p = plankton[i];
+
+          // pop-in scale eases toward 1
+          if (p.scale < 1) {
+            p.scale += (1.0 - p.scale) * 0.16;
+            if (p.scale > 0.999) p.scale = 1;
+          }
+
+          // gentle drift + bob, lightly tethered to home so they settle nearby
+          p.phase += 0.02;
+          p.vx += (p.homeX - p.x) * 0.0006 + (Math.random() - 0.5) * 0.02;
+          p.vy += (p.homeY - p.y) * 0.0006 + (Math.random() - 0.5) * 0.02;
+          p.vx *= 0.96;
+          p.vy *= 0.96;
+          p.x += p.vx;
+          p.y += p.vy + Math.sin(p.phase) * 0.12 * p.bob;
+
+          const r = p.r * p.scale;
+          const pulse = 0.85 + 0.15 * Math.sin(p.phase * 1.6);
+
+          // soft glow halo
+          const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 3.4);
+          halo.addColorStop(0, 'hsla(' + p.hue + ', 80%, 70%,' + (0.28 * p.glow * pulse) + ')');
+          halo.addColorStop(1, 'hsla(' + p.hue + ', 80%, 70%, 0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r * 3.4, 0, Math.PI * 2);
+          ctx.fill();
+
+          // bright core
+          ctx.fillStyle = 'hsla(' + p.hue + ', 85%, 82%,' + (0.95 * pulse) + ')';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        requestAnimationFrame(frame);
+      }
+
+      resize();
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>

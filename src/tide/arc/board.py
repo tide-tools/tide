@@ -15,7 +15,12 @@ a *rendered* projection — never stored — of the work stream:
 * **unmerged-delta flag** — tide invention: a CLOSED arc still carrying an
   unmerged ``delta.md`` is the between-arcs barrier offender (decision 9); listed
   so the orchestrator merges it through the gate.
-* **CANDIDATES** — the separately-numbered backlog (``NN-slug  from <arc>``).
+* **CANDIDATES** — the separately-numbered backlog (``NN-slug  from <arc>``);
+  ``from`` carries the surfaced-idea provenance (the origin arc, ``-`` when none).
+* **HEALTH** — tide net-new (dogfood fix F4): an always-on merge-health footer
+  showing the current ``cannon-rev``, the unmerged-delta count (with which arcs),
+  and the drift line (``none`` or the drifted open arcs). Rendered even when
+  clean — an explicit ``none`` beats ambiguous silence.
 
 All rendering is pure (argparse-free, snapshot-testable); :func:`cmd_status` is the
 thin CLI handler ``cli.py`` wires for both ``tide status`` and ``tide arc status``.
@@ -86,18 +91,22 @@ def _supersedes_suffix(entry_dir: Path) -> str:
     return "  (supersedes {0})".format(prev) if prev else ""
 
 
-def _drift_suffix(entry_dir: Path, current_rev: str) -> str:
-    """Drift flag for an OPEN entry whose stamped cannon-rev != *current_rev*.
+def _is_drifted(entry_dir: Path, current_rev: str) -> bool:
+    """True for an OPEN entry whose stamped cannon-rev differs from *current_rev*.
 
     Closed entries are done (and may legitimately carry an older stamp), so drift
-    is only flagged on still-open work — the case the sync barrier cares about.
+    is only flagged on still-open work — the case the sync barrier cares about. A
+    never-stamped open entry is not drift (nothing to compare).
     """
     if slug.is_closed_entry(entry_dir.name):
-        return ""
+        return False
     stamped = _field(entry_dir, "cannon-rev")
-    if stamped and stamped != current_rev:
-        return "  {0}".format(DRIFT_FLAG)
-    return ""
+    return bool(stamped) and stamped != current_rev
+
+
+def _drift_suffix(entry_dir: Path, current_rev: str) -> str:
+    """Inline ``⚠ drift`` flag for an OPEN drifted entry (see :func:`_is_drifted`)."""
+    return "  {0}".format(DRIFT_FLAG) if _is_drifted(entry_dir, current_rev) else ""
 
 
 # --- goal badge ------------------------------------------------------------
@@ -159,6 +168,43 @@ def _sub_line(sub_dir: Path, current_rev: str) -> str:
     return line
 
 
+# --- merge-health footer (tide net-new, fix F4) ----------------------------
+
+def _drifted_entries(root: Path, current_rev: str) -> List[Path]:
+    """Every OPEN stream entry (top + goal sub-arcs) that has drifted, in order."""
+    drifted: List[Path] = []
+    for entry in _stream_entries(paths.arcs_dir(Path(root))):
+        if _is_drifted(entry, current_rev):
+            drifted.append(entry)
+        if slug.is_goal_entry(entry.name):
+            for sub in _stream_entries(entry / paths.ARCS_DIRNAME):
+                if _is_drifted(sub, current_rev):
+                    drifted.append(sub)
+    return drifted
+
+
+def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[str]:
+    """The always-on HEALTH footer (fix F4): cannon-rev + unmerged + drift.
+
+    Rendered even when everything is clean — an explicit ``none`` beats silence,
+    which is ambiguous (clean vs. un-checked). *offenders* is the closed-arc
+    unmerged-delta list already computed by :func:`render_board` (reused so the
+    count and the ``UNMERGED DELTAS`` section can never disagree).
+    """
+    lines = ["HEALTH", "  cannon-rev: {0}".format(current_rev)]
+    if offenders:
+        names = ", ".join(o.name for o in offenders)
+        lines.append("  unmerged: {0} delta(s) ({1})".format(len(offenders), names))
+    else:
+        lines.append("  unmerged: none")
+    drifted = _drifted_entries(root, current_rev)
+    if drifted:
+        lines.append("  drift: {0}".format(", ".join(d.name for d in drifted)))
+    else:
+        lines.append("  drift: none")
+    return lines
+
+
 # --- whole-board render ----------------------------------------------------
 
 def render_board(root: Path) -> str:
@@ -191,13 +237,66 @@ def render_board(root: Path) -> str:
                 )
             )
 
-    # CANDIDATES backlog (separately numbered).
+    # CANDIDATES backlog (separately numbered); ``from`` = surfaced-idea provenance.
     cands = candidate.list_candidates(root)
     if cands:
         lines.append("")
         lines.append("CANDIDATES")
         for c in cands:
             lines.append("  {stem}  from {origin}".format(stem=c["stem"], origin=c["from"] or "-"))
+
+    # tide net-new (fix F4): always-on merge-health footer — explicit even at zero.
+    lines.append("")
+    lines.extend(_health_lines(root, current_rev, offenders))
+
+    return "\n".join(lines)
+
+
+# --- compact on-entry summary (consumed by launcher.context) ---------------
+
+def open_entries(root: Path) -> List[Path]:
+    """Open (not-closed) top-level stream entries of *root*, numeric order.
+
+    "Open" = not wrapped in the ``__…__`` closed marker. Goals and plain arcs alike
+    are returned (a goal is open until its dir is closed). This is the work a fresh
+    session should know about on entry — distinct from the full board, which also
+    renders closed history and health.
+    """
+    entries = _stream_entries(paths.arcs_dir(Path(root)))
+    return [e for e in entries if not slug.is_closed_entry(e.name)]
+
+
+def render_entry_summary(root: Path) -> str:
+    """A compact ``open arcs`` + ``candidates`` block for the on-entry view.
+
+    Pure projection of ``.tide/arcs/`` — open entries (with their kind + goal line)
+    and the candidate backlog — kept deliberately terse so a session entering a
+    project sees *what is live here* at a glance. Empty states say ``none`` (never
+    silence). Reused by :func:`tide.launcher.context.render_enter`.
+    """
+    root = Path(root)
+    lines: List[str] = []
+
+    opens = open_entries(root)
+    if opens:
+        lines.append("open arcs ({0}):".format(len(opens)))
+        for e in opens:
+            kind = "goal" if slug.is_goal_entry(e.name) else "arc"
+            goal_line = _goal_line(e)
+            line = "  {name}  [{kind}]".format(name=e.name, kind=kind)
+            if goal_line:
+                line += "  {0}".format(goal_line)
+            lines.append(line)
+    else:
+        lines.append("open arcs: none")
+
+    cands = candidate.list_candidates(root)
+    if cands:
+        lines.append("candidates ({0}):".format(len(cands)))
+        for c in cands:
+            lines.append("  {stem}  ← from {origin}".format(stem=c["stem"], origin=c["from"] or "-"))
+    else:
+        lines.append("candidates: none")
 
     return "\n".join(lines)
 

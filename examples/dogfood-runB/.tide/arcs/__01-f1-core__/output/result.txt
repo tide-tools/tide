@@ -1,0 +1,2 @@
+../../../index.html → the built game (relative to .tide/arcs/01-f1-core/output/)
+See notes.md in this dir.

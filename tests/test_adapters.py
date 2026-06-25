@@ -44,37 +44,43 @@ def test_resolve_from_settings_reads_terminal_adapter_key():
     assert isinstance(adapters.resolve_from_settings(None), OrcaAdapter)
 
 
+# the scoped launch command the launcher would build; adapters carry it verbatim.
+_LAUNCH = [base.SESSION_PROGRAM, "--strict-mcp-config", "--append-system-prompt", "@/tmp/seed.md"]
+
+
 # --- tmux dry-run (the build-blueprint's required test) --------------------
 
 def test_tmux_spawn_dry_run_builds_new_window_without_executing():
     a = TmuxAdapter()
-    res = a.spawn(seed="SEED-BODY", cwd="/p/focus", title="tide-focus", dry_run=True)
+    res = a.spawn(command=_LAUNCH, cwd="/p/focus", title="tide-focus", dry_run=True)
     assert res.ok is True
     assert "dry-run" in res.detail.lower()
-    # first command is the new-window invocation, scoped to cwd + title
+    # single command: the new-window invocation, scoped to cwd + title, carrying
+    # the launcher's scoped argv verbatim as the window program.
+    assert len(res.commands) == 1
     new_window = res.commands[0]
     assert new_window[:2] == ["tmux", "new-window"]
     assert "-c" in new_window and "/p/focus" in new_window
     assert "-n" in new_window and "tide-focus" in new_window
+    # the scoped claude argv (strict MCP + seed reference) rides at the tail
     assert base.SESSION_PROGRAM in new_window
-    # second command delivers the seed into the window
-    send = res.commands[1]
-    assert send[:3] == ["tmux", "send-keys", "-t"]
-    assert "SEED-BODY" in send
+    assert "--strict-mcp-config" in new_window
+    assert "--append-system-prompt" in new_window
 
 
 def test_tmux_build_commands_is_pure():
     a = TmuxAdapter()
-    cmds = a.build_commands(seed="s", cwd="/c", title="t")
-    assert len(cmds) == 2
+    cmds = a.build_commands(command=_LAUNCH, cwd="/c", title="t")
+    assert len(cmds) == 1
     assert cmds[0][0] == "tmux"
+    assert cmds[0][-len(_LAUNCH):] == _LAUNCH  # command carried verbatim
 
 
 # --- orca dry-run ----------------------------------------------------------
 
 def test_orca_spawn_dry_run_builds_osascript_without_executing():
     a = OrcaAdapter()
-    res = a.spawn(seed="SEED", cwd="/p/x", title="tide-x", dry_run=True)
+    res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x", dry_run=True)
     assert res.ok is True
     cmd = res.commands[0]
     assert cmd[0] == "osascript" and cmd[1] == "-e"
@@ -82,6 +88,8 @@ def test_orca_spawn_dry_run_builds_osascript_without_executing():
     assert "Orca" in script
     assert "/p/x" in script
     assert base.SESSION_PROGRAM in script
+    # the scoped flags are visible in the typed launch line
+    assert "--strict-mcp-config" in script
 
 
 # --- SpawnResult / helpers -------------------------------------------------

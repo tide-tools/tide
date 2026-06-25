@@ -9,6 +9,8 @@ from tide.arc import stream
 from tide.cannon import store
 from tide.hooks import session_start
 
+from tests.conftest import strip_placeholders
+
 
 def test_render_includes_board_and_role_reminder(tmp_project):
     stream.new_arc(tmp_project, "do-thing")
@@ -42,6 +44,7 @@ def test_render_flags_drift_on_open_arc(tmp_project):
 def test_render_flags_unmerged_delta(tmp_project):
     arc = stream.new_arc(tmp_project, "alpha")
     (arc / "output" / "r.md").write_text("ok\n", encoding="utf-8")
+    strip_placeholders(arc / "arc.md")
     closed = stream.close(tmp_project, "alpha")
     (closed / "delta.md").write_text(
         "# delta — alpha\n\nadded a thing.\n", encoding="utf-8"

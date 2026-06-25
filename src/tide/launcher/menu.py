@@ -24,8 +24,13 @@ from typing import Dict, List, Optional
 
 from .. import paths, roster
 from ..adapters import SETTINGS_KEY, SpawnResult, get_adapter, resolve_from_settings
+from ..adapters.base import persist_seed
 from ..arc.stream import StreamError
-from . import seed
+from . import context, seed
+
+# Placeholder seed-file token used in dry-run (nothing is persisted to disk then),
+# so the printed command shows the @<seed-file> shape without a real temp path.
+DRY_RUN_SEED_FILE = "<seed-file>"
 
 DEFAULT_ROLE = seed.ROLE_ORCHESTRATOR
 
@@ -96,6 +101,26 @@ def select_entries(entries: List[Dict[str, str]], raw: str) -> List[Dict[str, st
 
 # --- launch ----------------------------------------------------------------
 
+def build_launch(
+    project: Path,
+    *,
+    control_home: Path,
+    role: str = DEFAULT_ROLE,
+    dry_run: bool = False,
+) -> List[str]:
+    """Resolve seed + context profile into the scoped ``claude …`` argv for *project*.
+
+    On a real launch the seed is persisted (so the new session can read it by path);
+    on a dry-run nothing is written and a placeholder seed-file token is used, so the
+    printed command still shows the exact scoped shape.
+    """
+    s = seed.seed_for_project(project, role=role, control_home=control_home)
+    title = "tide-{0}".format(project.name)
+    seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
+    profile = context.load_profile(project)
+    return context.build_launch_command(seed_file, profile)
+
+
 def launch_entry(
     entry: Dict[str, str],
     *,
@@ -104,11 +129,15 @@ def launch_entry(
     role: str = DEFAULT_ROLE,
     dry_run: bool = False,
 ) -> SpawnResult:
-    """Build the seed for one rostered project and spawn its session via *adapter*."""
+    """Build the scoped launch command for one rostered project and spawn it."""
     project = Path(entry["path"]).expanduser()
-    s = seed.seed_for_project(project, role=role, control_home=control_home)
+    command = build_launch(
+        project, control_home=control_home, role=role, dry_run=dry_run
+    )
     title = "tide-{0}".format(entry["name"])
-    return adapter.spawn(seed=s, cwd=str(project), title=title, dry_run=dry_run)
+    return adapter.spawn(
+        command=command, cwd=str(project), title=title, dry_run=dry_run
+    )
 
 
 def launch_entries(
@@ -192,6 +221,14 @@ def cmd_menu(args) -> int:
     for entry, res in zip(chosen, results):
         flag = "ok" if res.ok else "FAILED"
         print("tide: {0} [{1}] {2}".format(entry["name"], flag, res.detail))
+        if dry_run:
+            # Show the human EXACTLY what scoped session would launch — the resolved
+            # claude argv (strict MCP scoping visible, no global MCP loaded).
+            project = Path(entry["path"]).expanduser()
+            command = build_launch(
+                project, control_home=root, role=role, dry_run=True
+            )
+            print("  scoped command: {0}".format(" ".join(command)))
     return 0 if all(r.ok for r in results) else 1
 
 

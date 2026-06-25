@@ -13,6 +13,8 @@ from tide.arc import stream
 from tide.cannon import rev, store
 from tide.contract import model
 
+from tests.conftest import strip_placeholders
+
 
 @pytest.fixture
 def in_project(tmp_project, monkeypatch):
@@ -47,15 +49,22 @@ def test_cli_full_lifecycle(in_project, orchestrator_role, capsys):
 
     assert cli.main(["contract", "accept", "fix-leak"]) == 0
     _write_delta(arc)
+    strip_placeholders(model.contract_path(arc))  # F5: fill the passport before close
 
     assert cli.main(["contract", "close", "fix-leak"]) == 0
-    assert model.read_state(arc) == "close"
+    # F3 — close seals the arc: open dir gone, replaced by __…__.
+    assert not arc.is_dir()
+    sealed = model.resolve_arc_dir(in_project, "fix-leak")
+    assert sealed.name == "__01-fix-leak__"
+    assert model.read_state(sealed) == "close"
     assert rev.compute(in_project) != before
     assert "the new truth" in store.read(in_project)
 
-    # reopen reverses
+    # reopen reverses: un-seals + back to running
     assert cli.main(["contract", "reopen", "fix-leak"]) == 0
-    assert model.read_state(arc) == "running"
+    reopened = model.resolve_arc_dir(in_project, "fix-leak")
+    assert reopened.name == "01-fix-leak"
+    assert model.read_state(reopened) == "running"
 
 
 def test_cli_sign_loose_stamps_orchestrator(in_project, capsys):

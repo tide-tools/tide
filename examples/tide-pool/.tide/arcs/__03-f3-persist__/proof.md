@@ -1,0 +1,5 @@
+# proof — f3-persist
+contract: f3-persist
+accepted: yes
+
+Verified in headless Chrome (Playwright, http://localhost:8799). C1 persist+restore: seeded balance500/lifetime800/spawnerLv3/clickLv2 -> after real page reload state identical (clickGain3, perSec3, costs scaled). C2 auto-save+timestamp: scheduleSave on click/purchase/tick (debounced 800ms) + beforeunload; every save stamps Date.now() lastSaved (observed in saved JSON). C3 offline: backdated lastSaved 50s at perSec4 -> reload granted floor(53s*4)=+213, balance 700->913+, away toast '+213 / 53s' shown. C4 reset: cancel(confirm=false)=no-op balance1046 unchanged & save intact; confirm(true)=state all zeros, count '0', rate hidden, away hidden, key reset to fresh defaults. C5 single self-contained index.html, no build, opens via file:// (served over http only because MCP browser blocks file://). Resilience: corrupt JSON->null no throw; partial save(balance only)->defaults+lifetime clamp; absent->null. Zero console errors (favicon404 only).

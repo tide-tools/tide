@@ -36,6 +36,7 @@ CANDIDATES_DIRNAME = "candidates"
 CANON_FILE = "CANON.md"
 CONFIG_FILE = "config"
 STRICTNESS_FILE = "strictness"
+CONTEXT_FILE = "context.json"
 
 
 # --- project-root resolution -----------------------------------------------
@@ -99,6 +100,11 @@ def state_dir(root: Path) -> Path:
 
 def strictness_file(root: Path) -> Path:
     return state_dir(root) / STRICTNESS_FILE
+
+
+def context_file(root: Path) -> Path:
+    """Path to the per-project launch context profile (``state/context.json``)."""
+    return state_dir(root) / CONTEXT_FILE
 
 
 # --- control-home --------------------------------------------------------

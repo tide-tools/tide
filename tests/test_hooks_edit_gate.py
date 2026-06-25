@@ -10,6 +10,8 @@ from tide import cli
 from tide.arc import stream
 from tide.hooks import edit_gate
 
+from tests.conftest import strip_placeholders
+
 
 # --- has_open_arc scan -----------------------------------------------------
 
@@ -31,6 +33,7 @@ def test_open_subarc_detected_one_level_down(tmp_project):
 def test_closed_arc_does_not_count_as_open(tmp_project):
     arc = stream.new_arc(tmp_project, "do-thing")
     (arc / "output" / "result.md").write_text("done\n", encoding="utf-8")
+    strip_placeholders(arc / "arc.md")
     stream.close(tmp_project, "do-thing")
     assert edit_gate.has_open_arc(tmp_project) is False
 
@@ -40,6 +43,7 @@ def test_closed_arc_with_stale_active_text_never_reopens_gate(tmp_project):
     # 'status: active' but the gate scans canonical passports + skips __…__.
     arc = stream.new_arc(tmp_project, "do-thing")
     (arc / "output" / "r.md").write_text("ok\n", encoding="utf-8")
+    strip_placeholders(arc / "arc.md")
     closed = stream.close(tmp_project, "do-thing")
     (closed / "workspace" / "scratch.md").write_text(
         "old notes\nstatus: active\n", encoding="utf-8"
@@ -88,6 +92,7 @@ def test_decide_allows_empty_file_path(tmp_project):
 def _make_closed_arc_with_unmerged_delta(root, slug_name="alpha"):
     arc = stream.new_arc(root, slug_name)
     (arc / "output" / "r.md").write_text("ok\n", encoding="utf-8")
+    strip_placeholders(arc / "arc.md")
     closed = stream.close(root, slug_name)
     (closed / "delta.md").write_text(
         "# delta — {0}\n\nadded a thing to cannon.\n".format(slug_name),

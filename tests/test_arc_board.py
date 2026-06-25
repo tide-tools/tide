@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from tide import fields, paths
 from tide.arc import board, candidate, stream
+from tide.cannon import rev
+
+from tests.conftest import strip_placeholders
 
 
 def _set_goal(passport_path, text):
@@ -59,13 +62,27 @@ def test_render_board_full_snapshot(tmp_project):
         "    ○ 02-test  [active]  testing\n"
         "\n"
         "CANDIDATES\n"
-        "  01-idea  from alpha"
-    )
+        "  01-idea  from alpha\n"
+        "\n"
+        "HEALTH\n"
+        "  cannon-rev: {rev}\n"
+        "  unmerged: none\n"
+        "  drift: none"
+    ).format(rev=rev.compute(tmp_project))
     assert board.render_board(tmp_project) == expected
 
 
 def test_render_board_empty_stream(tmp_project):
-    assert board.render_board(tmp_project) == "STREAM\n  (empty stream)"
+    expected = (
+        "STREAM\n"
+        "  (empty stream)\n"
+        "\n"
+        "HEALTH\n"
+        "  cannon-rev: {rev}\n"
+        "  unmerged: none\n"
+        "  drift: none"
+    ).format(rev=rev.compute(tmp_project))
+    assert board.render_board(tmp_project) == expected
 
 
 # --- drift flag (tide net-new) ---------------------------------------------
@@ -84,6 +101,7 @@ def test_open_arc_flags_drift_when_cannon_moves(tmp_project):
 def test_closed_arc_does_not_flag_drift(tmp_project):
     a = stream.new_arc(tmp_project, "alpha")
     (a / "output" / "r.md").write_text("x", encoding="utf-8")
+    strip_placeholders(a / "arc.md")
     stream.close(tmp_project, "alpha")
     canon = paths.canon_file(tmp_project)
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
@@ -98,10 +116,66 @@ def test_unmerged_delta_is_flagged(tmp_project):
     a = stream.new_arc(tmp_project, "leak")
     (a / "output" / "r.md").write_text("x", encoding="utf-8")
     (a / "delta.md").write_text("# delta — leak\nmerged: no\n\npatched the leak\n", encoding="utf-8")
+    strip_placeholders(a / "arc.md")
     stream.close(tmp_project, "leak")  # closed dir still carries an unmerged delta
     out = board.render_board(tmp_project)
     assert "UNMERGED DELTAS" in out
     assert "tide cannon merge leak" in out
+
+
+# --- merge-health footer (tide net-new, fix F4) ----------------------------
+
+def test_health_footer_always_rendered_when_clean(tmp_project):
+    # explicit even at zero — silence is ambiguous (clean vs un-checked)
+    stream.new_arc(tmp_project, "alpha")
+    out = board.render_board(tmp_project)
+    assert "HEALTH" in out
+    assert "cannon-rev: {0}".format(rev.compute(tmp_project)) in out
+    assert "unmerged: none" in out
+    assert "drift: none" in out
+
+
+def test_health_footer_present_on_empty_stream(tmp_project):
+    out = board.render_board(tmp_project)
+    assert "HEALTH" in out
+    assert "unmerged: none" in out
+    assert "drift: none" in out
+
+
+def test_health_footer_reports_unmerged_count_and_arcs(tmp_project):
+    a = stream.new_arc(tmp_project, "leak")
+    (a / "output" / "r.md").write_text("x", encoding="utf-8")
+    (a / "delta.md").write_text(
+        "# delta — leak\nmerged: no\n\npatched the leak\n", encoding="utf-8"
+    )
+    strip_placeholders(a / "arc.md")
+    stream.close(tmp_project, "leak")  # closed dir still carries an unmerged delta
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "unmerged: 1 delta(s) (__01-leak__)" in health
+
+
+def test_health_footer_lists_drifted_open_arcs(tmp_project):
+    a = stream.new_arc(tmp_project, "alpha")
+    _set_goal(a / "arc.md", "do it")
+    # move the cannon under the open arc WITHOUT restamping → drift
+    canon = paths.canon_file(tmp_project)
+    canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "drift: 01-alpha" in health
+    # footer rev must be the post-move (current) rev, matching the drift readout
+    assert "cannon-rev: {0}".format(rev.compute(tmp_project)) in health
+
+
+def test_health_footer_drift_includes_subarcs(tmp_project):
+    stream.new_goal(tmp_project, "ship")
+    stream.new_arc(tmp_project, "wire", goal_slug="ship")  # open sub-arc, stamped
+    canon = paths.canon_file(tmp_project)
+    canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "01-wire" in health.split("drift:")[1]
 
 
 # --- supersede link --------------------------------------------------------

@@ -84,9 +84,22 @@ def test_launch_entries_dry_run_builds_tmux_command(home_with_project):
     new_window = res.commands[0]
     assert new_window[:2] == ["tmux", "new-window"]
     assert str(proj) in new_window
-    # the seed delivered to the window mentions the project's cannon
-    send = res.commands[1]
-    assert any("CANON.md — proj" in part for part in send)
+    # the window runs the SCOPED claude session: strict MCP, no global servers,
+    # seed delivered by reference (no separate send-keys command anymore).
+    assert len(res.commands) == 1
+    assert "claude" in new_window
+    assert "--strict-mcp-config" in new_window
+    assert "--mcp-config" not in new_window  # lean default → no global MCP
+    assert "--append-system-prompt" in new_window
+
+
+def test_build_launch_is_scoped_lean_by_default(home_with_project):
+    home, proj = home_with_project
+    command = menu.build_launch(proj, control_home=home, dry_run=True)
+    assert command[0] == "claude"
+    assert "--strict-mcp-config" in command
+    assert "--mcp-config" not in command
+    assert command[-2:] == ["--append-system-prompt", "@<seed-file>"]
 
 
 def test_launch_entries_default_adapter_is_orca(home_with_project):
@@ -111,6 +124,10 @@ def test_cli_menu_dry_run_launches_picked_project(home_with_project, monkeypatch
     assert rc == 0
     out = capsys.readouterr().out
     assert "proj" in out and "ok" in out
+    # criterion 4: the human SEES the full scoped command on dry-run
+    assert "scoped command:" in out
+    assert "claude --strict-mcp-config" in out
+    assert "--append-system-prompt @<seed-file>" in out
 
 
 def test_cli_menu_empty_roster_is_a_note(tmp_control_home, monkeypatch, capsys):

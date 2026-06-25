@@ -14,6 +14,8 @@ from tide import fields, paths, sync
 from tide.arc import stream
 from tide.cannon import merge, rev
 
+from tests.conftest import strip_placeholders
+
 
 # --- helpers ---------------------------------------------------------------
 
@@ -29,6 +31,7 @@ def _closed_arc_with_delta(root, slug_name, body="patched the valve"):
     entry = stream.new_arc(root, slug_name)
     (entry / "output" / "r.md").write_text("done", encoding="utf-8")
     _write_delta(entry, body)
+    strip_placeholders(entry / "arc.md")
     return stream.close(root, slug_name)
 
 
@@ -115,16 +118,31 @@ def test_is_unmerged_delta_truth_table(tmp_path):
 
 # --- unmerged_deltas scan --------------------------------------------------
 
-def test_unmerged_deltas_lists_only_closed_offenders(tmp_project):
+def test_unmerged_deltas_lists_closed_offenders_by_default(tmp_project):
     closed = _closed_arc_with_delta(tmp_project, "alpha")
     offenders = sync.unmerged_deltas(tmp_project)
     assert offenders == [closed]
 
 
-def test_unmerged_deltas_ignores_open_arc_delta(tmp_project):
+def test_unmerged_deltas_default_ignores_open_arc_delta(tmp_project):
+    # Default scan is closed-only — the board / edit-gate / session-start view.
     entry = stream.new_arc(tmp_project, "alpha")
     _write_delta(entry, "work in progress")  # arc still OPEN
     assert sync.unmerged_deltas(tmp_project) == []
+
+
+def test_unmerged_deltas_include_active_sees_open_arc_delta(tmp_project):
+    # F1: with include_active the open arc's written delta is an offender too.
+    entry = stream.new_arc(tmp_project, "alpha")
+    _write_delta(entry, "work in progress")  # arc still OPEN
+    assert sync.unmerged_deltas(tmp_project, include_active=True) == [entry]
+
+
+def test_unmerged_deltas_include_active_ignores_empty_open_delta(tmp_project):
+    # An open arc whose delta is frontmatter-only is NOT an offender.
+    entry = stream.new_arc(tmp_project, "alpha")
+    _write_delta(entry, "")  # empty body
+    assert sync.unmerged_deltas(tmp_project, include_active=True) == []
 
 
 def test_unmerged_deltas_empty_on_clean_stream(tmp_project):
@@ -137,6 +155,7 @@ def test_unmerged_deltas_sees_goal_substream(tmp_project):
     sub = stream.new_arc(tmp_project, "wire", goal_slug="ship")
     (sub / "output" / "r.md").write_text("x", encoding="utf-8")
     _write_delta(sub, "sub-arc delta")
+    strip_placeholders(sub / "arc.md")
     closed = stream.close(tmp_project, "wire", goal_slug="ship")
     assert sync.unmerged_deltas(tmp_project) == [closed]
 
@@ -150,8 +169,24 @@ def test_block_fires_when_closed_arc_has_unmerged_delta(tmp_project):
         sync.block_new_arc_if_unmerged_delta(tmp_project)
 
 
+def test_block_fires_when_active_arc_has_unmerged_delta(tmp_project):
+    # F1 DONE-WHEN: an ACTIVE arc with a written-but-unmerged delta blocks too —
+    # this is the happy-path hole the old closed-only scan left open.
+    entry = stream.new_arc(tmp_project, "alpha")
+    _write_delta(entry, "work in progress")  # arc still OPEN
+    with pytest.raises(sync.SyncError):
+        sync.block_new_arc_if_unmerged_delta(tmp_project)
+
+
 def test_block_no_raise_on_clean_stream(tmp_project):
     stream.new_arc(tmp_project, "alpha")
+    sync.block_new_arc_if_unmerged_delta(tmp_project)  # must not raise
+
+
+def test_block_no_raise_when_active_delta_is_empty(tmp_project):
+    # An open arc carrying only an empty (frontmatter-only) delta is fine.
+    entry = stream.new_arc(tmp_project, "alpha")
+    _write_delta(entry, "")
     sync.block_new_arc_if_unmerged_delta(tmp_project)  # must not raise
 
 
@@ -163,11 +198,14 @@ def test_block_clears_after_merge(tmp_project):
     assert nxt.name == "02-beta"  # 01 consumed by the closed arc
 
 
-def test_block_clears_after_reopen(tmp_project):
-    # reopening un-wraps __…__ → no longer a *closed* arc → barrier lifts too.
+def test_block_still_fires_after_reopen(tmp_project):
+    # F1: reopening un-wraps __…__ → an ACTIVE arc that still owes a merge. The
+    # barrier now scans active arcs too, so the unmerged delta keeps blocking
+    # until it is actually merged (the old closed-only scan wrongly lifted here).
     _closed_arc_with_delta(tmp_project, "alpha")
     stream.reopen(tmp_project, "alpha")
-    sync.block_new_arc_if_unmerged_delta(tmp_project)
+    with pytest.raises(sync.SyncError):
+        sync.block_new_arc_if_unmerged_delta(tmp_project)
 
 
 def test_sync_error_is_a_stream_error():
@@ -196,3 +234,28 @@ def test_new_arc_succeeds_once_delta_merged(tmp_project):
     merge.merge_delta(tmp_project, closed, slug="alpha")
     nxt = stream.new_arc(tmp_project, "beta")  # barrier lifted → succeeds
     assert nxt.is_dir()
+
+
+def test_new_arc_blocked_by_unmerged_ACTIVE_delta(tmp_project):
+    # F1: the still-open arc holds a written delta → no 2nd concurrent arc.
+    entry = stream.new_arc(tmp_project, "alpha")
+    _write_delta(entry, "patched the valve")  # arc stays OPEN
+    with pytest.raises(sync.SyncError):
+        stream.new_arc(tmp_project, "beta")
+
+
+def test_open_arc_blocked_by_unmerged_ACTIVE_delta(tmp_project):
+    other = stream.new_arc(tmp_project, "beta")  # an open arc to re-enter
+    (other / "output" / "x.md").write_text("x", encoding="utf-8")
+    a = stream.new_arc(tmp_project, "alpha")
+    _write_delta(a, "patched the valve")  # active arc owes a merge
+    with pytest.raises(sync.SyncError):
+        stream.open_arc(tmp_project, "beta")
+
+
+def test_new_arc_blocked_by_active_delta_in_goal_substream(tmp_project):
+    stream.new_goal(tmp_project, "ship")
+    sub = stream.new_arc(tmp_project, "wire", goal_slug="ship")
+    _write_delta(sub, "sub-arc delta")  # active sub-arc owes a merge
+    with pytest.raises(sync.SyncError):
+        stream.new_arc(tmp_project, "beta")

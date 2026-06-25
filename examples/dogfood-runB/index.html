@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tide Pool</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a1622;color:#cfe8f5;
+    font-family:system-ui,-apple-system,sans-serif}
+  #app{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    height:100%;gap:16px}
+  h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.04em;color:#8fd3ef}
+  #hud{display:flex;gap:12px;align-items:baseline}
+  #count{font-variant-numeric:tabular-nums;font-size:28px;font-weight:700;color:#cfe8f5}
+  #count-label{font-size:13px;color:#5e89a2;text-transform:uppercase;letter-spacing:.08em}
+  #pool{border-radius:14px;cursor:pointer;
+    box-shadow:0 0 0 1px #163348, 0 18px 40px -18px #000 inset;
+    touch-action:none}
+  #hint{font-size:12px;color:#4d7a92}
+  /* f2-upgrades: shop panel */
+  #shop{display:flex;flex-direction:column;gap:8px;width:480px;max-width:92vw}
+  #shop-title{font-size:11px;color:#5e89a2;text-transform:uppercase;letter-spacing:.1em;
+    margin:2px 0}
+  .upg{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:#0e2030;border:1px solid #163348;border-radius:10px;padding:8px 12px}
+  .upg-name{font-size:14px;font-weight:600;color:#cfe8f5}
+  .upg-meta{font-size:12px;color:#5e89a2;font-variant-numeric:tabular-nums}
+  .buy{font:inherit;font-size:13px;font-weight:600;color:#0a1622;cursor:pointer;
+    background:#7fd6f5;border:0;border-radius:8px;padding:7px 12px;white-space:nowrap;
+    font-variant-numeric:tabular-nums}
+  .buy:hover:not(:disabled){background:#a6e4fa}
+  .buy:disabled{background:#1c3a4f;color:#456079;cursor:not-allowed}
+  /* f3-persist */
+  #away-note{font-size:12px;color:#7fd6f5;min-height:0;text-align:center;
+    font-variant-numeric:tabular-nums}
+  #away-note.show{margin:2px 0}
+  .reset{font:inherit;font-size:12px;font-weight:600;color:#d99;cursor:pointer;
+    background:transparent;border:1px solid #4a2330;border-radius:8px;
+    padding:6px 12px;align-self:center;margin-top:2px}
+  .reset:hover{background:#2a1620;color:#f3b6c2}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Tide Pool</h1>
+  <div id="hud">
+    <span id="count-label">Plankton</span>
+    <span id="count">0</span>
+  </div>
+  <canvas id="pool" width="480" height="320"></canvas>
+  <div id="hint">click the pool to seed plankton</div>
+  <div id="shop">
+    <div id="shop-title">Shop</div>
+    <div class="upg">
+      <div>
+        <span class="upg-name">Auto-spawner</span>
+        <span class="upg-meta">×<span id="auto-count">0</span> · +<span id="auto-rate">0</span>/s</span>
+      </div>
+      <button id="buy-auto" class="buy">Buy · <span id="auto-cost">10</span></button>
+    </div>
+    <div class="upg">
+      <div>
+        <span class="upg-name">Click power</span>
+        <span class="upg-meta">lvl <span id="click-level">0</span> · <span id="per-click">1</span>/click</span>
+      </div>
+      <button id="buy-click" class="buy">Buy · <span id="click-cost">25</span></button>
+    </div>
+    <!-- f3-persist: away note + reset -->
+    <div id="away-note"></div>
+    <button id="reset-btn" class="reset">Reset progress</button>
+  </div>
+</div>
+<script>
+// Tide Pool — idle/clicker. Features added per tide arc.
+// f1-core: click pool -> counter += 1, spawn a visible plankton at click point,
+//          small ripple feedback. Canvas render loop. Single file, no deps.
+"use strict";
+
+(function () {
+  var canvas = document.getElementById("pool");
+  var ctx = canvas.getContext("2d");
+  var countEl = document.getElementById("count");
+  var W = canvas.width, H = canvas.height;
+
+  // ---- game state ----
+  var state = {
+    plankton: 0,        // counter shown in HUD
+    dots: [],           // spawned plankton {x,y,r,hue,phase,drift,born}
+    ripples: [],        // click feedback {x,y,t}
+    // f2-upgrades: shop economy (reuses this same store)
+    perClick: 1,        // plankton gained per manual click (raised by click-multiplier)
+    auto: { count: 0, cost: 10 },   // auto-spawner: passive plankton/sec proportional to count
+    click: { level: 0, cost: 25 }   // click-multiplier: +1 per-click per level
+  };
+
+  var MAX_DOTS = 600;   // bound the array for perf / later arcs
+
+  // ---- upgrade tuning ----
+  var AUTO_BASE = 10, AUTO_SCALE = 1.15, AUTO_RATE = 1;   // plankton/sec per spawner
+  var CLICK_BASE = 25, CLICK_SCALE = 1.15, CLICK_STEP = 1; // +per-click per level
+  var TICK_MS = 1000;          // passive tick cadence
+  var PASSIVE_DOT_CAP = 12;    // cap dots spawned per tick (perf)
+
+  // ---- f3-persist tuning ----
+  var SAVE_KEY = "tidepool-B-v1";        // versioned localStorage key
+  var SAVE_THROTTLE_MS = 500;            // min gap between disk writes
+  var OFFLINE_CAP_S = 8 * 3600;          // cap offline elapsed at 8h (anti-absurd / NaN guard)
+
+  // economy defaults — single source of truth for fresh-start & reset
+  function defaultEconomy() {
+    return {
+      plankton: 0,
+      perClick: 1,
+      auto: { count: 0, cost: AUTO_BASE },
+      click: { level: 0, cost: CLICK_BASE }
+    };
+  }
+
+  function scaledCost(base, scale, n) { return Math.floor(base * Math.pow(scale, n)); }
+
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  // spawn a plankton near (x,y), jittered so repeat clicks scatter a bit
+  function spawnPlankton(x, y) {
+    var jx = x + rand(-10, 10);
+    var jy = y + rand(-10, 10);
+    // clamp inside the pool with a small margin
+    jx = Math.max(8, Math.min(W - 8, jx));
+    jy = Math.max(8, Math.min(H - 8, jy));
+    state.dots.push({
+      x: jx, y: jy,
+      r: rand(2.2, 4.2),
+      hue: rand(140, 190),       // teal/green plankton
+      born: performance.now(),
+      phase: rand(0, Math.PI * 2),
+      drift: rand(0.2, 0.6)
+    });
+    if (state.dots.length > MAX_DOTS) state.dots.shift();
+  }
+
+  function addRipple(x, y) {
+    state.ripples.push({ x: x, y: y, t: performance.now() });
+  }
+
+  function handleClick(clientX, clientY) {
+    var rect = canvas.getBoundingClientRect();
+    // map CSS pixels -> canvas coordinate space (handles any scaling)
+    var x = (clientX - rect.left) * (W / rect.width);
+    var y = (clientY - rect.top) * (H / rect.height);
+    state.plankton += state.perClick;   // click-multiplier raises manual gain
+    spawnPlankton(x, y);
+    addRipple(x, y);
+    renderHud();
+    updateShop();
+    saveState();
+  }
+
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    handleClick(e.clientX, e.clientY);
+  });
+
+  // ---- HUD + shop ----
+  var autoCountEl = document.getElementById("auto-count");
+  var autoRateEl  = document.getElementById("auto-rate");
+  var autoCostEl  = document.getElementById("auto-cost");
+  var clickLevelEl = document.getElementById("click-level");
+  var perClickEl  = document.getElementById("per-click");
+  var clickCostEl = document.getElementById("click-cost");
+  var buyAutoBtn  = document.getElementById("buy-auto");
+  var buyClickBtn = document.getElementById("buy-click");
+
+  function renderHud() { countEl.textContent = Math.floor(state.plankton); }
+
+  function updateShop() {
+    autoCountEl.textContent  = state.auto.count;
+    autoRateEl.textContent   = state.auto.count * AUTO_RATE;
+    autoCostEl.textContent   = state.auto.cost;
+    clickLevelEl.textContent = state.click.level;
+    perClickEl.textContent   = state.perClick;
+    clickCostEl.textContent  = state.click.cost;
+    // disable when unaffordable
+    buyAutoBtn.disabled  = state.plankton < state.auto.cost;
+    buyClickBtn.disabled = state.plankton < state.click.cost;
+  }
+
+  function buyAuto() {
+    if (state.plankton < state.auto.cost) return;
+    state.plankton -= state.auto.cost;
+    state.auto.count += 1;
+    state.auto.cost = scaledCost(AUTO_BASE, AUTO_SCALE, state.auto.count);
+    renderHud();
+    updateShop();
+    saveState();
+  }
+
+  function buyClick() {
+    if (state.plankton < state.click.cost) return;
+    state.plankton -= state.click.cost;
+    state.click.level += 1;
+    state.perClick += CLICK_STEP;
+    state.click.cost = scaledCost(CLICK_BASE, CLICK_SCALE, state.click.level);
+    renderHud();
+    updateShop();
+    saveState();
+  }
+
+  buyAutoBtn.addEventListener("click", buyAuto);
+  buyClickBtn.addEventListener("click", buyClick);
+
+  // ---- f3-persist: save / restore / offline / reset ----
+  var awayNoteEl = document.getElementById("away-note");
+  var resetBtn   = document.getElementById("reset-btn");
+
+  // serialize ONLY the durable economy (not transient dots/ripples) + lastSeen
+  function serializeState() {
+    return {
+      v: 1,
+      plankton: state.plankton,
+      perClick: state.perClick,
+      auto: { count: state.auto.count, cost: state.auto.cost },
+      click: { level: state.click.level, cost: state.click.cost },
+      lastSeen: Date.now()
+    };
+  }
+
+  var _saveTimer = null, _saveDirty = false;
+  // throttled write: coalesces rapid changes, but lastSeen is always fresh at write
+  function saveState() {
+    if (_saveTimer) { _saveDirty = true; return; }
+    writeSave();
+    _saveTimer = setTimeout(function () {
+      _saveTimer = null;
+      if (_saveDirty) { _saveDirty = false; saveState(); }
+    }, SAVE_THROTTLE_MS);
+  }
+  function writeSave() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(serializeState()));
+    } catch (e) { /* storage full / disabled — game still runs in-memory */ }
+  }
+
+  // merge a parsed save into live state, guarding every field against corruption
+  function applySave(save) {
+    var d = defaultEconomy();
+    var num = function (val, fallback) {
+      return (typeof val === "number" && isFinite(val)) ? val : fallback;
+    };
+    state.plankton = num(save.plankton, d.plankton);
+    state.perClick = num(save.perClick, d.perClick);
+    var sa = save.auto || {}, sc = save.click || {};
+    state.auto.count = num(sa.count, d.auto.count);
+    state.auto.cost  = num(sa.cost,  d.auto.cost);
+    state.click.level = num(sc.level, d.click.level);
+    state.click.cost  = num(sc.cost,  d.click.cost);
+  }
+
+  // offline progress: grant passive plankton for elapsed time since lastSeen.
+  // returns the granted amount (0 if none), bounded by OFFLINE_CAP_S.
+  function applyOffline(save) {
+    var last = (save && typeof save.lastSeen === "number" && isFinite(save.lastSeen))
+      ? save.lastSeen : null;
+    if (last === null) return 0;
+    var elapsed = (Date.now() - last) / 1000;          // seconds
+    if (!(elapsed > 0)) return 0;                       // also rejects NaN
+    elapsed = Math.min(elapsed, OFFLINE_CAP_S);         // cap to avoid absurd numbers
+    var grant = Math.floor(state.auto.count * AUTO_RATE * elapsed);
+    if (grant > 0) state.plankton += grant;
+    return grant;
+  }
+
+  function showAway(amount, elapsedS) {
+    if (amount <= 0) return;
+    var t = Math.floor(elapsedS);
+    var when = t >= 3600 ? (Math.floor(t / 3600) + "h " + Math.floor((t % 3600) / 60) + "m")
+             : t >= 60   ? (Math.floor(t / 60) + "m " + (t % 60) + "s")
+             :             (t + "s");
+    awayNoteEl.textContent = "while you were away (" + when + "): +" + amount + " plankton";
+    awayNoteEl.classList.add("show");
+  }
+
+  // load from disk: parse + guard, merge, then offline grant. Returns elapsed seconds.
+  function restoreState() {
+    var raw;
+    try { raw = localStorage.getItem(SAVE_KEY); }
+    catch (e) { raw = null; }
+    if (!raw) return;
+    var save;
+    try { save = JSON.parse(raw); }
+    catch (e) { return; }                               // corrupt JSON → keep defaults
+    if (!save || typeof save !== "object") return;
+    applySave(save);
+    var hadLast = typeof save.lastSeen === "number" && isFinite(save.lastSeen);
+    var elapsed = hadLast ? Math.min((Date.now() - save.lastSeen) / 1000, OFFLINE_CAP_S) : 0;
+    var granted = applyOffline(save);
+    showAway(granted, elapsed);
+  }
+
+  function resetGame() {
+    if (!window.confirm("Reset all progress? This cannot be undone.")) return;
+    try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+    var d = defaultEconomy();
+    state.plankton = d.plankton;
+    state.perClick = d.perClick;
+    state.auto.count = d.auto.count;  state.auto.cost = d.auto.cost;
+    state.click.level = d.click.level; state.click.cost = d.click.cost;
+    awayNoteEl.textContent = "";
+    awayNoteEl.classList.remove("show");
+    renderHud();
+    updateShop();
+    saveState();
+  }
+  resetBtn.addEventListener("click", resetGame);
+
+  // ---- passive auto-spawn tick (no clicking required) ----
+  function passiveTick() {
+    var gain = state.auto.count * AUTO_RATE;
+    if (gain > 0) {
+      state.plankton += gain;
+      var dotsToSpawn = Math.min(gain, PASSIVE_DOT_CAP);
+      for (var i = 0; i < dotsToSpawn; i++) {
+        spawnPlankton(rand(8, W - 8), rand(8, H - 8));
+      }
+      renderHud();
+    }
+    updateShop();   // re-evaluate affordability as plankton grows
+    saveState();    // keep lastSeen fresh + persist passive growth
+  }
+
+  // restore saved progress + offline grant BEFORE the loop / first paint
+  restoreState();
+  setInterval(passiveTick, TICK_MS);
+
+  // initial paint of HUD + shop (reflects any restored/offline state)
+  renderHud();
+  updateShop();
+  saveState();   // immediately persist (writes a fresh lastSeen for next session)
+
+  // ---- render ----
+  function drawBackground(now) {
+    var g = ctx.createRadialGradient(W / 2, H * 0.42, 30, W / 2, H / 2, W * 0.7);
+    g.addColorStop(0, "#0f2a3d");
+    g.addColorStop(1, "#081320");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // faint moving caustic lines for a "water" feel
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    ctx.strokeStyle = "#7fd6f5";
+    ctx.lineWidth = 1;
+    for (var i = 0; i < 5; i++) {
+      var yy = (i + 1) * H / 6 + Math.sin(now / 1400 + i) * 6;
+      ctx.beginPath();
+      ctx.moveTo(0, yy);
+      ctx.lineTo(W, yy + Math.cos(now / 1700 + i) * 6);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawDots(now) {
+    for (var i = 0; i < state.dots.length; i++) {
+      var d = state.dots[i];
+      var wx = d.x + Math.sin(now / 700 + d.phase) * d.drift;
+      var wy = d.y + Math.cos(now / 800 + d.phase) * d.drift;
+      var pulse = 1 + Math.sin(now / 500 + d.phase) * 0.12;
+      ctx.beginPath();
+      ctx.fillStyle = "hsl(" + d.hue + ",70%,62%)";
+      ctx.shadowColor = "hsl(" + d.hue + ",80%,55%)";
+      ctx.shadowBlur = 6;
+      ctx.arc(wx, wy, d.r * pulse, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  function drawRipples(now) {
+    var keep = [];
+    for (var i = 0; i < state.ripples.length; i++) {
+      var rp = state.ripples[i];
+      var age = (now - rp.t) / 1000;   // seconds
+      var life = 0.6;                  // ripple lasts 0.6s
+      if (age >= life) continue;
+      var p = age / life;
+      var radius = 6 + p * 34;
+      ctx.save();
+      ctx.globalAlpha = (1 - p) * 0.8;
+      ctx.strokeStyle = "#bfeefc";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(rp.x, rp.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      keep.push(rp);
+    }
+    state.ripples = keep;
+  }
+
+  function frame(now) {
+    drawBackground(now);
+    drawDots(now);
+    drawRipples(now);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // expose state for later arcs (spawn loop, upgrades) without broad globals
+  window.TidePool = state;
+})();
+</script>
+</body>
+</html>

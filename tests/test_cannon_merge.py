@@ -66,7 +66,9 @@ def test_merge_keeps_single_trailing_newline():
     assert not out.endswith("\n\n")
 
 
-def test_merge_inserts_before_sibling_section():
+def test_merge_keeps_journal_last_and_chronological():
+    # F2: the journal is the canonical FINAL section; a non-canonical sibling that
+    # happened to sit after it is preserved but lands BEFORE the journal on re-emit.
     canon = (
         "# CANON.md — demo\n\n"
         "## Cannon journal\n\n"
@@ -74,9 +76,86 @@ def test_merge_inserts_before_sibling_section():
         "## Changelog\nstuff\n"
     )
     out = merge.merge_delta_text(canon, "new body", date="2026-06-25", slug="new")
-    # new entry lands inside the journal — before the Changelog sibling
-    assert out.index("### 2026-06-25 · new") < out.index("## Changelog")
+    # the journal is forced to be the last section
+    assert out.index("## Changelog") < out.index("## Cannon journal")
+    # prior entry preserved + new entry appended chronologically after it
     assert out.index("### 2026-06-01 · old") < out.index("### 2026-06-25 · new")
+    assert "old body" in out and "stuff" in out
+
+
+def test_canonical_delta_section_fills_top_not_journal():
+    # F2 core: a delta carrying canonical ## sections routes them into the SINGLE
+    # top heading (filling the empty seed), NOT a dump under the journal.
+    canon = merge.store.canon_template("demo")  # seed: empty canonical sections
+    delta = (
+        "## What it is\n"
+        "a brass idle clicker\n\n"
+        "## State & components\n"
+        "- 12 py files\n\n"
+        "## Interfaces / how used\n"
+        "tide play\n"
+    )
+    out = merge.merge_delta_text(delta_body=delta, canon_text=canon,
+                                 date="2026-06-25", slug="seed")
+    sections = store.scan_text(out)
+    # canonical sections are now FILLED at the top
+    assert sections["What it is"].strip() == "a brass idle clicker"
+    assert "12 py files" in sections["State & components"]
+    assert sections["Interfaces / how used"].strip() == "tide play"
+    # exactly ONE of each canonical top header — no duplicates
+    for title in ("## What it is", "## State & components", "## Interfaces / how used"):
+        assert out.count(title) == 1
+    # the canonical content did NOT leak into the journal as a top-level header
+    assert out.count("## Cannon journal") == 1
+    assert out.index("### 2026-06-25 · seed") > out.index("## Cannon journal")
+
+
+def test_canonical_delta_section_appends_within_existing():
+    # an already-populated canonical section is appended-within (never replaced
+    # blind, never duplicated as a second top header).
+    canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\noriginal identity\n\n"
+        "## State & components\n\n"
+        "## Interfaces / how used\n\n"
+        "## Cannon journal\n"
+    )
+    delta = "## What it is\nnow with idle clicking\n"
+    out = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="grow")
+    sections = store.scan_text(out)
+    assert "original identity" in sections["What it is"]
+    assert "now with idle clicking" in sections["What it is"]
+    assert out.count("## What it is") == 1  # single header, appended within
+
+
+def test_merge_dedupes_duplicate_top_headers():
+    # pre-existing rot: two identical top headers get folded into one on merge.
+    canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\nfirst\n\n"
+        "## What it is\nsecond\n\n"
+        "## Cannon journal\n"
+    )
+    out = merge.merge_delta_text(canon, "note", date="2026-06-25", slug="dedup")
+    assert out.count("## What it is") == 1
+    sections = store.scan_text(out)
+    assert "first" in sections["What it is"]
+    assert "second" in sections["What it is"]
+
+
+def test_non_canonical_delta_section_demoted_into_journal():
+    # a non-canonical delta section is kept (chronicle) but demoted so it can't
+    # masquerade as a top-level CANON section.
+    canon = merge.store.canon_template("demo")
+    delta = "## Findings\n- rough edge spotted\n"
+    out = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="probe")
+    sections = store.scan_text(out)
+    # not promoted to a top-level section
+    assert "Findings" not in sections
+    # demoted heading + content live under the journal stamp
+    assert "#### Findings" in out
+    assert "rough edge spotted" in out
+    assert out.index("### 2026-06-25 · probe") < out.index("#### Findings")
 
 
 # --- file-level wrapper -----------------------------------------------------

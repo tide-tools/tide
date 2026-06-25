@@ -18,10 +18,11 @@ consumed by the agent CLI and the SessionStart / edit-gate hooks:
 * **drift_check(arc, root)** — compare an arc's stamped cannon-rev against the
   current one; if cannon moved, the arc has drifted and must reconcile before it
   proceeds (checked on worker dispatch + on arc close).
-* **block_new_arc_if_unmerged_delta(root)** — refuse to open a NEW arc while any
-  CLOSED arc still carries a non-empty, unmerged ``delta.md``. Extends canon's
-  close guard into a between-arcs barrier so deltas funnel through the merge gate
-  one at a time (decision 9).
+* **block_new_arc_if_unmerged_delta(root)** — refuse to open a NEW arc while ANY
+  arc — ACTIVE or CLOSED — still carries a non-empty, unmerged ``delta.md``.
+  Extends canon's close guard into a between-arcs barrier so deltas funnel through
+  the merge gate one at a time (decision 9 / dogfood fix F1). The active-arc scan
+  closes the happy-path hole where the current arc is still open.
 
 All functions are pure (read-only) except ``stamp`` (a single field write) and
 ``block_…`` (raises). They are wired into :mod:`tide.arc.stream` (``new``/``open``)
@@ -128,12 +129,17 @@ def is_unmerged_delta(delta_path: Path) -> bool:
     return bool(merge._delta_body(text))
 
 
-def unmerged_deltas(root: Path) -> List[Path]:
-    """Closed-arc dirs under ``.tide/arcs/`` that still hold an unmerged delta.
+def unmerged_deltas(root: Path, *, include_active: bool = False) -> List[Path]:
+    """Arc dirs under ``.tide/arcs/`` that still hold a non-empty, unmerged delta.
 
     Walks the whole stream (top + nested goal substreams) for ``delta.md`` files,
-    keeps only those whose containing entry is CLOSED (``__…__``) and whose delta
-    is non-empty + unmerged. Returns the offending entry dirs, name-sorted.
+    keeping those whose entry is a real arc/goal dir and whose delta is non-empty
+    + unmerged. By default only CLOSED (``__…__``) arcs count — the post-close
+    merge-gate offenders the board + hooks report. With ``include_active=True`` an
+    OPEN arc carrying a written-but-unmerged delta is an offender too; the
+    between-arcs barrier (:func:`block_new_arc_if_unmerged_delta`) uses this so the
+    one-at-a-time invariant also holds on the happy path, where the current arc is
+    still active. Returns the offending entry dirs, name-sorted.
     """
     arcs = paths.arcs_dir(Path(root))
     offenders: List[Path] = []
@@ -141,7 +147,9 @@ def unmerged_deltas(root: Path) -> List[Path]:
         return offenders
     for delta in sorted(arcs.rglob(DELTA_FILE)):
         entry = delta.parent
-        if not slug.is_closed_entry(entry.name):
+        if not slug.is_entry(entry.name):
+            continue
+        if not include_active and not slug.is_closed_entry(entry.name):
             continue
         if is_unmerged_delta(delta):
             offenders.append(entry)
@@ -149,18 +157,22 @@ def unmerged_deltas(root: Path) -> List[Path]:
 
 
 def block_new_arc_if_unmerged_delta(root: Path) -> None:
-    """Refuse to open a new arc while a closed arc has an unmerged delta.
+    """Refuse to open a new arc while ANY arc — active OR closed — owes a merge.
 
-    The between-arcs barrier (decision 9): deltas must funnel through the
-    orchestrator-only ``cannon merge`` gate one at a time. Raises
-    :class:`SyncError` listing the offenders; a no-op when the stream is clean.
+    The between-arcs barrier (decision 9 / dogfood fix F1): deltas must funnel
+    through the orchestrator-only ``cannon merge`` gate one feature at a time. The
+    old scan only saw CLOSED arcs, so the common happy path (the current arc still
+    active with a written delta) let a 2nd concurrent arc open silently. Scanning
+    active + closed (``include_active=True``) closes that hole. Raises
+    :class:`SyncError` naming the offender(s) + how to resolve; a no-op when the
+    stream is clean.
     """
-    offenders = unmerged_deltas(root)
+    offenders = unmerged_deltas(root, include_active=True)
     if not offenders:
         return
     names = ", ".join(o.name for o in offenders)
     raise SyncError(
-        "cannot open a new arc — {n} closed arc(s) carry an unmerged cannon-delta "
+        "cannot open a new arc — {n} arc(s) carry an unmerged cannon-delta "
         "({names}); merge into cannon first (tide cannon merge <arc>)".format(
             n=len(offenders), names=names
         )

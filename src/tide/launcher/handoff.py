@@ -33,9 +33,10 @@ from typing import List, Optional
 
 from .. import paths, slug
 from ..adapters import SpawnResult, get_adapter
+from ..adapters.base import persist_seed
 from ..arc import candidate
 from ..arc.stream import StreamError
-from . import seed
+from . import context, seed
 
 WORKSPACE_DIRNAME = "workspace"
 SUMMARY_PREFIX = "handoff-"
@@ -290,8 +291,10 @@ def run_handoff(
     )
     adapter = get_adapter(adapter_name)
     title = "tide-handoff-{0}".format(slug.slugify(arc_ref) or "session")
+    seed_file = "<seed-file>" if dry_run else str(persist_seed(seed_text, title))
+    command = context.build_launch_command(seed_file, context.load_profile(root))
     result.spawn = adapter.spawn(
-        seed=seed_text, cwd=str(root.resolve()), title=title, dry_run=dry_run
+        command=command, cwd=str(root.resolve()), title=title, dry_run=dry_run
     )
     result.notes.append(
         "{0}: {1}".format(

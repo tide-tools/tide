@@ -23,6 +23,19 @@ def test_cli_candidate_add_captures_file(in_project):
     assert "do it" in path.read_text(encoding="utf-8")
 
 
+def test_cli_candidate_add_long_idea_caps_slug_keeps_body(in_project):
+    # fix F6: a single long pasted idea → short slug handle + full idea in body.
+    idea = "make the export button stream rows so a huge sheet does not freeze the tab"
+    rc = cli.main(["candidate", "add", idea])
+    assert rc == 0
+    files = list(paths.candidates_dir(in_project).glob("*.md"))
+    assert len(files) == 1
+    path = files[0]
+    stem_slug = path.stem.split("-", 1)[1]
+    assert len(stem_slug) <= 48
+    assert idea in path.read_text(encoding="utf-8")
+
+
 def test_cli_candidate_list_renders(in_project, capsys):
     cli.main(["candidate", "add", "one"])
     rc = cli.main(["candidate", "list"])

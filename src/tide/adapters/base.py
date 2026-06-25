@@ -1,10 +1,13 @@
 """tide.adapters.base — the terminal-adapter contract.
 
 An adapter's one job: open a NEW terminal window/tab, ``cd`` into a project, and
-start a FRESH Claude session pre-seeded with the launcher's seed string. The seed
-itself is built (adapter-agnostically) by :mod:`tide.launcher.seed`; the adapter
-only *transports* it. That split keeps adapters thin and genuinely swappable
-(Orca default, tmux fallback, more later) behind one ABC.
+run a FRESH Claude session with the exact launch command the launcher built. That
+command (a scoped ``claude …`` argv) is assembled adapter-agnostically by
+:mod:`tide.launcher.context` from the project's context profile and the persisted
+seed file; the adapter only *carries it verbatim*. That split keeps adapters thin
+and genuinely swappable (Orca default, tmux fallback, more later) behind one ABC —
+and it means WHAT context loads (strict MCP scoping, allow-lists) is decided once,
+centrally, not re-derived per adapter.
 
 :class:`TerminalAdapter` is the contract; :class:`SpawnResult` is the uniform
 return so the caller (the menu, later the handoff skill) can report success or a
@@ -22,8 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-# The CLI that starts a fresh Claude session inside the new terminal. Adapters
-# launch this; the seed is delivered as its opening prompt.
+# The base CLI that starts a fresh Claude session inside the new terminal. The
+# launcher (tide.launcher.context) wraps this in scoping flags to build the full
+# launch argv; adapters carry that argv verbatim.
 SESSION_PROGRAM = "claude"
 
 
@@ -64,7 +68,7 @@ def persist_seed(seed: str, title: str) -> Path:
 
 
 class TerminalAdapter(ABC):
-    """Open a new terminal and start a fresh seeded Claude session.
+    """Open a new terminal and run a fresh, scoped Claude session.
 
     Subclasses set :attr:`name` (the registry key) and implement :meth:`spawn`.
     """
@@ -75,12 +79,16 @@ class TerminalAdapter(ABC):
     def spawn(
         self,
         *,
-        seed: str,
+        command: List[str],
         cwd: str,
         title: str = "tide",
         dry_run: bool = False,
     ) -> SpawnResult:
-        """Open a new terminal at *cwd* and start a fresh session seeded with *seed*.
+        """Open a new terminal at *cwd* and run *command* (the launcher's scoped argv).
+
+        *command* is the full ``claude …`` invocation (scoping flags + a reference
+        to the persisted seed file) built by :mod:`tide.launcher.context`; the
+        adapter carries it verbatim and never re-derives what context loads.
 
         With ``dry_run=True`` the adapter MUST build but NOT execute the command(s),
         returning them on :attr:`SpawnResult.commands`.

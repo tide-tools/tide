@@ -25,6 +25,8 @@ def test_terminal_command_is_scoped_and_seeded_without_bare():
     assert "--mcp-config" not in cmd
     # skill noise trimmed, like tide-go
     assert "--disable-slash-commands" in cmd
+    # interactive head: permission prompts skipped by default (deliberate operator choice)
+    assert "--dangerously-skip-permissions" in cmd
     # seed delivered by reference at the tail
     assert cmd[-2:] == ["--append-system-prompt", "@/tmp/seed.md"]
     # auth-preserving: --bare would drop OAuth (~/.claude.json) → never present
@@ -35,9 +37,26 @@ def test_terminal_command_reuses_context_builder_shape():
     profile = dict(context.DEFAULT_PROFILE)
     base = context.build_launch_command("/tmp/s.md", profile)
     full = terminal.build_terminal_command("/tmp/s.md", profile)
-    # every token of the scoped builder survives; we only ADD disable-slash
+    # every token of the scoped builder survives; we only ADD the head-session flags
     assert set(base).issubset(set(full))
-    assert [t for t in full if t not in base] == ["--disable-slash-commands"]
+    assert [t for t in full if t not in base] == [
+        "--disable-slash-commands",
+        "--dangerously-skip-permissions",
+    ]
+
+
+def test_skip_permissions_is_head_only_not_in_shared_builder():
+    # the autonomous/spawned path uses context.build_launch_command — it must NEVER
+    # carry skip-permissions; only the in-terminal head (build_terminal_command) opts in.
+    profile = dict(context.DEFAULT_PROFILE)
+    spawned = context.build_launch_command("/tmp/s.md", profile)
+    assert "--dangerously-skip-permissions" not in spawned
+
+
+def test_skip_permissions_can_be_turned_off():
+    profile = dict(context.DEFAULT_PROFILE)
+    cmd = terminal.build_terminal_command("/tmp/s.md", profile, skip_permissions=False)
+    assert "--dangerously-skip-permissions" not in cmd
 
 
 def test_disable_slash_can_be_turned_off():
@@ -93,9 +112,22 @@ def test_cli_terminal_dry_run_prints_command(tmp_control_home, monkeypatch, caps
     rc = cli.main(["terminal", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "claude --disable-slash-commands --strict-mcp-config" in out
+    assert "claude --disable-slash-commands --dangerously-skip-permissions --strict-mcp-config" in out
     assert "MIGRATE.md" in out
     # the built command line must not carry --bare (auth-preserving)
     cmd_line = next(ln for ln in out.splitlines() if "command:" in ln)
     assert "--bare" not in cmd_line
     assert "auth:" in out  # the auth-kept note is shown
+    assert "perms:" in out  # the skip-permissions note is shown
+    assert "deliberate operator choice" in out
+
+
+def test_cli_terminal_dry_run_no_skip_permissions_flag(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+    rc = cli.main(["terminal", "--dry-run", "--no-skip-permissions"])
+    assert rc == 0
+    cmd_line = next(ln for ln in capsys.readouterr().out.splitlines() if "command:" in ln)
+    assert "--dangerously-skip-permissions" not in cmd_line

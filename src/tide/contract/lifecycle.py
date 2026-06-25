@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import paths, slug, strictness
+from .. import fields, paths, placeholders, slug, strictness
 from ..cannon import merge
 from . import ask as ask_mod
 from . import model
@@ -238,20 +238,47 @@ def close(
     goal_slug: Optional[str] = None,
     date: Optional[str] = None,
 ) -> str:
-    """Close a contract: guard → merge delta into CANON.md → bump rev → state ``close``.
+    """Close a contract AND seal its arc — one unified step (dogfood fix F3).
 
-    Guard (skipped with *force*): ``report.md`` AND ``proof.md`` both
-    ``accepted: yes`` AND a non-empty ``delta.md``. Then :func:`cannon.merge.merge_delta`
-    appends the delta under the journal, the cannon-rev is recomputed/stamped, and
-    the state flips to ``close``. Returns the new cannon-rev.
+    Guard (skipped with *force*): the committed ``contract.md`` carries no leftover
+    scaffold placeholder (``<…>`` spans / the ``# supersedes:`` hint — fix F5) AND
+    ``report.md`` AND ``proof.md`` both ``accepted: yes`` AND a non-empty
+    ``delta.md``. Then, in order:
+
+    1. :func:`cannon.merge.merge_delta` routes the delta into CANON.md and returns
+       the bumped (post-merge) cannon-rev.
+    2. The arc is **sealed** like ``tide arc close`` — renamed to ``__…__`` and its
+       passport stamped ``status: done`` (via :func:`tide.arc.stream.close`, the
+       empty-output guard forced since the contract's report/proof/delta ARE the
+       arc's auditable output). Sealing is idempotent: an arc already closed (e.g.
+       a manual ``arc close`` first) is left as-is.
+    3. The **post-merge** cannon-rev is re-stamped onto the arc's passport (and the
+       contract), so the just-merged arc does NOT show drift against the canon it
+       authored — killing the two-phase footgun + post-merge self-drift.
+    4. The contract state flips to ``close``.
+
+    Returns the new cannon-rev. ``tide arc close`` stays for arcs without a
+    contract; for a contracted arc this is the single sealing path.
 
     NOTE: merging is orchestrator-only — the CLI handler calls
     ``require_orchestrator`` before this runs; the logic stays gate-free so it is
     unit-testable (mirrors ``cannon merge`` / ``candidate promote``).
     """
+    from ..arc import stream
+
     arc_dir = model.resolve_arc_dir(root, arc_ref, goal_slug=goal_slug)
     if not model.has_contract(arc_dir):
         raise model.ContractError("no contract on arc {0!r} to close".format(arc_dir.name))
+
+    if not force:
+        # Scaffold-placeholder guard (dogfood fix F5): refuse to seal a contract
+        # whose committed contract.md still carries `<…>` template spans or the
+        # `# supersedes:` hint, so the merged passport never reads like a form.
+        leftovers = placeholders.find_in_file(model.contract_path(arc_dir))
+        if leftovers:
+            raise model.ContractError(
+                placeholders.refuse_message(model.CONTRACT_FILE, arc_dir.name, leftovers)
+            )
 
     if not force:
         reasons: List[str] = []
@@ -269,13 +296,34 @@ def close(
 
     cslug = model.contract_slug(arc_dir)
     new_rev = merge.merge_delta(root, arc_dir, slug=cslug, date=date)
+
+    # Seal the arc unless it was already closed (idempotent — supports a prior
+    # manual `arc close`). The contract guard above already vouched for the
+    # deliverables, so the stream's empty-output guard is forced.
+    if not slug.is_closed_entry(arc_dir.name):
+        arc_dir = stream.close(
+            root, slug.entry_slug(arc_dir.name), goal_slug=goal_slug, force=True
+        )
+
+    # Re-stamp the POST-merge rev onto the arc passport (the drift anchor) AND the
+    # contract, so the arc that authored this canon shows no self-drift.
+    fields.set_field(stream.passport_path(arc_dir), "cannon-rev", new_rev)
     model.set_field(arc_dir, "cannon-rev", new_rev)
     model.set_state(arc_dir, model.CLOSE)
     return new_rev
 
 
 def reopen(root: Path, arc_ref: str, *, goal_slug: Optional[str] = None) -> str:
-    """Reverse a close: ``close → running``. Returns the new state (``running``)."""
+    """Reverse a unified close: un-seal the arc AND ``close → running``.
+
+    Mirrors :func:`close` (fix F3): since close now seals the arc (``__…__`` +
+    ``status: done``), reopen un-seals it (strip the marker + ``status: active``,
+    via :func:`tide.arc.stream.reopen`) before flipping the contract back to
+    ``running`` — so the arc seal and the contract state never disagree. Returns
+    the new state (``running``).
+    """
+    from ..arc import stream
+
     arc_dir = model.resolve_arc_dir(root, arc_ref, goal_slug=goal_slug)
     if not model.has_contract(arc_dir):
         raise model.ContractError("no contract on arc {0!r} to reopen".format(arc_dir.name))
@@ -285,6 +333,8 @@ def reopen(root: Path, arc_ref: str, *, goal_slug: Optional[str] = None) -> str:
                 arc_dir.name, model.read_state(arc_dir)
             )
         )
+    if slug.is_closed_entry(arc_dir.name):
+        arc_dir = stream.reopen(root, slug.entry_slug(arc_dir.name), goal_slug=goal_slug)
     return model.set_state(arc_dir, model.RUNNING)
 
 

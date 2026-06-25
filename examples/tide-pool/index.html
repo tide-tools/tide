@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tide Pool</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07171f; overflow: hidden; }
+    * { box-sizing: border-box; }
+    #game { position: relative; width: 100vw; height: 100vh; }
+    #pool { display: block; width: 100%; height: 100%; cursor: pointer; touch-action: manipulation; }
+
+    /* Counter HUD */
+    #hud {
+      position: absolute;
+      top: 22px; left: 24px;
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #e8fbff;
+      pointer-events: none;
+      user-select: none;
+      text-shadow: 0 1px 12px rgba(0, 40, 60, 0.55);
+    }
+    #count {
+      font-size: clamp(40px, 9vw, 92px);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      transition: transform 90ms ease-out;
+      display: inline-block;
+    }
+    #count.bump { transform: scale(1.16); }
+    #label {
+      font-size: clamp(12px, 2.4vw, 17px);
+      font-weight: 600;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      opacity: 0.62;
+      margin-top: 4px;
+    }
+    #rate {
+      font-family: "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: clamp(11px, 2vw, 14px);
+      letter-spacing: 0.04em;
+      color: #79e6cf;
+      opacity: 0;
+      margin-top: 9px;
+      transition: opacity 400ms ease;
+    }
+    #rate.show { opacity: 0.85; }
+
+    #hint {
+      position: absolute;
+      bottom: 26px; left: 0; right: 0;
+      text-align: center;
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #cdeef6;
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      opacity: 0.5;
+      pointer-events: none;
+      user-select: none;
+      transition: opacity 600ms ease;
+    }
+    #hint.gone { opacity: 0; }
+
+    /* ---- Upgrades shop (f2) — editorial-mono dark / teal ------------------ */
+    #shop {
+      position: absolute;
+      top: 20px; right: 20px;
+      width: 296px; max-width: calc(100vw - 40px);
+      font-family: "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      color: #d8f4ef;
+      background: rgba(7, 26, 33, 0.72);
+      border: 1px solid rgba(120, 222, 205, 0.18);
+      border-radius: 14px;
+      backdrop-filter: blur(9px) saturate(120%);
+      -webkit-backdrop-filter: blur(9px) saturate(120%);
+      box-shadow: 0 18px 50px rgba(0, 18, 26, 0.5);
+      user-select: none;
+      overflow: hidden;
+    }
+    #shop-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 13px 16px 11px;
+      border-bottom: 1px solid rgba(120, 222, 205, 0.12);
+    }
+    #shop-title {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.32em; text-transform: uppercase;
+      color: #8fefd8;
+    }
+    #shop-bal {
+      font-size: 12px; letter-spacing: 0.02em;
+      color: #cdeef6; opacity: 0.7;
+    }
+    #shop-bal b { color: #e8fbff; opacity: 1; font-weight: 700; }
+    #shop-items { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+    .item {
+      position: relative;
+      text-align: left;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      gap: 2px 10px;
+      padding: 11px 13px;
+      background: rgba(18, 52, 62, 0.55);
+      border: 1px solid rgba(120, 222, 205, 0.14);
+      border-radius: 10px;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 80ms ease, border-color 140ms ease, background 140ms ease, opacity 140ms ease;
+    }
+    .item:hover:not(:disabled) { border-color: rgba(143, 239, 216, 0.5); background: rgba(24, 66, 78, 0.7); }
+    .item:active:not(:disabled) { transform: scale(0.985); }
+    .item:disabled { cursor: not-allowed; opacity: 0.42; }
+    .item.flash { animation: itemflash 360ms ease; }
+    @keyframes itemflash {
+      0% { border-color: rgba(143, 239, 216, 0.95); background: rgba(40, 96, 108, 0.9); }
+      100% { border-color: rgba(120, 222, 205, 0.14); background: rgba(18, 52, 62, 0.55); }
+    }
+    .item-name { grid-column: 1; font-size: 13.5px; font-weight: 700; color: #eafffa; letter-spacing: 0.01em; }
+    .item-lvl  { grid-column: 2; justify-self: end; align-self: center;
+      font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: #7fe3cd; opacity: 0.82; white-space: nowrap; }
+    .item-eff  { grid-column: 1; font-size: 11px; color: #a9d8d0; opacity: 0.78; letter-spacing: 0.01em; }
+    .item-cost { grid-column: 2; justify-self: end; align-self: end;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap; }
+    .item-cost.ok  { color: #8fefd8; }
+    .item-cost.no  { color: #f2a59a; }
+    .item-cost::before { content: "◇ "; opacity: 0.7; font-weight: 400; }
+
+    /* ---- Reset button (f3) ----------------------------------------------- */
+    #shop-foot {
+      padding: 6px 8px 10px;
+      border-top: 1px solid rgba(120, 222, 205, 0.10);
+    }
+    #reset-btn {
+      width: 100%;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #e9b6ad;
+      background: rgba(60, 22, 22, 0.30);
+      border: 1px solid rgba(242, 165, 154, 0.22);
+      border-radius: 9px;
+      cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 80ms ease;
+    }
+    #reset-btn:hover { background: rgba(86, 30, 30, 0.5); border-color: rgba(242, 165, 154, 0.55); color: #ffd7cf; }
+    #reset-btn:active { transform: scale(0.99); }
+
+    /* ---- Offline-progress toast (f3) ------------------------------------- */
+    #away {
+      position: absolute;
+      left: 50%; bottom: 64px;
+      transform: translate(-50%, 14px);
+      max-width: min(460px, calc(100vw - 40px));
+      display: flex; align-items: center; gap: 14px;
+      padding: 13px 16px;
+      font-family: "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      color: #d8f4ef;
+      background: rgba(7, 26, 33, 0.86);
+      border: 1px solid rgba(120, 222, 205, 0.22);
+      border-radius: 13px;
+      backdrop-filter: blur(9px) saturate(120%);
+      -webkit-backdrop-filter: blur(9px) saturate(120%);
+      box-shadow: 0 18px 50px rgba(0, 18, 26, 0.55);
+      opacity: 0; pointer-events: none;
+      transition: opacity 420ms ease, transform 420ms ease;
+      z-index: 5;
+    }
+    #away.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+    #away-text { font-size: 12.5px; line-height: 1.45; }
+    #away-text b { color: #8fefd8; font-weight: 700; }
+    #away-text .sub {
+      display: block; font-size: 10px; opacity: 0.58;
+      letter-spacing: 0.16em; margin-bottom: 2px; text-transform: uppercase;
+    }
+    #away-close {
+      flex: none;
+      width: 26px; height: 26px;
+      font: inherit; font-size: 16px; line-height: 1;
+      color: #cdeef6;
+      background: rgba(120, 222, 205, 0.10);
+      border: 1px solid rgba(120, 222, 205, 0.20);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 140ms ease;
+    }
+    #away-close:hover { background: rgba(120, 222, 205, 0.22); }
+
+    @media (max-width: 520px) {
+      #shop { top: auto; bottom: 14px; right: 14px; left: 14px; width: auto; }
+      #shop-items { flex-direction: row; flex-wrap: wrap; }
+      .item { flex: 1 1 44%; }
+      #away { bottom: auto; top: 78px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="game">
+    <canvas id="pool"></canvas>
+    <div id="hud">
+      <div id="count">0</div>
+      <div id="label">plankton</div>
+      <div id="rate">+0/sec</div>
+    </div>
+
+    <div id="shop">
+      <div id="shop-head">
+        <span id="shop-title">Tide Shop</span>
+        <span id="shop-bal"><b id="bal">0</b> &#9671;</span>
+      </div>
+      <div id="shop-items"><!-- buttons injected by JS --></div>
+      <div id="shop-foot">
+        <button id="reset-btn" type="button">Reset progress</button>
+      </div>
+    </div>
+
+    <div id="away" role="status" aria-live="polite">
+      <div id="away-text">
+        <span class="sub">while you were away (<span id="away-time">0s</span>)</span>
+        <span>+<b id="away-num">0</b> plankton drifted into the pool</span>
+      </div>
+      <button id="away-close" type="button" aria-label="Dismiss">&times;</button>
+    </div>
+
+    <div id="hint">tap the pool to wake the plankton &mdash; then spend them in the shop</div>
+  </div>
+
+  <script>
+    // Tide Pool — cozy idle/clicker. Features arrive via tide arcs.
+    // Arc 01 (f1-core): click the pool -> spawn a plankton, bump the counter, juicy feedback.
+    // Arc 02 (f2-upgrades): plankton become a spendable balance; a shop sells an
+    //   auto-spawner (passive plankton/sec) and a click-multiplier (more per click).
+    //   Costs scale geometrically; an auto-spawn loop accrues plankton at zero clicks.
+    'use strict';
+
+    (function () {
+      const canvas = document.getElementById('pool');
+      const ctx = canvas.getContext('2d');
+      const countEl = document.getElementById('count');
+      const rateEl = document.getElementById('rate');
+      const balEl = document.getElementById('bal');
+      const hintEl = document.getElementById('hint');
+      const itemsEl = document.getElementById('shop-items');
+      const resetBtn = document.getElementById('reset-btn');
+      const awayEl = document.getElementById('away');
+      const awayNumEl = document.getElementById('away-num');
+      const awayTimeEl = document.getElementById('away-time');
+      const awayCloseEl = document.getElementById('away-close');
+
+      const MAX_PLANKTON = 240;   // live-particle cap for perf; counter keeps climbing past it
+      const PLANKTON_HUES = [165, 175, 150, 190, 95];
+
+      let W = 0, H = 0, DPR = 1;
+
+      // ---- economy (f2) -----------------------------------------------------
+      // `balance` is the spendable currency (shop deducts from it).
+      // `lifetime` is the total plankton ever earned (for flavor / never spent).
+      let balance = 0;
+      let lifetime = 0;
+
+      // Geometric pricing: cost = floor(baseCost * costMul^owned).
+      const COST_MUL = 1.15;
+      const upgrades = [
+        {
+          id: 'spawner',
+          name: 'Plankton Bloom',
+          owned: 0,
+          baseCost: 15,
+          ratePer: 1,            // +1 plankton/sec per level (passive income)
+          effect: (u) => '+' + u.ratePer + '/sec passive',
+        },
+        {
+          id: 'click',
+          name: 'Tide Surge',
+          owned: 0,
+          baseCost: 10,
+          clickPer: 1,           // +1 plankton/click per level
+          effect: (u) => '+' + u.clickPer + ' per click',
+        },
+      ];
+
+      function costOf(u) {
+        return Math.floor(u.baseCost * Math.pow(COST_MUL, u.owned));
+      }
+      function clickGain() {
+        const u = upgrades.find((x) => x.id === 'click');
+        return 1 + u.owned * u.clickPer;   // base +1, plus each level
+      }
+      function perSec() {
+        const u = upgrades.find((x) => x.id === 'spawner');
+        return u.owned * u.ratePer;
+      }
+
+      // ---- shop UI ----------------------------------------------------------
+      const itemNodes = {};   // id -> { btn, lvl, cost }
+
+      function buildShop() {
+        itemsEl.innerHTML = '';
+        for (const u of upgrades) {
+          const btn = document.createElement('button');
+          btn.className = 'item';
+          btn.type = 'button';
+          btn.setAttribute('data-id', u.id);
+
+          const name = document.createElement('span');
+          name.className = 'item-name';
+          name.textContent = u.name;
+
+          const lvl = document.createElement('span');
+          lvl.className = 'item-lvl';
+
+          const eff = document.createElement('span');
+          eff.className = 'item-eff';
+          eff.textContent = u.effect(u);
+
+          const cost = document.createElement('span');
+          cost.className = 'item-cost';
+
+          btn.appendChild(name);
+          btn.appendChild(lvl);
+          btn.appendChild(eff);
+          btn.appendChild(cost);
+          btn.addEventListener('click', () => buy(u.id));
+
+          itemsEl.appendChild(btn);
+          itemNodes[u.id] = { btn, lvl, cost, eff };
+        }
+        refreshShop();
+      }
+
+      function refreshShop() {
+        balEl.textContent = Math.floor(balance).toLocaleString();
+        for (const u of upgrades) {
+          const node = itemNodes[u.id];
+          const c = costOf(u);
+          node.lvl.textContent = 'Lv ' + u.owned;
+          node.eff.textContent = u.effect(u);
+          node.cost.textContent = c.toLocaleString();
+          const affordable = balance >= c;
+          node.cost.classList.toggle('ok', affordable);
+          node.cost.classList.toggle('no', !affordable);
+          node.btn.disabled = !affordable;
+        }
+      }
+
+      function buy(id) {
+        const u = upgrades.find((x) => x.id === id);
+        const c = costOf(u);
+        if (balance < c) return;            // guard: never overspend
+        balance -= c;
+        u.owned += 1;                       // raises this item's next cost geometrically
+        const node = itemNodes[id];
+        node.btn.classList.remove('flash');
+        void node.btn.offsetWidth;          // restart flash animation
+        node.btn.classList.add('flash');
+        updateCountUI();
+        refreshShop();
+        refreshRate();
+        scheduleSave();
+      }
+
+      // ---- HUD --------------------------------------------------------------
+      function updateCountUI(bump) {
+        countEl.textContent = Math.floor(balance).toLocaleString();
+        if (bump) {
+          countEl.classList.remove('bump');
+          void countEl.offsetWidth;
+          countEl.classList.add('bump');
+        }
+      }
+      function refreshRate() {
+        const ps = perSec();
+        rateEl.textContent = '+' + ps + '/sec';
+        rateEl.classList.toggle('show', ps > 0);
+      }
+
+      // ---- spawning ---------------------------------------------------------
+      function spawnPlankton(x, y) {
+        const hue = PLANKTON_HUES[(Math.random() * PLANKTON_HUES.length) | 0];
+        plankton.push({
+          x, y,
+          homeX: x, homeY: y,
+          vx: (Math.random() - 0.5) * 0.35,
+          vy: (Math.random() - 0.5) * 0.35,
+          r: 2.6 + Math.random() * 2.8,
+          hue,
+          scale: 0,                 // pop-in: starts at 0, eases up to ~1
+          phase: Math.random() * Math.PI * 2,
+          bob: 0.4 + Math.random() * 0.8,
+          glow: 0.5 + Math.random() * 0.5,
+        });
+        // retire the oldest live particle once we hit the cap (counter still climbs)
+        if (plankton.length > MAX_PLANKTON) plankton.shift();
+      }
+
+      function spawnRipple(x, y) {
+        ripples.push({ x, y, r: 6, max: 70 + Math.random() * 30, alpha: 0.55 });
+      }
+
+      const plankton = [];  // drifting particles
+      const ripples = [];   // expanding click rings
+
+      function resize() {
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        W = canvas.clientWidth;
+        H = canvas.clientHeight;
+        canvas.width = Math.round(W * DPR);
+        canvas.height = Math.round(H * DPR);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+      window.addEventListener('resize', resize);
+
+      // ---- input ------------------------------------------------------------
+      let hintHidden = false;
+      function handleClick(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        spawnRipple(x, y);
+        // a small cluster reads as one satisfying "pop"
+        spawnPlankton(x, y);
+        spawnPlankton(x + (Math.random() - 0.5) * 14, y + (Math.random() - 0.5) * 14);
+        // click now grants the current multiplier, not a flat +1 (f2)
+        const gain = clickGain();
+        balance += gain;
+        lifetime += gain;
+        updateCountUI(true);
+        refreshShop();
+        scheduleSave();
+        if (!hintHidden) { hintEl.classList.add('gone'); hintHidden = true; }
+      }
+
+      canvas.addEventListener('pointerdown', function (e) {
+        handleClick(e.clientX, e.clientY);
+      });
+
+      // ---- auto-spawn tick (f2) --------------------------------------------
+      // Owned auto-spawners drip plankton over time. We accumulate fractional
+      // income each frame; whenever it crosses an integer we credit the balance
+      // and drift a fresh plankton in from a pool edge so the income reads on
+      // canvas, not just in the number. Runs with zero clicks.
+      let incomeAcc = 0;
+      function autoTick(dtSec) {
+        const ps = perSec();
+        if (ps <= 0) return;
+        incomeAcc += ps * dtSec;
+        let credited = 0;
+        while (incomeAcc >= 1) {
+          incomeAcc -= 1;
+          balance += 1;
+          lifetime += 1;
+          credited += 1;
+          spawnDrifter();
+        }
+        if (credited > 0) {
+          updateCountUI(true);
+          refreshShop();
+          scheduleSave();
+        }
+      }
+
+      function spawnDrifter() {
+        // enter from a random spot along an edge, gentle home somewhere inward
+        const edge = (Math.random() * 4) | 0;
+        let x, y;
+        if (edge === 0) { x = Math.random() * W; y = -8; }
+        else if (edge === 1) { x = W + 8; y = Math.random() * H; }
+        else if (edge === 2) { x = Math.random() * W; y = H + 8; }
+        else { x = -8; y = Math.random() * H; }
+        spawnPlankton(x, y);
+        // pull its home toward the interior so it visibly drifts inward
+        const p = plankton[plankton.length - 1];
+        p.homeX = W * (0.2 + Math.random() * 0.6);
+        p.homeY = H * (0.2 + Math.random() * 0.6);
+      }
+
+      // ---- ambient background ----------------------------------------------
+      function drawWater(t) {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, '#0d3340');
+        g.addColorStop(0.5, '#0f4a59');
+        g.addColorStop(1, '#0a2a36');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const bands = 4;
+        for (let i = 0; i < bands; i++) {
+          const phase = t * 0.00018 + i * 1.7;
+          const cx = W * (0.5 + 0.42 * Math.sin(phase));
+          const cy = H * (0.5 + 0.36 * Math.cos(phase * 0.8 + i));
+          const rad = Math.max(W, H) * (0.32 + 0.06 * Math.sin(t * 0.0006 + i));
+          const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+          rg.addColorStop(0, 'rgba(120, 230, 220, 0.06)');
+          rg.addColorStop(1, 'rgba(120, 230, 220, 0)');
+          ctx.fillStyle = rg;
+          ctx.fillRect(0, 0, W, H);
+        }
+        ctx.restore();
+
+        ctx.save();
+        const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.72);
+        vg.addColorStop(0, 'rgba(0,0,0,0)');
+        vg.addColorStop(1, 'rgba(2, 14, 20, 0.55)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+
+      // ---- main loop --------------------------------------------------------
+      let lastT = performance.now();
+      function frame(t) {
+        const dtSec = Math.min((t - lastT) / 1000, 0.25);  // clamp big tab-away gaps
+        lastT = t;
+        autoTick(dtSec);
+
+        drawWater(t);
+
+        // ripples
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = ripples.length - 1; i >= 0; i--) {
+          const rp = ripples[i];
+          rp.r += (rp.max - rp.r) * 0.08 + 0.6;
+          rp.alpha *= 0.94;
+          if (rp.alpha < 0.02 || rp.r >= rp.max - 0.5) { ripples.splice(i, 1); continue; }
+          ctx.beginPath();
+          ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(170, 245, 240,' + rp.alpha + ')';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // plankton
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < plankton.length; i++) {
+          const p = plankton[i];
+
+          if (p.scale < 1) {
+            p.scale += (1.0 - p.scale) * 0.16;
+            if (p.scale > 0.999) p.scale = 1;
+          }
+
+          p.phase += 0.02;
+          p.vx += (p.homeX - p.x) * 0.0006 + (Math.random() - 0.5) * 0.02;
+          p.vy += (p.homeY - p.y) * 0.0006 + (Math.random() - 0.5) * 0.02;
+          p.vx *= 0.96;
+          p.vy *= 0.96;
+          p.x += p.vx;
+          p.y += p.vy + Math.sin(p.phase) * 0.12 * p.bob;
+
+          const r = p.r * p.scale;
+          const pulse = 0.85 + 0.15 * Math.sin(p.phase * 1.6);
+
+          const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 3.4);
+          halo.addColorStop(0, 'hsla(' + p.hue + ', 80%, 70%,' + (0.28 * p.glow * pulse) + ')');
+          halo.addColorStop(1, 'hsla(' + p.hue + ', 80%, 70%, 0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r * 3.4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'hsla(' + p.hue + ', 85%, 82%,' + (0.95 * pulse) + ')';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        requestAnimationFrame(frame);
+      }
+
+      // ---- persistence (f3) -------------------------------------------------
+      // The whole game state (spendable balance, lifetime, every upgrade level,
+      // and a lastSaved timestamp) is serialized to one namespaced localStorage
+      // key. Restore on load; missing keys fall back to defaults; corrupt JSON
+      // yields a fresh start and never throws.
+      const SAVE_KEY = 'tidePool.save.v1';
+      const SAVE_VERSION = 1;
+      const OFFLINE_CAP_SEC = 8 * 3600;   // cap idle credit at 8h so numbers stay sane
+
+      function sanitizeNum(v, dflt) {
+        const n = typeof v === 'number' ? v : Number(v);
+        return Number.isFinite(n) && n >= 0 ? n : dflt;
+      }
+
+      function serialize() {
+        const owned = {};
+        for (const u of upgrades) owned[u.id] = u.owned;
+        return {
+          v: SAVE_VERSION,
+          balance: balance,
+          lifetime: lifetime,
+          upgrades: owned,
+          lastSaved: Date.now(),
+        };
+      }
+
+      function saveGame() {
+        try {
+          localStorage.setItem(SAVE_KEY, JSON.stringify(serialize()));
+        } catch (e) {
+          // storage full / unavailable (e.g. private mode) — never break the game
+        }
+      }
+
+      let saveTimer = null;
+      function scheduleSave() {
+        if (saveTimer) return;            // debounce a burst of changes into one write
+        saveTimer = setTimeout(function () { saveTimer = null; saveGame(); }, 800);
+      }
+
+      // Returns { offline, elapsed } describing idle gains, or null on fresh start.
+      function loadGame() {
+        let raw;
+        try { raw = localStorage.getItem(SAVE_KEY); }
+        catch (e) { return null; }        // storage blocked -> fresh start
+        if (!raw) return null;
+
+        let data;
+        try { data = JSON.parse(raw); }
+        catch (e) { return null; }         // corrupt JSON -> fresh start, no throw
+        if (!data || typeof data !== 'object') return null;
+
+        balance = sanitizeNum(data.balance, 0);
+        lifetime = sanitizeNum(data.lifetime, 0);
+        if (lifetime < balance) lifetime = balance;   // keep invariant
+
+        const savedUp = (data.upgrades && typeof data.upgrades === 'object') ? data.upgrades : {};
+        for (const u of upgrades) {
+          u.owned = Math.max(0, Math.floor(sanitizeNum(savedUp[u.id], 0)));
+        }
+
+        // offline progress: elapsed real time x current auto-spawn rate
+        let offline = 0, elapsed = 0;
+        const last = sanitizeNum(data.lastSaved, 0);
+        if (last > 0) {
+          elapsed = Math.max(0, (Date.now() - last) / 1000);
+          elapsed = Math.min(elapsed, OFFLINE_CAP_SEC);
+          offline = Math.floor(elapsed * perSec());
+          if (offline > 0) {
+            balance += offline;
+            lifetime += offline;
+          }
+        }
+        return { offline: offline, elapsed: elapsed };
+      }
+
+      function formatElapsed(sec) {
+        sec = Math.floor(sec);
+        if (sec < 60) return sec + 's';
+        const m = Math.floor(sec / 60);
+        if (m < 60) return m + 'm';
+        const h = Math.floor(m / 60);
+        const rem = m % 60;
+        return rem ? h + 'h ' + rem + 'm' : h + 'h';
+      }
+
+      function showAwayNotice(n, elapsed) {
+        awayNumEl.textContent = Math.floor(n).toLocaleString();
+        awayTimeEl.textContent = formatElapsed(elapsed);
+        awayEl.classList.add('show');
+      }
+      function hideAwayNotice() { awayEl.classList.remove('show'); }
+      awayCloseEl.addEventListener('click', hideAwayNotice);
+
+      function resetGame() {
+        const ok = window.confirm('Reset all progress? This cannot be undone.');
+        if (!ok) return;                  // cancel -> no-op
+        try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+        balance = 0;
+        lifetime = 0;
+        for (const u of upgrades) u.owned = 0;
+        incomeAcc = 0;
+        plankton.length = 0;              // clear the canvas for a clean fresh start
+        ripples.length = 0;
+        hideAwayNotice();
+        updateCountUI(true);
+        refreshShop();
+        refreshRate();
+        saveGame();                       // persist the fresh defaults immediately
+      }
+      resetBtn.addEventListener('click', resetGame);
+
+      // belt-and-suspenders: flush the latest state as the tab goes away
+      window.addEventListener('beforeunload', saveGame);
+
+      // ---- boot -------------------------------------------------------------
+      resize();
+      const restored = loadGame();        // mutates state in place, returns idle gains
+      buildShop();
+      updateCountUI(false);
+      refreshRate();
+      if (restored && restored.offline > 0) showAwayNotice(restored.offline, restored.elapsed);
+      requestAnimationFrame(frame);
+
+      // expose a tiny hook for automated verification (no effect on gameplay)
+      window.__tidePool = {
+        state: () => ({
+          balance, lifetime,
+          clickGain: clickGain(),
+          perSec: perSec(),
+          owned: Object.fromEntries(upgrades.map((u) => [u.id, u.owned])),
+          cost: Object.fromEntries(upgrades.map((u) => [u.id, costOf(u)])),
+        }),
+        buy,
+        saveGame, loadGame, resetGame, saveKey: SAVE_KEY,
+        setLastSaved: (ms) => {                 // test helper: backdate the save
+          try {
+            const d = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
+            d.lastSaved = ms;
+            localStorage.setItem(SAVE_KEY, JSON.stringify(d));
+          } catch (e) {}
+        },
+      };
+    })();
+  </script>
+</body>
+</html>

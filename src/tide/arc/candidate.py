@@ -51,9 +51,10 @@ def _candidate_md(name: str, from_arc: Optional[str], body: Optional[str]) -> st
     """Seed text for a ``candidates/NN-<slug>.md`` backlog entry.
 
     *name* is the file stem (``NN-<slug>``) used as the H1; ``from:`` records the
-    origin arc (``-`` when none); the body is the free-form idea. On promote this
-    whole file moves into the new arc's ``input/`` as the seed, so the origin and
-    body travel with it untouched.
+    origin arc (``-`` when none); the body is the free-form idea — the slug is
+    only a short handle, so the full surfaced idea is persisted here (fix F6). On
+    promote this whole file moves into the new arc's ``input/`` as the seed, so the
+    origin and body travel with it untouched.
     """
     origin = (from_arc or "").strip() or "-"
     text = (body or "").strip() or "<one line — the surfaced idea>"
@@ -78,18 +79,23 @@ def new_candidate(
 
     The number comes from :func:`tide.numbering.next_num_file` (separate from the
     work-stream counter — capturing a candidate never consumes an arc number, and
-    vice-versa). Records *from_arc* as the ``from:`` origin and *body* as the
-    free-form idea. Returns the new file path.
+    vice-versa). Records *from_arc* as the ``from:`` origin. The slug is a SHORT
+    handle (:func:`slug.short_slug`, capped) so a pasted idea doesn't become a
+    200-char filename; the full idea is persisted in the BODY — *body* when given,
+    else the raw title text (fix F6). Returns the new file path.
     """
-    s = slug.slugify(raw_slug)
+    s = slug.short_slug(raw_slug)
     if not s:
         raise CandidateError("candidate: empty slug after slugify")
+    # Keep the full idea in the body even when only a title was passed: the slug
+    # is a capped handle and would otherwise be the only record of the idea.
+    idea = (body or "").strip() or (raw_slug or "").strip()
     cdir = paths.candidates_dir(root)
     cdir.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num_file(cdir)
     name = "{0}-{1}".format(nn, s)
     path = cdir / "{0}.md".format(name)
-    path.write_text(_candidate_md(name, from_arc, body), encoding="utf-8")
+    path.write_text(_candidate_md(name, from_arc, idea), encoding="utf-8")
     return path
 
 

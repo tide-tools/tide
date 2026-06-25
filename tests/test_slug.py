@@ -24,6 +24,24 @@ def test_slugify_empty_and_none_safe():
     assert slug.slugify(None) == ""
 
 
+def test_short_slug_passes_through_when_within_cap():
+    assert slug.short_slug("fix the leak") == "fix-the-leak"
+    assert slug.short_slug("") == ""
+
+
+def test_short_slug_caps_long_text_on_word_boundary():
+    long = "polish the settings screen with spring animations and haptics on slow devices"
+    s = slug.short_slug(long, max_len=20)
+    assert len(s) <= 20
+    # trimmed back to a whole-word ('-') boundary, no trailing dash, no mid-word cut
+    assert s == "polish-the-settings"
+
+
+def test_short_slug_hard_cuts_a_single_overlong_word():
+    s = slug.short_slug("a" * 100, max_len=10)
+    assert s == "a" * 10
+
+
 def test_strip_marker_one_layer():
     assert slug.strip_marker("__03-fix__") == "03-fix"
     assert slug.strip_marker("plain") == "plain"
@@ -45,6 +63,15 @@ def test_is_goal_and_is_closed_detect_markers():
     assert slug.is_goal_entry("07-ship-it") is False
     assert slug.is_closed_entry("__12-fix__") is True
     assert slug.is_closed_entry("12-fix") is False
+
+
+def test_is_entry_matches_open_and_closed_arcs_and_goals():
+    assert slug.is_entry("03-fix-bug") is True       # open arc
+    assert slug.is_entry("07-@ship-it") is True      # open goal
+    assert slug.is_entry("__12-fix-bug__") is True   # closed arc
+    assert slug.is_entry("__09-@goal-x__") is True   # closed goal
+    assert slug.is_entry("candidates") is False      # not a NN- entry
+    assert slug.is_entry("") is False
 
 
 def test_ref_matches_marker_tolerant_both_sides():

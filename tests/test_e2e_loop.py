@@ -10,7 +10,8 @@ One smoke test walks the whole machine exactly as a human + worker would:
       → arc new a2 BLOCKS (between-arcs barrier, decision 9)
       → contract close a1 merges the delta into CANON.md (cannon-rev bumps)
       → arc new a2 now OPENS (barrier lifted)
-      → drift_check on the stale a1 reports drift (cannon moved under its stamp)
+      → drift_check on a1 reports NO self-drift (F3: close re-stamped its arc.md
+        to the post-merge rev — the authoring arc never drifts against its canon)
     asserts: CANON.md journal carries the merged delta body; the board shows
     no UNMERGED-DELTAS flag once the gate has run.
 
@@ -26,6 +27,8 @@ import pytest
 
 from tide import cli, fields, paths, sync
 from tide.cannon import rev, store
+
+from tests.conftest import strip_placeholders
 
 DELTA_MARKER = "valve swapped for a brass fitting — the durable truth"
 
@@ -76,6 +79,8 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
     assert cli.main(["contract", "report", "a1", "replaced", "the", "valve"]) == 0
     assert cli.main(["contract", "proof", "a1", "no", "more", "drip"]) == 0
     assert cli.main(["contract", "accept", "a1"]) == 0
+    # F5: the worker fills the passport (arc.md + contract.md) before close.
+    strip_placeholders(a1 / "arc.md", a1 / "contract.md")
     capsys.readouterr()
 
     # --- arc close a1 (stream): now a CLOSED arc with an unmerged delta -------
@@ -111,10 +116,13 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
     assert a2.is_dir()
     assert fields.read_field(a2 / "arc.md", "cannon-rev") == r1  # no drift on a2
 
-    # --- drift_check on the STALE a1 reports drift (cannon moved under it) ----
+    # --- F3: the just-merged a1 was re-stamped to the post-merge rev ----------
+    # contract close seals + re-stamps, so the arc that AUTHORED this canon does
+    # NOT self-drift against it.
+    assert fields.read_field(a1_closed / "arc.md", "cannon-rev") == r1
     drift = sync.drift_check(a1_closed, demo)
-    assert drift.drifted is True
-    assert drift.stamped == r0
+    assert drift.drifted is False
+    assert drift.stamped == r1
     assert drift.current == r1
 
     # --- board shows no UNMERGED-DELTAS flag ---------------------------------
@@ -137,6 +145,7 @@ def test_loop_block_is_a_hard_refusal_not_a_silent_skip(tmp_path, monkeypatch, c
     a1 = paths.arcs_dir(demo) / "01-a1"
     (a1 / "output" / "r.md").write_text("x", encoding="utf-8")
     (a1 / "delta.md").write_text("# delta — a1\nmerged: no\n\nreal body\n", encoding="utf-8")
+    strip_placeholders(a1 / "arc.md")  # F5: fill the passport before close
     cli.main(["arc", "close", "a1"])
     capsys.readouterr()
 

@@ -17,7 +17,10 @@ The scoping we DO want — zero global MCP servers, no skill noise — is achiev
 What it loads, what it cuts:
 
 * CUT  — global MCP servers (``--strict-mcp-config``, no ``--mcp-config``), skills
-  (``--disable-slash-commands``).
+  (``--disable-slash-commands``), and permission prompts
+  (``--dangerously-skip-permissions`` — a deliberate operator choice for the
+  interactive head, opt out with ``--no-skip-permissions``; never on spawned
+  autonomous workers, which go through the menu/Orca path instead).
 * KEPT — OAuth auth (``~/.claude.json``), and ``~/.claude/CLAUDE.md`` (the ecc rules).
   There is no standalone flag to skip CLAUDE.md auto-discovery while keeping OAuth —
   the only flag that skips it is ``--bare``, which also drops auth. So the CLAUDE.md
@@ -41,6 +44,13 @@ from . import context
 
 # The skill-noise trim tide-go carried: disable all skills in the fresh session.
 DISABLE_SLASH = "--disable-slash-commands"
+
+# Skip permission prompts in the interactive head session. This is a DELIBERATE
+# operator choice for `tide terminal` — the human-driven coordinator session, where
+# constant prompts kill the flow — NOT for autonomous/spawned workers. Spawned
+# sessions go through context.build_launch_command (the menu / Orca path), which
+# never adds this; only the in-terminal head opts in (opt out with --no-skip-perms).
+SKIP_PERMISSIONS = "--dangerously-skip-permissions"
 
 # Control-home seed files, in resolution priority (first that exists wins).
 SEED_FILENAMES = ("MIGRATE.md", "RESUME.md")
@@ -105,17 +115,24 @@ def build_terminal_command(
     profile: dict,
     *,
     disable_slash: bool = True,
+    skip_permissions: bool = True,
 ) -> List[str]:
     """Assemble the scoped ``claude`` argv for ``tide terminal`` from the lean builder.
 
     Reuses :func:`context.build_launch_command` (the single source of the scoped
     shape — ``--strict-mcp-config``, the seed reference, any profile extras) and
-    splices in :data:`DISABLE_SLASH` right after the program. NEVER adds ``--bare``
-    (that would drop OAuth auth). *disable_slash* False leaves skills enabled.
+    splices in :data:`DISABLE_SLASH` and :data:`SKIP_PERMISSIONS` right after the
+    program. NEVER adds ``--bare`` (that would drop OAuth auth). *disable_slash*
+    False leaves skills enabled; *skip_permissions* False keeps prompts on (the flag
+    is a deliberate head-session choice — see :data:`SKIP_PERMISSIONS`).
     """
     cmd = context.build_launch_command(seed_file, profile)
+    inserts: List[str] = []
     if disable_slash and DISABLE_SLASH not in cmd:
-        cmd.insert(1, DISABLE_SLASH)  # after the program name, before the flags
+        inserts.append(DISABLE_SLASH)
+    if skip_permissions and SKIP_PERMISSIONS not in cmd:
+        inserts.append(SKIP_PERMISSIONS)
+    cmd[1:1] = inserts  # after the program name, before the flags
     return cmd
 
 
@@ -132,7 +149,10 @@ def cmd_terminal(args) -> int:
     seed_file = resolve_seed_file(root, getattr(args, "seed", None))
     profile = context.load_profile(root)
     disable_slash = not getattr(args, "no_disable_slash", False)
-    command = build_terminal_command(seed_file, profile, disable_slash=disable_slash)
+    skip_permissions = not getattr(args, "no_skip_permissions", False)
+    command = build_terminal_command(
+        seed_file, profile, disable_slash=disable_slash, skip_permissions=skip_permissions
+    )
 
     if getattr(args, "dry_run", False):
         print("tide terminal — clean logged-in seeded session (dry run, not exec'd)")
@@ -140,6 +160,11 @@ def cmd_terminal(args) -> int:
         print("  seed:    {0}".format(seed_file))
         print("  command: {0}".format(" ".join(command)))
         print("  auth:    kept — no --bare, so ~/.claude.json (OAuth) loads")
+        skip_state = "on" if skip_permissions else "off"
+        print(
+            "  perms:   {0} — {1} is a deliberate operator choice for the "
+            "interactive head (NOT autonomous workers)".format(skip_state, SKIP_PERMISSIONS)
+        )
         print("  {0}".format(CLAUDE_MD_GAP))
         return 0
 
@@ -162,6 +187,12 @@ def register(subparsers) -> None:
         action="store_true",
         dest="no_disable_slash",
         help="keep skills enabled (default: disabled, like tide-go)",
+    )
+    p.add_argument(
+        "--no-skip-permissions",
+        action="store_true",
+        dest="no_skip_permissions",
+        help="keep permission prompts on (default: skipped for the interactive head)",
     )
     p.add_argument(
         "--dry-run",

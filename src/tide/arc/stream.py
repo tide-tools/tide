@@ -25,6 +25,10 @@ outside reads ``output/`` only. The load-bearing invariants this module owns:
   ``input/from-<old>.md``. Old and new both stay on disk, linked.
 * **cannon-rev stamp** — opening (or creating) an arc stamps the current
   ``cannon-rev`` (sha256 of CANON.md) into its passport for drift detection.
+* **Safe removal** — ``rm``/``abort`` deletes a stray/unwanted entry but refuses
+  to drop one with a merged delta or one referenced by a ``supersedes:`` chain
+  (integrity guards, never ``-f``-overridable); a non-empty ``output/`` (or a
+  goal with sub-arcs) needs ``-f`` (dogfood fix F8 — kills the manual ``rm -rf``).
 
 All logic is plain functions (argparse-free, unit-testable); :func:`register`
 wires the thin CLI handlers.
@@ -32,10 +36,11 @@ wires the thin CLI handlers.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
-from .. import fields, numbering, paths, slug
+from .. import fields, numbering, paths, placeholders, slug
 from ..cannon import rev
 from . import templates
 
@@ -79,6 +84,11 @@ def _resolve(stream_dir: Path, want: str, *, closed: bool) -> Optional[Path]:
     if g is not None:
         return g
     return _find(stream_dir, want, goal=False, closed=closed)
+
+
+def _resolve_present(stream_dir: Path, want: str) -> Optional[Path]:
+    """Resolve an entry whether OPEN or CLOSED (open preferred), goal over arc."""
+    return _resolve(stream_dir, want, closed=False) or _resolve(stream_dir, want, closed=True)
 
 
 def passport_path(entry_dir: Path) -> Path:
@@ -214,9 +224,12 @@ def close(
     goal_slug: Optional[str] = None,
     force: bool = False,
 ) -> Path:
-    """Close an arc/goal: empty-output guard (``-f`` overrides), then dual-mark done.
+    """Close an arc/goal: empty-output + placeholder guards (``-f`` overrides), then dual-mark done.
 
-    Sets ``status: done`` in the passport AND renames the dir to ``__…__``.
+    Guards (skipped with *force*): an empty ``output/`` AND any leftover scaffold
+    placeholder in the passport (``<…>`` template spans / the ``# supersedes:``
+    hint — dogfood fix F5, so a closed passport never reads like a fill-in form).
+    Then sets ``status: done`` in the passport AND renames the dir to ``__…__``.
     Returns the closed dir path.
     """
     stream_dir = _search_dir(root, goal_slug)
@@ -230,6 +243,11 @@ def close(
             "arc {0!r} has an empty output/ — write the result there first "
             "(a closed arc must carry a self-contained output). override: close -f".format(ref)
         )
+    if not force:
+        doc = passport_path(entry)
+        leftovers = placeholders.find_in_file(doc)
+        if leftovers:
+            raise StreamError(placeholders.refuse_message(doc.name, ref, leftovers))
     fields.set_field(passport_path(entry), "status", "done")
     closed = entry.parent / "__{0}__".format(entry.name)
     entry.rename(closed)
@@ -338,6 +356,135 @@ def supersede(
     return entry
 
 
+# --- rm / abort ------------------------------------------------------------
+
+def _all_entry_dirs(root: Path) -> List[Path]:
+    """Every real stream entry (top-level + each goal's nested sub-arcs)."""
+    arcs = paths.arcs_dir(root)
+    out: List[Path] = []
+    for p in _entries(arcs):
+        if not slug.is_entry(p.name):
+            continue
+        out.append(p)
+        if slug.is_goal_entry(p.name):
+            out.extend(
+                c for c in _entries(p / paths.ARCS_DIRNAME) if slug.is_entry(c.name)
+            )
+    return out
+
+
+def _subtree_has_merged_delta(entry_dir: Path) -> bool:
+    """True when *entry_dir* (or, for a goal, any sub-arc) carries a merged delta.
+
+    A merged delta (``merged: yes``) is folded into CANON.md — its source is part
+    of cannon history, so deleting the arc would orphan a contribution the canon
+    journal already cites. Walks the whole subtree so a goal isn't emptied of a
+    sub-arc whose work is already merged.
+    """
+    from .. import sync  # lazy: tide.sync imports this module at top.
+
+    for delta in Path(entry_dir).rglob(sync.DELTA_FILE):
+        if fields.read_field(delta, sync.MERGED_KEY) == sync.MERGED_YES:
+            return True
+    return False
+
+
+def _referencing_entries(root: Path, entry: Path) -> List[Path]:
+    """Entries OUTSIDE *entry*'s subtree whose passport ``supersedes:`` names it.
+
+    Removing a superseded arc would orphan the ``supersedes:`` pointer (and the
+    ``input/from-…`` seed) in its successor. Referrers inside the subtree being
+    removed don't count — they vanish with it.
+    """
+    target = slug.normalize_ref(slug.entry_slug(entry.name))
+    refs: List[Path] = []
+    for e in _all_entry_dirs(root):
+        if e == entry or _is_within(e, entry):
+            continue
+        sup = fields.read_field(passport_path(e), "supersedes")
+        if sup and slug.normalize_ref(sup) == target:
+            refs.append(e)
+    return sorted(refs, key=lambda p: p.name)
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when *child* lives under *parent* (or is *parent* itself)."""
+    try:
+        Path(child).relative_to(Path(parent))
+        return True
+    except ValueError:
+        return False
+
+
+def _needs_force_to_remove(entry_dir: Path) -> bool:
+    """True when an entry carries auditable content that ``rm`` won't drop sans ``-f``.
+
+    A non-empty ``output/`` (the arc's self-contained result) or — for a goal —
+    any nested sub-arc both count as real work worth a deliberate ``-f``.
+    """
+    if not _output_empty(entry_dir):
+        return True
+    if slug.is_goal_entry(entry_dir.name):
+        return bool(_entries(entry_dir / paths.ARCS_DIRNAME))
+    return False
+
+
+def rm(
+    root: Path,
+    ref: str,
+    goal_slug: Optional[str] = None,
+    force: bool = False,
+) -> Path:
+    """Delete a stray/unwanted arc or goal dir (open OR closed) with sane guards.
+
+    The escape hatch for probe/throwaway entries that used to need a manual
+    ``rm -rf`` (dogfood fix F8). Resolves *ref* preferring an open entry then a
+    closed one, goal over arc, and refuses in three cases:
+
+    * **merged delta** — the entry (or, for a goal, a sub-arc) carries a
+      ``merged: yes`` delta folded into CANON.md; its source is cannon history,
+      so removal is refused outright (``-f`` does NOT override — reopen/supersede
+      instead).
+    * **referenced** — another entry's ``supersedes:`` names it; removing it would
+      orphan that chain. Refused outright; remove the referrer first.
+    * **non-empty output / nested sub-arcs** — auditable content; refused UNLESS
+      *force* (the one guard ``-f`` overrides).
+
+    Returns the removed dir path. The two integrity guards (merged / referenced)
+    are deliberately not force-overridable so a single ``-f`` can't silently drop
+    cannon-anchored work — that path stays a manual ``rm -rf``.
+    """
+    stream_dir = _search_dir(root, goal_slug)
+    entry = _resolve_present(stream_dir, ref)
+    if entry is None:
+        raise StreamError("arc/goal {0!r} not found in {1}".format(ref, stream_dir))
+
+    if _subtree_has_merged_delta(entry):
+        raise StreamError(
+            "refuse to remove {0}: it carries a merged cannon-delta (its work is "
+            "part of cannon history) — reopen/supersede instead of deleting".format(
+                entry.name
+            )
+        )
+
+    referrers = _referencing_entries(root, entry)
+    if referrers:
+        names = ", ".join(r.name for r in referrers)
+        raise StreamError(
+            "refuse to remove {0}: referenced by {1} (supersedes chain) — "
+            "remove the referrer first".format(entry.name, names)
+        )
+
+    if not force and _needs_force_to_remove(entry):
+        raise StreamError(
+            "{0} carries auditable output/nested work — refusing to delete it "
+            "without -f (override: arc rm -f)".format(entry.name)
+        )
+
+    shutil.rmtree(entry)
+    return entry
+
+
 # --- CLI wiring ------------------------------------------------------------
 
 def _root() -> Path:
@@ -377,6 +524,12 @@ def _cmd_reopen(args) -> int:
 def _cmd_supersede(args) -> int:
     entry = supersede(_root(), args.old, args.new, goal_slug=args.goal)
     print("tide: superseded {0} → {1}".format(args.old, entry.name))
+    return 0
+
+
+def _cmd_rm(args) -> int:
+    removed = rm(_root(), args.slug, goal_slug=args.goal, force=args.force)
+    print("tide: removed {0}".format(removed.name))
     return 0
 
 
@@ -421,3 +574,13 @@ def register(arc_subparsers) -> None:
     sp.add_argument("new")
     _add_goal_opt(sp)
     sp.set_defaults(func=_cmd_supersede, _cmd="arc supersede")
+
+    mp = arc_subparsers.add_parser(
+        "rm",
+        aliases=["abort"],
+        help="delete a stray arc/goal dir (guards: merged delta / referenced; -f for non-empty output)",
+    )
+    mp.add_argument("slug")
+    mp.add_argument("-f", "--force", action="store_true", help="remove even with non-empty output/ or nested sub-arcs")
+    _add_goal_opt(mp)
+    mp.set_defaults(func=_cmd_rm, _cmd="arc rm")
