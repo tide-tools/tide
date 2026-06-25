@@ -201,3 +201,122 @@ def test_merge_delta_file_missing_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         merge.merge_delta(tmp_path, arc_dir, slug="fix-leak")
+
+
+# --- journal dedup + idempotency (regression tests for the dup bug) ----------
+
+def test_journal_stamp_not_duplicated_on_second_merge():
+    """Re-merging same delta with same date+slug must not add a second journal entry."""
+    canon = store.canon_template("demo")
+    delta = "some update"
+    once = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="tide-terminal")
+    twice = merge.merge_delta_text(once, delta, date="2026-06-25", slug="tide-terminal")
+    # stamp appears exactly ONCE even after two calls
+    assert twice.count("### 2026-06-25 · tide-terminal") == 1
+
+
+def test_merge_idempotent_plain_delta():
+    """Merging same plain-prose delta twice yields identical CANON text."""
+    canon = store.canon_template("demo")
+    delta = "launched scoped context"
+    once = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="scoped-launch-context")
+    twice = merge.merge_delta_text(once, delta, date="2026-06-25", slug="scoped-launch-context")
+    assert once == twice
+
+
+def test_merge_idempotent_with_canonical_sections():
+    """Merging same structured delta (canonical ## sections) twice is idempotent."""
+    canon = store.canon_template("demo")
+    delta = (
+        "## What it is\n"
+        "tide orchestration machine\n\n"
+        "## State & components\n"
+        "- cannon/merge.py\n"
+    )
+    once = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="seed")
+    twice = merge.merge_delta_text(once, delta, date="2026-06-25", slug="seed")
+    assert once == twice
+
+
+def test_multiple_different_slugs_all_preserved():
+    """Multiple distinct slug entries do NOT get deduped — only exact dup stamps."""
+    canon = store.canon_template("demo")
+    after_a = merge.merge_delta_text(canon, "body-a", date="2026-06-25", slug="a")
+    after_b = merge.merge_delta_text(after_a, "body-b", date="2026-06-26", slug="b")
+    # both stamps still present after a third merge with same slug 'a'
+    after_a2 = merge.merge_delta_text(after_b, "body-a", date="2026-06-25", slug="a")
+    assert after_a2.count("### 2026-06-25 · a") == 1
+    assert after_a2.count("### 2026-06-26 · b") == 1
+
+
+# --- normalize_canon_text (heal function) ------------------------------------
+
+def test_normalize_deduplicates_journal_stamps():
+    """normalize_canon_text removes duplicate ### date · slug entries, keeping first."""
+    bad_canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\n\ncontent\n\n"
+        "## Cannon journal\n\n"
+        "### 2026-06-01 · tide-terminal\n\nbody\n\n"
+        "### 2026-06-01 · tide-terminal\n\nbody\n"   # duplicate
+    )
+    healed = merge.normalize_canon_text(bad_canon)
+    assert healed.count("### 2026-06-01 · tide-terminal") == 1
+    assert "body" in healed
+
+
+def test_normalize_heals_blind_append_empty_sections():
+    """normalize_canon_text extracts ## headers buried in journal from old blind-appends.
+
+    Old code blind-appended the full delta (including canonical ## headings) under
+    ## Cannon journal, leaving top sections empty.  normalize re-routes them.
+    """
+    bad_canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\n\n"            # ← empty (template never filled)
+        "## State & components\n\n"    # ← empty
+        "## Interfaces / how used\n\n" # ← empty
+        "## Cannon journal\n\n"
+        "### 2026-06-01 · tide-terminal\n\n"
+        "## What it is\n\n"            # ← content buried in journal by old blind-append
+        "tide orchestration machine\n\n"
+        "## State & components\n\n"
+        "- 12 py files\n"
+    )
+    healed = merge.normalize_canon_text(bad_canon)
+    sections = store.scan_text(healed)
+    assert "tide orchestration machine" in sections["What it is"]
+    assert "12 py files" in sections["State & components"]
+    # exactly one of each top header
+    assert healed.count("## What it is") == 1
+    assert healed.count("## State & components") == 1
+
+
+def test_normalize_is_idempotent():
+    """Calling normalize_canon_text twice yields same result as calling it once."""
+    bad_canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\n\ncontent\n\n"
+        "## Cannon journal\n\n"
+        "### 2026-06-01 · tide-terminal\n\nbody\n\n"
+        "### 2026-06-01 · tide-terminal\n\nbody\n"
+    )
+    once = merge.normalize_canon_text(bad_canon)
+    twice = merge.normalize_canon_text(once)
+    assert once == twice
+
+
+def test_normalize_preserves_unique_journal_entries():
+    """normalize_canon_text keeps distinct entries intact."""
+    canon = (
+        "# CANON.md — demo\n\n"
+        "## What it is\n\ncontent\n\n"
+        "## Cannon journal\n\n"
+        "### 2026-06-01 · a\n\nbody-a\n\n"
+        "### 2026-06-02 · b\n\nbody-b\n"
+    )
+    healed = merge.normalize_canon_text(canon)
+    assert healed.count("### 2026-06-01 · a") == 1
+    assert healed.count("### 2026-06-02 · b") == 1
+    assert "body-a" in healed
+    assert "body-b" in healed

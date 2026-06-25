@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .. import fields, paths
 from . import rev, store
@@ -167,6 +167,43 @@ def _entry_block(date: str, slug: str, body: str) -> str:
     return stamp
 
 
+def _journal_has_stamp(journal_body: str, date: str, slug: str) -> bool:
+    """True when *journal_body* already contains the exact stamp as a line.
+
+    Compared line-by-line (stripped) to avoid false positives from stamps that
+    share a common prefix (e.g. ``tide-terminal`` vs ``tide-terminal-2``).
+    """
+    target = "### {0} · {1}".format(date, slug)
+    return any(line.strip() == target for line in journal_body.splitlines())
+
+
+def _dedup_journal_body(journal_body: str) -> str:
+    """Remove duplicate ``### <date> · <slug>`` entries from *journal_body*.
+
+    First occurrence of each stamp is kept in place; all subsequent occurrences
+    (including their bodies) are dropped. Non-stamp lines before the first stamp
+    are always preserved. Idempotent.
+    """
+    lines = journal_body.splitlines()
+    seen: Set[str] = set()
+    out: List[str] = []
+    skip_current = False
+
+    for line in lines:
+        if line.startswith("### "):
+            stamp = line.strip()
+            if stamp in seen:
+                skip_current = True
+            else:
+                seen.add(stamp)
+                skip_current = False
+                out.append(line)
+        elif not skip_current:
+            out.append(line)
+
+    return "\n".join(out).strip("\n")
+
+
 def _render(pre: str, sections: List[List[str]], journal_body: str) -> str:
     """Re-emit CANON.md: preamble, sections in order, journal always last."""
     parts: List[str] = []
@@ -206,9 +243,30 @@ def merge_delta_text(canon_text: str, delta_body: str, *, date: str, slug: str) 
             _route(sections, title, content)
 
     remainder = _delta_remainder(d_pre, d_secs)
-    entry = _entry_block(date, slug, remainder)
-    journal_body = _join_bodies(journal_body, entry)
+    if not _journal_has_stamp(journal_body, date, slug):
+        entry = _entry_block(date, slug, remainder)
+        journal_body = _join_bodies(journal_body, entry)
 
+    return _render(pre, sections, journal_body)
+
+
+def normalize_canon_text(canon_text: str) -> str:
+    """Normalize *canon_text* in-place: fold duplicate headings and dedup journal.
+
+    Idempotent heal pass that repairs two classes of rot:
+
+    * **Duplicate top-level ``## `` headings** — bodies folded into the first
+      occurrence (a side-effect of the existing ``_load`` logic).
+    * **Duplicate ``### <date> · <slug>`` journal stamps** — first occurrence
+      kept, all repeats (including their bodies) dropped.
+    * **``## `` headings buried inside the journal** by old blind-append code —
+      extracted and routed back to their matching canonical top section or kept
+      as non-canonical sections above the journal.
+
+    Safe to call on any well-formed CANON.md; a clean file is returned unchanged.
+    """
+    pre, sections, journal_body = _load(canon_text)
+    journal_body = _dedup_journal_body(journal_body)
     return _render(pre, sections, journal_body)
 
 
