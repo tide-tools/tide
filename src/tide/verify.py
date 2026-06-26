@@ -401,20 +401,32 @@ def package_source_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def scan_package_source(pkg_dir: Path, tokens: List[str]) -> List[PortableLeak]:
-    """Scan every ``*.py`` under *pkg_dir* (the shipped package) for leaks.
+def _is_text_file(path: Path) -> bool:
+    """Heuristic: a file is text if its leading bytes hold no NUL (skip binaries)."""
+    try:
+        return b"\x00" not in path.read_bytes()[:8192]
+    except OSError:
+        return False
 
-    Skips ``__pycache__`` (compiled bytecode embeds compile-time abs paths and is
-    never shipped in a wheel).
+
+def scan_package_source(pkg_dir: Path, tokens: List[str]) -> List[PortableLeak]:
+    """Scan every TEXT file under *pkg_dir* (the shipped package) for leaks.
+
+    Scans ALL text files, not just ``*.py`` — a ``.md``/``.json``/``.toml`` added
+    under ``src/tide/`` would ship in the wheel and must be covered too. Skips
+    ``__pycache__`` (compiled bytecode embeds compile-time abs paths and never
+    ships in a wheel) and any binary (NUL-containing) file.
     """
     pkg_dir = Path(pkg_dir)
     leaks: List[PortableLeak] = []
-    for py in sorted(pkg_dir.rglob("*.py")):
-        if "__pycache__" in py.parts:
+    for f in sorted(pkg_dir.rglob("*")):
+        if not f.is_file() or "__pycache__" in f.parts:
             continue
-        rel = py.relative_to(pkg_dir.parent) if pkg_dir.parent in py.parents else py
+        if not _is_text_file(f):
+            continue
+        rel = f.relative_to(pkg_dir.parent) if pkg_dir.parent in f.parents else f
         leaks.extend(
-            scan_text(py.read_text(encoding="utf-8", errors="replace"), str(rel), tokens)
+            scan_text(f.read_text(encoding="utf-8", errors="replace"), str(rel), tokens)
         )
     return leaks
 
@@ -429,8 +441,15 @@ def scan_init_skeleton(tokens: List[str]) -> List[PortableLeak]:
     """Boot a fresh ``tide init`` (+arc +contract) into a tmpdir; scan all output.
 
     Exercises the real creation paths an actual new user hits — including the
-    contract passport (the former abs-path-bake bug). Asserts NO file the tool
-    *produces* carries an absolute home path or instance token.
+    contract passport (the site of the former abs-path-bake bug). Asserts NO file
+    the tool *produces* carries an absolute home path or instance token.
+
+    CRITICAL — catches the actual leak vector. The bug baked the *init root's own*
+    absolute path into a generated file. On macOS the tmpdir resolves under
+    ``/private/var/folders/…``, which the ``/(Users|home)/`` regex never matches —
+    so the regex ALONE false-passes here. We therefore add the init root's absolute
+    path (raw and ``/private``-resolved forms) as instance tokens for THIS scan; a
+    re-baked abs path is then flagged platform-agnostically.
     """
     from . import init_home
     from .arc import stream
@@ -440,6 +459,11 @@ def scan_init_skeleton(tokens: List[str]) -> List[PortableLeak]:
     with tempfile.TemporaryDirectory(prefix="tide-portable-") as td:
         home = Path(td) / "control-home"
         home.mkdir()
+
+        # The leak vector: any generated file echoing the init root's abs path.
+        root_tokens = {str(Path(td)), str(Path(td).resolve()), str(home), str(home.resolve())}
+        skeleton_tokens = sorted(set(tokens) | root_tokens)
+
         init_home.unfold_control_home(home, name="demo")
         stream.new_arc(home, "probe-arc")
         lifecycle.new(home, "probe-arc", goal="ship it", criteria="done when green")
@@ -449,7 +473,7 @@ def scan_init_skeleton(tokens: List[str]) -> List[PortableLeak]:
                 continue
             rel = "tide-init:{0}".format(f.relative_to(home))
             leaks.extend(
-                scan_text(f.read_text(encoding="utf-8", errors="replace"), rel, tokens)
+                scan_text(f.read_text(encoding="utf-8", errors="replace"), rel, skeleton_tokens)
             )
     return leaks
 

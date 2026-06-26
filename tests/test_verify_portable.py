@@ -70,6 +70,25 @@ def test_scan_package_source_skips_pycache(tmp_path):
     assert verify.scan_package_source(pkg, []) == []
 
 
+def test_scan_package_source_scans_non_py_text_files(tmp_path):
+    # A .json/.md/.toml added under the package ships in the wheel — must be scanned.
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    (pkg / "data.json").write_text('{"path": "/Users/leaky/x"}\n', encoding="utf-8")
+    leaks = verify.scan_package_source(pkg, [])
+    assert len(leaks) == 1
+    assert leaks[0].source.endswith("data.json")
+    assert leaks[0].kind == "abs-home-path"
+
+
+def test_scan_package_source_skips_binary(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "blob.bin").write_bytes(b"\x00\x01/Users/me/x\x00")
+    assert verify.scan_package_source(pkg, []) == []
+
+
 # --- the real shipped package + init skeleton are clean --------------------
 
 def test_real_package_source_is_clean():
@@ -81,6 +100,34 @@ def test_real_package_source_is_clean():
 
 def test_init_skeleton_is_clean():
     assert verify.scan_init_skeleton(verify.default_instance_tokens()) == []
+
+
+def test_scan_init_skeleton_catches_rebaked_abs_root(monkeypatch):
+    # Regression guard for the gate itself: re-introduce the ORIGINAL bug — bake the
+    # init root's absolute path into the contract passport — and prove the init scan
+    # FLAGS it. The macOS tmpdir (/private/var/folders/…) is invisible to the
+    # /(Users|home)/ regex, so this only passes because scan_init_skeleton seeds the
+    # init root's abs path as an instance token.
+    from pathlib import Path
+
+    from tide.contract import lifecycle
+
+    orig_new = lifecycle.new
+
+    def buggy_new(root, arc_ref, **kwargs):
+        cpath = orig_new(root, arc_ref, **kwargs)
+        # the exact shape of the fixed bug: str(Path(root).resolve())
+        cpath.write_text(
+            cpath.read_text(encoding="utf-8")
+            + "\nleaked-root: {0}\n".format(str(Path(root).resolve())),
+            encoding="utf-8",
+        )
+        return cpath
+
+    monkeypatch.setattr(lifecycle, "new", buggy_new)
+    leaks = verify.scan_init_skeleton([])
+    assert leaks, "scan_init_skeleton false-passed on a re-baked absolute root path"
+    assert any(lk.kind == "instance-token" for lk in leaks)
 
 
 # --- check_portable orchestration ------------------------------------------
