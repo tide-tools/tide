@@ -62,6 +62,23 @@ def read_strictness(root: Path) -> str:
     return raw if raw in VALID else DEFAULT
 
 
+def read_strictness_explicit(root: Path) -> str:
+    """Return the dial ONLY when explicitly set, else ``""`` (no inferred default).
+
+    Unlike :func:`read_strictness` (which folds a missing/garbage dial into the
+    safe ``strict`` default), this returns the empty string when the project has
+    made no decision. The ``land`` axis needs the distinction: a project that has
+    never run ``tide strictness`` lands ``loose`` by default (speed), while one
+    that deliberately ran ``tide strictness strict`` lands ``strict`` by default —
+    a difference :func:`read_strictness` cannot express.
+    """
+    f = paths.strictness_file(root)
+    if not f.is_file():
+        return ""
+    raw = f.read_text(encoding="utf-8").strip().lower()
+    return raw if raw in VALID else ""
+
+
 def set_strictness(root: Path, value: str) -> str:
     """Persist *value* (``strict``/``loose``) to ``.tide/state/strictness``.
 

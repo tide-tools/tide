@@ -203,6 +203,21 @@ def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[s
         lines.append("  drift: {0}".format(", ".join(d.name for d in drifted)))
     else:
         lines.append("  drift: none")
+
+    # Deferred-reconciliation debt (arc-land-strictness-dial): arcs landed `loose`
+    # that owe a `strict` reconciliation. Surfaced here AND in the SessionStart
+    # warnings so the head sees "канон отстал" on entry, with the one catch-up cmd.
+    from .. import ledger  # lazy: ledger imports paths/slug only, no cycle
+
+    debt = ledger.entries(root)
+    if debt:
+        names = ", ".join(e.arc for e in debt)
+        lines.append(
+            "  deferred: {0} arc(s) await strict reconciliation ({1})"
+            " → tide reconcile".format(len(debt), names)
+        )
+    else:
+        lines.append("  deferred: none")
     return lines
 
 

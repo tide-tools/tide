@@ -67,7 +67,8 @@ def test_render_board_full_snapshot(tmp_project):
         "HEALTH\n"
         "  cannon-rev: {rev}\n"
         "  unmerged: none\n"
-        "  drift: none"
+        "  drift: none\n"
+        "  deferred: none"
     ).format(rev=rev.compute(tmp_project))
     assert board.render_board(tmp_project) == expected
 
@@ -80,7 +81,8 @@ def test_render_board_empty_stream(tmp_project):
         "HEALTH\n"
         "  cannon-rev: {rev}\n"
         "  unmerged: none\n"
-        "  drift: none"
+        "  drift: none\n"
+        "  deferred: none"
     ).format(rev=rev.compute(tmp_project))
     assert board.render_board(tmp_project) == expected
 

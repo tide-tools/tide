@@ -446,6 +446,26 @@ def inflight_signals(root: Path) -> InFlight:
     return InFlight(unmerged, contracts, drift)
 
 
+def render_deferred(root: Path) -> str:
+    """One calm line on entry: deferred-reconciliation debt + the catch-up command.
+
+    ``tide go`` is an entry door, so the head must see "канон отстал" here too (not
+    only in the SessionStart board). ``deferred: none`` when the ledger is clean —
+    explicit, mirroring the in-flight block.
+    """
+    from .. import ledger  # lazy: keep the launcher light
+
+    debt = ledger.entries(Path(root))
+    if not debt:
+        return "  deferred: none"
+    return (
+        "  deferred: ⚠ канон отстал — {0} арок landed loose, ждут "
+        "strict-реконсиляции ({1}) → tide reconcile".format(
+            len(debt), ", ".join(e.arc for e in debt)
+        )
+    )
+
+
 def render_inflight(s: InFlight) -> str:
     """One short, calm block: ``in-flight: none`` when clear, else the live signals."""
     if s.clean:
@@ -612,6 +632,7 @@ def _render_overview(decision: RoleDecision) -> str:
         [
             render_resume_menu(threads),
             render_new_menu(arcs, root, is_orchestrator=decision.is_orchestrator),
+            render_deferred(root),
             render_inflight(inflight_signals(root)),
         ]
     )
@@ -698,6 +719,10 @@ def cmd_go(args) -> int:
     decision = resolve_role(Path.cwd(), force_orchestrator=bool(getattr(args, "orchestrator", False)))
     print(render_header(decision))
     print()  # a calm blank line between the banner and what follows
+    debt_line = render_deferred(decision.root)
+    if "none" not in debt_line:  # surface the canon-lag on entry (silent when clean)
+        print(debt_line)
+        print()
     dry_run = bool(getattr(args, "dry_run", False))
     mode = _resolve_mode(args, dry_run)
 

@@ -37,6 +37,7 @@ CANON_FILE = "CANON.md"
 CONFIG_FILE = "config"
 STRICTNESS_FILE = "strictness"
 CONTEXT_FILE = "context.json"
+DEFERRED_FILE = "deferred.md"
 
 
 # --- project-root resolution -----------------------------------------------
@@ -105,6 +106,16 @@ def strictness_file(root: Path) -> Path:
 def context_file(root: Path) -> Path:
     """Path to the per-project launch context profile (``state/context.json``)."""
     return state_dir(root) / CONTEXT_FILE
+
+
+def deferred_file(root: Path) -> Path:
+    """Path to the deferred-reconciliation debt ledger (``.tide/deferred.md``).
+
+    Lives at the ``.tide/`` root (not under ``state/``) so it is a human-visible,
+    git-trackable record of every arc landed ``loose`` that still owes a ``strict``
+    reconciliation — see :mod:`tide.ledger`.
+    """
+    return tide_dir(root) / DEFERRED_FILE
 
 
 # --- control-home --------------------------------------------------------

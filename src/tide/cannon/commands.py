@@ -50,13 +50,34 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     # cli.main wraps RoleError → exit 1; import lazily to avoid a cycle.
     from ..cli import require_orchestrator
 
-    require_orchestrator("cannon merge")
     root = paths.require_tide_root()
     arc_dir = _resolve_arc_dir(root, args.arc)
     if arc_dir is None:
         print("tide: no arc matching {0!r}".format(args.arc), file=sys.stderr)
         return 1
     arc_slug = slug.entry_slug(arc_dir.name)
+
+    # --preview is a read-only dry-run: show the prospective CANON.md diff and
+    # commit nothing. Allowed for any role (review-then-commit); the actual merge
+    # below stays orchestrator-only.
+    if getattr(args, "preview", False):
+        try:
+            current, prospective = merge.preview_delta(root, arc_dir, slug=arc_slug)
+        except FileNotFoundError as exc:
+            print("tide: {0}".format(exc), file=sys.stderr)
+            return 1
+        diff = merge.unified_diff(current, prospective)
+        if not diff.strip():
+            print(
+                "tide: preview {0} — no change to CANON.md "
+                "(already merged / empty delta)".format(arc_slug)
+            )
+        else:
+            print("tide: preview merge {0} → CANON.md (NOT committed):".format(arc_slug))
+            print(diff)
+        return 0
+
+    require_orchestrator("cannon merge")
     try:
         new_rev = merge.merge_delta(root, arc_dir, slug=arc_slug)
     except FileNotFoundError as exc:
@@ -120,6 +141,11 @@ def register(subparsers) -> None:
 
     mp = nsub.add_parser("merge", help="ORCHESTRATOR-ONLY: merge an arc delta into CANON.md")
     mp.add_argument("arc", help="arc slug (or dir name) whose delta.md to merge")
+    mp.add_argument(
+        "--preview",
+        action="store_true",
+        help="dry-run: print the prospective CANON.md diff, commit nothing (any role)",
+    )
     mp.set_defaults(func=_cmd_merge, _cmd="cannon merge")
 
     rp = nsub.add_parser("rev", help="print the current cannon-rev (sha256 of CANON.md)")

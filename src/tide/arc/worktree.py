@@ -12,8 +12,9 @@ remove(root, arc_dir)     → bool          remove worktree + delete branch
 has_worktree(root, arc_dir) → bool        True when arc has a recorded branch
 is_git_repo(root)         → bool          True when root/.git exists
 
-CLI: ``tide arc work <slug>``  (calls create)
-     ``tide arc land <slug>``  (calls land; on conflict prints warning, exits 1)
+CLI: ``tide arc work <slug>``  (calls create). ``tide arc land`` lives in
+:mod:`tide.arc.land` (the atomic, strictness-gated land) and calls :func:`land` /
+:func:`remove` here.
 
 Non-git projects fall back gracefully: create returns None, land/remove are no-ops.
 """
@@ -326,59 +327,17 @@ def _cmd_work(args) -> int:
         return 1
 
 
-def _cmd_land(args) -> int:
-    """Handler for ``tide arc land <slug>``.
-
-    When the arc was started via ``tide arc work`` with Orca available, uses the
-    gh-first flow: push branch → ``gh pr create`` → orca in-review.
-    Otherwise falls back to the headless git-merge-to-base flow.
-    """
-    root = paths.require_tide_root()
-    try:
-        arc_dir = _resolve_arc(root, args.slug, goal_slug=getattr(args, "goal", None))
-    except WorktreeError as exc:
-        print("tide: {0}".format(exc), file=sys.stderr)
-        return 1
-
-    # --- Orca gh-first path (arc has a linked GitHub issue) ---
-    from ..adapters import orca_worktree as _ow  # lazy
-    issue_num = fields.read_field(_passport(arc_dir), _ow.ISSUE_FIELD)
-    if issue_num:
-        try:
-            pr_url = _ow.orca_land(root, arc_dir)
-            print(
-                "tide: PR created: {url} "
-                "(issue #{n} marked in-review)".format(url=pr_url, n=issue_num)
-            )
-            return 0
-        except _ow.OrcaLandError as exc:
-            print("tide: {0}".format(exc), file=sys.stderr)
-            return 1
-
-    result = land(root, arc_dir)
-    if result.conflict:
-        print(
-            "tide: CONFLICT — {0}  (worktree branch NOT merged; resolve manually)".format(
-                result.detail
-            ),
-            file=sys.stderr,
-        )
-        return 1
-    if not result.landed:
-        print("tide: {0}".format(result.detail))
-        return 0
-    # Landed cleanly → clean up worktree.
-    remove(root, arc_dir)
-    print("tide: {0} (worktree removed)".format(result.detail))
-    return 0
-
-
 def _add_goal_opt(p) -> None:
     p.add_argument("-g", "--goal", help="operate inside this goal's substream")
 
 
 def register(arc_subparsers) -> None:
-    """Add ``tide arc work`` and ``tide arc land`` to the ``tide arc`` subparser group."""
+    """Add ``tide arc work`` to the ``tide arc`` subparser group.
+
+    ``tide arc land`` is no longer registered here — the atomic, strictness-gated
+    land lives in :mod:`tide.arc.land` (``register_land``), which still calls the
+    low-level :func:`land` / :func:`remove` primitives this module owns.
+    """
     wp = arc_subparsers.add_parser(
         "work",
         help="create an isolated git worktree for the arc (FILE-axis isolation)",
@@ -386,11 +345,3 @@ def register(arc_subparsers) -> None:
     wp.add_argument("slug")
     _add_goal_opt(wp)
     wp.set_defaults(func=_cmd_work, _cmd="arc work")
-
-    lp = arc_subparsers.add_parser(
-        "land",
-        help="merge the arc worktree branch back to base (gate: conflict surfaces and blocks)",
-    )
-    lp.add_argument("slug")
-    _add_goal_opt(lp)
-    lp.set_defaults(func=_cmd_land, _cmd="arc land")

@@ -68,6 +68,23 @@ def _unmerged_warnings(root: Path) -> List[str]:
     return warnings
 
 
+def _deferred_warnings(root: Path) -> List[str]:
+    """The "канон отстал" line: arcs landed loose that owe a strict reconciliation.
+
+    A single rolled-up warning (not one-per-arc) with the ONE catch-up command, so
+    the head opens already knowing the canon lags and how to close the gap.
+    """
+    from .. import ledger  # lazy: keep SessionStart light
+
+    debt = ledger.entries(root)
+    if not debt:
+        return []
+    return [
+        "  ⚠ канон отстал: {0} арок landed loose, ждут strict-реконсиляции "
+        "({1}) → tide reconcile".format(len(debt), ", ".join(e.arc for e in debt))
+    ]
+
+
 # Contract states that anchor work (a signed/running/output contract IS an arc's
 # binding). A `draft` is unsigned ⇒ NOT yet anchored. Mirrors contract.model.STATES.
 _ANCHORING_CONTRACT_STATES = ("sign", "running", "output")
@@ -116,6 +133,7 @@ def render(root: Path, role: str) -> str:
     warnings = (
         _drift_warnings(root)
         + _unmerged_warnings(root)
+        + _deferred_warnings(root)
         + _arc_first_warnings(root, role)
     )
     if warnings:

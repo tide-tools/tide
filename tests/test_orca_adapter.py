@@ -454,45 +454,52 @@ class TestOrcaLand:
         assert orca_set[wt_idx] == "branch:arc-branch-selector"
 
     def test_cmd_land_uses_orca_when_issue_present(self, monkeypatch, tmp_project):
-        """_cmd_land routes to orca_land when ISSUE_FIELD is set in the passport."""
-        from tide.arc.worktree import _cmd_land
+        """cmd_land (now tide.arc.land) routes to orca_land when ISSUE_FIELD is set."""
+        from tide.arc.land import cmd_land
 
-        arc = self._setup_arc(tmp_project, "cmd-land-orca", issue="33")
+        monkeypatch.setenv("TIDE_ROLE", "orchestrator")  # land is orchestrator-only
+        self._setup_arc(tmp_project, "cmd-land-orca", issue="33")
         orca_land_calls: List = []
 
         monkeypatch.setattr(
             "tide.adapters.orca_worktree.orca_land",
             lambda root, arc_dir: orca_land_calls.append((root, arc_dir)) or "https://github.com/pr/1",
         )
-        monkeypatch.setattr("tide.arc.worktree.paths.require_tide_root", lambda: tmp_project)
+        monkeypatch.setattr("tide.paths.require_tide_root", lambda start=None: tmp_project)
 
-        args = argparse.Namespace(slug="cmd-land-orca", goal=None)
-        result = _cmd_land(args)
+        args = argparse.Namespace(
+            slug=["cmd-land-orca"], goal=None, strict=False, loose=True, no_gate=True
+        )
+        result = cmd_land(args)
 
         assert result == 0
         assert orca_land_calls, "orca_land must be called when issue is set"
 
     def test_cmd_land_headless_when_no_issue(self, monkeypatch, tmp_project):
-        """_cmd_land falls back to raw-git land when no ISSUE_FIELD is set."""
-        from tide.arc.worktree import _cmd_land, land
+        """cmd_land does the atomic LOCAL land (no orca) when no ISSUE_FIELD is set."""
+        from tide.arc.land import cmd_land
+        from tide import slug as slug_mod
 
-        arc = stream.new_arc(tmp_project, "cmd-land-headless")
-        land_calls: List = []
+        monkeypatch.setenv("TIDE_ROLE", "orchestrator")
+        stream.new_arc(tmp_project, "cmd-land-headless")
+        orca_land_calls: List = []
 
-        def fake_land(root, arc_dir, base=None):
-            land_calls.append((root, arc_dir))
-            from tide.arc.worktree import LandResult
-            return LandResult(landed=False, conflict=False, branch="", detail="no worktree to land")
+        monkeypatch.setattr(
+            "tide.adapters.orca_worktree.orca_land",
+            lambda root, arc_dir: orca_land_calls.append((root, arc_dir)) or "x",
+        )
+        monkeypatch.setattr("tide.paths.require_tide_root", lambda start=None: tmp_project)
 
-        monkeypatch.setattr("tide.arc.worktree.land", fake_land)
-        monkeypatch.setattr("tide.adapters.orca_worktree.orca_available", lambda: False)
-        monkeypatch.setattr("tide.arc.worktree.paths.require_tide_root", lambda: tmp_project)
-
-        args = argparse.Namespace(slug="cmd-land-headless", goal=None)
-        result = _cmd_land(args)
+        args = argparse.Namespace(
+            slug=["cmd-land-headless"], goal=None, strict=False, loose=True, no_gate=True
+        )
+        result = cmd_land(args)
 
         assert result == 0
-        assert land_calls, "raw-git land must be called when no orca issue is set"
+        assert not orca_land_calls, "orca_land must NOT be called for a headless arc"
+        # The atomic local land sealed the arc (renamed __…__).
+        arcs = tmp_project / ".tide" / "arcs"
+        assert any(slug_mod.is_closed_entry(p.name) for p in arcs.iterdir() if p.is_dir())
 
 
 # ---------------------------------------------------------------------------

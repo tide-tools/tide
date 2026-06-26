@@ -183,9 +183,11 @@ def _register_verify(sub) -> None:
 
 def _register_arc(sub) -> None:
     # U3: real arc-stream verbs (new/new-goal/open/resume/close/reopen/supersede).
-    # 11-arc-worktree-isolation: adds work/land verbs via worktree.register.
+    # 11-arc-worktree-isolation: worktree.register adds `work`; arc-land-strictness-
+    # dial: land.register_land adds the atomic, strictness-gated `land`.
     # TODO(U4): tide.arc.candidate is a separate top-level group; status is U8.
     from .arc.board import cmd_status as arc_status
+    from .arc.land import register_land
     from .arc.stream import register as register_stream
     from .arc.worktree import register as register_worktree
 
@@ -193,9 +195,18 @@ def _register_arc(sub) -> None:
     asub = p.add_subparsers(dest="arc_cmd")
     register_stream(asub)
     register_worktree(asub)
+    register_land(asub)
     sp = asub.add_parser("status", help="render the STREAM board")
     sp.add_argument("--json", action="store_true", help="emit the board as JSON (canon/drift projection)")
     sp.set_defaults(func=arc_status, _cmd="arc status")
+
+
+def _register_reconcile(sub) -> None:
+    # arc-land-strictness-dial: pay down the deferred-reconciliation debt ledger
+    # (strict-land each owed arc). Lives top-level — it spans the whole stream.
+    from .arc.land import register_reconcile
+
+    register_reconcile(sub)
 
 
 def _register_candidate(sub) -> None:
@@ -273,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Agent module surface
     _register_arc(subparsers)
+    _register_reconcile(subparsers)
     _register_candidate(subparsers)
     _register_cannon(subparsers)
     _register_contract(subparsers)

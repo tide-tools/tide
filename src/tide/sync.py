@@ -168,6 +168,14 @@ def block_new_arc_if_unmerged_delta(root: Path) -> None:
     stream is clean.
     """
     offenders = unmerged_deltas(root, include_active=True)
+    # Arcs landed `loose` carry their unmerged delta as DELIBERATE deferred debt
+    # (tracked in the ledger, surfaced at session-start) — they don't block
+    # dispatching the next arc. That is the whole point of the loose dial:
+    # discipline without slowness. `tide reconcile` pays the debt down later.
+    from . import ledger  # lazy: ledger imports paths/slug only, no cycle
+
+    deferred = {e.ref for e in ledger.entries(root)}
+    offenders = [o for o in offenders if slug.entry_slug(o.name) not in deferred]
     if not offenders:
         return
     names = ", ".join(o.name for o in offenders)
