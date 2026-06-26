@@ -190,6 +190,16 @@ def _register_readme(sub) -> None:
     register_readme(sub)
 
 
+def _register_self_update(sub) -> None:
+    # 18-self-update: keep one tide current on any machine — detect a stale install
+    # vs the source-of-truth (pluggable VersionSource), run the REGRESSION GATE
+    # (verify --portable + suite), reinstall only on green. The published-channel
+    # source is a later seam (crit E); today the source is the local checkout.
+    from .update.commands import register as register_self_update
+
+    register_self_update(sub)
+
+
 def _register_verify(sub) -> None:
     # F7: isolated verification affordance — stage a built artifact into a temp dir,
     # serve it on an OS-assigned ephemeral port, and check it (HTTP 200 + optional
@@ -298,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_migrate_arcs(subparsers)
     _register_readme(subparsers)
     _register_verify(subparsers)
+    _register_self_update(subparsers)
 
     _register_version(subparsers)
     _register_help(subparsers)

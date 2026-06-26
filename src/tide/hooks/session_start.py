@@ -125,8 +125,14 @@ def _arc_first_warnings(root: Path, role: str) -> List[str]:
     ]
 
 
-def render(root: Path, role: str) -> str:
-    """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings."""
+def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
+    """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings.
+
+    *update_note*, when present, is a non-blocking "tide update available" line
+    SURFACED (never auto-applied) below the warnings. It is a parameter — not
+    computed here — so :func:`render` stays pure/snapshot-testable; the live note
+    is resolved by :func:`cmd_session_start`.
+    """
     root = Path(root)
     lines: List[str] = [board.render_board(root), "", _role_reminder(role)]
 
@@ -140,6 +146,11 @@ def render(root: Path, role: str) -> str:
         lines.append("")
         lines.append("WARNINGS")
         lines.extend(warnings)
+
+    if update_note:
+        lines.append("")
+        lines.append("UPDATE")
+        lines.append(update_note)
 
     return "\n".join(lines)
 
@@ -163,5 +174,20 @@ def cmd_session_start(args) -> int:
     root: Optional[Path] = paths.find_tide_root()
     if root is None:
         return 0
-    print(render(root, _current_role()))
+    print(render(root, _current_role(), update_note=_update_note()))
     return 0
+
+
+def _update_note() -> Optional[str]:
+    """Best-effort 'tide update available' line for SessionStart (None on any issue).
+
+    Lazy-imports :mod:`tide.update.core` so the hook stays light, and swallows all
+    errors there — a SessionStart hook must never break a session, and surfacing
+    an update is strictly advisory (the update is supervised, never auto-applied).
+    """
+    try:
+        from ..update.core import session_note
+
+        return session_note()
+    except Exception:
+        return None
