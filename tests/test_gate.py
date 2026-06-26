@@ -395,6 +395,42 @@ def test_cannon_lint_detects_placeholder(tmp_project):
     assert any("placeholder" in i for i in issues)
 
 
+def test_cannon_lint_ignores_angle_span_inside_code(tmp_project):
+    """`<…>` inside inline backticks / fenced blocks are examples, not placeholders.
+
+    Candidate 109: the backticked goal-H1 example tripped the gate twice; the proper
+    fix lets the original backticked form pass without a guillemet workaround.
+    """
+    paths.canon_file(tmp_project).write_text(
+        "# CANON.md — demo\n\n"
+        "## What it is\n\n"
+        "Run `tide arc new <slug>` to start. See `<one line — what this arc closes>`.\n\n"
+        "```\n"
+        "tide contract sign <slug> --signer <role>\n"
+        "```\n\n"
+        "## Cannon journal\n",
+        encoding="utf-8",
+    )
+    issues = gate.cannon_lint(tmp_project)
+    assert not any("placeholder" in i for i in issues), issues
+
+
+def test_cannon_lint_flags_bare_span_but_not_backticked_on_mixed_line(tmp_project):
+    """A bare `<…>` in prose is still flagged even when a backticked one shares the line."""
+    paths.canon_file(tmp_project).write_text(
+        "# CANON.md — demo\n\n"
+        "## What it is\n\n"
+        "Fill <fill me in> like `<code>` here.\n\n"
+        "## Cannon journal\n",
+        encoding="utf-8",
+    )
+    issues = gate.cannon_lint(tmp_project)
+    placeholder_issues = [i for i in issues if "placeholder" in i]
+    assert len(placeholder_issues) == 1
+    assert "<fill me in>" in placeholder_issues[0]
+    assert "<code>" not in placeholder_issues[0]
+
+
 def test_cannon_lint_detects_duplicate_journal_stamp(tmp_project):
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n"

@@ -48,6 +48,79 @@ def test_stray_lessthan_without_close_is_not_swallowed():
     assert placeholders.find_in_text("note: a < b in the formula\n") == []
 
 
+# --- code spans are not placeholders (candidate 109) ------------------------
+
+def test_angle_span_inside_inline_backticks_is_ignored():
+    # `<arg>` inside backticks is a documented example, not an unfilled field.
+    assert placeholders.find_in_text("run `tide go <arg>` to start\n") == []
+
+
+def test_angle_span_inside_fenced_block_is_ignored():
+    text = (
+        "## How used\n\n"
+        "```\n"
+        "tide arc new <slug>\n"
+        "tide contract sign <slug> --signer <role>\n"
+        "```\n"
+    )
+    assert placeholders.find_in_text(text) == []
+
+
+def test_tilde_fenced_block_is_ignored():
+    text = "~~~\n<placeholder> example\n~~~\n"
+    assert placeholders.find_in_text(text) == []
+
+
+def test_bare_angle_span_outside_code_still_flagged():
+    # The whole point: a real unfilled placeholder in prose is still caught.
+    assert placeholders.find_in_text("goal: <fill me in>\n") == ["<fill me in>"]
+
+
+def test_mixed_line_flags_only_the_bare_span():
+    # Bare `<real>` + backticked `<code>` on one line → only the bare one is a
+    # placeholder; the backticked example is skipped.
+    found = placeholders.find_in_text("fill <real> like `<code>` here\n")
+    assert found == ["<real>"]
+
+
+def test_multiple_inline_spans_on_one_line_all_masked():
+    found = placeholders.find_in_text("use `<a>` and `<b>` together\n")
+    assert found == []
+
+
+def test_unmatched_backtick_does_not_mask_following_span():
+    # A stray opening backtick with no closer must NOT swallow a later prose span.
+    found = placeholders.find_in_text("a ` stray then <real>\n")
+    assert found == ["<real>"]
+
+
+def test_backticked_one_line_goal_form_is_clean():
+    # The exact form that tripped the gate twice today (the backticked example of
+    # the goal H1 placeholder) must pass — no guillemet workaround needed.
+    assert placeholders.find_in_text("see `<one line — what this arc closes>`\n") == []
+
+
+# --- unterminated fence must not swallow placeholders below it ---------------
+
+def test_unterminated_backtick_fence_does_not_hide_placeholder_below():
+    # A ``` opener that never closes is a broken doc, not a code block: a real
+    # <placeholder> below it must STILL be flagged (completeness > masking).
+    text = "## s\n```\ncode\n\n<fill me in>\n"
+    assert placeholders.find_in_text(text) == ["<fill me in>"]
+
+
+def test_unterminated_tilde_fence_does_not_hide_placeholder_below():
+    text = "## s\n~~~\ncode\n\n<fill me in>\n"
+    assert placeholders.find_in_text(text) == ["<fill me in>"]
+
+
+def test_unterminated_fence_flags_placeholders_both_before_and_after():
+    # `<real before>` (prose, before the broken fence) + unterminated fence +
+    # `<real after>` (below it) → BOTH are flagged.
+    text = "<real before>\n```\ncode\n<real after>\n"
+    assert placeholders.find_in_text(text) == ["<real before>", "<real after>"]
+
+
 # --- the real templates all carry placeholders -----------------------------
 
 def test_fresh_arc_template_is_full_of_placeholders():

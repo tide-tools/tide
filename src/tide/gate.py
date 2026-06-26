@@ -41,17 +41,13 @@ Lint issues → stale (1), not oracle-error, because they are assessable
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import List, Tuple
 
-from . import fields, paths, slug, sync
+from . import fields, paths, placeholders, slug, sync
 from .arc.stream import passport_path
 from .cannon import merge as _merge
 from .cannon import reality, rev, store
-
-# Template placeholder pattern (mirrors tide.placeholders._ANGLE).
-_PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +73,12 @@ def cannon_lint(root: Path) -> List[str]:
     text = store.read(root)  # raises FileNotFoundError if missing
     issues: List[str] = []
 
-    # (c1) Template placeholders anywhere in CANON.md.
-    for match in _PLACEHOLDER_RE.finditer(text):
+    # (c1) Template placeholders anywhere in CANON.md — but a ``<…>`` example inside
+    # a code span or fenced block is legitimate prose, not an unfilled field, so the
+    # scan runs over a code-masked copy. The pattern is the shared
+    # ``placeholders._ANGLE`` symbol so the gate and the close-guard can never diverge.
+    masked = placeholders.mask_code(text)
+    for match in placeholders._ANGLE.finditer(masked):
         issues.append(
             "template placeholder in CANON.md: {0!r}".format(match.group(0))
         )
