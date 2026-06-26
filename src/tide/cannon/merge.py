@@ -319,6 +319,61 @@ def merge_delta(
     return rev.compute(root)
 
 
+def preview_delta(
+    root: Path,
+    arc_dir: Path,
+    *,
+    slug: str,
+    date: Optional[str] = None,
+    delta_name: str = "delta.md",
+) -> Tuple[str, str]:
+    """Compute ``(current_canon, prospective_canon)`` for a merge WITHOUT writing.
+
+    The dry-run twin of :func:`merge_delta`: it reads the delta + the live CANON.md
+    and returns what the post-merge CANON.md *would* be — but mutates nothing (no
+    write, no ``merged: yes`` stamp, no reality-rev baseline). Lets a merge be a
+    reviewable candidate (review-then-commit). Raises if the delta is missing.
+
+    NOTE: the reality-rev baseline line (stamped into the preamble at real commit)
+    is intentionally NOT applied here — the preview shows the substantive truth
+    change (the section-merge + journal entry), not that single metadata line.
+    """
+    date = date or _today()
+    delta_path = Path(arc_dir) / delta_name
+    if not delta_path.is_file():
+        raise FileNotFoundError("no delta to merge at {0}".format(delta_path))
+
+    delta_body = _delta_body(delta_path.read_text(encoding="utf-8"))
+    canon = paths.canon_file(root)
+    current = canon.read_text(encoding="utf-8") if canon.is_file() else ""
+    prospective = merge_delta_text(current, delta_body, date=date, slug=slug)
+    return current, prospective
+
+
+def unified_diff(
+    current: str,
+    prospective: str,
+    *,
+    fromfile: str = "CANON.md (current)",
+    tofile: str = "CANON.md (after merge)",
+) -> str:
+    """A unified diff between the current and prospective CANON.md (``""`` if equal).
+
+    The reviewable artifact a ``--preview`` merge prints: an empty string means the
+    merge would not change CANON.md (already merged / empty delta) — idempotent.
+    """
+    import difflib
+
+    diff = difflib.unified_diff(
+        current.splitlines(),
+        prospective.splitlines(),
+        fromfile=fromfile,
+        tofile=tofile,
+        lineterm="",
+    )
+    return "\n".join(diff)
+
+
 def _delta_body(text: str) -> str:
     """Extract the merge-worthy body of a delta.md (drop frontmatter + H1).
 

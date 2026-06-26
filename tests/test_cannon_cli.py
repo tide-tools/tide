@@ -50,3 +50,30 @@ def test_cli_cannon_merge_runs_for_orchestrator(in_project, orchestrator_role, c
     assert rc == 0
     assert "patched" in store.read(in_project)
     assert "### " in store.read(in_project)
+
+
+def test_cli_cannon_merge_preview_shows_diff_without_committing(in_project, capsys):
+    arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
+    arc_dir.mkdir(parents=True)
+    (arc_dir / "delta.md").write_text(
+        "# delta — fix-leak\nmerged: no\n\n## What it is\n\nfuture truth\n", encoding="utf-8"
+    )
+    before = store.read(in_project)
+    rc = cli.main(["cannon", "merge", "--preview", "fix-leak"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "NOT committed" in out
+    assert "future truth" in out  # the prospective diff
+    assert store.read(in_project) == before  # nothing written
+
+
+def test_cli_cannon_merge_preview_allowed_for_worker(in_project, worker_role, capsys):
+    """--preview is read-only → not gated to the orchestrator (review-then-commit)."""
+    arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
+    arc_dir.mkdir(parents=True)
+    (arc_dir / "delta.md").write_text(
+        "# delta — fix-leak\nmerged: no\n\n## What it is\n\npeek\n", encoding="utf-8"
+    )
+    rc = cli.main(["cannon", "merge", "--preview", "fix-leak"])
+    assert rc == 0
+    assert "orchestrator-only" not in capsys.readouterr().err

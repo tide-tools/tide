@@ -279,15 +279,17 @@ class TestReconcile:
 
         # Operator does the reconciliation paperwork on the sealed arc.
         _make_reconcilable(tmp_project)
-        outcomes = land.reconcile(tmp_project, gate_fn=_no_gate)
+        report = land.reconcile(tmp_project, gate_fn=_no_gate)
 
-        assert len(outcomes) == 1
-        assert outcomes[0].reconciled is True
+        assert len(report.paid) == 1
+        assert report.failed == []
+        assert report.paid[0].reconciled is True
         assert ledger.count(tmp_project) == 0  # debt paid
         assert rev.compute(tmp_project) != before  # delta merged into CANON
 
     def test_reconcile_no_debt_is_a_clean_no_op(self, tmp_project):
-        assert land.reconcile(tmp_project, gate_fn=_no_gate) == []
+        report = land.reconcile(tmp_project, gate_fn=_no_gate)
+        assert report.paid == [] and report.failed == []
 
     def test_reconcile_specific_arc_only(self, tmp_project):
         _contracted(tmp_project, "a")
@@ -298,6 +300,90 @@ class TestReconcile:
         land.reconcile(tmp_project, arcs=["a"], gate_fn=_no_gate)
         refs = {e.ref for e in ledger.entries(tmp_project)}
         assert refs == {"b"}  # only a was paid down
+
+    def test_reconcile_is_sequential_and_fault_isolated(self, tmp_project):
+        # Two owed arcs; only `a` has its paperwork done. The sweep must pay `a`
+        # and leave `b` on the ledger (NOT abort the whole run) — agent-safe.
+        _contracted(tmp_project, "a")
+        _contracted(tmp_project, "b")
+        land.batch_land(tmp_project, ["a", "b"], strict=False, gate_fn=_no_gate)
+        _make_reconcilable(tmp_project, "a")  # b stays un-papered
+
+        report = land.reconcile(tmp_project, gate_fn=_no_gate)
+
+        assert [o.ref for o in report.paid] == ["a"]
+        assert [ref for ref, _ in report.failed] == ["b"]
+        assert {e.ref for e in ledger.entries(tmp_project)} == {"b"}  # b retained
+
+    def test_reconcile_is_idempotent_on_rerun(self, tmp_project):
+        # Re-running after a paydown (or an interruption that left a delta merged
+        # but the ledger line lingering) neither double-applies nor corrupts CANON.
+        _contracted(tmp_project)
+        land.land_one(tmp_project, "fix-leak", strict=False, gate_fn=_no_gate)
+        _make_reconcilable(tmp_project)
+        land.reconcile(tmp_project, gate_fn=_no_gate)
+        canon_after_first = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+
+        # Simulate an interrupted run: the delta is merged, but re-queue the debt.
+        sealed = model.resolve_arc_dir(tmp_project, "fix-leak")
+        ledger.append(tmp_project, sealed.name, ["report"], rev.compute(tmp_project))
+        land.reconcile(tmp_project, gate_fn=_no_gate)
+
+        assert ledger.count(tmp_project) == 0  # cleared again
+        # CANON unchanged by the re-merge (idempotent — journal dedup).
+        assert paths.canon_file(tmp_project).read_text(encoding="utf-8") == canon_after_first
+
+
+# ---------------------------------------------------------------------------
+# (5) previewable merge — review-then-commit (cannon merge / reconcile --preview)
+# ---------------------------------------------------------------------------
+
+class TestPreviewMerge:
+    def test_preview_delta_shows_future_canon_without_writing(self, tmp_project):
+        from tide.cannon import merge
+
+        arc = stream.new_arc(tmp_project, "fix-leak")
+        model.delta_path(arc).write_text(
+            "# delta — fix-leak\nmerged: no\n\n## What it is\n\nbrand new truth\n",
+            encoding="utf-8",
+        )
+        before = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+
+        current, prospective = merge.preview_delta(tmp_project, arc, slug="fix-leak")
+        diff = merge.unified_diff(current, prospective)
+
+        assert "brand new truth" in prospective
+        assert "brand new truth" in diff
+        # No write happened — CANON.md and the delta's merged flag are untouched.
+        assert paths.canon_file(tmp_project).read_text(encoding="utf-8") == before
+        assert fields.read_field(model.delta_path(arc), "merged") == "no"
+
+    def test_preview_of_already_merged_delta_is_empty_diff(self, tmp_project):
+        from tide.cannon import merge
+
+        _contracted(tmp_project)
+        _make_reconcilable(tmp_project)
+        arc = model.resolve_arc_dir(tmp_project, "fix-leak")
+        merge.merge_delta(tmp_project, arc, slug="fix-leak")  # commit it
+
+        current, prospective = merge.preview_delta(tmp_project, arc, slug="fix-leak")
+        assert merge.unified_diff(current, prospective) == ""  # idempotent
+
+    def test_preview_reconcile_lists_a_diff_per_owed_arc_without_committing(self, tmp_project):
+        _contracted(tmp_project)
+        arc = model.resolve_arc_dir(tmp_project, "fix-leak")
+        model.delta_path(arc).write_text(
+            "# delta — fix-leak\nmerged: no\n\n## What it is\n\npreviewed truth\n",
+            encoding="utf-8",
+        )
+        land.land_one(tmp_project, "fix-leak", strict=False, gate_fn=_no_gate)
+
+        previews = land.preview_reconcile(tmp_project)
+        assert [p.ref for p in previews] == ["fix-leak"]
+        assert "previewed truth" in previews[0].diff
+        # Preview committed nothing: ledger intact, CANON unchanged.
+        assert ledger.count(tmp_project) == 1
+        assert "previewed truth" not in paths.canon_file(tmp_project).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

@@ -308,6 +308,74 @@ def batch_land(
     return outcomes
 
 
+@dataclass
+class ReconcilePreview:
+    """A single arc's previewed merge — what reconciling it WOULD change in CANON.md."""
+
+    ref: str
+    diff: str  # unified CANON.md diff ("" → no change: already merged / empty delta)
+
+
+@dataclass
+class ReconcileReport:
+    """The outcome of a debt-paydown sweep (sequential, fault-isolated).
+
+    * ``paid`` — arcs reconciled this run (delta merged, debt line cleared).
+    * ``failed`` — ``(ref, next-step)`` for arcs that could not auto-reconcile
+      (e.g. report/proof not yet written) — left on the ledger for a re-run.
+    * ``gate_code`` / ``gate_reasons`` — the single post-sweep gate verdict.
+    """
+
+    paid: List[LandOutcome] = field(default_factory=list)
+    failed: List[Tuple[str, str]] = field(default_factory=list)
+    gate_code: Optional[int] = None
+    gate_reasons: List[str] = field(default_factory=list)
+
+
+def _owed_refs(root: Path, arcs: Optional[List[str]]) -> List[str]:
+    """The refs to reconcile: *arcs* if given, else the whole ledger (file order)."""
+    return list(arcs) if arcs else [e.ref for e in ledger.entries(root)]
+
+
+def reconcile_one(root: Path, ref: str, *, date: Optional[str] = None) -> LandOutcome:
+    """Reconcile exactly ONE owed arc: a strict land (delta→CANON), debt cleared.
+
+    Idempotent: the strict close re-merges a delta that is already folded into
+    CANON as a no-op diff (the structural merge + journal dedup), so re-running
+    after an interruption neither double-applies nor corrupts the truth. No gate
+    here — the sweep runs the project-wide gate once at the end.
+    """
+    return land_one(root, ref, strict=True, run_gate=False, date=date)
+
+
+def preview_reconcile(root: Path, *, arcs: Optional[List[str]] = None) -> List[ReconcilePreview]:
+    """Dry-run the paydown: the prospective CANON.md diff for each owed arc, no writes.
+
+    The review step an autonomous agent runs BEFORE committing — each deferred arc's
+    delta merge shown as a reviewable diff. Pure (no disk mutation).
+    """
+    from ..cannon import merge
+
+    out: List[ReconcilePreview] = []
+    for ref in _owed_refs(root, arcs):
+        try:
+            arc_dir = model.resolve_arc_dir(root, ref)
+        except model.ContractError as exc:
+            out.append(ReconcilePreview(ref=ref, diff="(cannot preview: {0})".format(exc)))
+            continue
+        cslug = (
+            model.contract_slug(arc_dir)
+            if model.has_contract(arc_dir)
+            else slug.entry_slug(arc_dir.name)
+        )
+        try:
+            current, prospective = merge.preview_delta(root, arc_dir, slug=cslug)
+            out.append(ReconcilePreview(ref=ref, diff=merge.unified_diff(current, prospective)))
+        except FileNotFoundError:
+            out.append(ReconcilePreview(ref=ref, diff=""))
+    return out
+
+
 def reconcile(
     root: Path,
     *,
@@ -315,15 +383,26 @@ def reconcile(
     run_gate: bool = True,
     gate_fn: Optional[GateFn] = None,
     date: Optional[str] = None,
-) -> List[LandOutcome]:
-    """Pay down deferred debt: strict-land each owed (ledger) arc, clearing its line.
+) -> ReconcileReport:
+    """Pay down deferred debt SEQUENTIALLY, one arc at a time, fault-isolated.
 
-    With *arcs* given, reconciles exactly those; otherwise walks the whole ledger.
+    With *arcs* given, reconciles exactly those; otherwise the whole ledger.
     Reconciliation is always strict (it IS the full reconciliation a loose land
-    deferred). The gate runs once after the batch.
+    deferred). Each arc is processed independently: a single un-reconcilable arc
+    (missing report/proof) is recorded in ``failed`` and skipped — it does NOT
+    abort the sweep — so the run is safe for an autonomous agent and re-runnable
+    after an interruption (paid arcs leave the ledger; the rest are retried). The
+    gate runs once after the sweep.
     """
-    refs = list(arcs) if arcs else [e.ref for e in ledger.entries(root)]
-    return batch_land(root, refs, strict=True, run_gate=run_gate, gate_fn=gate_fn, date=date)
+    report = ReconcileReport()
+    for ref in _owed_refs(root, arcs):
+        try:
+            report.paid.append(reconcile_one(root, ref, date=date))
+        except LandError as exc:
+            report.failed.append((ref, str(exc)))
+    if run_gate and (report.paid or report.failed):
+        report.gate_code, report.gate_reasons = _gate(root, gate_fn)
+    return report
 
 
 # --- rendering -------------------------------------------------------------
@@ -442,35 +521,61 @@ def cmd_land(args) -> int:
     return rc
 
 
+def render_preview(p: "ReconcilePreview") -> str:
+    """Render one arc's reconcile preview (its prospective CANON.md diff)."""
+    if not p.diff.strip():
+        return "tide: preview {0} — no change to CANON.md (already merged / empty delta)".format(
+            p.ref
+        )
+    return "tide: preview {0} → CANON.md (NOT committed):\n{1}".format(p.ref, p.diff)
+
+
 def cmd_reconcile(args) -> int:
     """``tide reconcile [<slug>...]`` — pay down deferred-reconciliation debt.
 
-    Orchestrator-only. With no args reconciles the whole ledger; with slugs,
-    exactly those. Prints the per-arc result + the single post-batch gate verdict.
+    ``--preview`` is a read-only dry-run (any role): print the prospective CANON.md
+    diff for each owed arc and commit nothing — review-then-commit. The real sweep
+    is orchestrator-only, SEQUENTIAL and fault-isolated: each owed arc is reconciled
+    on its own (one previewable merge at a time); an arc that can't auto-reconcile
+    (missing report/proof) is reported and left on the ledger for a re-run, so the
+    command is safe to run by an autonomous agent and re-runnable after interruption.
     """
+    root = _root()
+    arcs = list(args.slug) if getattr(args, "slug", None) else None
+
+    # --preview: read-only, no role gate, no writes.
+    if getattr(args, "preview", False):
+        if arcs is None and ledger.count(root) == 0:
+            print("tide: reconcile --preview — no deferred debt (ledger clean)")
+            return 0
+        for p in preview_reconcile(root, arcs=arcs):
+            print(render_preview(p))
+        return 0
+
     from ..cli import require_orchestrator
 
     require_orchestrator("reconcile")
-    root = _root()
-    arcs = list(args.slug) if getattr(args, "slug", None) else None
 
     if arcs is None and ledger.count(root) == 0:
         print("tide: reconcile — no deferred debt (ledger clean)")
         return 0
 
-    try:
-        outcomes = reconcile(root, arcs=arcs, run_gate=False)
-    except LandError as exc:
-        print("tide: {0}".format(exc), file=sys.stderr)
-        return 1
-    for o in outcomes:
+    report = reconcile(root, arcs=arcs, run_gate=False)
+    for o in report.paid:
         print(render_outcome(o))
+    for ref, reason in report.failed:
+        print("tide: deferred {0} still owes reconciliation — {1}".format(ref, reason))
+
     code, reasons = _gate(root, None)
     print(render_gate(code, reasons))
     remaining = ledger.count(root)
     if remaining:
-        print("tide: {0} arc(s) still owe reconciliation".format(remaining))
-    return 0 if code == 0 else 1
+        print(
+            "tide: {0} arc(s) still owe reconciliation → re-run tide reconcile "
+            "after writing their report/proof".format(remaining)
+        )
+    # Nonzero when work remains (failed arcs) or the gate is not clean.
+    return 0 if (code == 0 and not report.failed) else 1
 
 
 # --- registration ----------------------------------------------------------
@@ -505,4 +610,9 @@ def register_reconcile(subparsers) -> None:
         help="pay down deferred-reconciliation debt (strict-land each owed arc)",
     )
     p.add_argument("slug", nargs="*", help="arc(s) to reconcile (default: the whole ledger)")
+    p.add_argument(
+        "--preview",
+        action="store_true",
+        help="dry-run: print the prospective CANON.md diff per owed arc, commit nothing (any role)",
+    )
     p.set_defaults(func=cmd_reconcile, _cmd="reconcile")

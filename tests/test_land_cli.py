@@ -80,6 +80,26 @@ def test_cli_reconcile_clean_ledger_is_noop(in_project, capsys):
     assert "no deferred debt" in capsys.readouterr().out
 
 
+def test_cli_reconcile_preview_is_read_only_any_role(tmp_project, monkeypatch, capsys):
+    from tide.contract import model
+
+    monkeypatch.chdir(tmp_project)
+    monkeypatch.setenv("TIDE_ROLE", "orchestrator")
+    _signed(tmp_project, "fix-leak")
+    model.delta_path(model.resolve_arc_dir(tmp_project, "fix-leak")).write_text(
+        "# delta — fix-leak\nmerged: no\n\n## What it is\n\nprospective\n", encoding="utf-8"
+    )
+    cli.main(["arc", "land", "--loose", "fix-leak"])  # create the debt
+
+    monkeypatch.setenv("TIDE_ROLE", "worker")  # preview is read-only → allowed
+    capsys.readouterr()
+    rc = cli.main(["reconcile", "--preview"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "prospective" in out and "NOT committed" in out
+    assert ledger.count(tmp_project) == 1  # preview committed nothing
+
+
 def test_cli_reconcile_pays_down_after_paperwork(in_project, capsys):
     _signed(in_project)
     cli.main(["arc", "land", "--loose", "fix-leak"])
