@@ -289,6 +289,301 @@ def test_reality_rev_is_short(tmp_project):
 
 
 # ---------------------------------------------------------------------------
+# API-surface fingerprinting for CODE files (kill gate fatigue)
+# ---------------------------------------------------------------------------
+
+_PY_V1 = (
+    "import os\n"
+    "\n"
+    "# original comment\n"
+    "def greet(name):\n"
+    "    return 'hello ' + name\n"
+    "\n"
+    "class Widget:\n"
+    "    def render(self):\n"
+    "        return 1\n"
+)
+
+
+def test_api_surface_extracts_signatures():
+    """_api_surface keeps only signature lines, stripped + sorted."""
+    surface = reality._api_surface(_PY_V1)
+    lines = surface.splitlines()
+    assert "def greet(name):" in lines
+    assert "class Widget:" in lines
+    assert "def render(self):" in lines
+    # body / import / comment lines are excluded
+    assert "import os" not in surface
+    assert "return 1" not in surface
+    assert "# original comment" not in surface
+
+
+def test_reality_rev_no_trip_on_comment_only_edit(tmp_project):
+    """(a) A comment-only edit to a covered .py does NOT change reality-rev."""
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    f.write_text(_PY_V1.replace("# original comment", "# a totally rewritten comment"),
+                 encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 == r2  # comments are not API surface
+
+
+def test_reality_rev_no_trip_on_whitespace_only_edit(tmp_project):
+    """(a) A whitespace-only edit to a covered .py does NOT change reality-rev."""
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    # add trailing whitespace + extra blank lines (no signature change)
+    noisy = _PY_V1.replace("def greet(name):", "def greet(name):   ") + "\n\n\n"
+    f.write_text(noisy, encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 == r2  # whitespace churn is normalized away
+
+
+def test_reality_rev_no_trip_on_body_only_edit(tmp_project):
+    """(a) A function-BODY-only edit to a covered .py does NOT change reality-rev.
+
+    This is the deliberate Drift tradeoff: a behavioural change that keeps the
+    same signature is invisible to the reality axis (M3/substance covers that).
+    """
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    body_changed = _PY_V1.replace(
+        "return 'hello ' + name", "return 'HELLO ' + name.upper()"
+    )
+    f.write_text(body_changed, encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 == r2  # body change is not API surface
+
+
+def test_reality_rev_no_trip_on_added_test(tmp_project):
+    """(a) Adding a non-covered test file does NOT change reality-rev."""
+    _write_state_covers(tmp_project, ["src/*.py"])
+    src = tmp_project / "src"
+    src.mkdir()
+    (src / "mod.py").write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    # a test file outside the covered glob
+    tests = tmp_project / "tests"
+    tests.mkdir()
+    (tests / "test_mod.py").write_text("def test_greet():\n    assert True\n",
+                                       encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 == r2  # uncovered test addition is invisible
+
+
+def test_reality_rev_trips_on_new_def_signature(tmp_project):
+    """(b) Adding a new def signature to a covered .py DOES change reality-rev."""
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    f.write_text(_PY_V1 + "\ndef farewell(name):\n    return 'bye ' + name\n",
+                 encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 != r2  # a new signature is a real API change
+
+
+def test_reality_rev_trips_on_changed_def_signature(tmp_project):
+    """(b) Changing an existing def signature DOES change reality-rev."""
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    # add a parameter → signature changes
+    f.write_text(_PY_V1.replace("def greet(name):", "def greet(name, loud=False):"),
+                 encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 != r2
+
+
+def test_reality_rev_trips_on_new_class(tmp_project):
+    """(b) Adding a new class DOES change reality-rev."""
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    f.write_text(_PY_V1 + "\nclass Gadget:\n    pass\n", encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 != r2
+
+
+def test_reality_rev_md_full_content_still_trips(tmp_project):
+    """(d) A covered .md content change still trips (full-content fallback).
+
+    Non-code files have no recognizable signatures, so they fall back to a full
+    content hash — docs/config remain tracked verbatim.
+    """
+    _write_state_covers(tmp_project, ["*.md"])
+    f = tmp_project / "doc.md"
+    f.write_text("# Title\n\nFirst draft.\n", encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    f.write_text("# Title\n\nSecond draft (reworded).\n", encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 != r2  # .md is non-code → full content hash
+
+
+def test_reality_rev_ts_export_signature_trips(tmp_project):
+    """API-surface fingerprinting also covers TS (export/interface/type).
+
+    Note: the line-based stdlib regex can only separate signature from body when
+    they are on different lines (the Pythonic case). A comment-only edit never
+    trips; a new ``export``/``interface`` signature always does.
+    """
+    _write_state_covers(tmp_project, ["*.ts"])
+    f = tmp_project / "api.ts"
+    body_v1 = (
+        "// header comment\n"
+        "export function foo(): number {\n"
+        "  return 1;\n"
+        "}\n"
+        "interface Shape { x: number; }\n"
+    )
+    f.write_text(body_v1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    # comment-only edit → no trip (comments are never API surface)
+    f.write_text(body_v1.replace("// header comment", "// changed comment"),
+                 encoding="utf-8")
+    assert reality.reality_rev(tmp_project) == r1
+
+    # body-only edit on its own line → no trip
+    f.write_text(body_v1.replace("  return 1;", "  return 2;"), encoding="utf-8")
+    assert reality.reality_rev(tmp_project) == r1
+
+    # new export signature → trip
+    f.write_text(body_v1 + "export function bar(): void {}\n", encoding="utf-8")
+    assert reality.reality_rev(tmp_project) != r1
+
+
+# ---------------------------------------------------------------------------
+# canon-covers-exclude (candidate 32)
+# ---------------------------------------------------------------------------
+
+def _write_state_exclude(root, globs):
+    from tide import paths as _p
+    (_p.state_dir(root) / "canon-covers-exclude").write_text(
+        "\n".join(globs) + "\n", encoding="utf-8"
+    )
+
+
+def test_parse_exclude_none_returns_empty_list(tmp_project):
+    assert reality.parse_exclude(tmp_project) == []
+
+
+def test_parse_exclude_from_state_file(tmp_project):
+    _write_state_exclude(tmp_project, ["*.lock", "# comment", "vendor/*"])
+    assert reality.parse_exclude(tmp_project) == ["*.lock", "vendor/*"]
+
+
+def test_parse_exclude_from_canon_preamble(tmp_project):
+    from tide import paths as _p
+    canon = _p.canon_file(tmp_project)
+    text = canon.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    h1 = next(i for i, ln in enumerate(lines) if ln.startswith("# "))
+    lines.insert(h1 + 1, "canon-covers-exclude:\n  *.lock\n  generated/*".rstrip())
+    canon.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert reality.parse_exclude(tmp_project) == ["*.lock", "generated/*"]
+
+
+def test_reality_rev_excluded_path_no_trip(tmp_project):
+    """(c) Changing an excluded path does NOT trip reality-rev."""
+    _write_state_covers(tmp_project, ["*.py", "*.lock"])
+    _write_state_exclude(tmp_project, ["*.lock"])
+    (tmp_project / "mod.py").write_text(_PY_V1, encoding="utf-8")
+    lock = tmp_project / "deps.lock"
+    lock.write_text("dep-a==1.0\n", encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    # bump the lockfile → excluded, must not trip
+    lock.write_text("dep-a==1.1\ndep-b==2.0\n", encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 == r2  # excluded path is invisible to reality-rev
+
+
+def test_reality_rev_excluded_path_dropped_entirely(tmp_project):
+    """An excluded path contributes nothing — same rev with or without it present."""
+    _write_state_covers(tmp_project, ["*.py", "*.lock"])
+    _write_state_exclude(tmp_project, ["*.lock"])
+    (tmp_project / "mod.py").write_text(_PY_V1, encoding="utf-8")
+    r_no_lock = reality.reality_rev(tmp_project)
+
+    (tmp_project / "deps.lock").write_text("dep-a==1.0\n", encoding="utf-8")
+    r_with_lock = reality.reality_rev(tmp_project)
+    assert r_no_lock == r_with_lock  # adding an excluded file changes nothing
+
+
+def test_reality_rev_non_excluded_code_still_trips(tmp_project):
+    """Sanity: with excludes configured, a real signature change still trips."""
+    _write_state_covers(tmp_project, ["*.py", "*.lock"])
+    _write_state_exclude(tmp_project, ["*.lock"])
+    f = tmp_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    r1 = reality.reality_rev(tmp_project)
+
+    f.write_text(_PY_V1 + "\ndef extra():\n    pass\n", encoding="utf-8")
+    r2 = reality.reality_rev(tmp_project)
+    assert r1 != r2
+
+
+def test_exclude_works_in_git_mode(tmp_git_project):
+    """Excludes apply in git mode too (lockfile bump invisible)."""
+    _write_state_covers(tmp_git_project, ["*.py", "*.lock"])
+    _write_state_exclude(tmp_git_project, ["*.lock"])
+    (tmp_git_project / "mod.py").write_text(_PY_V1, encoding="utf-8")
+    (tmp_git_project / "deps.lock").write_text("a==1.0\n", encoding="utf-8")
+    _git_add_commit(tmp_git_project, "mod.py", "deps.lock")
+    r1 = reality.reality_rev(tmp_git_project)
+
+    (tmp_git_project / "deps.lock").write_text("a==1.1\n", encoding="utf-8")
+    _git_add_commit(tmp_git_project, "deps.lock")
+    r2 = reality.reality_rev(tmp_git_project)
+    assert r1 == r2  # excluded lockfile change invisible
+
+
+def test_git_mode_code_body_change_no_trip(tmp_git_project):
+    """In git mode, a committed body-only change to covered code does NOT trip."""
+    _write_state_covers(tmp_git_project, ["*.py"])
+    f = tmp_git_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    _git_add_commit(tmp_git_project, "mod.py")
+    r1 = reality.reality_rev(tmp_git_project)
+
+    f.write_text(_PY_V1.replace("return 1", "return 99"), encoding="utf-8")
+    _git_add_commit(tmp_git_project, "mod.py")
+    r2 = reality.reality_rev(tmp_git_project)
+    assert r1 == r2  # body change, same signatures
+
+
+def test_git_mode_code_signature_change_trips(tmp_git_project):
+    """In git mode, a committed signature change to covered code DOES trip."""
+    _write_state_covers(tmp_git_project, ["*.py"])
+    f = tmp_git_project / "mod.py"
+    f.write_text(_PY_V1, encoding="utf-8")
+    _git_add_commit(tmp_git_project, "mod.py")
+    r1 = reality.reality_rev(tmp_git_project)
+
+    f.write_text(_PY_V1 + "\ndef added():\n    return 0\n", encoding="utf-8")
+    _git_add_commit(tmp_git_project, "mod.py")
+    r2 = reality.reality_rev(tmp_git_project)
+    assert r1 != r2
+
+
+# ---------------------------------------------------------------------------
 # reality_rev — git mode
 # ---------------------------------------------------------------------------
 
