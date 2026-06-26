@@ -37,6 +37,7 @@ wires the thin CLI handlers.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -527,7 +528,21 @@ def _cmd_open(args) -> int:
 
 
 def _cmd_close(args) -> int:
-    closed = close(_root(), args.slug, goal_slug=args.goal, force=args.force)
+    root = _root()
+    # Orca abandon-gate: refuse close if the arc's linked GitHub issue is still
+    # open.  The open issue IS the durable commitment — the arc cannot be sealed
+    # while its PR is unmerged.  No-op for headless arcs (no orca-issue field).
+    from ..adapters import orca_worktree as _ow  # lazy: avoid import at module load
+    stream_dir = _search_dir(root, args.goal)
+    arc_dir = _resolve(stream_dir, args.slug, closed=False)
+    if arc_dir is not None:
+        try:
+            _ow.abandon_gate(arc_dir)
+        except StreamError as exc:  # AbandonGateError is a StreamError subclass
+            print("tide: {0}".format(exc), file=sys.stderr)
+            return 1
+
+    closed = close(root, args.slug, goal_slug=args.goal, force=args.force)
     print("tide: closed {0} (status: done)".format(closed.name))
     return 0
 

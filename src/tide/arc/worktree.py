@@ -215,10 +215,36 @@ def _resolve_arc(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
 
 
 def _cmd_work(args) -> int:
-    """Handler for ``tide arc work <slug>``."""
+    """Handler for ``tide arc work <slug>``.
+
+    Routes to the Orca-native path (GitHub issue + orca worktree + Claude agent)
+    when ``orca_available()`` is True; falls back to raw-git worktree isolation
+    when Orca is unavailable.
+    """
     root = paths.require_tide_root()
     try:
         arc_dir = _resolve_arc(root, args.slug, goal_slug=getattr(args, "goal", None))
+    except WorktreeError as exc:
+        print("tide: {0}".format(exc), file=sys.stderr)
+        return 1
+
+    # --- Orca-native path ---
+    from ..adapters import orca_worktree as _ow  # lazy: avoid circular import
+    if _ow.orca_available():
+        try:
+            workspace = _ow.orca_work(root, arc_dir)
+            issue_num = fields.read_field(_passport(arc_dir), _ow.ISSUE_FIELD) or "?"
+            print(
+                "tide: orca worktree created at {ws} "
+                "(issue #{n}, agent: claude)".format(ws=workspace, n=issue_num)
+            )
+            return 0
+        except _ow.OrcaWorkError as exc:
+            print("tide: orca: {0}".format(exc), file=sys.stderr)
+            return 1
+
+    # --- Headless raw-git fallback ---
+    try:
         wt = create(root, arc_dir)
         if wt is None:
             print(
@@ -235,13 +261,33 @@ def _cmd_work(args) -> int:
 
 
 def _cmd_land(args) -> int:
-    """Handler for ``tide arc land <slug>``."""
+    """Handler for ``tide arc land <slug>``.
+
+    When the arc was started via ``tide arc work`` with Orca available, uses the
+    gh-first flow: push branch → ``gh pr create`` → orca in-review.
+    Otherwise falls back to the headless git-merge-to-base flow.
+    """
     root = paths.require_tide_root()
     try:
         arc_dir = _resolve_arc(root, args.slug, goal_slug=getattr(args, "goal", None))
     except WorktreeError as exc:
         print("tide: {0}".format(exc), file=sys.stderr)
         return 1
+
+    # --- Orca gh-first path (arc has a linked GitHub issue) ---
+    from ..adapters import orca_worktree as _ow  # lazy
+    issue_num = fields.read_field(_passport(arc_dir), _ow.ISSUE_FIELD)
+    if issue_num:
+        try:
+            pr_url = _ow.orca_land(root, arc_dir)
+            print(
+                "tide: PR created: {url} "
+                "(issue #{n} marked in-review)".format(url=pr_url, n=issue_num)
+            )
+            return 0
+        except _ow.OrcaLandError as exc:
+            print("tide: {0}".format(exc), file=sys.stderr)
+            return 1
 
     result = land(root, arc_dir)
     if result.conflict:
