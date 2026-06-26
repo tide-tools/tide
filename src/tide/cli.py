@@ -172,6 +172,15 @@ def _register_handoff(sub) -> None:
     register_handoff(sub)
 
 
+def _register_migrate_arcs(sub) -> None:
+    # 15-migrate-arcs: finish the half-done legacy .arcs/ → .tide/ migration per
+    # project (copy arcs+candidates, carry config/lang + CANON, backup .arcs). One
+    # deterministic command replacing the hand-run recipe; --dry-run/--verify/--force.
+    from .migrate import register as register_migrate
+
+    register_migrate(sub)
+
+
 def _register_verify(sub) -> None:
     # F7: isolated verification affordance — stage a built artifact into a temp dir,
     # serve it on an OS-assigned ephemeral port, and check it (HTTP 200 + optional
@@ -277,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_terminal(subparsers)
     _register_go(subparsers)
     _register_handoff(subparsers)
+    _register_migrate_arcs(subparsers)
     _register_verify(subparsers)
 
     _register_version(subparsers)
