@@ -16,7 +16,6 @@ the single serialization point.
 
 goal:    ship the tide CLI scaffold → working arc/cannon/contract modules, greenfield
 stage:   0
-updated: 2026-06-25
 
 ## Этапы
 - **Этап 0 (сейчас):** scaffold — package layout, argparse CLI root with stubbed
@@ -37,3 +36,23 @@ updated: 2026-06-25
 - **Source of truth for the build:** the design + blueprint in focus arc 42
   (`.arcs/arcs/42-@tide/arcs/01-design-and-plan/output/`).
 <!-- CONTRACT:end -->
+
+## tool ⊥ instance — the bright line
+
+tide ships as a **package** (`pip install` / `uv build` → wheel+sdist), and the
+package is **`src/tide/` only**. The wheel contains nothing but the `tide/`
+Python package + metadata; the sdist adds `src/` + `tests/` + `README.md`. So:
+
+- **Shipped (the tool):** everything under `src/tide/`. Must stay generic — no
+  absolute home paths (`/Users/…`, `/home/…`), no personal identity, no
+  instance-specific project names. Contract passports store the **portable
+  project name** (`Path(root).resolve().name`), never the absolute path.
+- **NOT shipped (this instance):** `.tide/` (our own dogfood work-stream),
+  `examples/` (dogfood run captures), `docs/`, `prompts/`, `skills/`, `rules/`,
+  this `CLAUDE.md`, `roster.md`. These are git-tracked dev history of *this*
+  instance — they do **not** travel with `pip install`. git-tracking ≠ shipping.
+
+A second person gets a clean generic tide via `pip install tide` + `tide init`;
+they inherit none of our content, paths, or PII. The enforcement gate is
+`tide verify --portable` — it scans the shipped package source + a fresh
+`tide init` skeleton for absolute home paths / instance tokens and fails loud.

@@ -9,7 +9,7 @@ description = "tide — simplified, synchronous, human-driven orchestration mach
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Grigorii Sharapov" }]
+authors = [{ name = "tide contributors" }]
 keywords = ["orchestration", "cli", "arcs", "cannon", "contracts"]
 
 # Runtime: STDLIB ONLY. No web deps, no click — argparse is the CLI surface.

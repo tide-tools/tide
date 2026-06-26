@@ -41,6 +41,18 @@ def test_new_one_per_arc_guard(tmp_project):
         lifecycle.new(tmp_project, "fix-leak")
 
 
+def test_new_stores_portable_project_name_not_abs_path(tmp_project):
+    # tool ⊥ instance: the passport must carry the portable project NAME, never the
+    # absolute path — a baked `/Users/<me>/…` leaks this instance into every contract.
+    _arc(tmp_project)
+    cpath = lifecycle.new(tmp_project, "fix-leak")
+    project = fields.read_field(cpath, "project")
+    assert project == tmp_project.resolve().name
+    body = cpath.read_text(encoding="utf-8")
+    assert "/Users/" not in body and "/home/" not in body
+    assert str(tmp_project.resolve()) not in body
+
+
 # --- sign ------------------------------------------------------------------
 
 def test_sign_strict_defaults_to_human_and_runs(tmp_project):

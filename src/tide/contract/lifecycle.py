@@ -71,7 +71,10 @@ def new(
     from ..cannon import rev
 
     cannon_rev = rev.compute(root)
-    project = str(Path(root).resolve())
+    # Store the PORTABLE project name, not the absolute path — a baked
+    # `/Users/<me>/…` would leak this instance into every passport (tool ⊥
+    # instance). Mirrors the codebase's `.name` portability pattern (init/scaffold).
+    project = Path(root).resolve().name
     text = model.contract_md(
         cslug, goal=goal, criteria=criteria, project=project, cannon_rev=cannon_rev
     )

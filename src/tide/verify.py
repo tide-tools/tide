@@ -319,9 +319,222 @@ def _run_node_smoke(
         )
 
 
+# --- portability invariant (tool ⊥ instance) ------------------------------
+#
+# The keystone for *sharing* tide: the shipped TOOL must be cleanly separable
+# from THIS instance, so a second person can `pip install tide` / `tide init`
+# without inheriting our content, paths, or PII. This checker is the enforcement
+# gate behind that bright line (see CLAUDE.md "tool ⊥ instance").
+#
+# SCOPE — what it scans, and why. Distribution is the **package** (wheel/sdist),
+# whose contents are `src/tide/` only (verified: `uv build` ships nothing but the
+# `tide/` package + metadata; the dev `.tide/`, `examples/`, etc. are git-tracked
+# instance history that does NOT travel with `pip install`). So the check targets
+# exactly the two surfaces a new user actually receives:
+#   1. the shipped package source (`src/tide/**/*.py`) + `pyproject.toml` metadata
+#   2. a fresh `tide init` skeleton (booted into a throwaway tmpdir)
+# It deliberately does NOT walk the whole git tree — flagging dogfood under
+# `.tide/`/`examples/` would be noise, since none of it ships.
+
+# An absolute home-dir root baked into source is the canonical "this instance
+# leaked into the tool" smell. `~/…` (the portable form) is fine; `/Users/<me>/`
+# and `/home/<me>/` are not.
+_ABS_HOME_RE = re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+")
+
+
+@dataclass
+class PortableLeak:
+    """One portability violation: an absolute home path or an instance token."""
+
+    source: str   # "<file>" or "tide-init:<relpath>"
+    line: int
+    kind: str     # "abs-home-path" | "instance-token"
+    detail: str   # the matched text / token
+    snippet: str  # the offending line (trimmed)
+
+
+@dataclass
+class PortableReport:
+    """Outcome of a ``tide verify --portable`` run; ``ok`` is the pass/fail."""
+
+    leaks: List[PortableLeak] = field(default_factory=list)
+    messages: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.leaks
+
+
+def default_instance_tokens() -> List[str]:
+    """Instance-specific literals to forbid in shipped source, auto-detected.
+
+    The most portable way to catch "this machine leaked in" without hardcoding a
+    name is to forbid the *current* user's home path + username — if those appear
+    in shipped source it is, by definition, a leak. Callers extend this with
+    ``--instance-token`` (e.g. known instance project-names).
+    """
+    home = Path.home()
+    tokens = {str(home), home.name}
+    tokens.discard("")
+    tokens.discard("/")
+    return sorted(t for t in tokens if t)
+
+
+def scan_text(text: str, source: str, tokens: List[str]) -> List[PortableLeak]:
+    """Scan *text* line-by-line for absolute home paths + any *tokens*."""
+    leaks: List[PortableLeak] = []
+    for i, raw in enumerate(text.splitlines(), 1):
+        for m in _ABS_HOME_RE.finditer(raw):
+            leaks.append(
+                PortableLeak(source, i, "abs-home-path", m.group(0), raw.strip()[:120])
+            )
+        for tok in tokens:
+            if tok and tok in raw:
+                leaks.append(
+                    PortableLeak(source, i, "instance-token", tok, raw.strip()[:120])
+                )
+    return leaks
+
+
+def package_source_dir() -> Path:
+    """The shipped package's source dir (this module's package = ``src/tide``)."""
+    return Path(__file__).resolve().parent
+
+
+def _is_text_file(path: Path) -> bool:
+    """Heuristic: a file is text if its leading bytes hold no NUL (skip binaries)."""
+    try:
+        return b"\x00" not in path.read_bytes()[:8192]
+    except OSError:
+        return False
+
+
+def scan_package_source(pkg_dir: Path, tokens: List[str]) -> List[PortableLeak]:
+    """Scan every TEXT file under *pkg_dir* (the shipped package) for leaks.
+
+    Scans ALL text files, not just ``*.py`` — a ``.md``/``.json``/``.toml`` added
+    under ``src/tide/`` would ship in the wheel and must be covered too. Skips
+    ``__pycache__`` (compiled bytecode embeds compile-time abs paths and never
+    ships in a wheel) and any binary (NUL-containing) file.
+    """
+    pkg_dir = Path(pkg_dir)
+    leaks: List[PortableLeak] = []
+    for f in sorted(pkg_dir.rglob("*")):
+        if not f.is_file() or "__pycache__" in f.parts:
+            continue
+        if not _is_text_file(f):
+            continue
+        rel = f.relative_to(pkg_dir.parent) if pkg_dir.parent in f.parents else f
+        leaks.extend(
+            scan_text(f.read_text(encoding="utf-8", errors="replace"), str(rel), tokens)
+        )
+    return leaks
+
+
+def _pyproject_path() -> Optional[Path]:
+    """Best-effort locate the dev-tree ``pyproject.toml`` (src/tide → src → repo)."""
+    candidate = package_source_dir().parent.parent / "pyproject.toml"
+    return candidate if candidate.is_file() else None
+
+
+def scan_init_skeleton(tokens: List[str]) -> List[PortableLeak]:
+    """Boot a fresh ``tide init`` (+arc +contract) into a tmpdir; scan all output.
+
+    Exercises the real creation paths an actual new user hits — including the
+    contract passport (the site of the former abs-path-bake bug). Asserts NO file
+    the tool *produces* carries an absolute home path or instance token.
+
+    CRITICAL — catches the actual leak vector. The bug baked the *init root's own*
+    absolute path into a generated file. On macOS the tmpdir resolves under
+    ``/private/var/folders/…``, which the ``/(Users|home)/`` regex never matches —
+    so the regex ALONE false-passes here. We therefore add the init root's absolute
+    path (raw and ``/private``-resolved forms) as instance tokens for THIS scan; a
+    re-baked abs path is then flagged platform-agnostically.
+    """
+    from . import init_home
+    from .arc import stream
+    from .contract import lifecycle
+
+    leaks: List[PortableLeak] = []
+    with tempfile.TemporaryDirectory(prefix="tide-portable-") as td:
+        home = Path(td) / "control-home"
+        home.mkdir()
+
+        # The leak vector: any generated file echoing the init root's abs path.
+        root_tokens = {str(Path(td)), str(Path(td).resolve()), str(home), str(home.resolve())}
+        skeleton_tokens = sorted(set(tokens) | root_tokens)
+
+        init_home.unfold_control_home(home, name="demo")
+        stream.new_arc(home, "probe-arc")
+        lifecycle.new(home, "probe-arc", goal="ship it", criteria="done when green")
+
+        for f in sorted(home.rglob("*")):
+            if not f.is_file() or "__pycache__" in f.parts:
+                continue
+            rel = "tide-init:{0}".format(f.relative_to(home))
+            leaks.extend(
+                scan_text(f.read_text(encoding="utf-8", errors="replace"), rel, skeleton_tokens)
+            )
+    return leaks
+
+
+def check_portable(
+    *,
+    instance_tokens: Optional[List[str]] = None,
+    pkg_dir: Optional[Path] = None,
+    include_auto_tokens: bool = True,
+) -> PortableReport:
+    """Run the full portability invariant; return a :class:`PortableReport`.
+
+    Scans (1) the shipped package source, (2) ``pyproject.toml`` metadata, and
+    (3) a fresh ``tide init`` skeleton, for absolute home paths + instance tokens.
+    """
+    tokens: List[str] = list(instance_tokens or [])
+    if include_auto_tokens:
+        tokens.extend(default_instance_tokens())
+    tokens = sorted(set(t for t in tokens if t))
+
+    pkg = Path(pkg_dir) if pkg_dir else package_source_dir()
+    report = PortableReport()
+
+    pkg_leaks = scan_package_source(pkg, tokens)
+    report.leaks.extend(pkg_leaks)
+    report.messages.append(
+        "package source ({0}): {1}".format(pkg, _verdict(pkg_leaks))
+    )
+
+    pyproject = _pyproject_path()
+    if pyproject is not None:
+        meta_leaks = scan_text(
+            pyproject.read_text(encoding="utf-8"), "pyproject.toml", tokens
+        )
+        report.leaks.extend(meta_leaks)
+        report.messages.append("pyproject.toml: {0}".format(_verdict(meta_leaks)))
+
+    init_leaks = scan_init_skeleton(tokens)
+    report.leaks.extend(init_leaks)
+    report.messages.append("tide init skeleton: {0}".format(_verdict(init_leaks)))
+
+    for lk in report.leaks:
+        report.messages.append(
+            "  LEAK {0}:{1} [{2}] {3} — {4}".format(
+                lk.source, lk.line, lk.kind, lk.detail, lk.snippet
+            )
+        )
+    return report
+
+
+def _verdict(leaks: List[PortableLeak]) -> str:
+    return "clean" if not leaks else "{0} LEAK(S)".format(len(leaks))
+
+
 # --- CLI wiring ------------------------------------------------------------
 
 def _cmd_verify(args) -> int:
+    if getattr(args, "portable", False):
+        return _cmd_verify_portable(args)
+    if not args.path:
+        raise VerifyError("verify: a PATH is required (or pass --portable)")
     result = verify(args.path, node=not args.no_node)
     verdict = "PASS" if result.ok else "FAIL"
     print("tide verify: {0}  ({1})".format(verdict, args.path))
@@ -330,16 +543,42 @@ def _cmd_verify(args) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_verify_portable(args) -> int:
+    report = check_portable(instance_tokens=list(args.instance_token or []))
+    verdict = "PASS" if report.ok else "FAIL"
+    print("tide verify --portable: {0}".format(verdict))
+    for line in report.messages:
+        print("  " + line)
+    return 0 if report.ok else 1
+
+
 def register(subparsers) -> None:
     """Add the top-level ``verify`` command to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
         "verify",
-        help="serve a built artifact on an ephemeral port + check it (HTTP 200 + node smoke)",
+        help="serve a built artifact (HTTP 200 + node smoke), or --portable: tool ⊥ instance",
     )
-    p.add_argument("path", help="path to an HTML file or a directory of one")
+    p.add_argument(
+        "path",
+        nargs="?",
+        help="path to an HTML file or a directory of one (omit with --portable)",
+    )
     p.add_argument(
         "--no-node",
         action="store_true",
         help="skip the optional node inline-script syntax smoke",
+    )
+    p.add_argument(
+        "--portable",
+        action="store_true",
+        help="check tool ⊥ instance: no abs home paths / instance tokens in the "
+        "shipped package or a fresh `tide init` (fails loud on a leak)",
+    )
+    p.add_argument(
+        "--instance-token",
+        action="append",
+        metavar="TOKEN",
+        help="extra literal to forbid in shipped source (repeatable; e.g. an "
+        "instance project name)",
     )
     p.set_defaults(func=_cmd_verify, _cmd="verify")
