@@ -183,7 +183,8 @@ def _register_verify(sub) -> None:
 
 def _register_arc(sub) -> None:
     # U3: real arc-stream verbs (new/new-goal/open/resume/close/reopen/supersede).
-    # 11-arc-worktree-isolation: adds work/land verbs via worktree.register.
+    # 11-arc-worktree-isolation: worktree.register adds `work`; arc-land-strictness-
+    # dial: land.register_land adds the atomic, strictness-gated `land`.
     # TODO(U4): tide.arc.candidate is a separate top-level group; status is U8.
     from .arc.board import cmd_status as arc_status
     from .arc.land import register_land
