@@ -181,6 +181,15 @@ def _register_migrate_arcs(sub) -> None:
     register_migrate(sub)
 
 
+def _register_readme(sub) -> None:
+    # 114-derived-materials: tide readme — generate the user-door README.md as a
+    # projection of CANON.md (generated + stamped + gated), one level up from the
+    # code↔canon machinery. --check is the drift gate (mirrors `cannon gate`).
+    from .readme import register as register_readme
+
+    register_readme(sub)
+
+
 def _register_verify(sub) -> None:
     # F7: isolated verification affordance — stage a built artifact into a temp dir,
     # serve it on an OS-assigned ephemeral port, and check it (HTTP 200 + optional
@@ -287,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_go(subparsers)
     _register_handoff(subparsers)
     _register_migrate_arcs(subparsers)
+    _register_readme(subparsers)
     _register_verify(subparsers)
 
     _register_version(subparsers)
