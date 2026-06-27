@@ -15,7 +15,7 @@ deterministic code — the hand-validated recipe a human ran on one real project
 1. scaffold ``.tide/`` (``tide init --project``) when it is not there yet;
 2. copy ``.arcs/arcs/.`` → ``.tide/arcs/`` (open + closed + goals);
 3. copy ``.arcs/candidates/.`` → ``.tide/arcs/candidates/``;
-4. carry ``.arcs/config`` → ``.tide/cannon/config`` — OVERRIDING the default ``lang``
+4. carry ``.arcs/config`` → ``.tide/canon/config`` — OVERRIDING the default ``lang``
    that ``tide init`` wrote (the project's real ``lang=ru`` must survive);
 5. CANON.md: carry ``.arcs/canon/CANON.md`` when present (never clobbering a real
    ``.tide`` CANON that already existed), else scaffold a ``## Где мы сейчас`` stub;
@@ -122,7 +122,7 @@ def canon_stub_text(name: str) -> str:
     """A real ``## Где мы сейчас`` CANON stub (thread + remotes + release placeholders).
 
     Keeps the canonical English H2 sections — crucially the append-only
-    ``## Cannon journal`` anchor :mod:`tide.cannon.merge` writes into — so a migrated
+    ``## Canon journal`` anchor :mod:`tide.canon.merge`` writes into — so a migrated
     project can still merge deltas, and adds the user's ``## Где мы сейчас`` thread
     section the roster's CANON convention expects on entry.
     """
@@ -141,7 +141,7 @@ def canon_stub_text(name: str) -> str:
             "",
             "## Interfaces / how used",
             "",
-            "## Cannon journal",
+            "## Canon journal",
             "",
         ]
     )
@@ -226,7 +226,7 @@ def plan_migration(root: Path) -> MigratePlan:
     # 4. config carry (overrides the default lang tide init wrote).
     src_cfg = legacy / LEGACY_CONFIG
     if src_cfg.is_file():
-        plan.config_carry = (src_cfg, paths.cannon_config(root))
+        plan.config_carry = (src_cfg, paths.canon_config(root))
 
     # 5. CANON.md.
     legacy_canon = legacy.joinpath(*LEGACY_CANON)
@@ -234,14 +234,14 @@ def plan_migration(root: Path) -> MigratePlan:
     if legacy_canon.is_file():
         if canon_preexisted:
             plan.canon_action = (
-                "skip — real .tide/cannon/CANON.md already present (not overwritten)"
+                "skip — real .tide/canon/CANON.md already present (not overwritten)"
             )
         else:
             plan.canon_carry = (legacy_canon, target_canon)
-            plan.canon_action = "carry .arcs/canon/CANON.md → .tide/cannon/CANON.md"
+            plan.canon_action = "carry .arcs/canon/CANON.md → .tide/canon/CANON.md"
     else:
         if canon_preexisted:
-            plan.canon_action = "keep existing .tide/cannon/CANON.md"
+            plan.canon_action = "keep existing .tide/canon/CANON.md"
         else:
             plan.canon_stub = True
             plan.canon_action = "scaffold a '## Где мы сейчас' CANON stub"
@@ -424,7 +424,7 @@ def render_plan(plan: MigratePlan) -> str:
         lines.append("    (none)")
 
     if plan.config_carry is not None:
-        lines.append("  config:        carry .arcs/config → .tide/cannon/config (override default lang)")
+        lines.append("  config:        carry .arcs/config → .tide/canon/config (override default lang)")
     else:
         lines.append("  config:        (no legacy .arcs/config)")
 

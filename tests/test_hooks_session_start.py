@@ -6,7 +6,7 @@ import pytest
 
 from tide import cli, readme
 from tide.arc import stream
-from tide.cannon import store
+from tide.canon import store
 from tide.hooks import session_start
 
 from tests.conftest import strip_placeholders
@@ -22,7 +22,7 @@ def test_render_includes_board_and_role_reminder(tmp_project):
 def test_render_worker_role_reminder(tmp_project):
     text = session_start.render(tmp_project, "worker")
     assert "WORKER" in text
-    assert "Never merge cannon" in text
+    assert "Never merge canon" in text
 
 
 def test_render_unknown_role_falls_back_to_worker(tmp_project):
@@ -31,9 +31,9 @@ def test_render_unknown_role_falls_back_to_worker(tmp_project):
 
 
 def test_render_flags_drift_on_open_arc(tmp_project):
-    # Open an arc (stamps current cannon-rev), then move CANON.md so it drifts.
+    # Open an arc (stamps current canon-rev), then move CANON.md so it drifts.
     stream.new_arc(tmp_project, "do-thing")
-    canon = tmp_project / ".tide" / "cannon" / "CANON.md"
+    canon = tmp_project / ".tide" / "canon" / "CANON.md"
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     text = session_start.render(tmp_project, "orchestrator")
     assert "WARNINGS" in text
@@ -52,7 +52,7 @@ def test_render_flags_unmerged_delta(tmp_project):
     text = session_start.render(tmp_project, "orchestrator")
     assert "WARNINGS" in text
     assert "unmerged delta" in text
-    assert "tide cannon merge alpha" in text
+    assert "tide canon merge alpha" in text
 
 
 def test_render_clean_project_has_no_warnings(tmp_project):

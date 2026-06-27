@@ -1,9 +1,9 @@
-"""U2 unit — cannon.rev: deterministic, stable, CANON.md-only content hash."""
+"""U2 unit — canon.rev: deterministic, stable, CANON.md-only content hash."""
 
 from __future__ import annotations
 
 from tide import paths
-from tide.cannon import rev, store
+from tide.canon import rev, store
 
 
 def test_compute_text_is_deterministic():
@@ -37,12 +37,12 @@ def test_compute_bumps_when_canon_changes(tmp_path):
     assert rev.compute(tmp_path) != before
 
 
-def test_rev_ignores_config_and_other_cannon_files(tmp_path):
+def test_rev_ignores_config_and_other_canon_files(tmp_path):
     # Decision: hash CANON.md ONLY — config/notes tweaks must NOT bump the rev.
     store.init(tmp_path, name="demo")
     before = rev.compute(tmp_path)
-    paths.cannon_config(tmp_path).write_text("lang=ru\n", encoding="utf-8")
-    (paths.cannon_dir(tmp_path) / "notes.md").write_text("scratch\n", encoding="utf-8")
+    paths.canon_config(tmp_path).write_text("lang=ru\n", encoding="utf-8")
+    (paths.canon_dir(tmp_path) / "notes.md").write_text("scratch\n", encoding="utf-8")
     assert rev.compute(tmp_path) == before
 
 

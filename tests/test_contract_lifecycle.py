@@ -6,7 +6,7 @@ import pytest
 
 from tide import fields, strictness
 from tide.arc import stream
-from tide.cannon import rev, store
+from tide.canon import rev, store
 from tide.contract import lifecycle, model
 
 from tests.conftest import strip_placeholders
@@ -31,7 +31,7 @@ def test_new_creates_passport_delta_asks_state_draft(tmp_project):
     assert model.read_state(arc) == "draft"
     assert model.delta_path(arc).is_file()
     assert model.asks_dir(arc).is_dir()
-    assert fields.read_field(cpath, "cannon-rev") == rev.compute(tmp_project)
+    assert fields.read_field(cpath, "canon-rev") == rev.compute(tmp_project)
 
 
 def test_new_one_per_arc_guard(tmp_project):
@@ -217,11 +217,11 @@ def test_close_merges_seals_arc_and_restamps_no_self_drift(tmp_project):
     # rev bumped, contract state close
     assert new_rev != before
     assert new_rev == rev.compute(tmp_project)
-    assert model.read_field(sealed, "cannon-rev") == new_rev
+    assert model.read_field(sealed, "canon-rev") == new_rev
     assert model.read_state(sealed) == "close"
     # F3 — the arc passport is re-stamped to the POST-merge rev → no self-drift
     # against the canon it just authored.
-    assert fields.read_field(stream.passport_path(sealed), "cannon-rev") == new_rev
+    assert fields.read_field(stream.passport_path(sealed), "canon-rev") == new_rev
     assert sync.has_drifted(sealed, tmp_project) is False
     # delta marked merged
     assert fields.read_field(model.delta_path(sealed), "merged") == "yes"
@@ -266,7 +266,7 @@ def test_close_after_manual_arc_close_is_idempotent_seal(tmp_project):
     assert sealed.name == "__01-fix-leak__"
     assert model.read_state(sealed) == "close"
     # re-stamped to post-merge rev → the authoring arc does not self-drift.
-    assert fields.read_field(stream.passport_path(sealed), "cannon-rev") == new_rev
+    assert fields.read_field(stream.passport_path(sealed), "canon-rev") == new_rev
     assert sync.has_drifted(sealed, tmp_project) is False
 
 

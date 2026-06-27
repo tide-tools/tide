@@ -1,12 +1,12 @@
-"""tide.cannon.commands — wire the ``tide cannon …`` subcommands.
+"""tide.canon.commands — wire the ``tide canon …`` subcommands.
 
 Follows the build convention: this module owns the argparse surface and thin
 handlers; all logic lives in :mod:`store` / :mod:`rev` / :mod:`merge` so it stays
 unit-testable without argparse. ``cli.py`` calls :func:`register`.
 
-``cannon merge`` is the single serialization point and is ORCHESTRATOR-ONLY —
-the handler hard-refuses a worker via ``cli.require_orchestrator``. ``cannon
-status`` lands in U8; it is a labelled stub here.
+``canon merge`` is the single serialization point and is ORCHESTRATOR-ONLY —
+the handler hard-refuses a worker via ``cli.require_orchestrator``. ``cannon``
+is kept as a hidden CLI alias for back-compat so ``tide cannon …`` still works.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from . import merge, rev, store
 
 def _cmd_init(args: argparse.Namespace) -> int:
     root = paths.require_tide_root()
-    cannon = store.init(root, name=args.name, lang=args.lang, force=args.force)
-    print("cannon ready: {0}".format(cannon))
+    canon_directory = store.init(root, name=args.name, lang=args.lang, force=args.force)
+    print("canon ready: {0}".format(canon_directory))
     return 0
 
 
@@ -77,13 +77,13 @@ def _cmd_merge(args: argparse.Namespace) -> int:
             print(diff)
         return 0
 
-    require_orchestrator("cannon merge")
+    require_orchestrator("canon merge")
     try:
         new_rev = merge.merge_delta(root, arc_dir, slug=arc_slug)
     except FileNotFoundError as exc:
         print("tide: {0}".format(exc), file=sys.stderr)
         return 1
-    print("merged {0} → cannon-rev {1}".format(arc_slug, new_rev))
+    print("merged {0} → canon-rev {1}".format(arc_slug, new_rev))
     return 0
 
 
@@ -94,7 +94,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_gate(args: argparse.Namespace) -> int:
-    """Run the M1 tri-state cannon-gate oracle and return a POSIX exit code.
+    """Run the M1 tri-state canon-gate oracle and return a POSIX exit code.
 
     Exit codes: 0 = current, 1 = stale, 2 = oracle-error.  Code 2 is
     FAIL-LOUD: callers (shells, hooks, CI, Orca --precheck) MUST treat it as
@@ -105,20 +105,20 @@ def _cmd_gate(args: argparse.Namespace) -> int:
     try:
         root = paths.require_tide_root()
     except FileNotFoundError as exc:
-        print("cannon gate: oracle-error", file=sys.stderr)
+        print("canon gate: oracle-error", file=sys.stderr)
         print("  oracle-error: {0}".format(exc), file=sys.stderr)
         return 2
 
     code, reasons = gate.decide(root)
 
     if code == 0:
-        print("cannon gate: current")
+        print("canon gate: current")
     elif code == 1:
-        print("cannon gate: stale ({0} issue(s))".format(len(reasons)))
+        print("canon gate: stale ({0} issue(s))".format(len(reasons)))
         for r in reasons:
             print("  - {0}".format(r))
     else:  # code == 2
-        print("cannon gate: oracle-error (code 2)", file=sys.stderr)
+        print("canon gate: oracle-error (code 2)", file=sys.stderr)
         for r in reasons:
             print("  {0}".format(r), file=sys.stderr)
 
@@ -126,18 +126,26 @@ def _cmd_gate(args: argparse.Namespace) -> int:
 
 
 def register(subparsers) -> None:
-    """Add the ``cannon`` command group to *subparsers* (called by cli.py)."""
-    p = subparsers.add_parser("cannon", help="durable truth: init/status/merge/rev/gate")
-    nsub = p.add_subparsers(dest="cannon_cmd")
+    """Add the ``canon`` command group to *subparsers* (called by cli.py).
 
-    ip = nsub.add_parser("init", help="seed a project's cannon/ (CANON.md + config)")
+    ``cannon`` is registered as a hidden alias so ``tide cannon …`` keeps working
+    for existing scripts and muscle memory.
+    """
+    p = subparsers.add_parser(
+        "canon",
+        aliases=["cannon"],  # back-compat alias; hidden from help
+        help="durable truth: init/status/merge/rev/gate",
+    )
+    nsub = p.add_subparsers(dest="canon_cmd")
+
+    ip = nsub.add_parser("init", help="seed a project's canon/ (CANON.md + config)")
     ip.add_argument("--name", help="project name in the CANON.md header (default: dir name)")
-    ip.add_argument("--lang", default=store.DEFAULT_LANG, help="cannon/config lang (default: en)")
+    ip.add_argument("--lang", default=store.DEFAULT_LANG, help="canon/config lang (default: en)")
     ip.add_argument("--force", action="store_true", help="overwrite existing CANON.md/config")
-    ip.set_defaults(func=_cmd_init, _cmd="cannon init")
+    ip.set_defaults(func=_cmd_init, _cmd="canon init")
 
     sp = nsub.add_parser("status", help="scan per-arc homes, group by state")
-    sp.set_defaults(func=_cmd_status, _cmd="cannon status")
+    sp.set_defaults(func=_cmd_status, _cmd="canon status")
 
     mp = nsub.add_parser("merge", help="ORCHESTRATOR-ONLY: merge an arc delta into CANON.md")
     mp.add_argument("arc", help="arc slug (or dir name) whose delta.md to merge")
@@ -146,13 +154,13 @@ def register(subparsers) -> None:
         action="store_true",
         help="dry-run: print the prospective CANON.md diff, commit nothing (any role)",
     )
-    mp.set_defaults(func=_cmd_merge, _cmd="cannon merge")
+    mp.set_defaults(func=_cmd_merge, _cmd="canon merge")
 
-    rp = nsub.add_parser("rev", help="print the current cannon-rev (sha256 of CANON.md)")
-    rp.set_defaults(func=_cmd_rev, _cmd="cannon rev")
+    rp = nsub.add_parser("rev", help="print the current canon-rev (sha256 of CANON.md)")
+    rp.set_defaults(func=_cmd_rev, _cmd="canon rev")
 
     gp = nsub.add_parser(
         "gate",
         help="M1 tri-state oracle: 0=current 1=stale 2=oracle-error (POSIX exit code)",
     )
-    gp.set_defaults(func=_cmd_gate, _cmd="cannon gate")
+    gp.set_defaults(func=_cmd_gate, _cmd="canon gate")

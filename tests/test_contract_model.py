@@ -13,14 +13,14 @@ def _arc(root, slug="fix-leak"):
 
 
 def test_contract_md_template_carries_fields():
-    text = model.contract_md("fix-leak", goal="stop the leak", criteria="no drip", project="/p", cannon_rev="abc123")
+    text = model.contract_md("fix-leak", goal="stop the leak", criteria="no drip", project="/p", canon_rev="abc123")
     assert "slug: fix-leak" in text
     assert "goal: stop the leak" in text
     assert "criteria: no drip" in text
     assert "project: /p" in text
     assert "state: draft" in text
     assert "sign:" in text
-    assert "cannon-rev: abc123" in text
+    assert "canon-rev: abc123" in text
     assert "## IS → TO-BE" in text
     assert "## where we are" in text
     # the supersedes placeholder is a comment, not a real field

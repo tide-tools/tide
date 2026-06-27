@@ -27,7 +27,14 @@ from typing import FrozenSet, List, Optional
 
 # Keys whose read/write is aliased: prev: is an inbound alias for supersedes:.
 _SUPERSEDES_KEYS = ("supersedes", "prev")
-_CANONICAL = {"supersedes": "supersedes", "prev": "supersedes"}
+# canon-rev is the new spelling; cannon-rev is the legacy alias (back-compat).
+_CANON_REV_KEYS = ("canon-rev", "cannon-rev")
+_CANONICAL = {
+    "supersedes": "supersedes",
+    "prev": "supersedes",
+    # Writing cannon-rev (old spelling) always emits the canonical canon-rev.
+    "cannon-rev": "canon-rev",
+}
 # Keys whose stored value is a bare slug → strip a surrounding __…__.
 _SLUG_VALUE_KEYS = {"supersedes", "prev"}
 
@@ -40,7 +47,8 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         # Supersedes alias (read-only; canonical write is always "supersedes").
         "prev",
         # Arc passport / goal passport fields.
-        "cannon-rev",
+        "canon-rev",    # new canonical spelling
+        "cannon-rev",   # legacy spelling — kept for back-compat parsing
         "criteria",
         "deferred",
         "from",
@@ -69,6 +77,8 @@ def _match_keys(key: str) -> List[str]:
     """The set of line-prefixes a read/write for *key* should match."""
     if key in _SUPERSEDES_KEYS:
         return list(_SUPERSEDES_KEYS)
+    if key in _CANON_REV_KEYS:
+        return list(_CANON_REV_KEYS)
     return [key]
 
 

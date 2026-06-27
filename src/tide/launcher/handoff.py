@@ -8,7 +8,7 @@ arc. Per design §12 it does four things, in order:
    it lands in ``workspace/`` — never ``output/``, which is reserved for the arc's
    durable finish).
 2. **remind candidates** — surface the candidates backlog so anything worth
-   keeping for cannon/method gets dropped via ``tide candidate add`` before the
+   keeping for canon/method gets dropped via ``tide candidate add`` before the
    chat is abandoned.
 3. **offer a fork** — ``continue`` (resume THIS arc in a fresh session) ·
    ``new`` (a fresh orchestrator session to pick a candidate) · ``close`` (just

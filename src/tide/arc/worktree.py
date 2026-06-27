@@ -2,7 +2,7 @@
 
 Each arc can have an isolated git worktree so worker edits never touch main or
 sibling worktrees. This is the FILE-axis gate: contradictions surface as merge
-conflicts on land (mirroring cannon-merge on the truth axis).
+conflicts on land (mirroring canon-merge on the truth axis).
 
 Public API
 ----------

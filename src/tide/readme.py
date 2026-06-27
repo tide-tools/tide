@@ -4,17 +4,17 @@ The two-entry principle (ratified canon): a project has TWO doors. ``CANON.md``
 is the **agent door** — the technical living-IS truth an agent re-hydrates from.
 ``README.md`` is the **user door** — what the project is and how a human enters
 it. README is a **derived material**: it must NEVER be hand-maintained (hand =
-drift / doc-rot), it is GENERATED from canon, STAMPED with the cannon-rev it was
+drift / doc-rot), it is GENERATED from canon, STAMPED with the canon-rev it was
 projected from, and GATED so drift is detectable and self-healing.
 
 This is tide's own code↔canon machinery recursed one level UP (canon↔materials):
-just as an arc stamps the ``cannon-rev`` it opened against and the gate trips when
-that rev drifts (:mod:`tide.gate`), a README stamps the ``cannon-rev`` it was
+just as an arc stamps the ``canon-rev`` it opened against and the gate trips when
+that rev drifts (:mod:`tide.gate`), a README stamps the ``canon-rev`` it was
 generated from and :func:`check` trips when canon moves ahead OR the README was
 hand-edited. One machinery, complexity does not grow.
 
 KISS gate: the README is a deterministic pure function of CANON.md + the current
-cannon-rev. So "is this README current?" reduces to "does the on-disk file equal
+canon-rev. So "is this README current?" reduces to "does the on-disk file equal
 what we would generate right now?" — one byte comparison catches both drift modes
 (canon moved ahead → stamp + body differ; hand-edited → body differs). The stamp
 is still embedded so the diagnostic can name *which* mode tripped, and so a human
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import io as _io, paths
-from .cannon import rev, store
+from .canon import rev, store
 
 # Roster import is deferred inside sweep() to avoid any potential import cycle
 # (roster → paths, readme → paths; no actual cycle, but the lazy pattern is
@@ -40,10 +40,11 @@ from .cannon import rev, store
 
 # The provenance stamp: an HTML comment (invisible in rendered markdown) on the
 # last line. It records the source canon-rev so drift is detectable and so the
-# raw file announces itself as generated. The cannon-rev token is parsed back out
-# by :func:`parse_stamp` — keep the ``cannon-rev <rev>`` shape stable.
+# raw file announces itself as generated. The canon-rev token is parsed back out
+# by :func:`parse_stamp` — keep the ``canon-rev <rev>`` shape stable.
+# Back-compat: also accepts the legacy ``cannon-rev`` spelling in existing files.
 STAMP_PREFIX = "<!-- tide-readme"
-_STAMP_RE = re.compile(r"<!-- tide-readme .*cannon-rev ([0-9a-f]+)")
+_STAMP_RE = re.compile(r"<!-- tide-readme .*(?:canon|cannon)-rev ([0-9a-f]+)")
 
 # H1 of CANON.md is ``# CANON.md — <name>`` (store.canon_template). We project the
 # bare project name out of it for the README title.
@@ -72,10 +73,10 @@ def project_name(canon_text: str, fallback: str = "project") -> str:
     return fallback
 
 
-def render(canon_text: str, cannon_rev: str, fallback_name: str = "project") -> str:
-    """Return the README.md text projected from *canon_text*, stamped with *cannon_rev*.
+def render(canon_text: str, canon_rev: str, fallback_name: str = "project") -> str:
+    """Return the README.md text projected from *canon_text*, stamped with *canon_rev*.
 
-    Pure + deterministic: identical (canon_text, cannon_rev) ⇒ identical bytes,
+    Pure + deterministic: identical (canon_text, canon_rev) ⇒ identical bytes,
     which is what makes :func:`check` a single byte comparison. The body projects
     only the user-facing sections; living technical state is referenced, not
     duplicated. The provenance stamp is always the final line.
@@ -99,21 +100,21 @@ def render(canon_text: str, cannon_rev: str, fallback_name: str = "project") -> 
     parts.append("")
     parts.append(
         "*For the living technical state of this project (where it is right now), "
-        "see [`.tide/cannon/CANON.md`](.tide/cannon/CANON.md) — the agent-facing "
+        "see [`.tide/canon/CANON.md`](.tide/canon/CANON.md) — the agent-facing "
         "source of truth this page is generated from.*"
     )
     parts.append("")
     parts.append(
-        "{0} generated from CANON.md @ cannon-rev {1} — do NOT hand-edit; "
+        "{0} generated from CANON.md @ canon-rev {1} — do NOT hand-edit; "
         "regenerate via 'tide readme' (drift gate: 'tide readme --check'). -->".format(
-            STAMP_PREFIX, cannon_rev
+            STAMP_PREFIX, canon_rev
         )
     )
     return "\n".join(parts) + "\n"
 
 
 def parse_stamp(readme_text: str) -> Optional[str]:
-    """Return the cannon-rev recorded in *readme_text*'s stamp, or None if absent.
+    """Return the canon-rev recorded in *readme_text*'s stamp, or None if absent.
 
     None means the file carries no tide-readme stamp — i.e. it was hand-written
     (or pre-dates the generator), which :func:`check` treats as stale.
@@ -138,7 +139,7 @@ def generate(
     *status* is one of ``"dry-run"`` (nothing written), ``"current"`` (already
     byte-identical — idempotent no-op), ``"generated"`` (file did not exist), or
     ``"regenerated"`` (overwrote a drifted/stale file). Raises ``FileNotFoundError``
-    when CANON.md is missing (mirrors :func:`tide.cannon.store.read`).
+    when CANON.md is missing (mirrors :func:`tide.canon.store.read`).
     """
     canon_text = store.read(root)  # raises FileNotFoundError if missing
     name = fallback_name or Path(root).resolve().name
@@ -172,7 +173,7 @@ def check(root: Path) -> Tuple[int, List[str]]:
         if not canon.is_file():
             return 2, [
                 "oracle-error: CANON.md missing at {0}"
-                " (run 'tide cannon init')".format(canon)
+                " (run 'tide canon init')".format(canon)
             ]
         canon_text = canon.read_text(encoding="utf-8")  # probe readability
 
@@ -196,7 +197,7 @@ def check(root: Path) -> Tuple[int, List[str]]:
             ]
         if stamped != current_rev:
             return 1, [
-                "README stale: generated from cannon-rev {0}, canon now {1} "
+                "README stale: generated from canon-rev {0}, canon now {1} "
                 "(canon moved ahead) — run 'tide readme'".format(stamped, current_rev)
             ]
         return 1, [

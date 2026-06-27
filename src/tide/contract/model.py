@@ -10,8 +10,8 @@ report+proof review):
     draft → (sign) → running → output → close
 
 Passport fields (architect ``contract.md passport``, autonomy ``backend:`` dropped,
-``cannon-rev`` added): ``slug · goal · criteria · project · state · sign ·
-supersedes (optional) · cannon-rev``. Body: ``## IS → TO-BE`` + ``## where we are``.
+``canon-rev`` added): ``slug · goal · criteria · project · state · sign ·
+supersedes (optional) · canon-rev``. Body: ``## IS → TO-BE`` + ``## where we are``.
 
 All functions are pure helpers or thin file wrappers (argparse-free, unit-testable);
 the CLI surface lives in :mod:`tide.contract.lifecycle`.
@@ -60,7 +60,7 @@ def contract_path(arc_dir: Path) -> Path:
 
 
 def delta_path(arc_dir: Path) -> Path:
-    """Path to an arc's staged cannon ``delta.md`` (merged into CANON.md on close)."""
+    """Path to an arc's staged canon ``delta.md`` (merged into CANON.md on close)."""
     return Path(arc_dir) / DELTA_FILE
 
 
@@ -82,7 +82,7 @@ def contract_md(
     goal: Optional[str] = None,
     criteria: Optional[str] = None,
     project: Optional[str] = None,
-    cannon_rev: str = "",
+    canon_rev: str = "",
 ) -> str:
     """Seed text for a fresh ``contract.md`` (state ``draft``, empty ``sign:``).
 
@@ -103,14 +103,14 @@ def contract_md(
         "state: {draft}\n"
         "sign:\n"
         "# supersedes: <slug of the contract this one pivots from — optional; alias: prev:>\n"
-        "cannon-rev: {rev}\n"
+        "canon-rev: {rev}\n"
         "\n"
         "## IS → TO-BE\n"
         "<where it is now → where this contract takes it>\n"
         "\n"
         "## where we are\n"
         "<current step / bottleneck>\n"
-    ).format(slug=contract_slug, goal=g, criteria=c, project=p, draft=DRAFT, rev=cannon_rev)
+    ).format(slug=contract_slug, goal=g, criteria=c, project=p, draft=DRAFT, rev=canon_rev)
 
 
 # --- field read / write ----------------------------------------------------

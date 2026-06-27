@@ -1,7 +1,7 @@
 """114-derived-materials — `tide readme`: generate + stamp + gate the user door.
 
 The README is a DERIVED material: generated from CANON.md, stamped with the
-cannon-rev it was projected from, and gated so drift is detectable. These tests
+canon-rev it was projected from, and gated so drift is detectable. These tests
 mirror the code↔canon gate's contract one level up (canon↔README): the gate
 passes on a fresh projection, trips STALE when canon moves ahead OR the README is
 hand-edited, and FAIL-LOUDs (code 2) when CANON.md is missing.
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from tide import cli, paths, readme, roster
-from tide.cannon import rev, store
+from tide.canon import rev, store
 from tests.conftest import build_tide_skeleton
 
 
@@ -60,10 +60,10 @@ def test_project_name_falls_back_when_header_absent():
     assert readme.project_name("## What it is\nno header\n", fallback="x") == "x"
 
 
-def test_render_embeds_stamp_with_cannon_rev():
+def test_render_embeds_stamp_with_canon_rev():
     text = readme.render(CANON_POPULATED, "abc123def456")
     assert readme.STAMP_PREFIX in text
-    assert "cannon-rev abc123def456" in text
+    assert "canon-rev abc123def456" in text
     assert readme.parse_stamp(text) == "abc123def456"
 
 
@@ -78,7 +78,7 @@ def test_render_projects_user_sections_only():
     assert "gizmo-engine v3" not in text
     assert "INTERNAL" not in text
     # README points to CANON for living state
-    assert ".tide/cannon/CANON.md" in text
+    assert ".tide/canon/CANON.md" in text
 
 
 def test_render_is_deterministic():
@@ -164,7 +164,7 @@ def test_check_stale_when_hand_edited_after_generate(populated):
 def test_check_stale_when_canon_moves_ahead(populated):
     readme.generate(populated)
     old_rev = rev.compute(populated)
-    # move canon forward → cannon-rev changes, README stamp now lags
+    # move canon forward → canon-rev changes, README stamp now lags
     canon = paths.canon_file(populated)
     canon.write_text(
         canon.read_text(encoding="utf-8") + "\n### 2026-06-27 · moved\nnew\n",
@@ -340,7 +340,7 @@ def test_sweep_oracle_error_check_mode_missing_canon(tmp_control_home, tmp_path)
     """Check mode: oracle-error when project path exists but has no CANON.md."""
     proj = tmp_path / "broken"
     proj.mkdir()
-    (proj / ".tide").mkdir()  # .tide/ present but no cannon/CANON.md
+    (proj / ".tide").mkdir()  # .tide/ present but no canon/CANON.md
     roster.add(tmp_control_home, "broken", str(proj))
 
     results = readme.sweep(tmp_control_home, check_mode=True)

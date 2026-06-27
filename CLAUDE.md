@@ -8,20 +8,20 @@
 dir is the control-home/roster from which the human leads all projects. tide
 **dogfoods itself** (led as a tide project under its own `.tide/`).
 
-The proven `arcs` + `canon` (two-n: **cannon**) tools are pulled inside as
+The proven `arcs` + `canon` (two-n: **canon**) tools are pulled inside as
 internal modules of the one binary. Two deterministic roles: **orchestrator**
-(cross-project session, owns roster/contracts/cannon-merge/promote) and
-**worker** (one arc, produces output + proposes a cannon-delta). cannon-merge is
+(cross-project session, owns roster/contracts/canon-merge/promote) and
+**worker** (one arc, produces output + proposes a canon-delta). canon-merge is
 the single serialization point.
 
-goal:    ship the tide CLI scaffold → working arc/cannon/contract modules, greenfield
+goal:    ship the tide CLI scaffold → working arc/canon/contract modules, greenfield
 stage:   0
 
 ## Этапы
 - **Этап 0 (сейчас):** scaffold — package layout, argparse CLI root with stubbed
   command groups, role gate (`TIDE_ROLE`), test harness (`tmp_project` fixture),
   build conventions documented in README. Skeleton imports + suite green.
-- **Этап 1 (план):** build units U1–U13 in dependency order (core → cannon →
+- **Этап 1 (план):** build units U1–U13 in dependency order (core → canon →
   arc → candidates → strictness/roster → contract → sync → board → init/wiring →
   hooks → launcher/adapters → prompts/skill → e2e+dogfood). See README "build order".
 
@@ -31,7 +31,7 @@ stage:   0
 - **Handler pattern:** each module exposes plain functions + `register(subparsers)`;
   `cli.py` only wires groups, logic lives in argparse-free functions. See README
   "## build conventions".
-- **State on disk:** per project `<project>/.tide/{cannon,arcs,state}`;
+- **State on disk:** per project `<project>/.tide/{canon,arcs,state}`;
   control-home adds `roster.md`. Formats per `build-blueprint.md` tide_dir_format.
 - **Source of truth for the build:** the design + blueprint in focus arc 42
   (`.arcs/arcs/42-@tide/arcs/01-design-and-plan/output/`).

@@ -8,7 +8,7 @@ replaces its ``_register_*`` body with a call into the real module's
 ``register(subparsers)`` (the module owns the parser + thin handler; logic lives
 in plain, argparse-free module functions so it stays unit-testable).
 
-Roles: commands that mutate shared truth (``cannon merge``, ``candidate
+Roles: commands that mutate shared truth (``canon merge``, ``candidate
 promote``) are ORCHESTRATOR-ONLY and hard-refuse unless TIDE_ROLE=orchestrator.
 The role check lives in ``require_orchestrator`` so every gated handler reuses it.
 """
@@ -40,7 +40,7 @@ def current_role() -> str:
 def require_orchestrator(action: str) -> None:
     """Hard-refuse an orchestrator-only action unless TIDE_ROLE=orchestrator.
 
-    Used by ``cannon merge`` and ``candidate promote``. Raises a nonzero
+    Used by ``canon merge`` and ``candidate promote``. Raises a nonzero
     SystemExit with a clear message — workers literally cannot run these.
     """
     role = current_role()
@@ -184,7 +184,7 @@ def _register_migrate_arcs(sub) -> None:
 def _register_readme(sub) -> None:
     # 114-derived-materials: tide readme — generate the user-door README.md as a
     # projection of CANON.md (generated + stamped + gated), one level up from the
-    # code↔canon machinery. --check is the drift gate (mirrors `cannon gate`).
+    # code↔canon machinery. --check is the drift gate (mirrors `canon gate`).
     from .readme import register as register_readme
 
     register_readme(sub)
@@ -244,11 +244,12 @@ def _register_candidate(sub) -> None:
     register_candidate(sub)
 
 
-def _register_cannon(sub) -> None:
-    # U2: real cannon group (init/rev/merge live; status stubbed for U8).
-    from .cannon.commands import register as register_cannon
+def _register_canon(sub) -> None:
+    # U2: real canon group (init/rev/merge live; status stubbed for U8).
+    # ``cannon`` is a hidden CLI alias registered inside commands.register().
+    from .canon.commands import register as register_canon
 
-    register_cannon(sub)
+    register_canon(sub)
 
 
 def _register_contract(sub) -> None:
@@ -317,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_arc(subparsers)
     _register_reconcile(subparsers)
     _register_candidate(subparsers)
-    _register_cannon(subparsers)
+    _register_canon(subparsers)
     _register_contract(subparsers)
 
     # Internal hook-dispatch group (the commands install-hooks writes into settings.json)

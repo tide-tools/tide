@@ -1,4 +1,4 @@
-"""U11 unit — launcher.seed: build a seed from cannon + arc + roster + prompt."""
+"""U11 unit — launcher.seed: build a seed from canon + arc + roster + prompt."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from tide.launcher import seed
 
 # --- pure build_seed -------------------------------------------------------
 
-def test_build_seed_carries_project_role_and_cannon():
+def test_build_seed_carries_project_role_and_canon():
     out = seed.build_seed(
         project_name="focus",
         role="orchestrator",
-        cannon_text="# CANON.md — focus\n## What it is\nthe genius",
+        canon_text="# CANON.md — focus\n## What it is\nthe genius",
     )
     assert seed.SEED_TITLE in out
     assert "ORCHESTRATOR" in out
@@ -25,7 +25,7 @@ def test_build_seed_carries_project_role_and_cannon():
 
 
 def test_build_seed_falls_back_to_role_reminder_when_no_prompt():
-    out = seed.build_seed(project_name="demo", role="worker", cannon_text="x")
+    out = seed.build_seed(project_name="demo", role="worker", canon_text="x")
     # worker reminder text leaks through the fallback
     assert "WORKER" in out
     assert "ONE open arc" in out
@@ -34,7 +34,7 @@ def test_build_seed_falls_back_to_role_reminder_when_no_prompt():
 def test_build_seed_includes_arc_and_roster_when_given():
     out = seed.build_seed(
         project_name="demo",
-        cannon_text="c",
+        canon_text="c",
         arc_ref="ship-it",
         arc_text="goal: ship it\nstatus: active",
         roster_text="focus | /p/focus\npulse | /p/pulse",
@@ -45,9 +45,9 @@ def test_build_seed_includes_arc_and_roster_when_given():
     assert "/p/pulse" in out
 
 
-def test_build_seed_notes_empty_cannon():
-    out = seed.build_seed(project_name="demo", cannon_text="   ")
-    assert "no cannon yet" in out
+def test_build_seed_notes_empty_canon():
+    out = seed.build_seed(project_name="demo", canon_text="   ")
+    assert "no canon yet" in out
 
 
 def test_launch_command_shapes():
@@ -57,7 +57,7 @@ def test_launch_command_shapes():
 
 # --- disk wrapper seed_for_project -----------------------------------------
 
-def test_seed_for_project_reads_cannon(tmp_project):
+def test_seed_for_project_reads_canon(tmp_project):
     out = seed.seed_for_project(tmp_project)
     # conftest seeds CANON.md '# CANON.md — demo'
     assert "CANON.md — demo" in out

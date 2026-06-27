@@ -192,7 +192,7 @@ def promote(
     arc dir.
 
     NOTE: orchestrator-only — the CLI handler calls ``require_orchestrator``
-    *before* this runs (mirrors ``cannon merge``); this logic stays gate-free so
+    *before* this runs (mirrors ``canon merge``); this logic stays gate-free so
     it is unit-testable.
     """
     cdir = paths.candidates_dir(root)

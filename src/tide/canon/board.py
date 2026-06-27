@@ -1,10 +1,10 @@
-"""tide.cannon.board — render the cannon status board (``tide cannon status``).
+"""tide.canon.board — render the canon status board (``tide canon status``).
 
-Ported from canon ``status`` (architect ``tide cannon status (board)``): scan all
-per-arc cannon homes, **group by the 5-state contract lifecycle**, list open asks,
+Ported from canon ``status`` (architect ``tide canon status (board)``): scan all
+per-arc canon homes, **group by the 5-state contract lifecycle**, list open asks,
 and fold the dropped desk/dock projection into a single **NEEDS YOU** slice.
 
-A "cannon home" is any arc dir carrying a ``contract.md`` (the one-per-arc binding,
+A "canon home" is any arc dir carrying a ``contract.md`` (the one-per-arc binding,
 ``1 arc = 1 contract``). :func:`tide.contract.lifecycle.list_contracts` already does
 the stream walk (top level + one goal substream deep) and reads each contract's
 ``state:`` — we reuse it (DRY) and enrich each row with:
@@ -17,7 +17,7 @@ the stream walk (top level + one goal substream deep) and reads each contract's
 * **open_asks** — the arc's durable ``asks/NN-slug.md`` entries still ``state: open``.
 
 The board is a pure projection (never stored); :func:`render_board` is
-snapshot-testable and :func:`cmd_status` is the thin handler ``cannon.commands`` wires.
+snapshot-testable and :func:`cmd_status` is the thin handler ``canon.commands`` wires.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _open_asks(arc_dir: Path) -> List[str]:
 
 
 def scan(root: Path) -> List[Dict[str, object]]:
-    """Scan per-arc cannon homes; one enriched row per contract (stream order).
+    """Scan per-arc canon homes; one enriched row per contract (stream order).
 
     Each row carries ``{arc, slug, state, sign, path, arc_dir, needs_you, open_asks}``.
     Reuses :func:`tide.contract.lifecycle.list_contracts` for the walk + state read.
@@ -89,9 +89,9 @@ def _row_line(row: Dict[str, object], *, with_state: bool) -> str:
 
 
 def render_board(root: Path) -> str:
-    """Render the full cannon status board for *root* (pure, snapshot-testable)."""
+    """Render the full canon status board for *root* (pure, snapshot-testable)."""
     rows = scan(Path(root))
-    lines: List[str] = ["CANNON"]
+    lines: List[str] = ["CANON"]
 
     if not rows:
         lines.append("  (no contracts)")
@@ -131,7 +131,7 @@ def render_board(root: Path) -> str:
 # --- CLI handler -----------------------------------------------------------
 
 def cmd_status(args) -> int:
-    """Print the cannon status board (``tide cannon status``)."""
+    """Print the canon status board (``tide canon status``)."""
     root = paths.require_tide_root()
     print(render_board(root))
     return 0

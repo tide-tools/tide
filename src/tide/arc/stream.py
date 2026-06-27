@@ -2,7 +2,7 @@
 
 Ported from the arcs CLI (``new-arc``/``new-goal``/``close``/``reopen``/
 ``supersede``), retargeted to ``<project>/.tide/arcs/`` and extended with tide's
-``cannon-rev`` stamp. The stream is ONE continuous numbered sequence holding two
+``canon-rev`` stamp. The stream is ONE continuous numbered sequence holding two
 kinds of entry:
 
 * **arc** — ``NN-<slug>/`` : work without a standing purpose.
@@ -23,8 +23,8 @@ outside reads ``output/`` only. The load-bearing invariants this module owns:
 * **Immutable intent** — a meaning pivot is a *supersede*: close old (no output
   guard), create new same-kind, write ``supersedes:`` after ``status:``, seed
   ``input/from-<old>.md``. Old and new both stay on disk, linked.
-* **cannon-rev stamp** — opening (or creating) an arc stamps the current
-  ``cannon-rev`` (sha256 of CANON.md) into its passport for drift detection.
+* **canon-rev stamp** — opening (or creating) an arc stamps the current
+  ``canon-rev`` (sha256 of CANON.md) into its passport for drift detection.
 * **Safe removal** — ``rm``/``abort`` deletes a stray/unwanted entry but refuses
   to drop one with a merged delta or one referenced by a ``supersedes:`` chain
   (integrity guards, never ``-f``-overridable); a non-empty ``output/`` (or a
@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import fields, io as _io, numbering, paths, placeholders, slug
-from ..cannon import rev
+from ..canon import rev
 from . import templates
 
 TRIAD = ("input", "workspace", "output")
@@ -132,21 +132,21 @@ def _open_goal_substream(root: Path, goal_slug: str) -> Path:
     return gdir / paths.ARCS_DIRNAME
 
 
-# --- cannon-rev stamp ------------------------------------------------------
+# --- canon-rev stamp ------------------------------------------------------
 
 def stamp_rev(entry_dir: Path, root: Path) -> str:
-    """Stamp cannon-rev (and reality-rev when a manifest exists) into the passport.
+    """Stamp canon-rev (and reality-rev when a manifest exists) into the passport.
 
     M2 extension: also stamps ``reality-rev:`` via
-    :func:`tide.cannon.reality.stamp_reality_rev` when the project carries a
+    :func:`tide.canon.reality.stamp_reality_rev` when the project carries a
     ``canon-covers:`` manifest. The lazy import keeps the load-time import
-    graph cycle-free (``cannon.reality`` does not import ``arc.stream`` at its
+    graph cycle-free (``canon.reality`` does not import ``arc.stream`` at its
     module top).
     """
     r = rev.compute(root)
     pp = passport_path(entry_dir)
-    fields.set_field(pp, "cannon-rev", r)
-    from ..cannon import reality as _reality  # lazy: avoids load-time cycle
+    fields.set_field(pp, "canon-rev", r)
+    from ..canon import reality as _reality  # lazy: avoids load-time cycle
     _reality.stamp_reality_rev(pp, root)
     return r
 
@@ -157,7 +157,7 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     """Create a standalone arc ``NN-<slug>/`` (or a sub-arc under ``-g goal``).
 
     Builds the input/workspace/output triad + a templated ``arc.md`` and stamps
-    the current cannon-rev. Returns the new entry dir.
+    the current canon-rev. Returns the new entry dir.
     """
     s = slug.slugify(raw_slug)
     if not s:
@@ -181,7 +181,7 @@ def new_goal(root: Path, raw_slug: str) -> Path:
     """Create a goal ``NN-@<slug>/`` with the triad + nested ``arcs/`` + goal doc.
 
     Goals always live in the top stream (never inside another goal). Returns the
-    new goal dir. Stamps cannon-rev into the goal doc.
+    new goal dir. Stamps canon-rev into the goal doc.
     """
     s = slug.slugify(raw_slug)
     if not s:
@@ -200,7 +200,7 @@ def new_goal(root: Path, raw_slug: str) -> Path:
 # --- open / resume ---------------------------------------------------------
 
 def open_arc(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
-    """Select an OPEN arc/goal as the active worker entry and stamp cannon-rev.
+    """Select an OPEN arc/goal as the active worker entry and stamp canon-rev.
 
     Resolves preferring the goal; raises :class:`StreamError` if no open entry
     matches *ref*. Returns the entry dir. ``resume`` is an alias of this.
@@ -412,7 +412,7 @@ def _subtree_has_merged_delta(entry_dir: Path) -> bool:
     """True when *entry_dir* (or, for a goal, any sub-arc) carries a merged delta.
 
     A merged delta (``merged: yes``) is folded into CANON.md — its source is part
-    of cannon history, so deleting the arc would orphan a contribution the canon
+    of canon history, so deleting the arc would orphan a contribution the canon
     journal already cites. Walks the whole subtree so a goal isn't emptied of a
     sub-arc whose work is already merged.
     """
@@ -477,7 +477,7 @@ def rm(
     closed one, goal over arc, and refuses in three cases:
 
     * **merged delta** — the entry (or, for a goal, a sub-arc) carries a
-      ``merged: yes`` delta folded into CANON.md; its source is cannon history,
+      ``merged: yes`` delta folded into CANON.md; its source is canon history,
       so removal is refused outright (``-f`` does NOT override — reopen/supersede
       instead).
     * **referenced** — another entry's ``supersedes:`` names it; removing it would
@@ -487,7 +487,7 @@ def rm(
 
     Returns the removed dir path. The two integrity guards (merged / referenced)
     are deliberately not force-overridable so a single ``-f`` can't silently drop
-    cannon-anchored work — that path stays a manual ``rm -rf``.
+    canon-anchored work — that path stays a manual ``rm -rf``.
     """
     stream_dir = _search_dir(root, goal_slug)
     entry = _resolve_present(stream_dir, ref)
@@ -496,8 +496,8 @@ def rm(
 
     if _subtree_has_merged_delta(entry):
         raise StreamError(
-            "refuse to remove {0}: it carries a merged cannon-delta (its work is "
-            "part of cannon history) — reopen/supersede instead of deleting".format(
+            "refuse to remove {0}: it carries a merged canon-delta (its work is "
+            "part of canon history) — reopen/supersede instead of deleting".format(
                 entry.name
             )
         )
@@ -540,7 +540,7 @@ def _cmd_new_goal(args) -> int:
 
 def _cmd_open(args) -> int:
     entry = open_arc(_root(), args.slug, goal_slug=args.goal)
-    print("tide: opened {0} (cannon-rev stamped)".format(entry))
+    print("tide: opened {0} (canon-rev stamped)".format(entry))
     return 0
 
 
@@ -597,12 +597,12 @@ def register(arc_subparsers) -> None:
     gp.add_argument("slug")
     gp.set_defaults(func=_cmd_new_goal, _cmd="arc new-goal")
 
-    op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps cannon-rev)")
+    op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")
     op.add_argument("slug")
     _add_goal_opt(op)
     op.set_defaults(func=_cmd_open, _cmd="arc open")
 
-    rp = arc_subparsers.add_parser("resume", help="re-enter an open arc (re-stamp cannon-rev)")
+    rp = arc_subparsers.add_parser("resume", help="re-enter an open arc (re-stamp canon-rev)")
     rp.add_argument("slug")
     _add_goal_opt(rp)
     rp.set_defaults(func=_cmd_open, _cmd="arc resume")

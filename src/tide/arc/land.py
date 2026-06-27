@@ -6,7 +6,7 @@ branch back to base. This module makes it **atomic** — one act that, in order:
 1. **merges** the worktree branch → base (the FILE axis; conflict aborts cleanly);
 2. **seals** the arc (rename ``__…__`` + ``status: done``) and, on the strict
    path, **reconciles** its delta into CANON via :func:`tide.contract.lifecycle.close`;
-3. **re-stamps** the cannon-rev so the just-landed arc shows no self-drift;
+3. **re-stamps** the canon-rev so the just-landed arc shows no self-drift;
 4. runs the **gate** (:func:`tide.gate.decide`) and reports the verdict.
 
 Every failure is self-documenting: it prints the EXACT next command the operator
@@ -28,7 +28,7 @@ it re-runs the strict land on each owed arc, merging its delta and clearing its
 debt. ``land`` and ``reconcile`` accept several arcs in one invocation (batch).
 
 Merging shared truth is orchestrator-only, so the CLI handlers are role-gated
-(mirroring ``cannon merge`` / ``contract close``); the logic functions stay
+(mirroring ``canon merge`` / ``contract close``); the logic functions stay
 gate-free so they are unit-testable.
 """
 
@@ -69,7 +69,7 @@ class LandOutcome:
     * ``merged`` — the worktree branch was merged to base (False for non-git / no branch).
     * ``reconciled`` — the delta was merged into CANON (strict path).
     * ``deferred`` — guards skipped + recorded to the ledger (loose path).
-    * ``new_rev`` — the cannon-rev stamped on the arc after the act.
+    * ``new_rev`` — the canon-rev stamped on the arc after the act.
     * ``gate_code`` / ``gate_reasons`` — the post-land gate verdict (None when skipped).
     """
 
@@ -214,7 +214,7 @@ def _land_loose(
 
     Returns ``(sealed_dir, new_rev, deferred)``. The delta is intentionally left
     unmerged (canon reconciliation is owed); the arc is re-stamped with the CURRENT
-    rev so it is not also flagged as cannon-rev drift.
+    rev so it is not also flagged as canon-rev drift.
     """
     deferred = deferred_guards(arc_dir) if has_contract else []
 
@@ -382,7 +382,7 @@ def preview_reconcile(root: Path, *, arcs: Optional[List[str]] = None) -> List[R
     The review step an autonomous agent runs BEFORE committing — each deferred arc's
     delta merge shown as a reviewable diff. Pure (no disk mutation).
     """
-    from ..cannon import merge
+    from ..canon import merge
 
     out: List[ReconcilePreview] = []
     for ref in _owed_refs(root, arcs):
@@ -440,7 +440,7 @@ def render_outcome(o: LandOutcome) -> str:
     merged_note = "merged→base, " if o.merged else ""
     if o.strict:
         recon = "reconciled" if o.reconciled else "sealed"
-        return "tide: landed {arc} --strict → cannon-rev {rev} ({merged}{recon})".format(
+        return "tide: landed {arc} --strict → canon-rev {rev} ({merged}{recon})".format(
             arc=o.arc, rev=o.new_rev, merged=merged_note, recon=recon
         )
     if o.deferred:
@@ -465,7 +465,7 @@ def render_gate(code: int, reasons: List[str]) -> str:
     for r in reasons:
         lines.append("  - {0}".format(r))
     if code == 1:
-        lines.append("  next: tide reconcile  (or tide cannon merge <arc>)")
+        lines.append("  next: tide reconcile  (or tide canon merge <arc>)")
     return "\n".join(lines)
 
 

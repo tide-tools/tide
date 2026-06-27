@@ -22,7 +22,7 @@ def test_cli_arc_new_creates_entry(in_project):
     entry = paths.arcs_dir(in_project) / "01-fix-leak"
     assert (entry / "arc.md").is_file()
     assert (entry / "workspace").is_dir()
-    assert fields.read_field(entry / "arc.md", "cannon-rev")  # stamped on create
+    assert fields.read_field(entry / "arc.md", "canon-rev")  # stamped on create
 
 
 def test_cli_arc_new_goal_then_nested_arc(in_project):

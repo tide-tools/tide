@@ -105,8 +105,8 @@ def test_orchestrator_allows_tide_arc_new():
     assert allow is True
 
 
-def test_orchestrator_allows_tide_cannon_merge():
-    allow, _ = role_gate.decide("Bash", {"command": "tide cannon merge alpha"}, "orchestrator")
+def test_orchestrator_allows_tide_canon_merge():
+    allow, _ = role_gate.decide("Bash", {"command": "tide canon merge alpha"}, "orchestrator")
     assert allow is True
 
 

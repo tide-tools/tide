@@ -1,16 +1,16 @@
-"""U8 unit — the cannon status board (group by 5-state · needs-you slice · open asks)."""
+"""U8 unit — the canon status board (group by 5-state · needs-you slice · open asks)."""
 
 from __future__ import annotations
 
 from tide import strictness
 from tide.arc import stream
-from tide.cannon import board
+from tide.canon import board
 from tide.contract import ask as ask_mod
 from tide.contract import lifecycle
 
 
 def test_no_contracts(tmp_project):
-    assert board.render_board(tmp_project) == "CANNON\n  (no contracts)"
+    assert board.render_board(tmp_project) == "CANON\n  (no contracts)"
 
 
 def test_render_board_groups_by_state_full_snapshot(tmp_project):
@@ -31,7 +31,7 @@ def test_render_board_groups_by_state_full_snapshot(tmp_project):
     ask_mod.ask(tmp_project, "a1", "which-db")
 
     expected = (
-        "CANNON\n"
+        "CANON\n"
         "\n"
         "NEEDS YOU\n"
         "  01-a1  [draft]  a1\n"

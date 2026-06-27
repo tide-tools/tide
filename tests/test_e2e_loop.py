@@ -3,12 +3,12 @@
 One smoke test walks the whole machine exactly as a human + worker would:
 
     tide init (control-home) → roster add demo → in demo:
-      arc new a1 (cannon-rev stamped)
+      arc new a1 (canon-rev stamped)
       → mock worker writes output/ + a non-empty delta.md
       → contract new/sign/report/proof/accept
       → arc close a1 (stream)  ⇒ a1 is a CLOSED arc carrying an unmerged delta
       → arc new a2 BLOCKS (between-arcs barrier, decision 9)
-      → contract close a1 merges the delta into CANON.md (cannon-rev bumps)
+      → contract close a1 merges the delta into CANON.md (canon-rev bumps)
       → arc new a2 now OPENS (barrier lifted)
       → drift_check on a1 reports NO self-drift (F3: close re-stamped its arc.md
         to the post-merge rev — the authoring arc never drifts against its canon)
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from tide import cli, fields, paths, sync
-from tide.cannon import rev, store
+from tide.canon import rev, store
 
 from tests.conftest import strip_placeholders
 
@@ -61,11 +61,11 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
 
     r0 = rev.compute(demo)
 
-    # --- arc new a1 (cannon-rev stamped) -------------------------------------
+    # --- arc new a1 (canon-rev stamped) -------------------------------------
     assert cli.main(["arc", "new", "a1"]) == 0
     a1 = paths.arcs_dir(demo) / "01-a1"
     assert a1.is_dir()
-    assert fields.read_field(a1 / "arc.md", "cannon-rev") == r0
+    assert fields.read_field(a1 / "arc.md", "canon-rev") == r0
 
     # --- mock worker: write output/ + a non-empty unmerged delta -------------
     (a1 / "output" / "result.md").write_text("a1 done\n", encoding="utf-8")
@@ -97,7 +97,7 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
     assert "unmerged" in err
     assert not (paths.arcs_dir(demo) / "02-a2").exists()
 
-    # --- contract close a1: merge the delta into CANON.md (cannon-rev bumps) --
+    # --- contract close a1: merge the delta into CANON.md (canon-rev bumps) --
     assert cli.main(["contract", "close", "a1"]) == 0
     capsys.readouterr()
     r1 = rev.compute(demo)
@@ -105,7 +105,7 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
     # journal carries the merged delta body + a stamped slug heading.
     canon_text = store.read(demo)
     assert DELTA_MARKER in canon_text
-    assert "## Cannon journal" in canon_text
+    assert "## Canon journal" in canon_text
     assert "· a1" in canon_text
     # the gate consumed the offender → barrier is clear.
     assert sync.unmerged_deltas(demo) == []
@@ -114,12 +114,12 @@ def test_full_loop_init_roster_arc_contract_merge_block_drift(tmp_path, monkeypa
     assert cli.main(["arc", "new", "a2"]) == 0
     a2 = paths.arcs_dir(demo) / "02-a2"
     assert a2.is_dir()
-    assert fields.read_field(a2 / "arc.md", "cannon-rev") == r1  # no drift on a2
+    assert fields.read_field(a2 / "arc.md", "canon-rev") == r1  # no drift on a2
 
     # --- F3: the just-merged a1 was re-stamped to the post-merge rev ----------
     # contract close seals + re-stamps, so the arc that AUTHORED this canon does
     # NOT self-drift against it.
-    assert fields.read_field(a1_closed / "arc.md", "cannon-rev") == r1
+    assert fields.read_field(a1_closed / "arc.md", "canon-rev") == r1
     drift = sync.drift_check(a1_closed, demo)
     assert drift.drifted is False
     assert drift.stamped == r1

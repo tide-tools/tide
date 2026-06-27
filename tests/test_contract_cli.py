@@ -10,7 +10,7 @@ import pytest
 
 from tide import cli, paths, strictness
 from tide.arc import stream
-from tide.cannon import rev, store
+from tide.canon import rev, store
 from tide.contract import model
 
 from tests.conftest import strip_placeholders

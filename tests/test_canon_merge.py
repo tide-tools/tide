@@ -1,14 +1,14 @@
-"""U2 unit — cannon.merge: append delta under journal, create header, append-only."""
+"""U2 unit — canon.merge: append delta under journal, create header, append-only."""
 
 from __future__ import annotations
 
 from tide import fields, paths
-from tide.cannon import merge, rev, store
+from tide.canon import merge, rev, store
 
 CANON_WITH_JOURNAL = (
     "# CANON.md — demo\n\n"
     "## What it is\nthe truth\n\n"
-    "## Cannon journal\n"
+    "## Canon journal\n"
 )
 
 CANON_NO_JOURNAL = (
@@ -29,16 +29,16 @@ def test_merge_appends_stamped_entry_under_journal():
     assert "### 2026-06-25 · fix-leak" in out
     assert "added X" in out
     # entry sits after the journal header
-    assert out.index("## Cannon journal") < out.index("### 2026-06-25 · fix-leak")
+    assert out.index("## Canon journal") < out.index("### 2026-06-25 · fix-leak")
 
 
 def test_merge_creates_header_when_missing():
     out = merge.merge_delta_text(
         CANON_NO_JOURNAL, "added X", date="2026-06-25", slug="fix-leak"
     )
-    assert "## Cannon journal" in out
-    assert out.index("## What it is") < out.index("## Cannon journal")
-    assert out.index("## Cannon journal") < out.index("### 2026-06-25 · fix-leak")
+    assert "## Canon journal" in out
+    assert out.index("## What it is") < out.index("## Canon journal")
+    assert out.index("## Canon journal") < out.index("### 2026-06-25 · fix-leak")
 
 
 def test_merge_is_append_only():
@@ -71,13 +71,13 @@ def test_merge_keeps_journal_last_and_chronological():
     # happened to sit after it is preserved but lands BEFORE the journal on re-emit.
     canon = (
         "# CANON.md — demo\n\n"
-        "## Cannon journal\n\n"
+        "## Canon journal\n\n"
         "### 2026-06-01 · old\nold body\n\n"
         "## Changelog\nstuff\n"
     )
     out = merge.merge_delta_text(canon, "new body", date="2026-06-25", slug="new")
     # the journal is forced to be the last section
-    assert out.index("## Changelog") < out.index("## Cannon journal")
+    assert out.index("## Changelog") < out.index("## Canon journal")
     # prior entry preserved + new entry appended chronologically after it
     assert out.index("### 2026-06-01 · old") < out.index("### 2026-06-25 · new")
     assert "old body" in out and "stuff" in out
@@ -106,8 +106,8 @@ def test_canonical_delta_section_fills_top_not_journal():
     for title in ("## What it is", "## State & components", "## Interfaces / how used"):
         assert out.count(title) == 1
     # the canonical content did NOT leak into the journal as a top-level header
-    assert out.count("## Cannon journal") == 1
-    assert out.index("### 2026-06-25 · seed") > out.index("## Cannon journal")
+    assert out.count("## Canon journal") == 1
+    assert out.index("### 2026-06-25 · seed") > out.index("## Canon journal")
 
 
 def test_canonical_delta_section_appends_within_existing():
@@ -118,7 +118,7 @@ def test_canonical_delta_section_appends_within_existing():
         "## What it is\noriginal identity\n\n"
         "## State & components\n\n"
         "## Interfaces / how used\n\n"
-        "## Cannon journal\n"
+        "## Canon journal\n"
     )
     delta = "## What it is\nnow with idle clicking\n"
     out = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="grow")
@@ -134,7 +134,7 @@ def test_merge_dedupes_duplicate_top_headers():
         "# CANON.md — demo\n\n"
         "## What it is\nfirst\n\n"
         "## What it is\nsecond\n\n"
-        "## Cannon journal\n"
+        "## Canon journal\n"
     )
     out = merge.merge_delta_text(canon, "note", date="2026-06-25", slug="dedup")
     assert out.count("## What it is") == 1
@@ -231,7 +231,7 @@ def test_merge_idempotent_with_canonical_sections():
         "## What it is\n"
         "tide orchestration machine\n\n"
         "## State & components\n"
-        "- cannon/merge.py\n"
+        "- canon/merge.py\n"
     )
     once = merge.merge_delta_text(canon, delta, date="2026-06-25", slug="seed")
     twice = merge.merge_delta_text(once, delta, date="2026-06-25", slug="seed")
@@ -256,7 +256,7 @@ def test_normalize_deduplicates_journal_stamps():
     bad_canon = (
         "# CANON.md — demo\n\n"
         "## What it is\n\ncontent\n\n"
-        "## Cannon journal\n\n"
+        "## Canon journal\n\n"
         "### 2026-06-01 · tide-terminal\n\nbody\n\n"
         "### 2026-06-01 · tide-terminal\n\nbody\n"   # duplicate
     )
@@ -269,14 +269,14 @@ def test_normalize_heals_blind_append_empty_sections():
     """normalize_canon_text extracts ## headers buried in journal from old blind-appends.
 
     Old code blind-appended the full delta (including canonical ## headings) under
-    ## Cannon journal, leaving top sections empty.  normalize re-routes them.
+    ## Canon journal, leaving top sections empty.  normalize re-routes them.
     """
     bad_canon = (
         "# CANON.md — demo\n\n"
         "## What it is\n\n"            # ← empty (template never filled)
         "## State & components\n\n"    # ← empty
         "## Interfaces / how used\n\n" # ← empty
-        "## Cannon journal\n\n"
+        "## Canon journal\n\n"
         "### 2026-06-01 · tide-terminal\n\n"
         "## What it is\n\n"            # ← content buried in journal by old blind-append
         "tide orchestration machine\n\n"
@@ -297,7 +297,7 @@ def test_normalize_is_idempotent():
     bad_canon = (
         "# CANON.md — demo\n\n"
         "## What it is\n\ncontent\n\n"
-        "## Cannon journal\n\n"
+        "## Canon journal\n\n"
         "### 2026-06-01 · tide-terminal\n\nbody\n\n"
         "### 2026-06-01 · tide-terminal\n\nbody\n"
     )
@@ -311,7 +311,7 @@ def test_normalize_preserves_unique_journal_entries():
     canon = (
         "# CANON.md — demo\n\n"
         "## What it is\n\ncontent\n\n"
-        "## Cannon journal\n\n"
+        "## Canon journal\n\n"
         "### 2026-06-01 · a\n\nbody-a\n\n"
         "### 2026-06-02 · b\n\nbody-b\n"
     )
@@ -325,7 +325,7 @@ def test_normalize_preserves_unique_journal_entries():
 # --- reality baseline stamped at merge (G2) ---------------------------------
 
 def test_merge_stamps_reality_baseline(tmp_path):
-    from tide.cannon import reality
+    from tide.canon import reality
 
     store.init(tmp_path, name="demo")
     # Declare a manifest so reality_rev is defined, plus a covered file.
@@ -343,7 +343,7 @@ def test_merge_stamps_reality_baseline(tmp_path):
 
 
 def test_merge_without_manifest_stamps_no_baseline(tmp_path):
-    from tide.cannon import reality
+    from tide.canon import reality
 
     store.init(tmp_path, name="demo")
     arc_dir = paths.arcs_dir(tmp_path) / "03-fix-leak"

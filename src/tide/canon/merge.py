@@ -1,4 +1,4 @@
-"""tide.cannon.merge — structural section-merge of an arc delta into CANON.md.
+"""tide.canon.merge — structural section-merge of an arc delta into CANON.md.
 
 This is tide's **single serialization point**: workers only ever write their own
 arc's ``delta.md``; the one place writes converge into the living truth is this
@@ -13,16 +13,20 @@ Mechanic (fix F2 — structural section-merge, supersedes the old blind append):
   duplicated and never left empty when the delta carries content for them.
 * Everything else in the delta (preamble prose + non-canonical sections) plus a
   stamped ``### <date> · <slug>`` header is appended under the one append-only
-  ``## Cannon journal``. Non-canonical delta headings are demoted so they nest
+  ``## Canon journal``. Non-canonical delta headings are demoted so they nest
   under the stamp and never masquerade as top-level CANON sections.
 * The journal is **append-only / chronological** — prior entries keep their order
-  and the new entry lands last. ``## Cannon journal`` is always the final section.
+  and the new entry lands last. ``## Canon journal`` is always the final section.
 * Duplicate top-level headings already present in CANON.md are de-duplicated
   (their bodies folded into the first occurrence) as a side effect of the merge.
 
+Back-compat: the legacy ``## Cannon journal`` heading (old spelling) is
+recognised on READ everywhere so existing CANON.md files keep working. On WRITE
+the canonical ``## Canon journal`` (new spelling) is always emitted.
+
 After a file-level merge the source delta is marked merged (``merged: yes``) so
 the sync engine won't double-merge it. Text helpers are pure; file wrappers do
-the I/O and recompute the bumped cannon-rev.
+the I/O and recompute the bumped canon-rev.
 """
 
 from __future__ import annotations
@@ -36,8 +40,13 @@ from . import rev, store
 
 # Canonical section titles a delta is routed INTO (everything bar the journal).
 CANONICAL_TITLES: List[str] = list(store.SECTIONS[:-1])
-JOURNAL_TITLE: str = store.SECTIONS[-1]
+JOURNAL_TITLE: str = store.SECTIONS[-1]          # "Canon journal" (new)
+_LEGACY_JOURNAL_TITLE: str = "Cannon journal"    # back-compat: old spelling
 JOURNAL_HEADER: str = "## {0}".format(JOURNAL_TITLE)
+_LEGACY_JOURNAL_HEADER: str = "## {0}".format(_LEGACY_JOURNAL_TITLE)
+
+# Both headings that count as the journal section (new + legacy).
+_JOURNAL_TITLES: frozenset = frozenset([JOURNAL_TITLE, _LEGACY_JOURNAL_TITLE])
 
 
 def _today() -> str:
@@ -46,9 +55,13 @@ def _today() -> str:
 
 
 def has_journal(text: str) -> bool:
-    """True when *text* contains a top-level ``## Cannon journal`` heading line."""
-    target = JOURNAL_HEADER.strip()
-    return any(line.strip() == target for line in text.splitlines())
+    """True when *text* contains a top-level journal heading line (either spelling).
+
+    Accepts both ``## Canon journal`` (new) and ``## Cannon journal`` (legacy)
+    so existing CANON.md files with the old heading are recognised.
+    """
+    targets = {JOURNAL_HEADER.strip(), _LEGACY_JOURNAL_HEADER.strip()}
+    return any(line.strip() in targets for line in text.splitlines())
 
 
 # --- pure structural helpers ------------------------------------------------
@@ -99,7 +112,8 @@ def _load(text: str) -> Tuple[str, List[List[str]], str]:
     index: Dict[str, int] = {}
     journal_body = ""
     for title, body in secs:
-        if title == JOURNAL_TITLE:
+        if title in _JOURNAL_TITLES:
+            # Accept both "Canon journal" (new) and "Cannon journal" (legacy).
             journal_body = _join_bodies(journal_body, body)
             continue
         if title in index:
@@ -287,7 +301,7 @@ def merge_delta(
 
     Reads the arc's delta body, routes its canonical sections into CANON and
     appends the chronological journal entry, marks the delta merged, and returns
-    the bumped cannon-rev (recomputed over the new CANON.md). Raises if the delta
+    the bumped canon-rev (recomputed over the new CANON.md). Raises if the delta
     file is missing.
     """
     date = date or _today()
@@ -301,10 +315,10 @@ def merge_delta(
 
     # F5: a missing CANON.md is a structural error — fabricating a canon from an
     # empty base silently produces a malformed file.  Fail loud with a clear message
-    # so the caller knows to run 'tide cannon init' first.
+    # so the caller knows to run 'tide canon init' first.
     if not canon.is_file():
         raise FileNotFoundError(
-            "no CANON.md at {0} (run 'tide cannon init' first)".format(canon)
+            "no CANON.md at {0} (run 'tide canon init' first)".format(canon)
         )
 
     lock_dir = paths.state_dir(root) / ".merge.lock"
@@ -325,7 +339,7 @@ def merge_delta(
         merged = merge_delta_text(canon_text, delta_body, date=date, slug=slug)
         _io.atomic_write(canon, merged)
         mark_merged(delta_path, date=date)
-        from . import reality as _reality
+        from . import reality as _reality  # lazy: avoid import cycle
         _reality.stamp_canon_baseline(root)
 
     return rev.compute(root)
