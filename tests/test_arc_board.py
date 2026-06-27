@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tide import fields, paths
+from tide import fields, paths, readme
 from tide.arc import board, candidate, stream
 from tide.cannon import rev
 
@@ -68,7 +68,8 @@ def test_render_board_full_snapshot(tmp_project):
         "  cannon-rev: {rev}\n"
         "  unmerged: none\n"
         "  drift: none\n"
-        "  deferred: none"
+        "  deferred: none\n"
+        "  readme: drift (run 'tide readme')"
     ).format(rev=rev.compute(tmp_project))
     assert board.render_board(tmp_project) == expected
 
@@ -82,7 +83,8 @@ def test_render_board_empty_stream(tmp_project):
         "  cannon-rev: {rev}\n"
         "  unmerged: none\n"
         "  drift: none\n"
-        "  deferred: none"
+        "  deferred: none\n"
+        "  readme: drift (run 'tide readme')"
     ).format(rev=rev.compute(tmp_project))
     assert board.render_board(tmp_project) == expected
 
@@ -188,3 +190,45 @@ def test_supersedes_link_shown(tmp_project):
     out = board.render_board(tmp_project)
     line = next(ln for ln in out.splitlines() if " 02-new" in ln)
     assert "(supersedes old)" in line
+
+
+# --- readme drift in HEALTH footer (criterion F) ---------------------------
+
+def test_health_footer_readme_ok_when_current(tmp_project):
+    """HEALTH shows 'readme: ok' after the README has been generated and is current."""
+    readme.generate(tmp_project)
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "readme: ok" in health
+
+
+def test_health_footer_readme_drift_when_missing(tmp_project):
+    """HEALTH shows 'readme: drift' when no README has been generated yet (code 1)."""
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "readme: drift" in health
+
+
+def test_health_footer_readme_drift_when_stale_after_canon_move(tmp_project):
+    """HEALTH shows 'readme: drift' when canon moved ahead of the generated README."""
+    readme.generate(tmp_project)
+    canon = paths.canon_file(tmp_project)
+    canon.write_text(
+        canon.read_text(encoding="utf-8") + "\n### extra-entry\nmoved\n",
+        encoding="utf-8",
+    )
+    out = board.render_board(tmp_project)
+    health = out[out.index("HEALTH"):]
+    assert "readme: drift" in health
+
+
+def test_health_footer_readme_transitions_ok_to_drift(tmp_project):
+    """HEALTH transitions from ok → drift when the README becomes stale."""
+    readme.generate(tmp_project)
+    # confirm ok first
+    assert "readme: ok" in board.render_board(tmp_project)
+    # mangle the README body (body drift: hand-edited)
+    target = readme.readme_file(tmp_project)
+    target.write_text("# hacked\n", encoding="utf-8")
+    # now expect drift
+    assert "readme: drift" in board.render_board(tmp_project)

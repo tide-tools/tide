@@ -218,6 +218,23 @@ def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[s
         )
     else:
         lines.append("  deferred: none")
+
+    # README-drift gate (criterion F): surface whether the user-door README is
+    # in sync with canon.  Only code 1 (stale/missing/drifted) is flagged;
+    # code 2 (oracle-error: CANON.md missing) stays silent — render_board()
+    # would already have failed earlier if CANON.md were absent.
+    from .. import readme as _readme  # lazy: keep arc.board import-light
+
+    try:
+        readme_code, _readme_reasons = _readme.check(root)
+        if readme_code == 0:
+            lines.append("  readme: ok")
+        elif readme_code == 1:
+            lines.append("  readme: drift (run 'tide readme')")
+        # code 2 → stay silent (matches existing oracle-error conventions)
+    except Exception:
+        pass  # HEALTH must never raise; skip silently on unexpected error
+
     return lines
 
 
