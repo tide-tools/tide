@@ -26,10 +26,15 @@ from tide.update.source import LocalSourceCheckout, PublishedChannelSource
 
 class _FakeResp:
     def __init__(self, payload: bytes):
-        self._payload = payload
+        self._buf = payload
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, amt=None) -> bytes:
+        # DRAIN the buffer honouring amt (mirrors HTTPResponse.read(amt) → b"" at
+        # EOF) so the bounded, looping reader terminates instead of re-reading
+        # forever. Kept in sync with tests/test_update_published.py::_FakeResp.
+        amt = len(self._buf) if amt is None else amt
+        out, self._buf = self._buf[:amt], self._buf[amt:]
+        return out
 
     def __enter__(self) -> "_FakeResp":
         return self
