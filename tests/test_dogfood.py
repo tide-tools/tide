@@ -48,7 +48,10 @@ def test_dogfood_arc_is_closed_on_disk():
 @needs_dogfood
 def test_dogfood_delta_is_merged_into_canon_journal():
     canon = paths.canon_file(REPO_ROOT).read_text(encoding="utf-8")
-    assert "## Cannon journal" in canon
+    # canonical heading is "## Canon journal" (single-n); the legacy "## Cannon
+    # journal" spelling is rewritten by `tide canon migrate` (back-compat still
+    # reads both — see test_canon_backcompat). The repo's own dogfood is migrated.
+    assert "## Canon journal" in canon
     assert DOGFOOD_MARKER in canon
     assert "· {0}".format(DOGFOOD_SLUG) in canon
 
