@@ -259,6 +259,11 @@ def default_rollback_path(env: Optional[dict] = None) -> Path:
     return tide_home_dir(env) / "rollback-marker.json"
 
 
+def default_broken_path(env: Optional[dict] = None) -> Path:
+    """Where the broken-install marker lives (``$TIDE_HOME/broken-install-marker.json``)."""
+    return tide_home_dir(env) / "broken-install-marker.json"
+
+
 def read_marker(path: Path) -> Optional[dict]:
     """Parse the install marker JSON (None when absent or unreadable)."""
     p = Path(path)
@@ -281,6 +286,41 @@ def write_marker(path: Path, revision: Revision, source_dir: Path) -> None:
         "source": str(source_dir),
     }
     _io.atomic_write(p, json.dumps(payload, indent=2) + "\n")
+
+
+# --- the broken-install marker (a smoke-failed install, kept LOUD) -----------
+#
+# Stamping the version marker on a smoke-failed install stops the perpetual
+# stale-version re-nudge — but it would also make a broken install INVISIBLE.
+# This separate marker keeps the failure surfaced every session (see
+# :func:`tide.update.core.session_note`) until a successful install or rollback
+# clears it.
+
+
+def read_broken(path: Path) -> Optional[dict]:
+    """Parse the broken-install marker JSON (None when absent or unreadable)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_broken(path: Path, version: str, reason: str) -> None:
+    """Record that the install of *version* failed its post-install smoke (*reason*)."""
+    payload = {"version": version, "reason": reason}
+    _io.atomic_write(Path(path), json.dumps(payload, indent=2) + "\n")
+
+
+def clear_broken(path: Path) -> None:
+    """Remove the broken-install marker (best-effort — a recovered install is healthy)."""
+    try:
+        Path(path).unlink()
+    except (FileNotFoundError, OSError):
+        pass
 
 
 # --- the rollback marker (how to reinstall the PREVIOUS version) -------------
@@ -442,22 +482,32 @@ def _detect_homebrew(python_exe: str) -> bool:
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024  # cap on bytes read from the network
 MAX_EXTRACT_MEMBER_BYTES = 256 * 1024 * 1024  # cap on any single member's declared size
 MAX_EXTRACT_TOTAL_BYTES = 512 * 1024 * 1024  # cap on the total declared uncompressed size
+MAX_FEED_BYTES = 1 * 1024 * 1024  # cap on the releases-feed JSON read (generous for a tag feed)
 
 
 def _read_bounded(resp: object, cap: int) -> bytes:
     """Read at most *cap* bytes from *resp*; REFUSE (don't truncate) an oversized body.
 
-    Reads ``cap + 1`` so an over-cap body is detectable, then rejects loudly — a
-    runaway/oversized download on the update path must fail, not silently truncate
-    into a corrupt archive.
+    Reads in a LOOP until more than *cap* bytes have accumulated (→ reject) or EOF.
+    A single ``read(cap + 1)`` is not enough: ``HTTPResponse.read(n)`` may return
+    FEWER than *n* bytes per call (partial TCP), so an oversized body delivered in
+    chunks could slip an under-read. A runaway/oversized download on the update
+    path must fail loudly, not silently truncate into a corrupt archive.
     """
-    data = resp.read(cap + 1)  # type: ignore[attr-defined]
-    if len(data) > cap:
+    chunks: List[bytes] = []
+    total = 0
+    while total <= cap:
+        chunk = resp.read(cap + 1 - total)  # type: ignore[attr-defined]
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > cap:
         raise RuntimeError(
             "release artifact exceeds {0} bytes — refusing "
             "(possible decompression bomb / runaway download)".format(cap)
         )
-    return data
+    return b"".join(chunks)
 
 
 def safe_extract(tarball: Path, dest: Path) -> Path:
@@ -631,7 +681,8 @@ class PublishedChannelSource:
         )
         try:
             with self.opener(req, timeout=NETWORK_TIMEOUT_S) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                raw = _read_bounded(resp, MAX_FEED_BYTES)
+            data = json.loads(raw.decode("utf-8"))
             tag = data.get("tag_name")
             return tag if isinstance(tag, str) and tag else None
         except Exception:
