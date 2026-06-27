@@ -87,6 +87,27 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    """Rename a legacy ``.tide/cannon/`` → ``.tide/canon/`` (atomic, idempotent).
+
+    Refuses loudly (via :class:`CanonMigrateError`, caught by ``cli.main``) when both
+    dirs coexist. ``--dry-run`` prints the plan and changes nothing.
+    """
+    from . import migrate as canon_migrate
+
+    root = paths.require_tide_root()
+    plan = canon_migrate.plan(root)
+    if plan.coexist:
+        # Loud refusal — single source of the message; cli.main prints + exits 1.
+        raise canon_migrate.CanonMigrateError(canon_migrate.coexist_message(plan))
+    if getattr(args, "dry_run", False):
+        print(canon_migrate.render_plan(plan))
+        return 0
+    result = canon_migrate.apply(plan)
+    print(canon_migrate.render_result(result))
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     from . import board
 
@@ -146,6 +167,17 @@ def register(subparsers) -> None:
 
     sp = nsub.add_parser("status", help="scan per-arc homes, group by state")
     sp.set_defaults(func=_cmd_status, _cmd="canon status")
+
+    migp = nsub.add_parser(
+        "migrate",
+        help="rename a legacy .tide/cannon/ → .tide/canon/ (atomic, idempotent, loud on coexistence)",
+    )
+    migp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the rename + stamp-rewrite plan and change nothing",
+    )
+    migp.set_defaults(func=_cmd_migrate, _cmd="canon migrate")
 
     mp = nsub.add_parser("merge", help="ORCHESTRATOR-ONLY: merge an arc delta into CANON.md")
     mp.add_argument("arc", help="arc slug (or dir name) whose delta.md to merge")
