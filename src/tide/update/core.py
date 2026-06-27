@@ -27,12 +27,22 @@ portable-only gate, and it says so.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-from .source import Revision, VersionSource, resolve_source
+from .source import (
+    LocalSourceCheckout,
+    PublishedChannelSource,
+    Revision,
+    VersionSource,
+    read_rollback,
+    resolve_source,
+    write_rollback,
+)
 
 # A runner abstraction so tests can drive the flow without real installs/suites.
 # Returns (returncode, combined_output).
@@ -230,7 +240,97 @@ def self_update(
         )
     )
 
-    gate = run_regression_gate(source, run_suite=run_suite, runner=runner)
+    return _gate_then_install(
+        source, status, res, gate_source=source, run_suite=run_suite, runner=runner
+    )
+
+
+def self_update_published(
+    source: PublishedChannelSource,
+    *,
+    force: bool = False,
+    run_suite: bool = True,
+    runner: Runner = _default_runner,
+    workdir_factory: Callable[[], str] = tempfile.mkdtemp,
+) -> SelfUpdateResult:
+    """Self-update for a PUBLISHED install (brew / pip-from-git) — gate the artifact.
+
+    A published channel has no in-place checkout to run the suite against. The
+    faithful gated path: DOWNLOAD + extract the release tarball, run the EXISTING
+    :func:`run_regression_gate` against the extracted source, and only on GREEN
+    apply the channel install (``brew upgrade`` / ``pip install git+…``) + smoke +
+    stamp. A failed fetch or red gate REFUSES — nothing is installed. The temp
+    checkout is always cleaned up.
+    """
+    status = check_for_update(source)
+    res = SelfUpdateResult(
+        source_name=status.source_name,
+        installed=status.installed,
+        available=status.available,
+        stale=status.stale,
+        accepted=False,
+        applied=False,
+    )
+
+    if not status.stale and not force:
+        res.accepted = True
+        res.messages.append(
+            "already current ({0}) — nothing to update".format(status.installed)
+        )
+        return res
+
+    res.messages.append(
+        "{0}: {1} → {2}".format(
+            "forced reinstall" if (not status.stale and force) else "update available",
+            status.installed,
+            status.available,
+        )
+    )
+
+    workdir = Path(workdir_factory())
+    try:
+        try:
+            gate_root = source.materialize_source(workdir)
+        except Exception as exc:
+            res.messages.append(
+                "REFUSED — could not fetch/extract the release artifact to gate it: "
+                "{0}".format(exc)
+            )
+            return res
+        res.messages.append("fetched release artifact → {0}".format(gate_root))
+        # A throwaway checkout over the extracted source: the gate runs against
+        # THIS (it has pyproject + tests), but the INSTALL + stamp stay on the
+        # published source (its channel command, its version-keyed marker).
+        gate_source = LocalSourceCheckout(
+            source_dir=gate_root,
+            python_exe=source.python_exe,
+            editable=False,
+            marker_path=workdir / "gate-marker.json",
+        )
+        return _gate_then_install(
+            source, status, res, gate_source=gate_source, run_suite=run_suite, runner=runner
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _gate_then_install(
+    source: VersionSource,
+    status: UpdateStatus,
+    res: SelfUpdateResult,
+    *,
+    gate_source: VersionSource,
+    run_suite: bool,
+    runner: Runner,
+) -> SelfUpdateResult:
+    """Shared tail: run the gate against *gate_source* → install *source* → smoke → stamp.
+
+    The gate target and the install target differ for a published update (gate the
+    extracted tarball; install via the channel) but are the same for a local one —
+    so both flows funnel through here, keeping the nightmare-guard (no red gate
+    ever ships) in ONE place.
+    """
+    gate = run_regression_gate(gate_source, run_suite=run_suite, runner=runner)
     res.gate = gate
     res.messages.append("regression gate: {0}".format("GREEN" if gate.ok else "RED"))
     res.messages.extend("  " + ln for ln in gate.messages)
@@ -240,8 +340,10 @@ def self_update(
         )
         return res
 
-    # Gate green → install. `applied` flips the moment we invoke pip — the install
-    # may mutate site-packages, so the caller must know it ran even if it errored.
+    # Gate green → record the rollback point (best-effort), THEN install. `applied`
+    # flips the moment we invoke the installer — it may mutate site-packages, so the
+    # caller must know it ran even if it errored.
+    _record_rollback(source, res)
     cmd = source.install_command()
     res.messages.append("installing: {0}".format(" ".join(cmd)))
     res.applied = True
@@ -258,8 +360,7 @@ def self_update(
     if smoke_rc != 0 or "tide" not in smoke_out:
         res.messages.append(
             "WARNING — install applied but post-install smoke FAILED "
-            "(reinstall the previous source manually; versioned rollback needs the "
-            "published channel, crit E)"
+            "(roll back with 'tide self-update --rollback')"
         )
         res.messages.append(_indent(_tail(smoke_out)))
         return res
@@ -267,6 +368,71 @@ def self_update(
     recorded = source.record_install() if hasattr(source, "record_install") else status.available
     res.accepted = True
     res.messages.append("accepted — installed + stamped at {0}".format(recorded))
+    return res
+
+
+def _record_rollback(source: VersionSource, res: SelfUpdateResult) -> None:
+    """Record how to reinstall the CURRENTLY-installed version (best-effort, never blocks).
+
+    Only sources that expose a ``rollback_path`` + ``rollback_command()`` (the
+    published channel — a pinned pip-from-git@<tag>) get a rollback marker; a local
+    editable checkout has no past artifact to pin, so it is skipped silently.
+    """
+    path = getattr(source, "rollback_path", None)
+    cmd_fn = getattr(source, "rollback_command", None)
+    if path is None or cmd_fn is None:
+        return
+    try:
+        write_rollback(Path(path), source.installed().version, cmd_fn())
+        res.messages.append("rollback point recorded ({0})".format(source.installed()))
+    except Exception:
+        pass  # recording a rollback must never block the update itself
+
+
+# --- rollback (reinstall the previously-pinned version) ---------------------
+
+
+@dataclass
+class RollbackResult:
+    """Outcome of a :func:`rollback` run; ``ok`` is the overall success."""
+
+    ok: bool
+    target: Optional[str] = None
+    messages: List[str] = field(default_factory=list)
+
+
+def rollback(marker_path: Path, *, runner: Runner = _default_runner) -> RollbackResult:
+    """Reinstall the previous version recorded by the rollback marker → smoke-check.
+
+    Replays the pinned reinstall command captured BEFORE the last update (a
+    version-pinned ``pip install git+…@<tag>``). No marker / no command → a clean
+    refusal (nothing to roll back to). Reuses the same post-install smoke as the
+    forward path.
+    """
+    data = read_rollback(marker_path)
+    if not data or not data.get("command"):
+        return RollbackResult(False, messages=["no rollback marker — nothing to roll back to"])
+
+    cmd = list(data["command"])
+    target = data.get("version")
+    res = RollbackResult(False, target=target)
+    res.messages.append("rolling back to {0}: {1}".format(target or "?", " ".join(cmd)))
+
+    rc, out = runner(cmd, None, None)
+    if rc != 0:
+        res.messages.append("FAILED — rollback install errored")
+        res.messages.append(_indent(_tail(out)))
+        return res
+
+    python_exe = cmd[0] if cmd else "python"
+    smoke_rc, smoke_out = runner([python_exe, "-m", "tide", "version"], None, None)
+    if smoke_rc != 0 or "tide" not in smoke_out:
+        res.messages.append("FAILED — rolled-back install does not run (post-install smoke)")
+        res.messages.append(_indent(_tail(smoke_out)))
+        return res
+
+    res.ok = True
+    res.messages.append("rolled back — reinstalled {0}".format(target or "previous version"))
     return res
 
 

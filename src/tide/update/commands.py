@@ -18,15 +18,18 @@ argparse + printing only.
 from __future__ import annotations
 
 from . import core
-from .source import resolve_source
+from .source import PublishedChannelSource, default_rollback_path, resolve_source
 
 NO_SOURCE_MSG = (
-    "tide self-update: no local source resolvable (not a local/editable install). "
-    "A published update channel is not built yet (crit E) — nothing to update against."
+    "tide self-update: no update source resolvable (neither a local/editable "
+    "install nor a published channel) — nothing to update against."
 )
 
 
 def _cmd_self_update(args) -> int:
+    if getattr(args, "rollback", False):
+        return _cmd_rollback()
+
     source = resolve_source()
     if source is None:
         print(NO_SOURCE_MSG)
@@ -38,17 +41,29 @@ def _cmd_self_update(args) -> int:
     if getattr(args, "dry_run", False):
         return _cmd_dry_run(source, args)
 
-    result = core.self_update(
-        source,
-        force=getattr(args, "force", False),
-        run_suite=not getattr(args, "no_suite", False),
-    )
+    force = getattr(args, "force", False)
+    run_suite = not getattr(args, "no_suite", False)
+    if isinstance(source, PublishedChannelSource):
+        result = core.self_update_published(source, force=force, run_suite=run_suite)
+    else:
+        result = core.self_update(source, force=force, run_suite=run_suite)
     print("tide self-update [{0}]".format(result.source_name))
     for line in result.messages:
         print("  " + line)
     if result.accepted:
         return 0
     return 1
+
+
+def _cmd_rollback() -> int:
+    path = default_rollback_path()
+    result = core.rollback(path)
+    print("tide self-update --rollback")
+    for line in result.messages:
+        print("  " + line)
+    if not result.ok and result.target is None:
+        return 2  # no marker — nothing to roll back to
+    return 0 if result.ok else 1
 
 
 def _cmd_check(source) -> int:
@@ -103,5 +118,10 @@ def register(subparsers) -> None:
         action="store_true",
         dest="dry_run",
         help="show the resolved source + install command without acting",
+    )
+    p.add_argument(
+        "--rollback",
+        action="store_true",
+        help="reinstall the previous pinned version recorded before the last update",
     )
     p.set_defaults(func=_cmd_self_update, _cmd="self-update")

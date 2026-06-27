@@ -32,10 +32,13 @@ import json
 import os
 import re
 import subprocess
+import tarfile
+import time
 import tomllib
-from dataclasses import dataclass
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import Callable, List, Optional, Protocol
 
 from .. import __version__ as _PKG_FALLBACK_VERSION
 from .. import io as _io
@@ -159,17 +162,32 @@ def installed_metadata_version() -> str:
 # --- the install marker (what we last actually installed) --------------------
 
 
-def default_marker_path(env: Optional[dict] = None) -> Path:
-    """Where the install marker lives (``$TIDE_HOME/install-marker.json``).
+def tide_home_dir(env: Optional[dict] = None) -> Path:
+    """The ``$TIDE_HOME`` base (default ``~/.local/share/tide``), resolved at RUNTIME.
 
-    Mirrors ``install.sh``'s ``TIDE_HOME`` (default ``~/.local/share/tide``). The
-    home dir is resolved at RUNTIME via ``Path.home()`` — never baked into source
-    — so the shipped package stays portable (no abs-home leak; see verify.py).
+    Mirrors ``install.sh``'s ``TIDE_HOME``. The home dir is resolved via
+    ``Path.home()`` — never baked into source — so the shipped package stays
+    portable (no abs-home leak; see verify.py). Shared by every state file we keep
+    next to the install (marker, published-channel cache, rollback marker).
     """
     env = env if env is not None else os.environ
     home = env.get("TIDE_HOME")
-    base = Path(home) if home else Path.home() / ".local" / "share" / "tide"
-    return base / "install-marker.json"
+    return Path(home) if home else Path.home() / ".local" / "share" / "tide"
+
+
+def default_marker_path(env: Optional[dict] = None) -> Path:
+    """Where the install marker lives (``$TIDE_HOME/install-marker.json``)."""
+    return tide_home_dir(env) / "install-marker.json"
+
+
+def default_cache_path(env: Optional[dict] = None) -> Path:
+    """Where the published-channel feed cache lives (``$TIDE_HOME/published-channel-cache.json``)."""
+    return tide_home_dir(env) / "published-channel-cache.json"
+
+
+def default_rollback_path(env: Optional[dict] = None) -> Path:
+    """Where the rollback marker lives (``$TIDE_HOME/rollback-marker.json``)."""
+    return tide_home_dir(env) / "rollback-marker.json"
 
 
 def read_marker(path: Path) -> Optional[dict]:
@@ -194,6 +212,31 @@ def write_marker(path: Path, revision: Revision, source_dir: Path) -> None:
         "source": str(source_dir),
     }
     _io.atomic_write(p, json.dumps(payload, indent=2) + "\n")
+
+
+# --- the rollback marker (how to reinstall the PREVIOUS version) -------------
+
+
+def read_rollback(path: Path) -> Optional[dict]:
+    """Parse the rollback marker JSON (None when absent or unreadable)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_rollback(path: Path, version: str, command: List[str]) -> None:
+    """Record the PREVIOUS install: its *version* and the *command* that reinstalls it.
+
+    Written just BEFORE an update is applied, so a regression has a pinned recovery
+    path (``tide self-update --rollback`` replays ``command``).
+    """
+    payload = {"version": version, "command": list(command)}
+    _io.atomic_write(Path(path), json.dumps(payload, indent=2) + "\n")
 
 
 # --- the local-source implementation ----------------------------------------
@@ -252,6 +295,261 @@ class LocalSourceCheckout:
         return rev
 
 
+# --- the published-channel implementation (brew / pip-from-git) -------------
+
+# The release repo is DISCOVERED from the package's own declared source URL (the
+# pyproject ``[project.urls]`` → dist ``Project-URL`` metadata), never hardcoded:
+# hardcoding the ``owner/name`` literal would (a) bake an instance token into
+# shipped source — which ``tide verify --portable`` rightly forbids when the org
+# name collides with a dev's username — and (b) drift from the canonical home. The
+# fallback below is portable-safe (carries no instance token) and matches the
+# pyproject-declared org; the HEAD reconciles it with the real release org when it
+# cuts the release (the published channel then follows automatically).
+_FALLBACK_REPO = "tide-cli/tide"
+_GITHUB_REPO_RE = re.compile(r"github\.com[/:]([^/\s,]+)/([^/\s,#]+)")
+CACHE_TTL_S = 24 * 60 * 60  # 24h: session start does NOT hit the network every time
+NETWORK_TIMEOUT_S = 5  # short: a stale/offline feed must never hang a session
+_USER_AGENT = "tide-self-update"
+
+# A urlopen-shaped callable, injectable so tests never touch the real network.
+Opener = Callable[..., object]
+
+
+def discover_repo() -> str:
+    """The release repo ``owner/name``, read from the dist's declared GitHub URL.
+
+    Probes the installed ``tide`` distribution metadata (``Project-URL`` /
+    ``Home-page``) for a ``github.com/<owner>/<name>`` and returns ``owner/name``.
+    Falls back to :data:`_FALLBACK_REPO` when no metadata / URL is resolvable — so
+    a non-dev install still has a channel to point at, with NO literal baked into
+    shipped source.
+    """
+    try:
+        from importlib.metadata import metadata
+
+        md = metadata("tide")
+        candidates: List[str] = list(md.get_all("Project-URL") or [])
+        home = md.get("Home-page")
+        if home:
+            candidates.append(home)
+        for entry in candidates:
+            m = _GITHUB_REPO_RE.search(entry)
+            if m:
+                owner, name = m.group(1), m.group(2)
+                if name.endswith(".git"):
+                    name = name[: -len(".git")]
+                return "{0}/{1}".format(owner, name)
+    except Exception:  # pragma: no cover - metadata layout varies / absent
+        pass
+    return _FALLBACK_REPO
+
+
+def _detect_homebrew(python_exe: str) -> bool:
+    """True when the running ``tide`` lives in a Homebrew keg (a formula install).
+
+    Homebrew's keg layout is ``<prefix>/Cellar/tide/<version>/…``; both the
+    formula venv interpreter and the installed package files sit under it. We probe
+    the interpreter path first (cheap), then the distribution location as a
+    fallback. Explicit + testable: callers may also set ``homebrew=`` directly.
+    """
+    if "/Cellar/tide/" in str(python_exe or ""):
+        return True
+    try:
+        from importlib.metadata import distribution
+
+        loc = str(distribution("tide").locate_file(""))
+        return "/Cellar/tide/" in loc
+    except Exception:  # pragma: no cover - metadata layout varies
+        return False
+
+
+def safe_extract(tarball: Path, dest: Path) -> Path:
+    """Extract *tarball* into *dest* (path-traversal-guarded) and return the source root.
+
+    A GitHub release/source tarball extracts to a single top-level dir holding the
+    project (pyproject + tests). We reject any member that would escape *dest*
+    (defence-in-depth on top of the 3.12 ``data`` filter) and return the first
+    extracted dir carrying a ``pyproject.toml``.
+    """
+    dest = Path(dest).resolve()
+    with tarfile.open(tarball, "r:gz") as tf:
+        for member in tf.getmembers():
+            target = (dest / member.name).resolve()
+            if target != dest and dest not in target.parents:
+                raise RuntimeError("unsafe tar member escapes dest: {0}".format(member.name))
+        tf.extractall(dest, filter="data")
+    for child in sorted(dest.iterdir()):
+        if child.is_dir() and (child / "pyproject.toml").is_file():
+            return child
+    for found in dest.rglob("pyproject.toml"):
+        return found.parent
+    raise RuntimeError("extracted archive has no pyproject.toml")
+
+
+@dataclass
+class PublishedChannelSource:
+    """The source-of-truth = a published GitHub release (brew / pip-from-git install).
+
+    Fills the seam ``LocalSourceCheckout`` could not: a ``tide`` put on PATH by
+    ``brew`` / ``pip install git+…`` / ``install.sh`` has NO in-place source
+    checkout. ``installed()`` reads package metadata (+ marker); ``available()``
+    asks the GitHub *releases/latest* feed for the newest tag — CACHED ~24h under
+    ``$TIDE_HOME`` and fully network-defensive: any error (offline, parse, rate
+    limit) is swallowed and reported as "no newer version" (``available == installed``),
+    so a session start never blocks, never raises, never falsely nudges.
+
+    ``install_command()`` picks the channel: ``brew upgrade`` for a Homebrew keg,
+    else ``pip install --upgrade git+…@<tag>``. The published artifact has no local
+    suite to gate, so :meth:`materialize_source` downloads + extracts the release
+    tarball; the gate runs against THAT (see :func:`tide.update.core.self_update_published`).
+    """
+
+    python_exe: str
+    marker_path: Path
+    cache_path: Path
+    rollback_path: Path
+    repo: str = _FALLBACK_REPO
+    homebrew: bool = False
+    opener: Opener = urllib.request.urlopen
+
+    def name(self) -> str:
+        return "published-channel"
+
+    # -- staleness sides -----------------------------------------------------
+
+    def installed(self) -> Revision:
+        marker = read_marker(self.marker_path)
+        if marker and isinstance(marker.get("version"), str):
+            # A published install is keyed on version only (commit is meaningless
+            # against a release tag) — so the marker is stamped with commit=None.
+            return Revision(version=marker["version"])
+        return Revision(version=installed_metadata_version())
+
+    def available(self) -> Revision:
+        """The latest published version, or the installed one when unknowable.
+
+        Reads the cached feed (network only on a cold/expired cache, short timeout,
+        all errors swallowed). When nothing is resolvable we return *installed* so
+        the source reads as "current" — never a crash, never a false nudge.
+        """
+        tag = self._latest_tag()
+        if not tag:
+            return self.installed()
+        return Revision(version=tag.lstrip("v"))
+
+    def install_command(self) -> List[str]:
+        if self.homebrew:
+            return ["brew", "upgrade", "{0}/tide".format(self.repo)]
+        tag = self._latest_tag() or ("v" + self.available().version)
+        return [
+            self.python_exe, "-m", "pip", "install", "--upgrade",
+            "git+https://github.com/{0}@{1}".format(self.repo, tag),
+        ]
+
+    def record_install(self) -> Revision:
+        """Stamp the marker with ``available()`` (call AFTER an accepted install)."""
+        rev = self.available()
+        write_marker(self.marker_path, rev, Path("published:" + self.repo))
+        return rev
+
+    def rollback_command(self) -> List[str]:
+        """Pin a reinstall of the CURRENTLY-installed version (recorded pre-upgrade).
+
+        Always via pip-from-git@<tag>: it is the only version-pinned reinstall that
+        works regardless of channel (a brew keg can't downgrade to an exact past
+        version, but pip-from-git can pin the tag).
+        """
+        version = self.installed().version
+        return [
+            self.python_exe, "-m", "pip", "install", "--upgrade",
+            "git+https://github.com/{0}@v{1}".format(self.repo, version),
+        ]
+
+    # -- release artifact (the gated published install) ----------------------
+
+    def tarball_url(self, tag: str) -> str:
+        """The GitHub source tarball for *tag* (carries pyproject + tests to gate)."""
+        return "https://github.com/{0}/archive/refs/tags/{1}.tar.gz".format(self.repo, tag)
+
+    def materialize_source(self, workdir: Path) -> Path:
+        """Download + extract the release tarball into *workdir*; return its source root.
+
+        Raises on any failure. Unlike :meth:`available`, this is fail-LOUD: it runs
+        only under an EXPLICIT ``tide self-update`` (never at session start), and a
+        gate cannot run without the source — so a failed fetch must REFUSE the
+        update, not silently proceed.
+        """
+        tag = self._latest_tag()
+        if not tag:
+            raise RuntimeError("no published release tag resolvable (cannot fetch artifact)")
+        workdir = Path(workdir)
+        tarball = workdir / "tide-{0}.tar.gz".format(tag.lstrip("v"))
+        req = urllib.request.Request(self.tarball_url(tag), headers={"User-Agent": _USER_AGENT})
+        with self.opener(req, timeout=NETWORK_TIMEOUT_S) as resp:
+            tarball.write_bytes(resp.read())
+        return safe_extract(tarball, workdir)
+
+    # -- the 24h feed cache --------------------------------------------------
+
+    def _latest_tag(self) -> Optional[str]:
+        """Latest release tag (e.g. ``v1.0.1``) — cache-first, network-defensive."""
+        cached = self._read_cache()
+        if cached and self._cache_fresh(cached):
+            return _cache_tag(cached)
+        fetched = self._fetch_latest_tag()
+        if fetched:
+            self._write_cache(fetched)
+            return fetched
+        # Fetch failed (offline / rate-limited): fall back to a stale cache if any,
+        # else report nothing (→ available()==installed() → no nudge).
+        return _cache_tag(cached) if cached else None
+
+    def _fetch_latest_tag(self) -> Optional[str]:
+        """Query GitHub ``releases/latest`` for ``tag_name`` (None on ANY error)."""
+        url = "https://api.github.com/repos/{0}/releases/latest".format(self.repo)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json"}
+        )
+        try:
+            with self.opener(req, timeout=NETWORK_TIMEOUT_S) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            tag = data.get("tag_name")
+            return tag if isinstance(tag, str) and tag else None
+        except Exception:
+            return None
+
+    def _read_cache(self) -> Optional[dict]:
+        p = Path(self.cache_path)
+        if not p.is_file():
+            return None
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _cache_fresh(self, data: dict) -> bool:
+        ts = data.get("fetched_at")
+        return isinstance(ts, (int, float)) and (time.time() - ts) < CACHE_TTL_S
+
+    def _write_cache(self, tag: str) -> None:
+        try:
+            _io.atomic_write(
+                Path(self.cache_path),
+                json.dumps({"tag": tag, "fetched_at": time.time()}, indent=2) + "\n",
+            )
+        except OSError:  # pragma: no cover - cache is best-effort, never fatal
+            pass
+
+
+def _cache_tag(data: Optional[dict]) -> Optional[str]:
+    """Read the ``tag`` out of a cache dict (None when absent/odd)."""
+    if not data:
+        return None
+    tag = data.get("tag")
+    return tag if isinstance(tag, str) and tag else None
+
+
 # --- resolution: find the local source the install points at ----------------
 
 
@@ -301,18 +599,21 @@ def resolve_source(
     python_exe: Optional[str] = None,
     marker_path: Optional[Path] = None,
 ) -> Optional[VersionSource]:
-    """Resolve the active :class:`VersionSource`, or None when none is available.
+    """Resolve the active :class:`VersionSource` — local source first, else published.
 
     Resolution order for the source-of-truth checkout:
 
     1. ``$TIDE_SOURCE`` (explicit override) — treated as editable iff the install
        reports editable (so a reinstall preserves the current install shape).
-    2. the install's ``direct_url.json`` origin (the normal case).
+    2. the install's ``direct_url.json`` origin (the normal dev case).
     3. a walk-up from this package's location to an enclosing git checkout
        (covers an editable install whose metadata is missing direct_url).
 
-    Returns None when there is no local source — that is the seam crit E fills
-    (a published channel becomes the source instead).
+    When NONE of those yields a real local checkout, fall back to a
+    :class:`PublishedChannelSource` (the brew / pip-from-git / install.sh case) —
+    so a non-dev install still gets gated, supervised self-update. (Returns None
+    only in the degenerate case the published source itself can't be constructed,
+    which is effectively never — it needs only metadata, not a checkout.)
     """
     import sys
 
@@ -324,22 +625,30 @@ def resolve_source(
     origin_editable = origin[1] if origin else True  # default editable: dev shape
 
     override = env.get("TIDE_SOURCE")
+    source_dir: Optional[Path] = None
     if override:
-        source_dir = Path(override).expanduser()
-    elif origin is not None:
+        cand = Path(override).expanduser()
+        if cand.is_dir():
+            source_dir = cand
+    elif origin is not None and origin[0].is_dir():
         source_dir = origin[0]
     else:
-        walked = _walk_up_to_checkout(Path(__file__))
-        if walked is None:
-            return None
-        source_dir = walked
+        source_dir = _walk_up_to_checkout(Path(__file__))
 
-    if not source_dir.is_dir():
-        return None
+    if source_dir is not None and source_dir.is_dir():
+        return LocalSourceCheckout(
+            source_dir=source_dir,
+            python_exe=python_exe,
+            editable=origin_editable,
+            marker_path=marker_path,
+        )
 
-    return LocalSourceCheckout(
-        source_dir=source_dir,
+    # No local source → the published channel becomes the source-of-truth.
+    return PublishedChannelSource(
         python_exe=python_exe,
-        editable=origin_editable,
         marker_path=marker_path,
+        cache_path=default_cache_path(env),
+        rollback_path=default_rollback_path(env),
+        repo=discover_repo(),
+        homebrew=_detect_homebrew(python_exe),
     )

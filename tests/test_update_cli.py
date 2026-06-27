@@ -73,7 +73,7 @@ def test_exit_2_when_no_source(monkeypatch, capsys):
     monkeypatch.setattr(commands, "resolve_source", lambda: None)
     rc = cli.main(["self-update", "--check"])
     assert rc == 2
-    assert "no local source" in capsys.readouterr().out
+    assert "no update source" in capsys.readouterr().out
 
 
 # --- --dry-run --------------------------------------------------------------
@@ -162,3 +162,52 @@ def test_session_start_silent_when_no_update(tmp_project, monkeypatch, capsys):
     rc = cli.main(["hook", "session-start"])
     assert rc == 0
     assert "UPDATE" not in capsys.readouterr().out
+
+
+# --- published-channel dispatch + --rollback --------------------------------
+
+
+def test_default_flow_dispatches_published_source(monkeypatch, capsys):
+    from tide.update.source import PublishedChannelSource
+
+    source = PublishedChannelSource(
+        python_exe="/py", marker_path=Path("/m"), cache_path=Path("/c"),
+        rollback_path=Path("/r"),
+    )
+    monkeypatch.setattr(commands, "resolve_source", lambda: source)
+
+    seen = {}
+
+    def fake_published(src, **kw):
+        seen["called"] = True
+        return core.SelfUpdateResult(
+            source_name="published-channel",
+            installed=Revision("0.1.0"), available=Revision("1.0.1"),
+            stale=True, accepted=True, applied=True, messages=["accepted"],
+        )
+
+    monkeypatch.setattr(core, "self_update_published", fake_published)
+    rc = cli.main(["self-update"])
+    assert rc == 0
+    assert seen.get("called") is True  # routed to the published flow, not local
+
+
+def test_rollback_flag_invokes_rollback(monkeypatch, capsys):
+    def fake_rollback(path, **kw):
+        return core.RollbackResult(True, target="0.1.0", messages=["rolled back"])
+
+    monkeypatch.setattr(core, "rollback", fake_rollback)
+    rc = cli.main(["self-update", "--rollback"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "rollback" in out
+    assert "rolled back" in out
+
+
+def test_rollback_flag_exit_2_when_no_marker(monkeypatch, capsys):
+    def fake_rollback(path, **kw):
+        return core.RollbackResult(False, target=None, messages=["no rollback marker"])
+
+    monkeypatch.setattr(core, "rollback", fake_rollback)
+    rc = cli.main(["self-update", "--rollback"])
+    assert rc == 2

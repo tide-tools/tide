@@ -191,13 +191,16 @@ def test_resolve_source_honours_tide_source_override(tmp_path: Path):
     assert source.available().version == "1.0.0"
 
 
-def test_resolve_source_none_when_override_missing(tmp_path: Path, monkeypatch):
-    # Override points nowhere and editable_origin disabled → no local source.
+def test_resolve_source_falls_back_to_published_when_no_local(tmp_path: Path, monkeypatch):
+    # Override points nowhere and editable_origin disabled → no local source, so
+    # resolution now falls back to the published channel (crit E seam filled).
     monkeypatch.setattr(src, "editable_origin", lambda: None)
     monkeypatch.setattr(src, "_walk_up_to_checkout", lambda start: None)
     source = src.resolve_source(
-        env={"TIDE_SOURCE": str(tmp_path / "does-not-exist")},
+        env={"TIDE_SOURCE": str(tmp_path / "does-not-exist"), "TIDE_HOME": str(tmp_path)},
         python_exe="/py",
         marker_path=tmp_path / "m.json",
     )
-    assert source is None
+    assert isinstance(source, src.PublishedChannelSource)
+    assert source.name() == "published-channel"
+    assert source.cache_path == tmp_path / "published-channel-cache.json"
