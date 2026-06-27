@@ -6,7 +6,7 @@
 
 ## Interfaces / how used
 
-## Cannon journal
+## Canon journal
 
 ### 2026-06-25 · f1-core
 
@@ -66,7 +66,7 @@ self-contained `index.html`, zero network deps, f1 click loop and f2 shop untouc
   occasionally spawns a sprite (respecting `MAX_SPRITES = 220`).
 - Still self-contained: zero external network dependencies, single IIFE / `"use strict"`.
 
-## Cannon journal
+## Canon journal
 - f2-upgrades: added the upgrades shop + economy (auto-spawner passive tick, click-multiplier,
   geometric costs, affordability-gated buying). Plankton becomes spendable currency. Builds
   directly on the f1 substrate without altering the core click+spawn+ripple feel. Sets up
@@ -85,7 +85,7 @@ self-contained `index.html`, zero network deps, f1 click loop and f2 shop untouc
   emits one `.ripple`. Initial hint fades on first click.
 - Self-contained: zero external network dependencies.
 
-## Cannon journal
+## Canon journal
 - f1-core: established the core click+spawn+count loop and the single-file architecture
   (DOM sprites, IIFE, sprite cap). This is the substrate later features (passive tick, upgrades,
   persistence) build on.

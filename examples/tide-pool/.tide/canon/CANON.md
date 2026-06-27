@@ -6,7 +6,7 @@
 
 ## Interfaces / how used
 
-## Cannon journal
+## Canon journal
 
 ### 2026-06-25 · f1-core
 

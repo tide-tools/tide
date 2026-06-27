@@ -16,7 +16,7 @@ Tide Pool — a playable single-file browser idle/clicker base (`index.html`, no
 - Click coords mapped CSS-px → canvas space, so it works under CSS scaling.
 - Downstream arcs build on `window.TidePool`: a spawn loop pushes to `state.dots` + bumps `state.plankton`; upgrades read/write the same store.
 
-## Cannon journal
+## Canon journal
 
 ### 2026-06-25 · f1-core
 Established the single-file game + central mutable state store + render loop. Click → plankton + counter + ripple feedback. Verified by `node --check` (SYNTAX_OK) and DOM-stub click simulation (counter/dots/ripples 0→3, first dot in-bounds, no exceptions).
@@ -42,7 +42,7 @@ Tuning: `AUTO_BASE=10`, `CLICK_BASE=25`, both scale `cost = floor(base * 1.15^n)
 - Manual click now grants `state.perClick` (not a flat +1).
 - Downstream arcs read/write `state.auto/state.click/state.perClick` the same way.
 
-### Cannon journal
+### Canon journal
 #### 2026-06-25 · f2-upgrades
 Added the upgrades shop: auto-spawner (passive plankton/sec, spawns dots untouched)
 and click-multiplier (more plankton per click), with ~1.15x/level scaling costs and
