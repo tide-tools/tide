@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tide import cli
+from tide import cli, readme
 from tide.arc import stream
 from tide.cannon import store
 from tide.hooks import session_start
@@ -56,7 +56,11 @@ def test_render_flags_unmerged_delta(tmp_project):
 
 
 def test_render_clean_project_has_no_warnings(tmp_project):
+    # A truly clean project: open arc (suppresses arc-first) + current README
+    # (suppresses readme-drift).  Only these two warnings could fire on a plain
+    # new project; both are cleared here so the session opens warning-free.
     stream.new_arc(tmp_project, "do-thing")
+    readme.generate(tmp_project)
     text = session_start.render(tmp_project, "orchestrator")
     assert "WARNINGS" not in text
 
@@ -122,3 +126,43 @@ def test_draft_contract_does_not_anchor(tmp_project):
     _write_sealed_contract(tmp_project, state="draft")
     text = session_start.render(tmp_project, "orchestrator")
     assert "arc-first" in text
+
+
+# --- readme drift warnings (criterion F) -----------------------------------
+
+def test_render_warns_readme_drift_when_stale(tmp_project):
+    """SessionStart includes a readme drift warning when the README is stale/missing."""
+    # Open an arc to suppress the arc-first advisory.
+    stream.new_arc(tmp_project, "do-thing")
+    # README never generated → code 1 → warning expected.
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "readme: drift" in text
+    assert "WARNINGS" in text
+
+
+def test_render_no_readme_warning_when_current(tmp_project):
+    """SessionStart has no readme drift warning when README is up-to-date."""
+    readme.generate(tmp_project)
+    stream.new_arc(tmp_project, "do-thing")  # suppress arc-first
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "readme: drift" not in text
+
+
+def test_readme_drift_warning_silent_on_oracle_error(tmp_path):
+    """_readme_drift_warnings returns [] when CANON.md is missing (oracle-error).
+
+    The hook must never raise on infrastructure errors — code 2 stays silent.
+    """
+    # A path with .tide/ but no CANON.md → check() returns code 2 (oracle-error).
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / ".tide").mkdir()
+    warnings = session_start._readme_drift_warnings(bad)
+    assert warnings == []
+
+
+def test_readme_drift_warning_silent_for_nonexistent_path(tmp_path):
+    """_readme_drift_warnings returns [] for a totally non-existent path."""
+    nonexistent = tmp_path / "no-such-project"
+    warnings = session_start._readme_drift_warnings(nonexistent)
+    assert warnings == []

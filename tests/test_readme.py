@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from tide import cli, paths, readme
+from tide import cli, paths, readme, roster
 from tide.cannon import rev, store
+from tests.conftest import build_tide_skeleton
 
 
 # A populated canon (the conftest skeleton leaves sections empty) so the
@@ -257,3 +258,240 @@ def test_generate_on_raw_skeleton_omits_empty_sections(tmp_project, monkeypatch)
     # the gate accepts its own fresh projection even when sections are empty
     code, _ = readme.check(tmp_project)
     assert code == 0
+
+
+# --- sweep (roster-wide generate / check) ------------------------------------
+
+def _make_project(tmp_path, name: str):
+    """Helper: build a minimal tide project dir and return its root."""
+    proj = tmp_path / name
+    build_tide_skeleton(proj, name=name)
+    return proj
+
+
+def test_sweep_empty_roster_returns_empty(tmp_control_home):
+    """Empty roster → empty result list, no crash."""
+    results = readme.sweep(tmp_control_home)
+    assert results == []
+
+
+def test_sweep_generate_creates_readme(tmp_control_home, tmp_path):
+    """Generate mode: sweep generates a README for each roster entry."""
+    proj = _make_project(tmp_path, "alpha")
+    roster.add(tmp_control_home, "alpha", str(proj))
+
+    results = readme.sweep(tmp_control_home)
+
+    assert len(results) == 1
+    name, status = results[0]
+    assert name == "alpha"
+    assert status == "generated"
+    assert readme.readme_file(proj).is_file()
+
+
+def test_sweep_generate_current_on_second_run(tmp_control_home, tmp_path):
+    """Generate mode: idempotent — second sweep reports 'current'."""
+    proj = _make_project(tmp_path, "beta")
+    roster.add(tmp_control_home, "beta", str(proj))
+
+    readme.sweep(tmp_control_home)
+    results = readme.sweep(tmp_control_home)
+
+    _, status = results[0]
+    assert status == "current"
+
+
+def test_sweep_check_current_after_generate(tmp_control_home, tmp_path):
+    """Check mode: 'current' after README has been generated."""
+    proj = _make_project(tmp_path, "gamma")
+    roster.add(tmp_control_home, "gamma", str(proj))
+    readme.generate(proj)
+
+    results = readme.sweep(tmp_control_home, check_mode=True)
+
+    _, status = results[0]
+    assert status == "current"
+
+
+def test_sweep_check_stale_when_no_readme(tmp_control_home, tmp_path):
+    """Check mode: 'stale' when README has never been generated."""
+    proj = _make_project(tmp_path, "delta")
+    roster.add(tmp_control_home, "delta", str(proj))
+
+    results = readme.sweep(tmp_control_home, check_mode=True)
+
+    _, status = results[0]
+    assert status == "stale"
+
+
+def test_sweep_oracle_error_for_missing_path(tmp_control_home):
+    """A roster entry with a non-existent path reports oracle-error, never crashes."""
+    roster.add(tmp_control_home, "ghost", "/nonexistent/path/tide-sweep-ghost")
+
+    results = readme.sweep(tmp_control_home)
+
+    assert len(results) == 1
+    name, status = results[0]
+    assert name == "ghost"
+    assert "oracle-error" in status
+
+
+def test_sweep_oracle_error_check_mode_missing_canon(tmp_control_home, tmp_path):
+    """Check mode: oracle-error when project path exists but has no CANON.md."""
+    proj = tmp_path / "broken"
+    proj.mkdir()
+    (proj / ".tide").mkdir()  # .tide/ present but no cannon/CANON.md
+    roster.add(tmp_control_home, "broken", str(proj))
+
+    results = readme.sweep(tmp_control_home, check_mode=True)
+
+    _, status = results[0]
+    assert status == "oracle-error"
+
+
+def test_sweep_continues_past_errors(tmp_control_home, tmp_path):
+    """An oracle-error on one entry does not abort the sweep — all entries visited."""
+    good = _make_project(tmp_path, "good")
+    roster.add(tmp_control_home, "ghost", "/nonexistent/path/tide-sweep-ghost2")
+    roster.add(tmp_control_home, "good", str(good))
+
+    results = readme.sweep(tmp_control_home)
+
+    assert len(results) == 2
+    names = [n for n, _ in results]
+    assert names == ["ghost", "good"]
+    assert "oracle-error" in results[0][1]
+    assert results[1][1] == "generated"
+
+
+def test_sweep_dry_run_writes_nothing(tmp_control_home, tmp_path):
+    """Dry-run mode: no README file written, status is 'dry-run'."""
+    proj = _make_project(tmp_path, "dryproj")
+    roster.add(tmp_control_home, "dryproj", str(proj))
+
+    results = readme.sweep(tmp_control_home, dry_run=True)
+
+    _, status = results[0]
+    assert status == "dry-run"
+    assert not readme.readme_file(proj).exists()
+
+
+# --- CLI --all flag ----------------------------------------------------------
+
+def test_cli_readme_all_generates_roster(tmp_control_home, tmp_path, monkeypatch, capsys):
+    """'tide readme --all' sweeps the roster and reports per-project status."""
+    monkeypatch.chdir(tmp_control_home)
+    proj = _make_project(tmp_path, "proj")
+    roster.add(tmp_control_home, "proj", str(proj))
+
+    rc = cli.main(["readme", "--all"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "proj:" in out
+    assert "generated" in out
+
+
+def test_cli_readme_all_check_exit_1_when_stale(tmp_control_home, tmp_path, monkeypatch, capsys):
+    """'tide readme --check --all' exits 1 when any project README is stale."""
+    monkeypatch.chdir(tmp_control_home)
+    proj = _make_project(tmp_path, "proj")
+    roster.add(tmp_control_home, "proj", str(proj))
+    # README never generated → stale
+
+    rc = cli.main(["readme", "--check", "--all"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "stale" in out
+
+
+def test_cli_readme_all_check_exit_0_when_all_current(tmp_control_home, tmp_path, monkeypatch, capsys):
+    """'tide readme --check --all' exits 0 when every registered README is current."""
+    monkeypatch.chdir(tmp_control_home)
+    proj = _make_project(tmp_path, "proj")
+    roster.add(tmp_control_home, "proj", str(proj))
+    readme.generate(proj)
+
+    rc = cli.main(["readme", "--check", "--all"])
+
+    assert rc == 0
+    assert "current" in capsys.readouterr().out
+
+
+def test_cli_readme_all_empty_roster_exits_0(tmp_control_home, monkeypatch, capsys):
+    """'tide readme --all' with an empty roster exits 0 with an informational note."""
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["readme", "--all"])
+
+    assert rc == 0
+    assert "empty" in capsys.readouterr().out
+
+
+def test_cli_readme_all_oracle_error_exits_nonzero_in_check_mode(
+    tmp_control_home, monkeypatch, capsys
+):
+    """'tide readme --check --all' exits nonzero when a project has an oracle-error."""
+    monkeypatch.chdir(tmp_control_home)
+    roster.add(tmp_control_home, "ghost", "/nonexistent/path/tide-cli-ghost")
+
+    rc = cli.main(["readme", "--check", "--all"])
+
+    assert rc != 0
+    out = capsys.readouterr().out
+    assert "oracle-error" in out
+
+
+# --- regression: tilde-bad-username path must not crash sweep ---------------
+# Covers two bugs fixed together:
+#   HIGH  — expanduser() was outside the try block; a bad ~username raises
+#            RuntimeError which escaped and crashed the whole sweep.
+#   MEDIUM — has_issue matched exact "oracle-error" but exception-path produces
+#            "oracle-error: <detail>"; startswith() now catches both forms so
+#            the CI gate exits nonzero even for the exception path.
+
+_BAD_TILDE_PATH = "~nonexistentuser123tide/anything"
+
+
+def test_sweep_bad_tilde_does_not_crash_generate_mode(tmp_control_home, tmp_path):
+    """expanduser() on a bad ~username must be captured as oracle-error, never raise.
+
+    A good entry after the bad one must still be processed (collect-and-continue).
+    """
+    good = _make_project(tmp_path, "good")
+    roster.add(tmp_control_home, "bad-tilde", _BAD_TILDE_PATH)
+    roster.add(tmp_control_home, "good", str(good))
+
+    # Must not raise RuntimeError or any other exception.
+    results = readme.sweep(tmp_control_home)
+
+    assert len(results) == 2
+    names = [n for n, _ in results]
+    assert names == ["bad-tilde", "good"]
+    bad_status = results[0][1]
+    assert bad_status.startswith("oracle-error"), bad_status
+    # good entry was reached and processed despite the prior error
+    assert results[1][1] == "generated"
+
+
+def test_sweep_bad_tilde_check_mode_sets_has_issue(tmp_control_home):
+    """Exception-path oracle-error (detail string) must count as a CI-gate failure.
+
+    Covers the MEDIUM bug: 'oracle-error: <detail>' must match the has_issue check
+    so --check --all exits nonzero even when the error came from the exception path.
+    """
+    roster.add(tmp_control_home, "bad-tilde", _BAD_TILDE_PATH)
+
+    results = readme.sweep(tmp_control_home, check_mode=True)
+
+    assert len(results) == 1
+    _, status = results[0]
+    # Exception path produces "oracle-error: <detail>" (with colon + detail).
+    assert status.startswith("oracle-error"), status
+
+    # Simulate what _cmd_readme_all does: the startswith check must fire.
+    has_issue = any(
+        s == "stale" or s.startswith("oracle-error") for _, s in results
+    )
+    assert has_issue, "CI gate would have silently passed a broken entry"

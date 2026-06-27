@@ -34,6 +34,10 @@ from typing import List, Optional, Tuple
 from . import paths
 from .cannon import rev, store
 
+# Roster import is deferred inside sweep() to avoid any potential import cycle
+# (roster → paths, readme → paths; no actual cycle, but the lazy pattern is
+# consistent with how board.py and session_start.py guard their imports).
+
 # The provenance stamp: an HTML comment (invisible in rendered markdown) on the
 # last line. It records the source canon-rev so drift is detectable and so the
 # raw file announces itself as generated. The cannon-rev token is parsed back out
@@ -205,9 +209,87 @@ def check(root: Path) -> Tuple[int, List[str]]:
         return 2, ["oracle-error (unexpected): {0}".format(exc)]
 
 
+# --- roster sweep (--all) ---------------------------------------------------
+
+def sweep(
+    control_home: Path,
+    check_mode: bool = False,
+    dry_run: bool = False,
+) -> List[Tuple[str, str]]:
+    """Roster-wide README generate or check — one ``(name, status)`` per entry.
+
+    Iterates every project registered in *control_home*'s ``roster.md`` and
+    runs :func:`generate` (or :func:`check` when *check_mode* is True) for each
+    project path. Results are returned in roster file order.
+
+    Status values:
+
+    * generate mode: ``"generated"``, ``"regenerated"``, ``"current"``,
+      ``"dry-run"``, or ``"oracle-error: <detail>"``.
+    * check mode: ``"current"``, ``"stale"``, or ``"oracle-error"``.
+
+    Never raises: missing paths, unreadable CANON.md, and any other per-project
+    error are captured as ``"oracle-error: …"`` status strings so the sweep is
+    always a collect-and-continue loop (never crash on one bad entry).
+    """
+    from . import roster as _roster  # lazy: consistent with board/session_start style
+
+    entries = _roster.read_roster(Path(control_home))
+    results: List[Tuple[str, str]] = []
+    for entry in entries:
+        name = entry["name"]
+        try:
+            # expanduser() is inside the try: a tilde path with a non-existent
+            # username raises RuntimeError — must be caught, not crash the sweep.
+            proj = Path(entry["path"]).expanduser()
+            if check_mode:
+                # check() is already defensive (catches OSError/UnicodeDecodeError)
+                # and returns (code, reasons) — no extra try/except needed here.
+                code, _reasons = check(proj)
+                if code == 0:
+                    status = "current"
+                elif code == 1:
+                    status = "stale"
+                else:
+                    status = "oracle-error"
+            else:
+                # generate() raises FileNotFoundError when CANON.md is missing.
+                _text, status = generate(proj, dry_run=dry_run)
+        except (FileNotFoundError, OSError) as exc:
+            status = "oracle-error: {0}".format(exc)
+        except Exception as exc:  # pragma: no cover — defensive; should not fire
+            status = "oracle-error: {0}".format(exc)
+        results.append((name, status))
+    return results
+
+
 # --- CLI wiring ------------------------------------------------------------
 
+def _cmd_readme_all(args) -> int:
+    """Handle ``--all``: sweep every roster entry from the current tide root."""
+    root = paths.require_tide_root()
+    check_mode = getattr(args, "check", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    results = sweep(root, check_mode=check_mode, dry_run=dry_run)
+
+    if not results:
+        print("readme --all: roster is empty")
+        return 0
+
+    has_issue = False
+    for name, status in results:
+        print("{0}: {1}".format(name, status))
+        if check_mode and (status == "stale" or status.startswith("oracle-error")):
+            has_issue = True
+
+    return 1 if has_issue else 0
+
+
 def _cmd_readme(args) -> int:
+    if getattr(args, "all", False):
+        return _cmd_readme_all(args)
+
     root = paths.require_tide_root()
 
     if getattr(args, "check", False):
@@ -258,5 +340,13 @@ def register(subparsers) -> None:
         "--dry-run",
         action="store_true",
         help="print the projected README to stdout, write nothing",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "sweep every project registered in the roster; combined with --check, "
+            "exits nonzero when any project is stale/oracle-error (CI-gateable)"
+        ),
     )
     p.set_defaults(func=_cmd_readme, _cmd="readme")

@@ -105,6 +105,24 @@ def _has_signed_contract(root: Path) -> bool:
     )
 
 
+def _readme_drift_warnings(root: Path) -> List[str]:
+    """Warning line when the current project's README has drifted from canon.
+
+    Emits a single line for code 1 (stale / missing / hand-edited / canon moved
+    ahead). Code 0 (current) and code 2 (oracle-error: no CANON.md) are silent —
+    the hook must never raise or break a session on any error.
+    """
+    try:
+        from .. import readme as _readme  # lazy: keep SessionStart import-light
+
+        code, _reasons = _readme.check(root)
+        if code == 1:
+            return ["  readme: drift — run 'tide readme' to regenerate"]
+    except Exception:
+        pass  # SessionStart must never raise; silently skip on unexpected error
+    return []
+
+
 def _arc_first_warnings(root: Path, role: str) -> List[str]:
     """Warn the HEAD when it leads work with no open arc and no signed contract.
 
@@ -140,6 +158,7 @@ def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
         _drift_warnings(root)
         + _unmerged_warnings(root)
         + _deferred_warnings(root)
+        + _readme_drift_warnings(root)
         + _arc_first_warnings(root, role)
     )
     if warnings:
