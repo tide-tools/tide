@@ -1,18 +1,35 @@
-"""U11 unit — adapters: registry (default orca), tmux/orca dry-run, unknown raises."""
+"""U11 unit — adapters: registry, tmux/orca dry-run, unknown raises, auto-detect.
+
+Auto-detect contract (updated when macos adapter was added):
+  - get_adapter() / resolve_from_settings(None) now call default_adapter_name()
+    instead of hard-coding "orca".
+  - default_adapter_name(): orca-on-PATH → "orca"; else Darwin → "macos"; else "tmux".
+  - Explicit adapter names (via settings or --adapter) still always win.
+  - Unknown names still raise AdapterError.
+
+Tests that previously asserted ``get_adapter() is OrcaAdapter`` unconditionally
+have been updated to mock shutil.which so they test the contract, not the
+machine state.
+"""
 
 from __future__ import annotations
+
+import shutil
 
 import pytest
 
 from tide import adapters
 from tide.adapters import base
 from tide.adapters.orca import OrcaAdapter
+from tide.adapters.terminal_app import TerminalAppAdapter
 from tide.adapters.tmux import TmuxAdapter
 
 
 # --- registry --------------------------------------------------------------
 
-def test_get_adapter_default_is_orca():
+def test_get_adapter_default_auto_detects_orca_when_on_path(monkeypatch):
+    """When orca binary is present on PATH, the auto-detect default is OrcaAdapter."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca" if name == "orca" else None)
     a = adapters.get_adapter()
     assert isinstance(a, OrcaAdapter)
     assert a.name == "orca"
@@ -28,20 +45,24 @@ def test_unknown_adapter_raises_listing_available():
         adapters.get_adapter("kitty")
     msg = str(exc.value)
     assert "kitty" in msg
-    # the error lists what IS available
-    assert "orca" in msg and "tmux" in msg
+    # the error lists what IS available (now includes macos)
+    assert "orca" in msg and "tmux" in msg and "macos" in msg
 
 
-def test_available_adapters_lists_both_orca_first():
-    assert adapters.available_adapters() == ["orca", "tmux"]
+def test_available_adapters_lists_three_in_order():
+    """Registry now contains orca → macos → tmux in that insertion order."""
+    assert adapters.available_adapters() == ["orca", "macos", "tmux"]
 
 
-def test_resolve_from_settings_reads_terminal_adapter_key():
+def test_resolve_from_settings_reads_terminal_adapter_key(monkeypatch):
     assert isinstance(adapters.resolve_from_settings({"terminal_adapter": "tmux"}), TmuxAdapter)
-    # absent / blank / non-dict → default orca
-    assert isinstance(adapters.resolve_from_settings({}), OrcaAdapter)
-    assert isinstance(adapters.resolve_from_settings({"terminal_adapter": "  "}), OrcaAdapter)
-    assert isinstance(adapters.resolve_from_settings(None), OrcaAdapter)
+    # absent / blank / non-dict → auto-detect; mock orca absent + Darwin → macos
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert isinstance(adapters.resolve_from_settings({}), TerminalAppAdapter)
+    assert isinstance(adapters.resolve_from_settings({"terminal_adapter": "  "}), TerminalAppAdapter)
+    assert isinstance(adapters.resolve_from_settings(None), TerminalAppAdapter)
 
 
 # the scoped launch command the launcher would build; adapters carry it verbatim.
