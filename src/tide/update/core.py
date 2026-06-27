@@ -379,6 +379,15 @@ def _gate_then_install(
         [getattr(source, "python_exe"), "-m", "tide", "version"], None, None
     )
     if smoke_rc != 0 or "tide" not in smoke_out:
+        # The install PHYSICALLY happened (pip succeeded) — the new version IS on
+        # disk, it just fails to smoke. STAMP the marker anyway so installed() reads
+        # the new version: otherwise the marker stays at the OLD version and every
+        # session re-nudges "update available" to a version already installed (a
+        # perpetual loop). Stamping only silences the re-nudge for THIS version; a
+        # genuinely newer release still nudges. The loud WARNING + rollback guidance
+        # keep the failure visible — accepted stays False (not a clean success).
+        if hasattr(source, "record_install"):
+            source.record_install()
         res.messages.append(
             "WARNING — install applied but post-install smoke FAILED "
             "(roll back with 'tide self-update --rollback')"

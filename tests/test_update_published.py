@@ -486,12 +486,17 @@ def test_published_update_cleans_up_workdir(tmp_path: Path):
     assert created and not Path(created[0]).exists()  # temp checkout removed
 
 
-def test_published_update_smoke_failure_does_not_stamp(tmp_path: Path):
+def test_published_update_smoke_failure_stamps_to_stop_renudge(tmp_path: Path):
+    # pip succeeded (the new version IS installed); only the smoke failed. The
+    # marker advances to the new version so installed()==available() and the user
+    # is no longer perpetually re-nudged to reinstall a version they already have —
+    # while accepted stays False and the loud WARNING keeps the failure visible.
     s = _stale_published(tmp_path)
     runner = FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(1, "ImportError"))
     res = core.self_update_published(s, runner=runner, workdir_factory=_wd_factory(tmp_path))
     assert res.accepted is False
-    assert src.read_marker(s.marker_path)["version"] == "0.1.0"  # NOT advanced
+    assert src.read_marker(s.marker_path)["version"] == "1.0.1"  # advanced → no re-nudge
+    assert core.check_for_update(s).stale is False
     assert any("smoke FAILED" in m for m in res.messages)
 
 
