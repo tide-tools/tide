@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import paths
+from . import io as _io, paths
 from .cannon import rev, store
 
 # Roster import is deferred inside sweep() to avoid any potential import cycle
@@ -153,7 +153,7 @@ def generate(
     existed = target.is_file()
     if existed and target.read_text(encoding="utf-8") == text:
         return text, "current"
-    target.write_text(text, encoding="utf-8")
+    _io.atomic_write(target, text)
     return text, ("regenerated" if existed else "generated")
 
 

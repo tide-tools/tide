@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from . import paths, slug
+from . import io as _io, paths, slug
 
 # The three strict-reconciliation guards a loose land may defer, canonical order.
 GUARD_DELTA = "delta"
@@ -122,8 +122,7 @@ def _write(root: Path, items: List[LedgerEntry]) -> None:
             f.unlink()
         return
     body = "\n".join(_format_line(e) for e in items)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(_HEADER + body + "\n", encoding="utf-8")
+    _io.atomic_write(f, _HEADER + body + "\n")
 
 
 def append(root: Path, arc: str, deferred: List[str], cannon_rev: str) -> LedgerEntry:

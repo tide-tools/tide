@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import fields, paths, placeholders, slug, strictness
+from .. import fields, io as _io, paths, placeholders, slug, strictness
 from ..cannon import merge
 from . import ask as ask_mod
 from . import model
@@ -79,12 +79,12 @@ def new(
         cslug, goal=goal, criteria=criteria, project=project, cannon_rev=cannon_rev
     )
     cpath = model.contract_path(arc_dir)
-    cpath.write_text(text, encoding="utf-8")
+    _io.atomic_write(cpath, text)
 
     # Stage an empty delta + the durable asks/ home.
     dpath = model.delta_path(arc_dir)
     if not dpath.is_file():
-        dpath.write_text("# delta — {0}\nmerged: no\n\n".format(cslug), encoding="utf-8")
+        _io.atomic_write(dpath, "# delta — {0}\nmerged: no\n\n".format(cslug))
     model.asks_dir(arc_dir).mkdir(parents=True, exist_ok=True)
     return cpath
 
@@ -166,7 +166,7 @@ def report(
         raise model.ContractError("no contract on arc {0!r}".format(arc_dir.name))
     cslug = model.contract_slug(arc_dir)
     path = arc_dir / REPORT_FILE
-    path.write_text(_deliverable_md("report", cslug, body), encoding="utf-8")
+    _io.atomic_write(path, _deliverable_md("report", cslug, body))
     _maybe_advance_to_output(arc_dir)
     return path
 
@@ -188,7 +188,7 @@ def proof(
         raise model.ContractError("no contract on arc {0!r}".format(arc_dir.name))
     cslug = model.contract_slug(arc_dir)
     path = arc_dir / PROOF_FILE
-    path.write_text(_deliverable_md("proof", cslug, body), encoding="utf-8")
+    _io.atomic_write(path, _deliverable_md("proof", cslug, body))
     _maybe_advance_to_output(arc_dir)
     return path
 

@@ -23,7 +23,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
-from . import paths, roster
+from . import io as _io, paths, roster
 from .arc.stream import StreamError
 from .cannon import store
 from .strictness import DEFAULT as DEFAULT_STRICTNESS
@@ -90,7 +90,7 @@ def scaffold_project(
     sf = paths.strictness_file(root)
     sf.parent.mkdir(parents=True, exist_ok=True)
     if force or not sf.exists():
-        sf.write_text("{0}\n".format(DEFAULT_STRICTNESS), encoding="utf-8")
+        _io.atomic_write(sf, "{0}\n".format(DEFAULT_STRICTNESS))
         created.append("state/strictness")
 
     if not tide_existed:
@@ -120,13 +120,13 @@ def unfold_control_home(
     # roster.md — the control-home registry (header-only when fresh).
     rf = paths.roster_file(root)
     if force or not rf.is_file():
-        rf.write_text(roster.HEADER + "\n", encoding="utf-8")
+        _io.atomic_write(rf, roster.HEADER + "\n")
         created.append("roster.md")
 
     # README.md — orientation for a human opening the dir.
     readme = root / "README.md"
     if force or not readme.exists():
-        readme.write_text(README_TEMPLATE.format(name=name), encoding="utf-8")
+        _io.atomic_write(readme, README_TEMPLATE.format(name=name))
         created.append("README.md")
 
     if git:

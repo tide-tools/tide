@@ -62,7 +62,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from .. import fields, paths
+from .. import fields, io as _io, paths
 
 # Match cannon.rev.REV_LEN for consistency.
 REV_LEN = 12
@@ -413,7 +413,7 @@ def stamp_canon_baseline(root: Path) -> Optional[str]:
     text = canon.read_text(encoding="utf-8")
     new_text = _set_preamble_baseline(text, rr)
     if new_text != text:
-        canon.write_text(new_text, encoding="utf-8")
+        _io.atomic_write(canon, new_text)
     return rr
 
 

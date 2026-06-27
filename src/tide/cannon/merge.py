@@ -31,7 +31,7 @@ import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .. import fields, paths
+from .. import fields, io as _io, paths
 from . import rev, store
 
 # Canonical section titles a delta is routed INTO (everything bar the journal).
@@ -298,23 +298,26 @@ def merge_delta(
     delta_body = _delta_body(delta_path.read_text(encoding="utf-8"))
 
     canon = paths.canon_file(root)
-    canon_text = canon.read_text(encoding="utf-8") if canon.is_file() else ""
-    merged = merge_delta_text(canon_text, delta_body, date=date, slug=slug)
-    canon.parent.mkdir(parents=True, exist_ok=True)
-    canon.write_text(merged, encoding="utf-8")
-
-    mark_merged(delta_path, date=date)
-
-    # Reconcile prose↔reality at the single serialization point: stamp the current
-    # reality-rev into CANON.md's preamble so the gate has a standing baseline to
-    # diff. A no-op when the project has no canon-covers manifest. Stamped LAST (after
-    # mark_merged) so the baseline captures the FINAL post-merge state of every
-    # covered file — otherwise a manifest covering delta.md (e.g. ``**/*.md``) would
-    # see it flip ``merged: no→yes`` after the stamp and falsely report standing
-    # drift. The baseline line is part of CANON.md, so rev.compute below hashes it
-    # into the bumped cannon-rev.
-    from . import reality as _reality
-    _reality.stamp_canon_baseline(root)
+    lock_dir = paths.state_dir(root) / ".merge.lock"
+    # Hold the lock across the ENTIRE critical section — atomic_write(canon),
+    # mark_merged, AND stamp_canon_baseline — so no concurrent merge can read
+    # a partially-updated CANON.md and clobber the other merge's journal entry.
+    #
+    # Ordering inside the lock matters:
+    #   1. atomic_write(canon): journal entry is durable.
+    #   2. mark_merged: delta stamped *after* canon is persisted so that a crash
+    #      between 1 and 2 is safe — re-running merge_delta sees the stamp already
+    #      in the journal (_journal_has_stamp) and is a no-op.
+    #   3. stamp_canon_baseline: stamped last so it captures the FINAL post-merge
+    #      state of every covered file (a manifest covering delta.md would otherwise
+    #      see ``merged: no→yes`` happen *after* the baseline and trip standing drift).
+    with _io.file_lock(lock_dir):
+        canon_text = canon.read_text(encoding="utf-8") if canon.is_file() else ""
+        merged = merge_delta_text(canon_text, delta_body, date=date, slug=slug)
+        _io.atomic_write(canon, merged)
+        mark_merged(delta_path, date=date)
+        from . import reality as _reality
+        _reality.stamp_canon_baseline(root)
 
     return rev.compute(root)
 

@@ -23,13 +23,46 @@ file wrappers do the I/O.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import FrozenSet, List, Optional
 
 # Keys whose read/write is aliased: prev: is an inbound alias for supersedes:.
 _SUPERSEDES_KEYS = ("supersedes", "prev")
 _CANONICAL = {"supersedes": "supersedes", "prev": "supersedes"}
 # Keys whose stored value is a bare slug → strip a surrounding __…__.
 _SLUG_VALUE_KEYS = {"supersedes", "prev"}
+
+# Whitelist of all frontmatter keys tide actually uses.  ``_line_key`` only
+# returns a key when it is in this set, so body lines like ``TODO: fix`` or
+# ``NOTE: …`` are never misparsed as frontmatter regardless of their shape.
+# Add here when a new key is introduced; keep sorted for readability.
+KNOWN_KEYS: FrozenSet[str] = frozenset(
+    {
+        # Supersedes alias (read-only; canonical write is always "supersedes").
+        "prev",
+        # Arc passport / goal passport fields.
+        "cannon-rev",
+        "criteria",
+        "deferred",
+        "from",
+        "goal",
+        "merged",
+        "mode",
+        "orca-base-branch",
+        "orca-issue",
+        "orca-workspace",
+        "project",
+        "reality-rev",
+        "sign",
+        "slug",
+        "state",
+        "status",
+        "supersedes",
+        # Contract deliverable fields.
+        "accepted",
+        # Worktree adapter fields.
+        "worktree-branch",
+    }
+)
 
 
 def _match_keys(key: str) -> List[str]:
@@ -40,15 +73,25 @@ def _match_keys(key: str) -> List[str]:
 
 
 def _line_key(line: str) -> Optional[str]:
-    """The frontmatter key of *line* (text before the first ``:``), or None."""
+    """The frontmatter key of *line* (text before the first ``:``), or None.
+
+    A key is returned only when the candidate token:
+      * is a bare word with no whitespace,
+      * is present in :data:`KNOWN_KEYS`,
+
+    so body lines such as ``TODO: fix`` or ``NOTE: …`` are never misparsed as
+    frontmatter even though they are syntactically key-like.
+    """
     stripped = line.rstrip("\n")
     idx = stripped.find(":")
     if idx <= 0:
         return None
     head = stripped[:idx]
-    # A frontmatter key is a bare token (no spaces) — guards against prose
-    # lines like 'Note: see below' being treated as fields.
+    # A frontmatter key is a bare token (no spaces).
     if head != head.strip() or " " in head or "\t" in head:
+        return None
+    # Restrict to the known-key whitelist — unknown keys in the body are prose.
+    if head not in KNOWN_KEYS:
         return None
     return head
 
@@ -150,7 +193,9 @@ def set_field_text(text: str, key: str, value: str) -> str:
 
 
 def set_field(path: Path, key: str, value: str) -> None:
-    """File wrapper for :func:`set_field_text` (read-modify-write, utf-8)."""
+    """File wrapper for :func:`set_field_text` (atomic read-modify-write, utf-8)."""
+    from .io import atomic_write  # deferred to avoid import-cycle risks
+
     p = Path(path)
     original = p.read_text(encoding="utf-8") if p.is_file() else ""
-    p.write_text(set_field_text(original, key, value), encoding="utf-8")
+    atomic_write(p, set_field_text(original, key, value))

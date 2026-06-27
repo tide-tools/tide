@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import fields, numbering, paths, slug
+from .. import fields, io as _io, numbering, paths, slug
 from . import stream
 
 # A candidate file: NN-<slug>.md (2+ digit number, base-10 padding).
@@ -95,7 +95,7 @@ def new_candidate(
     nn = numbering.next_num_file(cdir)
     name = "{0}-{1}".format(nn, s)
     path = cdir / "{0}.md".format(name)
-    path.write_text(_candidate_md(name, from_arc, idea), encoding="utf-8")
+    _io.atomic_write(path, _candidate_md(name, from_arc, idea))
     return path
 
 

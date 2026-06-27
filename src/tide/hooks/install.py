@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 from typing import List, Tuple
 
+from .. import io as _io
 from ..arc.stream import StreamError
 from . import edit_gate, role_gate, session_start
 
@@ -174,8 +175,7 @@ def install_hooks(root: Path) -> Tuple[Path, List[str]]:
     data = _load(path)
     notes = merge_hooks(data)
     if notes:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        _io.atomic_write(path, json.dumps(data, indent=2) + "\n")
     return path, notes
 
 

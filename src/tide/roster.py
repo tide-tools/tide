@@ -51,7 +51,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from . import paths
+from . import io as _io, paths
 from .arc.stream import StreamError
 
 HEADER = "# tide roster"
@@ -140,8 +140,7 @@ def _render(entries: List[Dict[str, str]]) -> str:
 
 def _write(root: Path, entries: List[Dict[str, str]]) -> None:
     f = paths.roster_file(root)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(_render(entries), encoding="utf-8")
+    _io.atomic_write(f, _render(entries))
 
 
 # --- operations ------------------------------------------------------------

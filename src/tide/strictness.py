@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from . import paths
+from . import io as _io, paths
 from .arc.stream import StreamError
 
 STRICT = "strict"
@@ -88,8 +88,7 @@ def set_strictness(root: Path, value: str) -> str:
     """
     v = _normalise(value)
     f = paths.strictness_file(root)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("{0}\n".format(v), encoding="utf-8")
+    _io.atomic_write(f, "{0}\n".format(v))
     return v
 
 

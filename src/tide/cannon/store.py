@@ -25,7 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import paths
+from .. import io as _io, paths
 
 DEFAULT_LANG = "en"
 
@@ -79,11 +79,11 @@ def init(
 
     canon = paths.canon_file(root)
     if force or not canon.exists():
-        canon.write_text(canon_template(project_name), encoding="utf-8")
+        _io.atomic_write(canon, canon_template(project_name))
 
     cfg = paths.cannon_config(root)
     if force or not cfg.exists():
-        cfg.write_text(config_text(lang), encoding="utf-8")
+        _io.atomic_write(cfg, config_text(lang))
 
     return cannon
 

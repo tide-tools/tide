@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import fields, numbering, slug
+from .. import fields, io as _io, numbering, slug
 from . import model
 
 OPEN = "open"
@@ -91,7 +91,7 @@ def ask(
     nn = numbering.next_num_file(adir)
     name = "{0}-{1}".format(nn, s)
     path = adir / "{0}.md".format(name)
-    path.write_text(ask_md(name, from_ref, question), encoding="utf-8")
+    _io.atomic_write(path, ask_md(name, from_ref, question))
     return path
 
 
@@ -177,7 +177,7 @@ def answer(
     body = (answer or "").strip() or "<answer>"
     text = path.read_text(encoding="utf-8")
     text = _set_answer_section(text, body)
-    path.write_text(text, encoding="utf-8")
+    _io.atomic_write(path, text)
     fields.set_field(path, "state", ANSWERED)
     return path
 

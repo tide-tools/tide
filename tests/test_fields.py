@@ -51,13 +51,18 @@ def test_set_field_replaces_in_place_preserving_order():
 
 
 def test_set_field_new_key_appended_to_frontmatter_block():
-    out = fields.set_field_text(ARC_MD, "contract", "c-07")
-    assert fields.read_field_text(out, "contract") == "c-07"
+    # Use a real known key ("slug") — the whitelist introduced in the durability
+    # hardening pass restricts read_field_text to KNOWN_KEYS, so "contract" (a
+    # CLI sub-command name, not a real field key) would not round-trip.  The
+    # insertion-ordering behavior under test is the same regardless of which
+    # whitelisted key is used.
+    out = fields.set_field_text(ARC_MD, "slug", "c-07")
+    assert fields.read_field_text(out, "slug") == "c-07"
     # existing fields keep their values/order
     assert fields.read_field_text(out, "goal") == "stop the leak"
     assert fields.read_field_text(out, "cannon-rev") == "abc123"
     # inserted inside the frontmatter block, before the body heading
-    assert out.index("contract: c-07") < out.index("## input")
+    assert out.index("slug: c-07") < out.index("## input")
 
 
 def test_set_field_supersedes_replaces_prev_line_in_place():

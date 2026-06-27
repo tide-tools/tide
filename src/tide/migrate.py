@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import fields, paths
+from . import fields, io as _io, paths
 from .arc.stream import StreamError
 from .init_home import scaffold_project
 
@@ -319,8 +319,7 @@ def apply_migration(plan: MigratePlan, force: bool = False) -> MigrateResult:
         shutil.copy2(src_canon, dst_canon)
     elif plan.canon_stub:
         target = paths.canon_file(root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(canon_stub_text(root.resolve().name), encoding="utf-8")
+        _io.atomic_write(target, canon_stub_text(root.resolve().name))
     result.canon_action = plan.canon_action
 
     # 6. backup — mv .arcs .arcs.pre-tide-bak (NEVER rm).

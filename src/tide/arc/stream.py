@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from .. import fields, numbering, paths, placeholders, slug
+from .. import fields, io as _io, numbering, paths, placeholders, slug
 from ..cannon import rev
 from . import templates
 
@@ -172,7 +172,7 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     entry = stream_dir / "{0}-{1}".format(nn, s)
     for sub in TRIAD:
         (entry / sub).mkdir(parents=True, exist_ok=True)
-    (entry / "arc.md").write_text(templates.arc_md(entry.name), encoding="utf-8")
+    _io.atomic_write(entry / "arc.md", templates.arc_md(entry.name))
     stamp_rev(entry, root)
     return entry
 
@@ -192,7 +192,7 @@ def new_goal(root: Path, raw_slug: str) -> Path:
     entry = arcs / "{0}-@{1}".format(nn, s)
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
-    (entry / "{0}-goal.md".format(s)).write_text(templates.goal_md(s), encoding="utf-8")
+    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.goal_md(s))
     stamp_rev(entry, root)
     return entry
 
@@ -338,7 +338,7 @@ def _write_supersedes(doc_path: Path, old: str) -> None:
         fields.set_field(doc_path, "supersedes", bare)
         return
     body = "\n".join(out)
-    doc_path.write_text(body + "\n" if had_trailing_nl else body, encoding="utf-8")
+    _io.atomic_write(doc_path, body + "\n" if had_trailing_nl else body)
 
 
 def supersede(
@@ -378,8 +378,9 @@ def supersede(
     _write_supersedes(doc, old_s)
 
     # 4. seed the back-pointer into input/.
-    (entry / "input" / "from-{0}.md".format(old_s)).write_text(
-        templates.from_seed(old_s, kind), encoding="utf-8"
+    _io.atomic_write(
+        entry / "input" / "from-{0}.md".format(old_s),
+        templates.from_seed(old_s, kind),
     )
     return entry
 

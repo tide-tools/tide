@@ -31,7 +31,7 @@ from datetime import date as _date
 from pathlib import Path
 from typing import List, Optional
 
-from .. import paths, slug
+from .. import io as _io, paths, slug
 from ..adapters import SpawnResult, get_adapter
 from ..adapters.base import persist_seed
 from ..arc import candidate
@@ -152,7 +152,7 @@ def write_summary(
     ws = entry / WORKSPACE_DIRNAME
     ws.mkdir(parents=True, exist_ok=True)
     path = ws / summary_filename(date)
-    path.write_text(summary, encoding="utf-8")
+    _io.atomic_write(path, summary)
     return path
 
 

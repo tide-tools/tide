@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import List, Optional, Protocol
 
 from .. import __version__ as _PKG_FALLBACK_VERSION
+from .. import io as _io
 
 # --- revision identity ------------------------------------------------------
 
@@ -186,14 +187,13 @@ def read_marker(path: Path) -> Optional[dict]:
 def write_marker(path: Path, revision: Revision, source_dir: Path) -> None:
     """Write the install marker recording *revision* + its *source_dir*."""
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": revision.version,
         "commit": revision.commit,
         "dirty": revision.dirty,
         "source": str(source_dir),
     }
-    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _io.atomic_write(p, json.dumps(payload, indent=2) + "\n")
 
 
 # --- the local-source implementation ----------------------------------------
