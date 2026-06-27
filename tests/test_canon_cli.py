@@ -1,11 +1,11 @@
-"""U2 integration — `tide cannon …` wired through the real CLI parser."""
+"""U2 integration — `tide canon …` wired through the real CLI parser."""
 
 from __future__ import annotations
 
 import pytest
 
 from tide import cli, paths
-from tide.cannon import rev, store
+from tide.canon import rev, store
 
 
 @pytest.fixture
@@ -15,17 +15,17 @@ def in_project(tmp_project, monkeypatch):
     return tmp_project
 
 
-def test_cli_cannon_init_creates_files(in_project):
-    # start from an empty cannon dir so init does real work
+def test_cli_canon_init_creates_files(in_project):
+    # start from an empty canon dir so init does real work
     paths.canon_file(in_project).unlink()
-    paths.cannon_config(in_project).unlink()
+    paths.canon_config(in_project).unlink()
     rc = cli.main(["cannon", "init", "--name", "demo"])
     assert rc == 0
     assert paths.canon_file(in_project).is_file()
-    assert paths.cannon_config(in_project).read_text(encoding="utf-8") == "lang=en\n"
+    assert paths.canon_config(in_project).read_text(encoding="utf-8") == "lang=en\n"
 
 
-def test_cli_cannon_rev_prints_hash(in_project, capsys):
+def test_cli_canon_rev_prints_hash(in_project, capsys):
     rc = cli.main(["cannon", "rev"])
     assert rc == 0
     printed = capsys.readouterr().out.strip()
@@ -33,7 +33,7 @@ def test_cli_cannon_rev_prints_hash(in_project, capsys):
     assert len(printed) == rev.REV_LEN
 
 
-def test_cli_cannon_merge_refused_for_worker(in_project, worker_role, capsys):
+def test_cli_canon_merge_refused_for_worker(in_project, worker_role, capsys):
     arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
     arc_dir.mkdir(parents=True)
     (arc_dir / "delta.md").write_text("body\n", encoding="utf-8")
@@ -42,7 +42,7 @@ def test_cli_cannon_merge_refused_for_worker(in_project, worker_role, capsys):
     assert "orchestrator-only" in capsys.readouterr().err
 
 
-def test_cli_cannon_merge_runs_for_orchestrator(in_project, orchestrator_role, capsys):
+def test_cli_canon_merge_runs_for_orchestrator(in_project, orchestrator_role, capsys):
     arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
     arc_dir.mkdir(parents=True)
     (arc_dir / "delta.md").write_text("# delta — fix-leak\n\npatched\n", encoding="utf-8")
@@ -52,7 +52,7 @@ def test_cli_cannon_merge_runs_for_orchestrator(in_project, orchestrator_role, c
     assert "### " in store.read(in_project)
 
 
-def test_cli_cannon_merge_preview_shows_diff_without_committing(in_project, capsys):
+def test_cli_canon_merge_preview_shows_diff_without_committing(in_project, capsys):
     arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
     arc_dir.mkdir(parents=True)
     (arc_dir / "delta.md").write_text(
@@ -67,7 +67,7 @@ def test_cli_cannon_merge_preview_shows_diff_without_committing(in_project, caps
     assert store.read(in_project) == before  # nothing written
 
 
-def test_cli_cannon_merge_preview_allowed_for_worker(in_project, worker_role, capsys):
+def test_cli_canon_merge_preview_allowed_for_worker(in_project, worker_role, capsys):
     """--preview is read-only → not gated to the orchestrator (review-then-commit)."""
     arc_dir = paths.arcs_dir(in_project) / "03-fix-leak"
     arc_dir.mkdir(parents=True)

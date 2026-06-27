@@ -32,8 +32,8 @@ def test_require_tide_root_returns_root(tmp_project):
 
 
 def test_subdir_helpers_match_blueprint_layout(tmp_project):
-    assert paths.canon_file(tmp_project) == tmp_project / ".tide" / "cannon" / "CANON.md"
-    assert paths.cannon_config(tmp_project) == tmp_project / ".tide" / "cannon" / "config"
+    assert paths.canon_file(tmp_project) == tmp_project / ".tide" / "canon" / "CANON.md"
+    assert paths.canon_config(tmp_project) == tmp_project / ".tide" / "canon" / "config"
     assert paths.arcs_dir(tmp_project) == tmp_project / ".tide" / "arcs"
     assert paths.candidates_dir(tmp_project) == tmp_project / ".tide" / "arcs" / "candidates"
     assert paths.state_dir(tmp_project) == tmp_project / ".tide" / "state"

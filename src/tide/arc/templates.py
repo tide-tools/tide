@@ -7,10 +7,10 @@ English variant (localization dropped, decision in build-blueprint). Three seeds
 * :func:`goal_md` — the immutable ``<slug>-goal.md`` for a goal (arc-with-purpose).
 * :func:`from_seed` — the ``input/from-<old>.md`` pointer a supersede writes back.
 
-Field KEYS stay English (``goal:``/``status:``/``supersedes:``/``cannon-rev:``)
+Field KEYS stay English (``goal:``/``status:``/``supersedes:``/``canon-rev:``)
 so parsing is language-agnostic. The ``# supersedes:`` placeholder is a *comment*
 line (a key with a leading ``# `` is not a real field); ``arc supersede`` removes
-it and writes the real ``supersedes:`` after ``status:``. The ``cannon-rev:``
+it and writes the real ``supersedes:`` after ``status:``. The ``canon-rev:``
 stamp is added on open by :mod:`tide.arc.stream`, not baked into the template.
 """
 

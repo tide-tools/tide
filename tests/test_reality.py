@@ -1,4 +1,4 @@
-"""M2 unit — cannon.reality: manifest parsing + reality-rev (content hash).
+"""M2 unit — canon.reality: manifest parsing + reality-rev (content hash).
 
 Coverage targets:
 * _parse_canon_text: indented globs, dash-list globs, stops at ## , None when absent
@@ -17,7 +17,7 @@ from typing import List
 
 import pytest
 
-from tide.cannon import reality
+from tide.canon import reality
 
 from tests.conftest import build_tide_skeleton
 

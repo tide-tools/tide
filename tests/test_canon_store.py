@@ -1,18 +1,18 @@
-"""U2 unit — cannon.store: init seeds CANON.md + config; read/scan."""
+"""U2 unit — canon.store: init seeds CANON.md + config; read/scan."""
 
 from __future__ import annotations
 
 import pytest
 
 from tide import paths
-from tide.cannon import store
+from tide.canon import store
 
 
 def test_init_creates_canon_and_config(tmp_path):
-    cannon = store.init(tmp_path, name="demo")
-    assert cannon == paths.cannon_dir(tmp_path)
+    canon = store.init(tmp_path, name="demo")
+    assert canon == paths.canon_dir(tmp_path)
     assert paths.canon_file(tmp_path).is_file()
-    assert paths.cannon_config(tmp_path).is_file()
+    assert paths.canon_config(tmp_path).is_file()
 
 
 def test_init_canon_has_all_canonical_sections(tmp_path):
@@ -22,12 +22,12 @@ def test_init_canon_has_all_canonical_sections(tmp_path):
     for title in store.SECTIONS:
         assert "## {0}".format(title) in text
     # the merge anchor must be present and last
-    assert "## Cannon journal" in text
+    assert "## Canon journal" in text
 
 
 def test_init_config_is_lang_line(tmp_path):
     store.init(tmp_path, name="demo", lang="en")
-    assert paths.cannon_config(tmp_path).read_text(encoding="utf-8") == "lang=en\n"
+    assert paths.canon_config(tmp_path).read_text(encoding="utf-8") == "lang=en\n"
 
 
 def test_init_defaults_name_to_dir(tmp_path):
@@ -63,13 +63,13 @@ def test_scan_splits_sections(tmp_path):
         "# CANON.md — demo\n\n"
         "## What it is\nthe truth\n\n"
         "## State & components\na, b\n\n"
-        "## Cannon journal\n",
+        "## Canon journal\n",
         encoding="utf-8",
     )
     sections = store.scan(tmp_path)
     assert sections["What it is"] == "the truth"
     assert sections["State & components"] == "a, b"
-    assert sections["Cannon journal"] == ""
+    assert sections["Canon journal"] == ""
 
 
 def test_template_matches_skeleton_shape(tmp_path):
@@ -80,7 +80,7 @@ def test_template_matches_skeleton_shape(tmp_path):
         "## What it is\n\n"
         "## State & components\n\n"
         "## Interfaces / how used\n\n"
-        "## Cannon journal\n"
+        "## Canon journal\n"
     )
     store.init(tmp_path, name="demo")
     assert store.read(tmp_path) == expected

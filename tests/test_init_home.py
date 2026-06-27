@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tide import init_home, paths, roster, strictness
-from tide.cannon import store
+from tide.canon import store
 
 
 # --- per-project scaffold --------------------------------------------------
@@ -16,7 +16,7 @@ def test_scaffold_project_lays_down_skeleton(tmp_path: Path):
     init_home.scaffold_project(tmp_path, name="demo")
 
     assert paths.canon_file(tmp_path).is_file()
-    assert paths.cannon_config(tmp_path).read_text(encoding="utf-8").strip() == "lang=en"
+    assert paths.canon_config(tmp_path).read_text(encoding="utf-8").strip() == "lang=en"
     assert paths.candidates_dir(tmp_path).is_dir()
     assert paths.strictness_file(tmp_path).read_text(encoding="utf-8").strip() == "strict"
 

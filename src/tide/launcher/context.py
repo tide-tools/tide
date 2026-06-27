@@ -27,7 +27,7 @@ Profile schema (every key optional)::
 
       # --- loading strategy (HOW this project explains itself on entry) ---
       "read_first":       ["..."] | null,  # orientation read-order; null ⇒ compute
-                                            #   default (CLAUDE.md + cannon/CANON.md
+                                            #   default (CLAUDE.md + canon/CANON.md
                                             #   when present)
       "surface_on_entry": true              # show open arcs/candidates on entry
     }
@@ -60,7 +60,7 @@ DEFAULT_PROFILE: Dict[str, object] = {
 
 # When read_first is unset, these are the orientation reads we try, in order —
 # only the ones that actually exist on disk are surfaced (see resolve_read_first).
-DEFAULT_READ_FIRST = ("CLAUDE.md",)  # cannon/CANON.md is appended via paths.canon_file
+DEFAULT_READ_FIRST = ("CLAUDE.md",)  # canon/CANON.md is appended via paths.canon_file
 
 
 # --- pure command builder --------------------------------------------------
@@ -183,7 +183,7 @@ def resolve_read_first(root: Path, profile: Dict[str, object]) -> List[str]:
 
     An explicit ``read_first`` list is honoured verbatim (existence is *not* a
     filter — a listed-but-missing file is a real signal, surfaced as ``(missing)``).
-    When unset (``None``), the default is computed: ``CLAUDE.md`` then the cannon
+    When unset (``None``), the default is computed: ``CLAUDE.md`` then the canon
     ``CANON.md``, but only the ones that actually exist — so the default never
     points a fresh session at a file that isn't there.
     """
@@ -207,7 +207,7 @@ def render_read_first(root: Path, profile: Dict[str, object]) -> str:
     reads = resolve_read_first(root, profile)
     lines = ["read first (orientation order):"]
     if not reads:
-        lines.append("  (none resolved — no CLAUDE.md / cannon found)")
+        lines.append("  (none resolved — no CLAUDE.md / canon found)")
         return "\n".join(lines)
     for rel in reads:
         missing = "" if (Path(root) / rel).is_file() else "  (missing)"

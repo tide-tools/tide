@@ -551,7 +551,7 @@
                 <div class="term-body">
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide status</span></span>
 <span class="l"><span class="out">  project   myapp            role  orchestrator</span></span>
-<span class="l"><span class="out">  cannon    rev a91c · clean read-order: CLAUDE.md · CANON.md</span></span>
+<span class="l"><span class="out">  canon    rev a91c · clean read-order: CLAUDE.md · CANON.md</span></span>
 <span class="l"><span class="out">  STREAM</span></span>
 <span class="l"><span class="out">    03  ship-onboarding      </span><span class="ok">open</span><span class="out">   ← active</span></span>
 <span class="l"><span class="out">    02  search-revamp        </span><span class="out">done · merged</span></span>
@@ -580,7 +580,7 @@
 <span class="l"><span class="you">you ›</span> <span class="cmd">ship onboarding — a 3-step walkthrough, no console errors.</span></span>
 <span class="l"></span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide arc new</span> ship-onboarding   <span class="cmt"># carve a bounded unit</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide arc open</span> ship-onboarding  <span class="cmt"># stamp the cannon-rev</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide arc open</span> ship-onboarding  <span class="cmt"># stamp the canon-rev</span></span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide contract new</span> ship-onboarding   <span class="cmt"># goal + criteria</span></span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide contract sign</span> ship-onboarding  <span class="cmt"># you sign first</span></span>
 <span class="l"><span class="ok">  ✓ contract signed · worker dispatched → output/</span></span>
@@ -630,12 +630,12 @@
               </p>
               <div class="term" role="img" aria-label="Terminal: landing the arc merges the delta into CANON.md">
                 <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">the one serialization point · <span class="badge">cannon merge</span></span></div>
+                  <span class="term-title">the one serialization point · <span class="badge">canon merge</span></span></div>
                 <div class="term-body">
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide contract proof</span> ship-onboarding  <span class="cmt"># evidence criteria met</span></span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide contract accept</span> ship-onboarding</span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide arc land</span> ship-onboarding</span>
-<span class="l"><span class="out">  → tide cannon merge → CANON.md  (atomic · idempotent)</span></span>
+<span class="l"><span class="out">  → tide canon merge → CANON.md  (atomic · idempotent)</span></span>
 <span class="l"><span class="ok">  ✓ landed · delta merged · rev a91c → e4f0</span></span>
 <span class="l"><span class="prompt">$</span> <span class="cmd">tide status</span></span>
 <span class="l"><span class="ok">  ✓ 03 ship-onboarding  done · merged · criteria passed</span></span>
@@ -694,7 +694,7 @@
             <div class="cap-body">Distil a heavy chat into the arc workspace and fork a fresh terminal that starts already working.</div>
           </div>
           <div class="cap">
-            <div class="cap-cmd">tide cannon merge</div>
+            <div class="cap-cmd">tide canon merge</div>
             <div class="cap-name">Canon + drift gate</div>
             <div class="cap-body">Durable markdown truth. The merge into <code class="mono" style="color:var(--accent)">CANON.md</code> is the single serialization point; drift is flagged, never silent.</div>
           </div>
@@ -732,7 +732,7 @@
         <div class="pitch-list reveal-slow">
           <div class="pitch-item">
             <span class="pitch-key">One binary</span>
-            <span class="pitch-val"><code>tide arc …</code>, <code>tide cannon …</code>, <code>tide contract …</code> — namespaced verbs that compose like <code>git</code>. No platform to host, just the point you lead from.</span>
+            <span class="pitch-val"><code>tide arc …</code>, <code>tide canon …</code>, <code>tide contract …</code> — namespaced verbs that compose like <code>git</code>. No platform to host, just the point you lead from.</span>
           </div>
           <div class="pitch-item">
             <span class="pitch-key">Plain text is the DB</span>
@@ -744,7 +744,7 @@
           </div>
           <div class="pitch-item">
             <span class="pitch-key">Least privilege</span>
-            <span class="pitch-val">Role is carried in one env var, <code>TIDE_ROLE</code>. Orchestrator-only ops — <code>cannon merge</code>, <code>contract close</code> — refuse to run as a worker.</span>
+            <span class="pitch-val">Role is carried in one env var, <code>TIDE_ROLE</code>. Orchestrator-only ops — <code>canon merge</code>, <code>contract close</code> — refuse to run as a worker.</span>
           </div>
           <div class="pitch-item">
             <span class="pitch-key">Dogfooded</span>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tide import fields, paths, readme
 from tide.arc import board, candidate, stream
-from tide.cannon import rev
+from tide.canon import rev
 
 from tests.conftest import strip_placeholders
 
@@ -65,7 +65,7 @@ def test_render_board_full_snapshot(tmp_project):
         "  01-idea  from alpha\n"
         "\n"
         "HEALTH\n"
-        "  cannon-rev: {rev}\n"
+        "  canon-rev: {rev}\n"
         "  unmerged: none\n"
         "  drift: none\n"
         "  deferred: none\n"
@@ -80,7 +80,7 @@ def test_render_board_empty_stream(tmp_project):
         "  (empty stream)\n"
         "\n"
         "HEALTH\n"
-        "  cannon-rev: {rev}\n"
+        "  canon-rev: {rev}\n"
         "  unmerged: none\n"
         "  drift: none\n"
         "  deferred: none\n"
@@ -91,10 +91,10 @@ def test_render_board_empty_stream(tmp_project):
 
 # --- drift flag (tide net-new) ---------------------------------------------
 
-def test_open_arc_flags_drift_when_cannon_moves(tmp_project):
+def test_open_arc_flags_drift_when_canon_moves(tmp_project):
     a = stream.new_arc(tmp_project, "alpha")
     _set_goal(a / "arc.md", "do it")
-    # move the cannon under the arc WITHOUT restamping (no open_arc) → drift
+    # move the canon under the arc WITHOUT restamping (no open_arc) → drift
     canon = paths.canon_file(tmp_project)
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     out = board.render_board(tmp_project)
@@ -124,7 +124,7 @@ def test_unmerged_delta_is_flagged(tmp_project):
     stream.close(tmp_project, "leak")  # closed dir still carries an unmerged delta
     out = board.render_board(tmp_project)
     assert "UNMERGED DELTAS" in out
-    assert "tide cannon merge leak" in out
+    assert "tide canon merge leak" in out
 
 
 # --- merge-health footer (tide net-new, fix F4) ----------------------------
@@ -134,7 +134,7 @@ def test_health_footer_always_rendered_when_clean(tmp_project):
     stream.new_arc(tmp_project, "alpha")
     out = board.render_board(tmp_project)
     assert "HEALTH" in out
-    assert "cannon-rev: {0}".format(rev.compute(tmp_project)) in out
+    assert "canon-rev: {0}".format(rev.compute(tmp_project)) in out
     assert "unmerged: none" in out
     assert "drift: none" in out
 
@@ -162,14 +162,14 @@ def test_health_footer_reports_unmerged_count_and_arcs(tmp_project):
 def test_health_footer_lists_drifted_open_arcs(tmp_project):
     a = stream.new_arc(tmp_project, "alpha")
     _set_goal(a / "arc.md", "do it")
-    # move the cannon under the open arc WITHOUT restamping → drift
+    # move the canon under the open arc WITHOUT restamping → drift
     canon = paths.canon_file(tmp_project)
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     out = board.render_board(tmp_project)
     health = out[out.index("HEALTH"):]
     assert "drift: 01-alpha" in health
     # footer rev must be the post-move (current) rev, matching the drift readout
-    assert "cannon-rev: {0}".format(rev.compute(tmp_project)) in health
+    assert "canon-rev: {0}".format(rev.compute(tmp_project)) in health
 
 
 def test_health_footer_drift_includes_subarcs(tmp_project):

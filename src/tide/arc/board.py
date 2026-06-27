@@ -10,15 +10,15 @@ a *rendered* projection — never stored — of the work stream:
 * **N/M badge** — closed/total of the goal's on-disk sub-arcs (``__…__`` counts as
   closed); **never hand-ticked**. A goal with **zero** sub-arcs shows an EMPTY
   badge (no ``0/0``) — the badge only means something once there is a substream.
-* **drift flag** — tide invention: an OPEN entry whose stamped ``cannon-rev``
-  differs from the current one has drifted (cannon moved under it) and is flagged.
+* **drift flag** — tide invention: an OPEN entry whose stamped ``canon-rev``
+  differs from the current one has drifted (canon moved under it) and is flagged.
 * **unmerged-delta flag** — tide invention: a CLOSED arc still carrying an
   unmerged ``delta.md`` is the between-arcs barrier offender (decision 9); listed
   so the orchestrator merges it through the gate.
 * **CANDIDATES** — the separately-numbered backlog (``NN-slug  from <arc>``);
   ``from`` carries the surfaced-idea provenance (the origin arc, ``-`` when none).
 * **HEALTH** — tide net-new (dogfood fix F4): an always-on merge-health footer
-  showing the current ``cannon-rev``, the unmerged-delta count (with which arcs),
+  showing the current ``canon-rev``, the unmerged-delta count (with which arcs),
   and the drift line (``none`` or the drifted open arcs). Rendered even when
   clean — an explicit ``none`` beats ambiguous silence.
 
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .. import fields, paths, slug
-from ..cannon import rev
+from ..canon import rev
 from . import candidate, stream
 
 # Numeric prefix of an entry dir (tolerates the closed ``__…__`` wrapper) — used to
@@ -93,7 +93,7 @@ def _supersedes_suffix(entry_dir: Path) -> str:
 
 
 def _is_drifted(entry_dir: Path, current_rev: str) -> bool:
-    """True for an OPEN entry whose stamped cannon-rev differs from *current_rev*.
+    """True for an OPEN entry whose stamped canon-rev differs from *current_rev*.
 
     Closed entries are done (and may legitimately carry an older stamp), so drift
     is only flagged on still-open work — the case the sync barrier cares about. A
@@ -101,7 +101,7 @@ def _is_drifted(entry_dir: Path, current_rev: str) -> bool:
     """
     if slug.is_closed_entry(entry_dir.name):
         return False
-    stamped = _field(entry_dir, "cannon-rev")
+    stamped = _field(entry_dir, "canon-rev")
     return bool(stamped) and stamped != current_rev
 
 
@@ -185,14 +185,14 @@ def _drifted_entries(root: Path, current_rev: str) -> List[Path]:
 
 
 def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[str]:
-    """The always-on HEALTH footer (fix F4): cannon-rev + unmerged + drift.
+    """The always-on HEALTH footer (fix F4): canon-rev + unmerged + drift.
 
     Rendered even when everything is clean — an explicit ``none`` beats silence,
     which is ambiguous (clean vs. un-checked). *offenders* is the closed-arc
     unmerged-delta list already computed by :func:`render_board` (reused so the
     count and the ``UNMERGED DELTAS`` section can never disagree).
     """
-    lines = ["HEALTH", "  cannon-rev: {0}".format(current_rev)]
+    lines = ["HEALTH", "  canon-rev: {0}".format(current_rev)]
     if offenders:
         names = ", ".join(o.name for o in offenders)
         lines.append("  unmerged: {0} delta(s) ({1})".format(len(offenders), names))
@@ -265,7 +265,7 @@ def render_board(root: Path) -> str:
         lines.append("UNMERGED DELTAS")
         for off in offenders:
             lines.append(
-                "  ! {name}  → tide cannon merge {slug}".format(
+                "  ! {name}  → tide canon merge {slug}".format(
                     name=off.name, slug=slug.entry_slug(off.name)
                 )
             )
@@ -393,7 +393,7 @@ def _entry_dict(entry_dir: Path, current_rev: str, *, include_sub: bool) -> Dict
         "goal": _goal_line(entry_dir),
         "is_goal": is_goal,
         "is_closed": slug.is_closed_entry(name),
-        "cannon_rev_stamped": _field(entry_dir, "cannon-rev"),
+        "canon_rev_stamped": _field(entry_dir, "canon-rev"),
         "drifted": _is_drifted(entry_dir, current_rev),
         "supersedes": _field(entry_dir, "supersedes"),
         "badge": {"closed": badge[0], "total": badge[1]} if badge else None,
@@ -416,7 +416,7 @@ def project_status_dict(root: Path) -> Dict[str, object]:
     return {
         "name": root.name,
         "path": str(root),
-        "cannon_rev": current_rev,
+        "canon_rev": current_rev,
         "stream": [
             _entry_dict(e, current_rev, include_sub=True)
             for e in _stream_entries(paths.arcs_dir(root))
@@ -428,7 +428,7 @@ def project_status_dict(root: Path) -> Dict[str, object]:
             {"stem": c["stem"], "from": c["from"]} for c in candidate.list_candidates(root)
         ],
         "health": {
-            "cannon_rev": current_rev,
+            "canon_rev": current_rev,
             "unmerged_count": len(offenders),
             "unmerged_arcs": [o.name for o in offenders],
             "drifted_entries": [d.name for d in drifted],

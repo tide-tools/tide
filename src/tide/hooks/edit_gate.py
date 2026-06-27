@@ -17,9 +17,9 @@ Load-bearing scan discipline (build-blueprint ``sync_hook_wiring`` EDIT-GATE):
   otherwise re-open the gate).
 
 Always-allowed: any edit **inside ``.tide/``** (the agent must be free to write
-arc output, deltas, reports, cannon merges). Net-new barrier (decision 9): while
+arc output, deltas, reports, canon merges). Net-new barrier (decision 9): while
 any closed arc still carries an unmerged ``delta.md`` the gate blocks project
-edits too — the delta must funnel through ``tide cannon merge`` first.
+edits too — the delta must funnel through ``tide canon merge`` first.
 
 Decision logic is pure (:func:`decide`); :func:`cmd_edit_gate` is the thin CLI
 handler that reads the Claude Code PreToolUse payload from stdin and maps the
@@ -138,8 +138,8 @@ def decide(file_path: Optional[str], cwd: Path) -> Tuple[int, str]:
     if offenders:
         names = ", ".join(o.name for o in offenders)
         return BLOCK, (
-            "tide: blocked — {n} closed arc(s) carry an unmerged cannon-delta "
-            "({names}); run 'tide cannon merge <arc>' before editing".format(
+            "tide: blocked — {n} closed arc(s) carry an unmerged canon-delta "
+            "({names}); run 'tide canon merge <arc>' before editing".format(
                 n=len(offenders), names=names
             )
         )

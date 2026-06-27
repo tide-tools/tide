@@ -7,7 +7,7 @@ Implements the 5-state lifecycle (see :mod:`tide.contract.model`):
 The load-bearing rules this module owns (build-blueprint + architect contract_module):
 
 * **new** — one-per-arc guard (refuse a second ``contract.md``), seed
-  ``contract.md`` + empty ``delta.md`` + ``asks/``, stamp the current cannon-rev,
+  ``contract.md`` + empty ``delta.md`` + ``asks/``, stamp the current canon-rev,
   state ``draft``.
 * **sign** — the dispatch gate, **respecting strictness**: ``strict`` = the human
   signs in the live session (default signer ``human``); ``loose`` = the
@@ -17,10 +17,10 @@ The load-bearing rules this module owns (build-blueprint + architect contract_mo
   (``accepted: no``); once both exist the contract advances ``running → output``.
 * **accept** — the two-step gate: flip ``accepted: no → yes`` on BOTH deliverables.
 * **close** — guard (``report`` + ``proof`` accepted **and** a non-empty
-  ``delta.md``; ``-f`` overrides) → ``cannon.merge`` the delta into CANON.md →
-  bump the cannon-rev → state ``close``. Merging is the orchestrator-only
+  ``delta.md``; ``-f`` overrides) → ``canon.merge`` the delta into CANON.md →
+  bump the canon-rev → state ``close``. Merging is the orchestrator-only
   serialization point, so the CLI handler is role-gated (the logic stays gate-free
-  for testability, mirroring ``cannon merge``).
+  for testability, mirroring ``canon merge``).
 * **reopen** — reverse a close: ``close → running``.
 * **state** — manual transition by key (``draft|sign|running|output|close``).
 
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .. import fields, io as _io, paths, placeholders, slug, strictness
-from ..cannon import merge
+from ..canon import merge
 from . import ask as ask_mod
 from . import model
 
@@ -55,7 +55,7 @@ def new(
     """Draft a contract bound to an arc (one-per-arc guard), state ``draft``.
 
     Resolves the arc, refuses a second ``contract.md``, seeds the passport + an
-    empty ``delta.md`` + an ``asks/`` dir, and stamps the current cannon-rev.
+    empty ``delta.md`` + an ``asks/`` dir, and stamps the current canon-rev.
     Returns the new ``contract.md`` path.
     """
     arc_dir = model.resolve_arc_dir(root, arc_ref, goal_slug=goal_slug)
@@ -68,15 +68,15 @@ def new(
     if not cslug:
         raise model.ContractError("contract new: empty slug after slugify")
 
-    from ..cannon import rev
+    from ..canon import rev
 
-    cannon_rev = rev.compute(root)
+    canon_rev_val = rev.compute(root)
     # Store the PORTABLE project name, not the absolute path — a baked
     # `/Users/<me>/…` would leak this instance into every passport (tool ⊥
     # instance). Mirrors the codebase's `.name` portability pattern (init/scaffold).
     project = Path(root).resolve().name
     text = model.contract_md(
-        cslug, goal=goal, criteria=criteria, project=project, cannon_rev=cannon_rev
+        cslug, goal=goal, criteria=criteria, project=project, canon_rev=canon_rev_val
     )
     # F7 ordering fix: write delta.md BEFORE contract.md.
     # A delta with no contract.md → has_contract=False → the one-per-arc guard
@@ -252,24 +252,24 @@ def close(
     ``report.md`` AND ``proof.md`` both ``accepted: yes`` AND a non-empty
     ``delta.md``. Then, in order:
 
-    1. :func:`cannon.merge.merge_delta` routes the delta into CANON.md and returns
-       the bumped (post-merge) cannon-rev.
+    1. :func:`canon.merge.merge_delta` routes the delta into CANON.md and returns
+       the bumped (post-merge) canon-rev.
     2. The arc is **sealed** like ``tide arc close`` — renamed to ``__…__`` and its
        passport stamped ``status: done`` (via :func:`tide.arc.stream.close`, the
        empty-output guard forced since the contract's report/proof/delta ARE the
        arc's auditable output). Sealing is idempotent: an arc already closed (e.g.
        a manual ``arc close`` first) is left as-is.
-    3. The **post-merge** cannon-rev is re-stamped onto the arc's passport (and the
+    3. The **post-merge** canon-rev is re-stamped onto the arc's passport (and the
        contract), so the just-merged arc does NOT show drift against the canon it
        authored — killing the two-phase footgun + post-merge self-drift.
     4. The contract state flips to ``close``.
 
-    Returns the new cannon-rev. ``tide arc close`` stays for arcs without a
+    Returns the new canon-rev. ``tide arc close`` stays for arcs without a
     contract; for a contracted arc this is the single sealing path.
 
     NOTE: merging is orchestrator-only — the CLI handler calls
     ``require_orchestrator`` before this runs; the logic stays gate-free so it is
-    unit-testable (mirrors ``cannon merge`` / ``candidate promote``).
+    unit-testable (mirrors ``canon merge`` / ``candidate promote``).
     """
     from ..arc import stream
 
@@ -314,8 +314,8 @@ def close(
 
     # Re-stamp the POST-merge rev onto the arc passport (the drift anchor) AND the
     # contract, so the arc that authored this canon shows no self-drift.
-    fields.set_field(stream.passport_path(arc_dir), "cannon-rev", new_rev)
-    model.set_field(arc_dir, "cannon-rev", new_rev)
+    fields.set_field(stream.passport_path(arc_dir), "canon-rev", new_rev)
+    model.set_field(arc_dir, "canon-rev", new_rev)
     model.set_state(arc_dir, model.CLOSE)
     return new_rev
 
@@ -467,7 +467,7 @@ def _cmd_close(args) -> int:
 
     require_orchestrator("contract close")
     new_rev = close(_root(), args.arc, force=args.force, goal_slug=args.in_goal)
-    print("tide: closed contract → cannon-rev {0} (state: close)".format(new_rev))
+    print("tide: closed contract → canon-rev {0} (state: close)".format(new_rev))
     return 0
 
 

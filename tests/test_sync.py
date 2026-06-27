@@ -1,6 +1,6 @@
-"""U7 unit — cannon-sync engine: stamp / bump / drift_check / block-unmerged.
+"""U7 unit — canon-sync engine: stamp / bump / drift_check / block-unmerged.
 
-The load-bearing tide-new discipline (build-blueprint sync_hook): the cannon-rev
+The load-bearing tide-new discipline (build-blueprint sync_hook): the canon-rev
 becomes a drift anchor + a between-arcs barrier. Covers the pure helpers and the
 two DONE-WHEN scenarios — drift surfaces after a merge, and the block fires when
 a closed arc carries a non-empty unmerged delta.
@@ -12,7 +12,7 @@ import pytest
 
 from tide import fields, paths, sync
 from tide.arc import stream
-from tide.cannon import merge, rev
+from tide.canon import merge, rev
 
 from tests.conftest import strip_placeholders
 
@@ -37,20 +37,20 @@ def _closed_arc_with_delta(root, slug_name, body="patched the valve"):
 
 # --- stamp / bump ----------------------------------------------------------
 
-def test_stamp_writes_current_cannon_rev(tmp_project):
+def test_stamp_writes_current_canon_rev(tmp_project):
     entry = stream.new_arc(tmp_project, "alpha")
-    # move the cannon so the stamp must be recomputed, then re-stamp via sync.
+    # move the canon so the stamp must be recomputed, then re-stamp via sync.
     canon = paths.canon_file(tmp_project)
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     r = sync.stamp(entry, tmp_project)
     assert r == rev.compute(tmp_project)
-    assert fields.read_field(entry / "arc.md", "cannon-rev") == r
+    assert fields.read_field(entry / "arc.md", "canon-rev") == r
 
 
 def test_stamp_writes_into_goal_passport(tmp_project):
     goal = stream.new_goal(tmp_project, "ship")
     r = sync.stamp(goal, tmp_project)
-    assert fields.read_field(goal / "ship-goal.md", "cannon-rev") == r
+    assert fields.read_field(goal / "ship-goal.md", "canon-rev") == r
 
 
 def test_bump_returns_current_rev(tmp_project):
@@ -68,7 +68,7 @@ def test_bump_tracks_a_merge(tmp_project):
 
 # --- drift check -----------------------------------------------------------
 
-def test_drift_check_no_drift_when_cannon_unchanged(tmp_project):
+def test_drift_check_no_drift_when_canon_unchanged(tmp_project):
     entry = stream.new_arc(tmp_project, "alpha")
     res = sync.drift_check(entry, tmp_project)
     assert res.drifted is False
@@ -79,11 +79,11 @@ def test_drift_check_no_drift_when_cannon_unchanged(tmp_project):
 def test_drift_check_reports_drift_after_merging_another_arc(tmp_project):
     # DONE-WHEN: stamp arc A, then merge a *different* arc → A has drifted.
     a = stream.new_arc(tmp_project, "alpha")          # stamped at rev r0
-    stamped0 = fields.read_field(a / "arc.md", "cannon-rev")
+    stamped0 = fields.read_field(a / "arc.md", "canon-rev")
 
     b = stream.new_arc(tmp_project, "beta")           # b is open, not closed
-    _write_delta(b, "beta moves the cannon")
-    merge.merge_delta(tmp_project, b, slug="beta")    # cannon journal grows → r1
+    _write_delta(b, "beta moves the canon")
+    merge.merge_delta(tmp_project, b, slug="beta")    # canon journal grows → r1
 
     res = sync.drift_check(a, tmp_project)
     assert res.drifted is True

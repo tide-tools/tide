@@ -23,7 +23,7 @@ import pytest
 
 from tide import fields, ledger, paths
 from tide.io import atomic_write, file_lock
-from tide.cannon import merge
+from tide.canon import merge
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ def test_ledger_write_creates_parent_and_survives_round_trip(tmp_project: Path) 
     assert len(entries) == 1
     assert entries[0].arc == "__05-thing__"
     assert entries[0].deferred == ["delta", "report"]
-    assert entries[0].cannon_rev == "abcdef"
+    assert entries[0].canon_rev == "abcdef"
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ def test_whitelist_known_keys_all_parse() -> None:
     doc = (
         "# arc\n"
         "status: active\n"
-        "cannon-rev: abc123\n"
+        "canon-rev: abc123\n"
         "reality-rev: def456\n"
         "merged: no\n"
         "goal: finish it\n"
@@ -382,7 +382,7 @@ def test_whitelist_known_keys_all_parse() -> None:
     )
     expected = {
         "status": "active",
-        "cannon-rev": "abc123",
+        "canon-rev": "abc123",
         "reality-rev": "def456",
         "merged": "no",
         "goal": "finish it",
@@ -555,7 +555,7 @@ def test_merge_delta_stamp_baseline_called_inside_lock(tmp_project: Path, monkey
     stamp_canon_baseline runs outside the lock. With the fix, all three steps
     (atomic_write, mark_merged, stamp_canon_baseline) are inside the with-block.
     """
-    from tide.cannon import reality as _reality_mod
+    from tide.canon import reality as _reality_mod
 
     arc_dir = tmp_project / ".tide" / "arcs" / "01-fix"
     arc_dir.mkdir(parents=True)

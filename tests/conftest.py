@@ -1,7 +1,7 @@
 """Shared pytest fixtures for the tide suite.
 
 ``tmp_project`` builds a minimal per-project ``.tide/`` skeleton in a tmp dir,
-matching the blueprint ``tide_dir_format``. Later units (arc/cannon/contract)
+matching the blueprint ``tide_dir_format``. Later units (arc/canon/contract)
 build their integration + e2e tests on top of it.
 """
 
@@ -47,7 +47,7 @@ CANON_MD_TEMPLATE = """# CANON.md — {name}
 
 ## Interfaces / how used
 
-## Cannon journal
+## Canon journal
 """
 
 
@@ -55,8 +55,8 @@ def build_tide_skeleton(root: Path, *, name: str, control_home: bool = False) ->
     """Create a ``.tide/`` skeleton under *root* and return the .tide path.
 
     Layout (per blueprint tide_dir_format):
-      .tide/cannon/CANON.md   — living-IS doc
-      .tide/cannon/config     — lang=en
+      .tide/canon/CANON.md    — living-IS doc
+      .tide/canon/config      — lang=en
       .tide/arcs/             — work stream (NN-<slug>/ entries land here)
       .tide/arcs/candidates/  — separately-numbered candidate backlog
       .tide/state/strictness  — per-project dial (default 'strict')
@@ -64,14 +64,14 @@ def build_tide_skeleton(root: Path, *, name: str, control_home: bool = False) ->
     A control-home additionally gets a top-level roster.md ('name | path' lines).
     """
     tide = root / ".tide"
-    cannon = tide / "cannon"
+    canon = tide / "canon"
     arcs = tide / "arcs"
     state = tide / "state"
-    for d in (cannon, arcs, arcs / "candidates", state):
+    for d in (canon, arcs, arcs / "candidates", state):
         d.mkdir(parents=True, exist_ok=True)
 
-    (cannon / "CANON.md").write_text(CANON_MD_TEMPLATE.format(name=name), encoding="utf-8")
-    (cannon / "config").write_text("lang=en\n", encoding="utf-8")
+    (canon / "CANON.md").write_text(CANON_MD_TEMPLATE.format(name=name), encoding="utf-8")
+    (canon / "config").write_text("lang=en\n", encoding="utf-8")
     (state / "strictness").write_text("strict\n", encoding="utf-8")
 
     if control_home:

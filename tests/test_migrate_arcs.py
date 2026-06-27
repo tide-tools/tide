@@ -133,7 +133,7 @@ def test_migrate_carries_lang_overriding_default(tmp_path: Path):
     build_legacy(tmp_path, lang="ru", rules="subagents")
     migrate.apply_migration(migrate.plan_migration(tmp_path))
 
-    cfg = paths.cannon_config(tmp_path).read_text(encoding="utf-8")
+    cfg = paths.canon_config(tmp_path).read_text(encoding="utf-8")
     # the real project lang (ru) survived — NOT reset to tide's default (en)
     assert "lang=ru" in cfg
     assert "lang=en" not in cfg
@@ -158,14 +158,14 @@ def test_migrate_scaffolds_canon_stub_when_no_legacy_canon(tmp_path: Path):
     canon = paths.canon_file(tmp_path).read_text(encoding="utf-8")
     assert "## Где мы сейчас" in canon
     # the merge anchor must survive so the migrated project can still merge deltas
-    assert "## Cannon journal" in canon
+    assert "## Canon journal" in canon
 
 
 def test_migrate_does_not_clobber_a_real_pretide_canon(tmp_path: Path):
     # .tide already exists with a real CANON, AND legacy carries one too → keep the real .tide CANON.
-    from tide.cannon import store
+    from tide.canon import store
 
-    paths.cannon_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    paths.canon_dir(tmp_path).mkdir(parents=True, exist_ok=True)
     store.init(tmp_path, name="demo")
     paths.canon_file(tmp_path).write_text("# CANON.md — demo\n\nREAL PRE-TIDE CANON\n", encoding="utf-8")
     build_legacy(tmp_path, with_canon=True)

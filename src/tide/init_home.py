@@ -4,7 +4,7 @@
 implementation (build-blueprint ``tide_dir_format``):
 
 * **control-home** (default) — the dir where the human leads ALL projects. Gets the
-  per-project ``.tide/{cannon,arcs,state}`` skeleton (tide **dogfoods itself**, so
+  per-project ``.tide/{canon,arcs,state}`` skeleton (tide **dogfoods itself**, so
   the control-home is also a tide project) PLUS a top-level ``roster.md`` registry,
   a short ``README.md`` orientation, and an optional ``git init``.
 * **plain project** (``--project``) — just the per-project ``.tide/`` skeleton, no
@@ -25,7 +25,7 @@ from typing import List, Optional
 
 from . import io as _io, paths, roster
 from .arc.stream import StreamError
-from .cannon import store
+from .canon import store
 from .strictness import DEFAULT as DEFAULT_STRICTNESS
 
 README_TEMPLATE = """# {name} — tide control-home
@@ -35,9 +35,9 @@ This dir is a **tide control-home**: where you lead every project from one place
 ## Layout
 - `roster.md` — the project registry (`name | path` per line); edit via `tide roster`.
 - `.tide/` — this home's own work stream (tide dogfoods itself as a tide project).
-  - `cannon/CANON.md` — durable living-IS truth.
+  - `canon/CANON.md` — durable living-IS truth.
   - `arcs/` — the numbered work stream (`NN-<slug>/`) + `candidates/`.
-  - `state/` — the strictness dial + cannon-rev stamps.
+  - `state/` — the strictness dial + canon-rev stamps.
 
 ## Daily use
 - `tide roster add <name> <path>` — register a project.
@@ -63,9 +63,9 @@ def scaffold_project(
     lang: str = store.DEFAULT_LANG,
     force: bool = False,
 ) -> List[str]:
-    """Lay down the per-project ``.tide/{cannon,arcs/candidates,state}`` skeleton.
+    """Lay down the per-project ``.tide/{canon,arcs/candidates,state}`` skeleton.
 
-    Seeds ``cannon/`` (CANON.md + config via :func:`tide.cannon.store.init`),
+    Seeds ``canon/`` (CANON.md + config via :func:`tide.canon.store.init`),
     creates the ``arcs/candidates/`` backlog dir and ``state/``, and writes the
     default ``strict`` dial. Non-destructive: existing files survive unless
     *force*. Returns a list of human-readable "created …" notes (idempotent ⇒ may
@@ -77,11 +77,11 @@ def scaffold_project(
 
     tide_existed = paths.tide_dir(root).is_dir()
 
-    # cannon/ — CANON.md + config (store.init is itself non-destructive).
+    # canon/ — CANON.md + config (store.init is itself non-destructive).
     canon_existed = paths.canon_file(root).exists()
     store.init(root, name=name, lang=lang, force=force)
     if force or not canon_existed:
-        created.append("cannon/CANON.md")
+        created.append("canon/CANON.md")
 
     # arcs/ + candidates/ backlog.
     paths.candidates_dir(root).mkdir(parents=True, exist_ok=True)

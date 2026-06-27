@@ -18,7 +18,7 @@ import pytest
 from tests.conftest import build_tide_skeleton, strip_placeholders
 from tide import fields, ledger, paths, slug, strictness, sync
 from tide.arc import board, land, stream, worktree
-from tide.cannon import rev
+from tide.canon import rev
 from tide.contract import lifecycle, model
 from tide.hooks import session_start
 from tide.launcher import go
@@ -128,7 +128,7 @@ class TestLooseDefers:
         assert len(items) == 1
         assert items[0].ref == "fix-leak"
         assert items[0].deferred == ["delta", "report", "proof"]
-        assert items[0].cannon_rev == rev.compute(tmp_project)
+        assert items[0].canon_rev == rev.compute(tmp_project)
 
     def test_loose_stamps_the_deferred_field_on_the_contract(self, tmp_project):
         arc = _contracted(tmp_project)
@@ -335,12 +335,12 @@ class TestReconcile:
 
 
 # ---------------------------------------------------------------------------
-# (5) previewable merge — review-then-commit (cannon merge / reconcile --preview)
+# (5) previewable merge — review-then-commit (canon merge / reconcile --preview)
 # ---------------------------------------------------------------------------
 
 class TestPreviewMerge:
     def test_preview_delta_shows_future_canon_without_writing(self, tmp_project):
-        from tide.cannon import merge
+        from tide.canon import merge
 
         arc = stream.new_arc(tmp_project, "fix-leak")
         model.delta_path(arc).write_text(
@@ -359,7 +359,7 @@ class TestPreviewMerge:
         assert fields.read_field(model.delta_path(arc), "merged") == "no"
 
     def test_preview_of_already_merged_delta_is_empty_diff(self, tmp_project):
-        from tide.cannon import merge
+        from tide.canon import merge
 
         _contracted(tmp_project)
         _make_reconcilable(tmp_project)

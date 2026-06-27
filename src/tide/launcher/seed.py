@@ -1,7 +1,7 @@
 """tide.launcher.seed — resolve context into a seed string for a fresh session.
 
 The seed is the opening payload a NEW Claude session is launched with: the role
-prompt + the project's living-IS cannon + (optionally) the active arc passport +
+prompt + the project's living-IS canon + (optionally) the active arc passport +
 the control-home roster. It orients a fresh orchestrator session the same way the
 SessionStart hook orients an in-place one, but it is *transported* by a terminal
 adapter (``tide.adapters``) into a brand-new terminal rather than printed inline.
@@ -9,7 +9,7 @@ adapter (``tide.adapters``) into a brand-new terminal rather than printed inline
 Two layers, mirroring the rest of the package:
 
 * :func:`build_seed` — **pure** string assembly from already-resolved pieces
-  (cannon text, arc text, roster text, prompt text). Argparse-free, snapshot-
+  (canon text, arc text, roster text, prompt text). Argparse-free, snapshot-
   testable, never touches disk.
 * :func:`seed_for_project` — the **disk** wrapper: reads ``CANON.md``, the global
   role prompt (``prompts/<role>.md``, shipped in U12 — absent is tolerated), the
@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import paths, slug
-from ..cannon import store
+from ..canon import store
 from ..hooks.session_start import ROLE_REMINDERS
 
 ROLE_ORCHESTRATOR = "orchestrator"
@@ -114,7 +114,7 @@ def build_seed(
     *,
     project_name: str,
     role: str = ROLE_ORCHESTRATOR,
-    cannon_text: str = "",
+    canon_text: str = "",
     roster_text: Optional[str] = None,
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
@@ -140,7 +140,7 @@ def build_seed(
         _role_block(role, prompt_text),
         "",
         "## CANON.md — {0}".format(project_name),
-        cannon_text.strip() if cannon_text.strip() else "(no cannon yet — run 'tide cannon init')",
+        canon_text.strip() if canon_text.strip() else "(no canon yet — run 'tide canon init')",
     ]
 
     if arc_ref:
@@ -176,7 +176,7 @@ def seed_for_project(
     role: str = ROLE_ORCHESTRATOR,
     control_home: Optional[Path] = None,
 ) -> str:
-    """Build the seed for project *root*, reading cannon / arc / prompt / roster.
+    """Build the seed for project *root*, reading canon / arc / prompt / roster.
 
     *control_home* (when given and a real control-home) supplies the roster block
     so a cross-project orchestrator session sees the whole portfolio. A missing
@@ -187,7 +187,7 @@ def seed_for_project(
     project_name = root.resolve().name
 
     canon = paths.canon_file(root)
-    cannon_text = canon.read_text(encoding="utf-8") if canon.is_file() else ""
+    canon_text_str = canon.read_text(encoding="utf-8") if canon.is_file() else ""
 
     arc_text = read_arc_passport(root, arc_ref) if arc_ref else None
     prompt_text = read_role_prompt(role)
@@ -203,7 +203,7 @@ def seed_for_project(
     return build_seed(
         project_name=project_name,
         role=role,
-        cannon_text=cannon_text,
+        canon_text=canon_text_str,
         roster_text=roster_text,
         arc_ref=arc_ref,
         arc_text=arc_text,

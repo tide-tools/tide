@@ -1,6 +1,6 @@
-"""tide.cannon.store — the cannon/ home: init, read, scan.
+"""tide.canon.store — the canon/ home: init, read, scan.
 
-``cannon/`` is a project's durable truth. Its centrepiece is ``CANON.md`` — the
+``canon/`` is a project's durable truth. Its centrepiece is ``CANON.md`` — the
 living-IS doc — plus a one-line ``config``. This module owns their on-disk shape
 (ported from canon ``init``, English-only headings for language-agnostic
 parsing):
@@ -9,15 +9,15 @@ parsing):
     ## What it is
     ## State & components
     ## Interfaces / how used
-    ## Cannon journal        ← append-only merge log (merge.py writes here)
+    ## Canon journal        ← append-only merge log (merge.py writes here)
 
-The journal is the section :mod:`tide.cannon.merge` appends arc deltas under, so
+The journal is the section :mod:`tide.canon.merge` appends arc deltas under, so
 ``init`` always seeds it (an empty journal is still a valid anchor). Folded
 notes/lore/changelog/goals subsections may follow later; ``init`` keeps the
 minimal four-section skeleton.
 
 All functions are pure where possible (text helpers) with thin file wrappers; a
-``register``-style CLI handler lives in :mod:`tide.cannon.commands`.
+``register``-style CLI handler lives in :mod:`tide.canon.commands`.
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ from .. import io as _io, paths
 DEFAULT_LANG = "en"
 
 # Canonical H2 section titles, in order. Kept in sync with the conftest skeleton
-# template so a hand-built fixture and a real ``cannon init`` agree byte-for-byte.
+# template so a hand-built fixture and a real ``canon init`` agree byte-for-byte.
 SECTIONS: List[str] = [
     "What it is",
     "State & components",
     "Interfaces / how used",
-    "Cannon journal",
+    "Canon journal",
 ]
 
 
@@ -43,7 +43,7 @@ def canon_template(name: str) -> str:
     """Return the seed ``CANON.md`` text for a project called *name*.
 
     Header ``# CANON.md — <name>`` then the four canonical H2 sections, each
-    separated by a blank line. The trailing ``## Cannon journal`` is the merge
+    separated by a blank line. The trailing ``## Canon journal`` is the merge
     anchor and is intentionally left empty.
     """
     body = ["# CANON.md — {0}".format(name), ""]
@@ -55,7 +55,7 @@ def canon_template(name: str) -> str:
 
 
 def config_text(lang: str = DEFAULT_LANG) -> str:
-    """Return the ``cannon/config`` text (single ``lang=`` line, newline-terminated)."""
+    """Return the ``canon/config`` text (single ``lang=`` line, newline-terminated)."""
     return "lang={0}\n".format(lang)
 
 
@@ -65,15 +65,21 @@ def init(
     lang: str = DEFAULT_LANG,
     force: bool = False,
 ) -> Path:
-    """Seed ``<root>/.tide/cannon/`` with ``CANON.md`` + ``config``.
+    """Seed ``<root>/.tide/canon/`` with ``CANON.md`` + ``config``.
 
     *name* defaults to the project dir name. Existing files are preserved unless
-    *force* is set (so re-running ``cannon init`` never clobbers a real CANON).
-    Returns the ``cannon/`` directory path.
+    *force* is set (so re-running ``canon init`` never clobbers a real CANON).
+    Returns the ``canon/`` directory path.
+
+    On the first write, if a legacy ``.tide/cannon/`` exists and ``.tide/canon/``
+    does not, the legacy dir is atomically renamed to ``.tide/canon/`` so existing
+    instances are migrated in place.
     """
     root = Path(root)
-    cannon = paths.cannon_dir(root)
-    cannon.mkdir(parents=True, exist_ok=True)
+    # Migrate legacy .tide/cannon/ → .tide/canon/ before creating/writing.
+    paths.migrate_canon_dir(root)
+    canon_directory = paths.tide_dir(root) / paths.CANON_DIRNAME
+    canon_directory.mkdir(parents=True, exist_ok=True)
 
     project_name = name if name else root.resolve().name
 
@@ -81,11 +87,11 @@ def init(
     if force or not canon.exists():
         _io.atomic_write(canon, canon_template(project_name))
 
-    cfg = paths.cannon_config(root)
+    cfg = paths.canon_config(root)
     if force or not cfg.exists():
         _io.atomic_write(cfg, config_text(lang))
 
-    return cannon
+    return canon_directory
 
 
 def read(root: Path) -> str:
@@ -93,7 +99,7 @@ def read(root: Path) -> str:
     canon = paths.canon_file(root)
     if not canon.is_file():
         raise FileNotFoundError(
-            "no cannon at {0} (run 'tide cannon init')".format(canon)
+            "no canon at {0} (run 'tide canon init')".format(canon)
         )
     return canon.read_text(encoding="utf-8")
 

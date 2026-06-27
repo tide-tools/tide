@@ -162,7 +162,7 @@ def test_strategy_wrong_types_fall_back_to_defaults(tmp_project):
 
 
 def test_resolve_read_first_default_only_includes_existing(tmp_project):
-    # tmp_project has cannon/CANON.md but NO CLAUDE.md → default surfaces only cannon
+    # tmp_project has canon/CANON.md but NO CLAUDE.md → default surfaces only canon
     profile = context.load_profile(tmp_project)
     reads = context.resolve_read_first(tmp_project, profile)
     assert any("CANON.md" in r for r in reads)

@@ -78,7 +78,7 @@ tide menu --pick all  # non-interactive
 ```
 
 This opens a terminal seeded as an **orchestrator** (`TIDE_ROLE=orchestrator`, the
-project's cannon + active arc + roster already loaded). From here you **talk**, and
+project's canon + active arc + roster already loaded). From here you **talk**, and
 the session does the work:
 
 > **you:** let's ship onboarding — clicking "start" walks the user through 3 steps,
@@ -93,7 +93,7 @@ The orchestrator translates that into the loop:
    you to sign first; in **loose** it runs synchronously.
 3. **dispatches a worker** — a subagent that builds the work into the arc's
    `output/` and proposes the durable change in `delta.md`. A worker can never merge
-   cannon or close a contract.
+   canon or close a contract.
 4. **lands it in front of you** — `tide contract report/proof/accept`, then
    `tide contract close`, which **merges the delta into `CANON.md`**. That merge is
    the single serialization point, and it only happens in a live orchestrator
@@ -112,7 +112,7 @@ tide status --all      # roster-wide; flags unmerged deltas + drift
 ```
 
 The board flags anything dangling — an unmerged delta, or an open arc still stamped
-at an older cannon-rev (drift). The one load-bearing rule: **you cannot open the
+at an older canon-rev (drift). The one load-bearing rule: **you cannot open the
 next arc while the last closed arc's delta is still unmerged.** Truth is reconciled
 before new work begins, every time.
 
@@ -147,7 +147,7 @@ arc because the previous delta was still unmerged. `examples/dogfood-runA/` and
 ## The loop in one line
 
 ```
-roster add → tide (orchestrator) → say the goal → arc · contract · worker · cannon-merge → status / handoff
+roster add → tide (orchestrator) → say the goal → arc · contract · worker · canon-merge → status / handoff
 ```
 
 Everything is plain markdown under `<project>/.tide/`. Next: read

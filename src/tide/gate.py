@@ -1,4 +1,4 @@
-"""tide.gate — M1 cannon-gate: the single two-axis tri-state oracle.
+"""tide.gate — M1 canon-gate: the single two-axis tri-state oracle.
 
 ``decide(root) -> (code, reasons)`` is THE definition of "canon is current."
 
@@ -14,15 +14,15 @@ Tri-state exit codes (POSIX-safe, compose verbatim in shells, hooks, CI):
 Checks (M1 clauses a/b/c; M3 clauses d/e/f are a later build unit):
 
     (a) No unmerged deltas — any arc (active or closed) still owes a
-        ``tide cannon merge`` before work can continue.
+        ``tide canon merge`` before work can continue.
 
-    (b) No open arc drifted on cannon-rev OR reality-rev:
-        * cannon-rev drift: arc's stamped rev ≠ sha256(CANON.md) now.
+    (b) No open arc drifted on canon-rev OR reality-rev:
+        * canon-rev drift: arc's stamped rev ≠ sha256(CANON.md) now.
         * reality-rev drift: arc's stamped rev ≠ current content hash over
           canon-covered paths (only when a ``canon-covers:`` manifest exists).
           This is the M2 tripwire: "code shipped, canon didn't."
 
-    (c) cannon lint — structural health of CANON.md:
+    (c) canon lint — structural health of CANON.md:
         * no ``<…>`` template placeholders
         * no duplicate ``## `` headings
         * no duplicate ``### date · slug`` journal stamps
@@ -48,15 +48,15 @@ from typing import List, Tuple
 
 from . import fields, paths, placeholders, slug, sync
 from .arc.stream import passport_path
-from .cannon import merge as _merge
-from .cannon import reality, rev, store
+from .canon import merge as _merge
+from .canon import reality, rev, store
 
 
 # ---------------------------------------------------------------------------
-# cannon lint
+# canon lint
 # ---------------------------------------------------------------------------
 
-def cannon_lint(root: Path) -> List[str]:
+def canon_lint(root: Path) -> List[str]:
     """Return structural lint issues for *root*'s CANON.md.
 
     An empty list means the canon is structurally healthy. Raises
@@ -123,7 +123,7 @@ def cannon_lint(root: Path) -> List[str]:
         if reality.parse_baseline(root) is None:
             issues.append(
                 "canon missing reality-rev baseline "
-                "(run 'tide cannon merge' to stamp the reality↔canon baseline)"
+                "(run 'tide canon merge' to stamp the reality↔canon baseline)"
             )
 
     return issues
@@ -183,18 +183,18 @@ def _stale_checks(root: Path) -> List[str]:
     for o in offenders:
         reasons.append("unmerged delta: arc {0}".format(o.name))
 
-    # (b) Open-arc drift on cannon-rev and reality-rev.
+    # (b) Open-arc drift on canon-rev and reality-rev.
     current_cr = rev.compute(root)
     current_rr = reality.reality_rev(root)  # None when no manifest
 
     for entry in _open_arc_dirs(root):
         pp = passport_path(entry)
 
-        # cannon-rev drift
-        stamped_cr = fields.read_field(pp, "cannon-rev")
+        # canon-rev drift (read "canon-rev" which also matches legacy "cannon-rev")
+        stamped_cr = fields.read_field(pp, "canon-rev")
         if stamped_cr is not None and stamped_cr != current_cr:
             reasons.append(
-                "arc {0} drifted on cannon-rev"
+                "arc {0} drifted on canon-rev"
                 " (stamped {1}, current {2})".format(
                     entry.name, stamped_cr, current_cr
                 )
@@ -222,11 +222,11 @@ def _stale_checks(root: Path) -> List[str]:
             reasons.append(
                 "canon prose may be stale: covered code moved since last merge "
                 "(canon reality-rev {0}, current {1}) — re-read CANON.md re-entry "
-                "prose, reconcile via an arc + cannon merge".format(baseline, current_rr)
+                "prose, reconcile via an arc + canon merge".format(baseline, current_rr)
             )
 
-    # (c) Cannon lint.
-    lint_issues = cannon_lint(root)
+    # (c) Canon lint.
+    lint_issues = canon_lint(root)
     reasons.extend(lint_issues)
 
     return reasons
@@ -237,7 +237,7 @@ def _stale_checks(root: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def decide(root: Path) -> Tuple[int, List[str]]:
-    """Return ``(code, reasons)`` for the tri-state cannon-gate oracle.
+    """Return ``(code, reasons)`` for the tri-state canon-gate oracle.
 
     ``code`` is 0 (current), 1 (stale), or 2 (oracle-error). ``reasons`` is
     empty for code 0; a list of human-readable diagnostic strings for codes 1
@@ -255,7 +255,7 @@ def decide(root: Path) -> Tuple[int, List[str]]:
         if not canon.is_file():
             return 2, [
                 "oracle-error: CANON.md missing at {0}"
-                " (run 'tide cannon init')".format(canon)
+                " (run 'tide canon init')".format(canon)
             ]
         # Probe readability; raises OSError / UnicodeDecodeError if broken.
         canon.read_text(encoding="utf-8")

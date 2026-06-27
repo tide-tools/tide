@@ -4,9 +4,9 @@ Every module that touches disk routes through here so the on-disk layout
 (`build-blueprint.md` ``tide_dir_format``) lives in exactly one place:
 
     <project>/.tide/
-      cannon/   CANON.md + config            durable truth
+      canon/    CANON.md + config            durable truth
       arcs/     NN-<slug>/ work stream        + candidates/ (separate seq)
-      state/    strictness + cannon-rev stamps + contract index
+      state/    strictness + canon-rev stamps + contract index
 
 The control-home (where ``tide init`` ran) additionally carries a top-level
 ``roster.md`` and its own dogfood ``.tide/``.
@@ -21,6 +21,7 @@ are computed relative to this package so a source checkout works without install
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +29,8 @@ from typing import Optional
 TIDE_DIR = ".tide"
 ROSTER_FILE = "roster.md"
 
-CANNON_DIRNAME = "cannon"
+CANON_DIRNAME = "canon"          # new canonical spelling
+CANNON_DIRNAME = "cannon"        # legacy spelling — for back-compat detection only
 ARCS_DIRNAME = "arcs"
 STATE_DIRNAME = "state"
 CANDIDATES_DIRNAME = "candidates"
@@ -75,16 +77,53 @@ def tide_dir(root: Path) -> Path:
 
 # --- per-project subdir helpers (take a project root) ----------------------
 
-def cannon_dir(root: Path) -> Path:
-    return tide_dir(root) / CANNON_DIRNAME
+def canon_dir(root: Path) -> Path:
+    """The ``.tide/canon/`` dir for *root*, with back-compat legacy resolution.
+
+    Resolution order (read-both back-compat):
+    1. ``.tide/canon/``  exists → return it (new canonical path).
+    2. ``.tide/cannon/`` exists and ``.tide/canon/`` does NOT → return the
+       legacy path so existing instances read correctly without migration.
+    3. Neither exists → return ``.tide/canon/`` (new instances / fresh init).
+
+    The first WRITE that creates the dir should call :func:`migrate_canon_dir`
+    first (atomic rename ``cannon/`` → ``canon/``) so we never end up with two
+    dirs and legacy instances are migrated on the next write.
+    """
+    td = tide_dir(Path(root))
+    new_path = td / CANON_DIRNAME
+    if new_path.is_dir():
+        return new_path
+    legacy_path = td / CANNON_DIRNAME
+    if legacy_path.is_dir():
+        return legacy_path
+    return new_path
+
+
+def migrate_canon_dir(root: Path) -> bool:
+    """Atomically rename ``.tide/cannon/`` → ``.tide/canon/`` when needed.
+
+    Called before the first write to the canon dir so legacy instances are
+    migrated in place. No-op when ``.tide/canon/`` already exists or no legacy
+    dir is present. Returns True when a migration actually happened.
+    """
+    td = tide_dir(Path(root))
+    new_path = td / CANON_DIRNAME
+    legacy_path = td / CANNON_DIRNAME
+    if new_path.is_dir():
+        return False
+    if not legacy_path.is_dir():
+        return False
+    os.rename(str(legacy_path), str(new_path))
+    return True
 
 
 def canon_file(root: Path) -> Path:
-    return cannon_dir(root) / CANON_FILE
+    return canon_dir(root) / CANON_FILE
 
 
-def cannon_config(root: Path) -> Path:
-    return cannon_dir(root) / CONFIG_FILE
+def canon_config(root: Path) -> Path:
+    return canon_dir(root) / CONFIG_FILE
 
 
 def arcs_dir(root: Path) -> Path:
@@ -145,5 +184,5 @@ def global_prompts_dir() -> Path:
 
 
 def global_rules_dir() -> Path:
-    """Canonical rules dir (subagents.md / cannon-sync.md / contract.md)."""
+    """Canonical rules dir (subagents.md / canon-sync.md / contract.md)."""
     return install_root() / "rules"

@@ -19,7 +19,7 @@ def test_package_exposes_version():
 def test_parser_builds_and_has_groups():
     parser = cli.build_parser()
     help_text = parser.format_help()
-    for group in ("init", "status", "arc", "cannon", "contract", "candidate", "roster"):
+    for group in ("init", "status", "arc", "canon", "contract", "candidate", "roster"):
         assert group in help_text
 
 
@@ -54,19 +54,19 @@ def test_default_role_is_worker(monkeypatch):
 
 def test_require_orchestrator_refuses_worker(worker_role):
     with pytest.raises(SystemExit) as exc:
-        cli.require_orchestrator("cannon merge")
+        cli.require_orchestrator("canon merge")
     assert exc.value.code != 0
 
 
 def test_require_orchestrator_allows_orchestrator(orchestrator_role):
     # Should not raise.
-    cli.require_orchestrator("cannon merge")
+    cli.require_orchestrator("canon merge")
 
 
 def test_tmp_project_skeleton(tmp_project):
     tide_dir = tmp_project / ".tide"
-    assert (tide_dir / "cannon" / "CANON.md").is_file()
-    assert (tide_dir / "cannon" / "config").read_text(encoding="utf-8").strip() == "lang=en"
+    assert (tide_dir / "canon" / "CANON.md").is_file()
+    assert (tide_dir / "canon" / "config").read_text(encoding="utf-8").strip() == "lang=en"
     assert (tide_dir / "arcs" / "candidates").is_dir()
     assert (tide_dir / "state" / "strictness").read_text(encoding="utf-8").strip() == "strict"
 

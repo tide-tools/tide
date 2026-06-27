@@ -66,5 +66,5 @@ def test_cli_help_command_lists_groups(capsys):
     rc = cli.main(["help"])
     assert rc == 0
     out = capsys.readouterr().out.lower()
-    for group in ("init", "roster", "status", "strictness", "arc", "cannon", "contract", "version"):
+    for group in ("init", "roster", "status", "strictness", "arc", "canon", "contract", "version"):
         assert group in out

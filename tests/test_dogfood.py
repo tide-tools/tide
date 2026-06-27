@@ -2,7 +2,7 @@
 
 Unlike every other test (which works in a tmp ``.tide/``), this one reads the
 **real** tide repo. The U13 build step ran the full loop on the repo itself —
-``tide init`` → one arc → contract sign/report/proof/accept/close (cannon merge)
+``tide init`` → one arc → contract sign/report/proof/accept/close (canon merge)
 → ``arc close`` — so the repo is now a tide project led by tide. These assertions
 pin that durable artifact: the dogfood arc must stay closed, merged, and clean.
 

@@ -1,6 +1,6 @@
-"""tide.cannon.reality — M2 reality-rev: API-surface fingerprint over covered paths.
+"""tide.canon.reality — M2 reality-rev: API-surface fingerprint over covered paths.
 
-The reality-rev is the second freshness axis: while cannon-rev tracks whether
+The reality-rev is the second freshness axis: while canon-rev tracks whether
 CANON.md itself has changed, reality-rev tracks whether the *interface CANON
 claims to describe* has changed. When an open arc's stamped reality-rev
 disagrees with the current reality-rev, the gate trips STALE — "the API shipped,
@@ -65,7 +65,7 @@ from typing import Dict, List, Optional, Set
 
 from .. import fields, io as _io, paths
 
-# Match cannon.rev.REV_LEN for consistency.
+# Match canon.rev.REV_LEN for consistency.
 REV_LEN = 12
 
 # Manifest markers (declared in CANON.md preamble or .tide/state/<file>).

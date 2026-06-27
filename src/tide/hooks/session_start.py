@@ -3,13 +3,13 @@
 Ported from the arcs ``arcs-hook`` SessionStart banner, trimmed per
 build-blueprint ``sync_hook_wiring`` SESSIONSTART: print the ``tide arc status``
 board inline (no plugin system), a one-line orchestrator/worker **role
-reminder**, and the net-new **cannon-drift / unmerged-delta warnings**. The arcs
+reminder**, and the net-new **canon-drift / unmerged-delta warnings**. The arcs
 update-nudge and plugin-block emission are DROPPED (the package manager owns
 versions; there is no plugin system).
 
 It runs at the top of every Claude session in an opted-in project, so the agent
 opens already oriented: what is on the stream, which role it holds, and whether
-the cannon moved under an open arc (drift) or a closed arc still owes a merge.
+the canon moved under an open arc (drift) or a closed arc still owes a merge.
 
 :func:`render` is pure (snapshot-testable); :func:`cmd_session_start` is the thin
 handler. Both are defensive: outside a tide project they emit nothing and exit 0
@@ -29,11 +29,11 @@ from . import edit_gate
 ROLE_REMINDERS = {
     "orchestrator": (
         "tide · role: ORCHESTRATOR — you run the CLI; open/close arcs, merge "
-        "cannon, sign contracts. The user doesn't learn the commands — you do."
+        "canon, sign contracts. The user doesn't learn the commands — you do."
     ),
     "worker": (
         "tide · role: WORKER — work ONE open arc; write only its own output/ + "
-        "delta.md. Never merge cannon / promote candidates (orchestrator-only)."
+        "delta.md. Never merge canon / promote candidates (orchestrator-only)."
     ),
 }
 
@@ -44,12 +44,12 @@ def _role_reminder(role: str) -> str:
 
 
 def _drift_warnings(root: Path) -> List[str]:
-    """Warning lines for OPEN entries whose stamped cannon-rev != the current one."""
+    """Warning lines for OPEN entries whose stamped canon-rev != the current one."""
     warnings: List[str] = []
     for entry in edit_gate.open_entries(root):
         if sync.has_drifted(entry, root):
             warnings.append(
-                "  ⚠ drift: {0} — cannon moved since open; re-read CANON.md "
+                "  ⚠ drift: {0} — canon moved since open; re-read CANON.md "
                 "+ re-stamp ('tide arc resume {1}')".format(
                     entry.name, slug.entry_slug(entry.name)
                 )
@@ -62,7 +62,7 @@ def _unmerged_warnings(root: Path) -> List[str]:
     warnings: List[str] = []
     for off in sync.unmerged_deltas(root):
         warnings.append(
-            "  ! unmerged delta: {0} → tide cannon merge {1}".format(
+            "  ! unmerged delta: {0} → tide canon merge {1}".format(
                 off.name, slug.entry_slug(off.name)
             )
         )

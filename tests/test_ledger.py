@@ -18,7 +18,7 @@ def test_append_writes_a_parseable_entry(tmp_project):
     e = items[0]
     assert e.arc == "__03-fix-leak__"
     assert e.deferred == ["delta", "report", "proof"]
-    assert e.cannon_rev == "abc123def456"
+    assert e.canon_rev == "abc123def456"
     assert e.ref == "fix-leak"  # markers stripped for resolution
 
 
@@ -37,7 +37,7 @@ def test_append_is_idempotent_per_arc(tmp_project):
     items = ledger.entries(tmp_project)
     assert len(items) == 1  # replaced, not duplicated
     assert items[0].deferred == ["delta", "report"]
-    assert items[0].cannon_rev == "rev2"
+    assert items[0].canon_rev == "rev2"
 
 
 def test_find_resolves_by_bare_slug(tmp_project):

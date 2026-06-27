@@ -1,17 +1,17 @@
-"""tide.cannon.rev — cannon-rev = short sha256 of ``CANON.md`` ONLY.
+"""tide.canon.rev — canon-rev = short sha256 of ``CANON.md`` ONLY.
 
-The cannon-rev is tide's drift anchor: arc open stamps it into ``arc.md``; every
-cannon merge bumps it; a later arc whose stamped rev differs from the current one
+The canon-rev is tide's drift anchor: arc open stamps it into ``arc.md``; every
+canon merge bumps it; a later arc whose stamped rev differs from the current one
 has drifted (decision 9). It is a **tide invention** — the canon bash had none.
 
 Scope decision (build-blueprint resolved-risk #2): hash **CANON.md only**, the
-truth — not the whole ``cannon/`` dir. So tweaks to ``config`` / folded
+truth — not the whole ``canon/`` dir. So tweaks to ``config`` / folded
 notes / changelog never spam drift; only the living-IS doc moving the rev.
 
 The hash is a deterministic, stable function of the file's bytes: identical
 content ⇒ identical rev regardless of when/where computed; any byte change ⇒ a
 different rev. A missing CANON.md hashes as empty (stable, never raises) so the
-sync engine can stamp before a project's cannon is fully seeded.
+sync engine can stamp before a project's canon is fully seeded.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def compute_text(text: str) -> str:
 
 
 def compute(root: Path) -> str:
-    """Return the cannon-rev for project *root* (hash of CANON.md, '' → empty hash).
+    """Return the canon-rev for project *root* (hash of CANON.md, '' → empty hash).
 
     Reads bytes and decodes utf-8 so the rev is content-defined (not affected by
     path or mtime). A missing CANON.md is treated as empty content.

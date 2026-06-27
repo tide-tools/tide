@@ -83,7 +83,7 @@ def test_second_person_init_creates_control_home_scaffold(tmp_path, monkeypatch)
     assert rc == 0
     # Core scaffold items the second person receives.
     assert paths.tide_dir(home).is_dir(), ".tide/ must exist"
-    assert paths.canon_file(home).is_file(), "cannon/CANON.md must exist"
+    assert paths.canon_file(home).is_file(), "canon/CANON.md must exist"
     assert paths.candidates_dir(home).is_dir(), "arcs/candidates/ must exist"
     assert paths.strictness_file(home).is_file(), "state/strictness must exist"
     assert paths.is_control_home(home), "roster.md must mark this as a control-home"

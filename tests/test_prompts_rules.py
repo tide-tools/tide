@@ -16,7 +16,7 @@ def test_global_prompts_shipped():
 
 def test_global_rules_shipped():
     rdir = paths.global_rules_dir()
-    for name in ("subagents", "cannon-sync", "contract"):
+    for name in ("subagents", "canon-sync", "contract"):
         f = rdir / "{0}.md".format(name)
         assert f.is_file(), "missing rule {0}".format(f)
         assert f.read_text(encoding="utf-8").strip()

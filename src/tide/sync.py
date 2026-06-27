@@ -1,22 +1,22 @@
-"""tide.sync — the cannon-rev drift engine (stamp · bump · drift-check · block).
+"""tide.sync — the canon-rev drift engine (stamp · bump · drift-check · block).
 
 This is tide's load-bearing **net-new** discipline over the arcs/canon bash tools
-(they had no content-hash, no drift anchor). It turns the cannon-rev (sha256 of
-``CANON.md`` ONLY — :mod:`tide.cannon.rev`) into a synchronisation barrier so
+(they had no content-hash, no drift anchor). It turns the canon-rev (sha256 of
+``CANON.md`` ONLY — :mod:`tide.canon.rev`) into a synchronisation barrier so
 parallel workers never share writes and divergence surfaces one delta at a time
 at the human-gated merge.
 
 Four pure operations (build-blueprint ``sync_hook`` / package-layout U7), each
 consumed by the agent CLI and the SessionStart / edit-gate hooks:
 
-* **stamp(arc, root)** — write the current cannon-rev into an arc's passport.
+* **stamp(arc, root)** — write the current canon-rev into an arc's passport.
   The on-open stamp; mirrors :func:`tide.arc.stream.stamp_rev` (which the stream
   calls directly on new/open) so the whole stamp/bump/drift/block vocabulary
   lives in one module.
-* **bump(root)** — recompute the cannon-rev after a merge (close = delta-merge).
+* **bump(root)** — recompute the canon-rev after a merge (close = delta-merge).
   So any later arc comparing against an older stamp detects movement.
-* **drift_check(arc, root)** — compare an arc's stamped cannon-rev against the
-  current one; if cannon moved, the arc has drifted and must reconcile before it
+* **drift_check(arc, root)** — compare an arc's stamped canon-rev against the
+  current one; if canon moved, the arc has drifted and must reconcile before it
   proceeds (checked on worker dispatch + on arc close).
 * **block_new_arc_if_unmerged_delta(root)** — refuse to open a NEW arc while ANY
   arc — ACTIVE or CLOSED — still carries a non-empty, unmerged ``delta.md``.
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 from . import fields, paths, slug
-from .cannon import merge, rev
+from .canon import merge, rev
 
 # stamp_rev/passport_path are the single on-disk-passport implementation; reuse
 # them so sync never re-derives the goal-doc-vs-arc.md resolution (DRY). Imported
@@ -49,7 +49,7 @@ MERGED_YES = "yes"
 
 
 class SyncError(StreamError):
-    """A cannon-sync barrier error (unmerged delta blocks a new arc).
+    """A canon-sync barrier error (unmerged delta blocks a new arc).
 
     Subclasses :class:`tide.arc.stream.StreamError` so ``cli.main`` catches it on
     the same ``except`` arm (prints ``tide: …``, exits nonzero).
@@ -60,7 +60,7 @@ class DriftResult(NamedTuple):
     """Outcome of :func:`drift_check`.
 
     ``drifted`` is True only when the arc carries a stamp AND it differs from the
-    current cannon-rev. A never-stamped arc (``stamped is None``) is *not* drift —
+    current canon-rev. A never-stamped arc (``stamped is None``) is *not* drift —
     there is nothing to compare — so callers can flag "unstamped" separately.
     """
 
@@ -72,19 +72,19 @@ class DriftResult(NamedTuple):
 # --- stamp / bump ----------------------------------------------------------
 
 def stamp(arc_dir: Path, root: Path) -> str:
-    """Write the current cannon-rev into *arc_dir*'s passport; return the rev.
+    """Write the current canon-rev into *arc_dir*'s passport; return the rev.
 
     The on-open stamp (decision 9/10). Delegates to
     :func:`tide.arc.stream.stamp_rev` so there is exactly one writer of the
-    ``cannon-rev:`` field.
+    ``canon-rev:`` field.
     """
     return stamp_rev(Path(arc_dir), Path(root))
 
 
 def bump(root: Path) -> str:
-    """Recompute the cannon-rev after a merge — the post-merge drift anchor.
+    """Recompute the canon-rev after a merge — the post-merge drift anchor.
 
-    Pure read of ``CANON.md``; identical to what :func:`tide.cannon.merge.merge_delta`
+    Pure read of ``CANON.md``; identical to what :func:`tide.canon.merge.merge_delta`
     returns, named here so the merge path and the hook share one vocabulary.
     """
     return rev.compute(Path(root))
@@ -93,13 +93,13 @@ def bump(root: Path) -> str:
 # --- drift check -----------------------------------------------------------
 
 def drift_check(arc_dir: Path, root: Path) -> DriftResult:
-    """Compare *arc_dir*'s stamped cannon-rev against the current one.
+    """Compare *arc_dir*'s stamped canon-rev against the current one.
 
-    Reads the stamp from the arc's passport (``cannon-rev:``) and the live rev
+    Reads the stamp from the arc's passport (``canon-rev:``) and the live rev
     from ``CANON.md``. Returns a :class:`DriftResult`; ``drifted`` is True when a
-    stamp exists and the cannon has since moved.
+    stamp exists and the canon has since moved.
     """
-    stamped = fields.read_field(passport_path(Path(arc_dir)), "cannon-rev")
+    stamped = fields.read_field(passport_path(Path(arc_dir)), "canon-rev")
     current = rev.compute(Path(root))
     drifted = stamped is not None and stamped != current
     return DriftResult(drifted=drifted, stamped=stamped, current=current)
@@ -116,7 +116,7 @@ def is_unmerged_delta(delta_path: Path) -> bool:
     """True when *delta_path* is a non-empty delta NOT yet marked ``merged: yes``.
 
     "Non-empty" means it has a merge-worthy body — exactly what
-    :func:`tide.cannon.merge.merge_delta` would fold into the journal (frontmatter
+    :func:`tide.canon.merge.merge_delta` would fold into the journal (frontmatter
     + heading stripped) — so a delta carrying only a ``merged:`` line counts as
     empty. A merged delta (``merged: yes``) is done and never an offender.
     """
@@ -160,7 +160,7 @@ def block_new_arc_if_unmerged_delta(root: Path) -> None:
     """Refuse to open a new arc while ANY arc — active OR closed — owes a merge.
 
     The between-arcs barrier (decision 9 / dogfood fix F1): deltas must funnel
-    through the orchestrator-only ``cannon merge`` gate one feature at a time. The
+    through the orchestrator-only ``canon merge`` gate one feature at a time. The
     old scan only saw CLOSED arcs, so the common happy path (the current arc still
     active with a written delta) let a 2nd concurrent arc open silently. Scanning
     active + closed (``include_active=True``) closes that hole. Raises
@@ -180,8 +180,8 @@ def block_new_arc_if_unmerged_delta(root: Path) -> None:
         return
     names = ", ".join(o.name for o in offenders)
     raise SyncError(
-        "cannot open a new arc — {n} arc(s) carry an unmerged cannon-delta "
-        "({names}); merge into cannon first (tide cannon merge <arc>)".format(
+        "cannot open a new arc — {n} arc(s) carry an unmerged canon-delta "
+        "({names}); merge into canon first (tide canon merge <arc>)".format(
             n=len(offenders), names=names
         )
     )

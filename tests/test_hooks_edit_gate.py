@@ -68,7 +68,7 @@ def test_decide_allows_project_edit_with_open_arc(tmp_project):
 
 
 def test_decide_always_allows_edits_inside_tide(tmp_project):
-    # No open arc, yet an edit inside .tide/ is allowed (deltas/reports/cannon).
+    # No open arc, yet an edit inside .tide/ is allowed (deltas/reports/canon).
     target = tmp_project / ".tide" / "arcs" / "01-foo" / "delta.md"
     code, reason = edit_gate.decide(str(target), tmp_project)
     assert code == edit_gate.ALLOW
@@ -95,7 +95,7 @@ def _make_closed_arc_with_unmerged_delta(root, slug_name="alpha"):
     strip_placeholders(arc / "arc.md")
     closed = stream.close(root, slug_name)
     (closed / "delta.md").write_text(
-        "# delta — {0}\n\nadded a thing to cannon.\n".format(slug_name),
+        "# delta — {0}\n\nadded a thing to canon.\n".format(slug_name),
         encoding="utf-8",
     )
     return closed
@@ -107,12 +107,12 @@ def test_decide_blocks_project_edit_while_delta_unmerged(tmp_project):
     _make_closed_arc_with_unmerged_delta(tmp_project)
     code, reason = edit_gate.decide(str(tmp_project / "x.py"), tmp_project)
     assert code == edit_gate.BLOCK
-    assert "unmerged cannon-delta" in reason
+    assert "unmerged canon-delta" in reason
 
 
 def test_decide_still_allows_tide_edits_while_delta_unmerged(tmp_project):
     _make_closed_arc_with_unmerged_delta(tmp_project)
-    target = tmp_project / ".tide" / "cannon" / "CANON.md"
+    target = tmp_project / ".tide" / "canon" / "CANON.md"
     code, _ = edit_gate.decide(str(target), tmp_project)
     assert code == edit_gate.ALLOW
 

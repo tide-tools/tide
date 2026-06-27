@@ -8,7 +8,7 @@ ARC_MD = """# 03-fix-bug
 
 goal: stop the leak
 status: active
-cannon-rev: abc123
+canon-rev: abc123
 
 ## input
 some prose with a colon: not a field
@@ -18,7 +18,7 @@ some prose with a colon: not a field
 def test_read_field_first_line_after_colon():
     assert fields.read_field_text(ARC_MD, "goal") == "stop the leak"
     assert fields.read_field_text(ARC_MD, "status") == "active"
-    assert fields.read_field_text(ARC_MD, "cannon-rev") == "abc123"
+    assert fields.read_field_text(ARC_MD, "canon-rev") == "abc123"
 
 
 def test_read_field_missing_returns_none():
@@ -44,10 +44,10 @@ def test_read_supersedes_strips_double_underscore():
 def test_set_field_replaces_in_place_preserving_order():
     out = fields.set_field_text(ARC_MD, "status", "done")
     lines = [ln for ln in out.splitlines() if ln and not ln.startswith("#")]
-    # order: goal, status, cannon-rev — status stays in slot 2
+    # order: goal, status, canon-rev — status stays in slot 2
     assert lines[0] == "goal: stop the leak"
     assert lines[1] == "status: done"
-    assert lines[2] == "cannon-rev: abc123"
+    assert lines[2] == "canon-rev: abc123"
 
 
 def test_set_field_new_key_appended_to_frontmatter_block():
@@ -60,7 +60,7 @@ def test_set_field_new_key_appended_to_frontmatter_block():
     assert fields.read_field_text(out, "slug") == "c-07"
     # existing fields keep their values/order
     assert fields.read_field_text(out, "goal") == "stop the leak"
-    assert fields.read_field_text(out, "cannon-rev") == "abc123"
+    assert fields.read_field_text(out, "canon-rev") == "abc123"
     # inserted inside the frontmatter block, before the body heading
     assert out.index("slug: c-07") < out.index("## input")
 

@@ -408,7 +408,7 @@ class InFlight:
       between-arcs barrier offenders).
     * ``contracts`` — ``(arc, state)`` of contracts still ``running``/``output``
       (signed but not sealed).
-    * ``drift`` — open arcs whose stamped ``cannon-rev`` lags the current one.
+    * ``drift`` — open arcs whose stamped ``canon-rev`` lags the current one.
 
     ``clean`` is the gate's verdict: nothing in flight ⇒ enter silently.
     """
@@ -428,7 +428,7 @@ def inflight_signals(root: Path) -> InFlight:
     """
     from .. import sync
     from ..arc.stream import passport_path
-    from ..cannon import rev
+    from ..canon import rev
     from ..contract import lifecycle
 
     unmerged = [p.name for p in sync.unmerged_deltas(Path(root))]
@@ -440,7 +440,7 @@ def inflight_signals(root: Path) -> InFlight:
     current = rev.compute(Path(root))
     drift: List[str] = []
     for entry in board.open_entries(Path(root)):
-        stamped = fields.read_field(passport_path(entry), "cannon-rev")
+        stamped = fields.read_field(passport_path(entry), "canon-rev")
         if stamped and stamped != current:
             drift.append(entry.name)
     return InFlight(unmerged, contracts, drift)

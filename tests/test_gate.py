@@ -1,12 +1,12 @@
-"""M1 unit — gate.decide: tri-state cannon-gate oracle (0=current 1=stale 2=oracle-error).
+"""M1 unit — gate.decide: tri-state canon-gate oracle (0=current 1=stale 2=oracle-error).
 
 Coverage targets:
 * decide: all three codes returned correctly
-* cannon_lint: c1 placeholders, c2 dup headings, c3 dup stamps, c4 empty sections
+* canon_lint: c1 placeholders, c2 dup headings, c3 dup stamps, c4 empty sections
 * _open_arc_dirs: top-level + goal sub-arcs
 * reality-rev stale-detection: covered file changed → gate returns 1
 * oracle-error FAIL-LOUD: returns 2, NEVER 0, when oracle can't evaluate
-* CLI smoke: tide cannon gate exits 0/1/2
+* CLI smoke: tide canon gate exits 0/1/2
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 
 from tide import gate, paths
 from tide.arc import stream
-from tide.cannon import merge, rev as cannon_rev, store
+from tide.canon import merge, rev as canon_rev, store
 
 from tests.conftest import strip_placeholders
 
@@ -55,7 +55,7 @@ def _filled_canon(root: Path) -> None:
 
 
 def _write_state_covers(root: Path, globs: list) -> None:
-    from tide.cannon import reality as _r  # avoid top-level import of reality in gate tests
+    from tide.canon import reality as _r  # avoid top-level import of reality in gate tests
     from tide import paths as _p
     (_p.state_dir(root) / "canon-covers").write_text(
         "\n".join(globs) + "\n", encoding="utf-8"
@@ -81,7 +81,7 @@ def test_gate_current_clean_fresh_project(tmp_project):
 
 
 def test_gate_current_with_open_arc_and_no_drift(tmp_project):
-    """An open arc stamped at the current cannon-rev → current (0)."""
+    """An open arc stamped at the current canon-rev → current (0)."""
     stream.new_arc(tmp_project, "work")
     code, reasons = gate.decide(tmp_project)
     assert code == 0
@@ -105,9 +105,9 @@ def test_gate_current_after_merge_and_new_arc(tmp_project):
     (entry / "output" / "r.md").write_text("done", encoding="utf-8")
     strip_placeholders(entry / "arc.md")
     closed = stream.close(tmp_project, "init")
-    # Merge the closed arc's delta (marks merged, bumps cannon-rev)
+    # Merge the closed arc's delta (marks merged, bumps canon-rev)
     merge.merge_delta(tmp_project, closed, slug="init")
-    # Open a fresh arc (barrier lifted; stamps the new current cannon-rev)
+    # Open a fresh arc (barrier lifted; stamps the new current canon-rev)
     stream.new_arc(tmp_project, "next")
     code, reasons = gate.decide(tmp_project)
     assert code == 0, reasons
@@ -141,26 +141,26 @@ def test_gate_stale_unmerged_active_delta(tmp_project):
     assert any("unmerged" in r for r in reasons)
 
 
-def test_gate_stale_cannon_rev_drift(tmp_project):
-    """Open arc drifted on cannon-rev → stale (1), reason mentions 'cannon-rev'."""
+def test_gate_stale_canon_rev_drift(tmp_project):
+    """Open arc drifted on canon-rev → stale (1), reason mentions 'canon-rev'."""
     # Pre-fill CANON.md so lint passes (maintained project)
     _filled_canon(tmp_project)
 
-    # Create arc → stamps cannon-rev = r0
+    # Create arc → stamps canon-rev = r0
     entry = stream.new_arc(tmp_project, "work")
-    stamped_cr = cannon_rev.compute(tmp_project)
+    stamped_cr = canon_rev.compute(tmp_project)
 
-    # Modify CANON.md → cannon-rev = r1 ≠ r0
+    # Modify CANON.md → canon-rev = r1 ≠ r0
     canon = paths.canon_file(tmp_project)
     canon.write_text(
         canon.read_text(encoding="utf-8") + "\n### 2026-02-01 · bump\n\nmore.\n",
         encoding="utf-8",
     )
-    assert cannon_rev.compute(tmp_project) != stamped_cr  # precondition
+    assert canon_rev.compute(tmp_project) != stamped_cr  # precondition
 
     code, reasons = gate.decide(tmp_project)
     assert code == 1
-    assert any("cannon-rev" in r for r in reasons)
+    assert any("canon-rev" in r for r in reasons)
 
 
 def test_gate_stale_lint_duplicate_heading(tmp_project):
@@ -309,7 +309,7 @@ def test_gate_stale_when_reality_rev_drifts(tmp_project):
 
     # Modify the covered file → current reality-rev is now rr1 ≠ rr0
     f.write_text("v2", encoding="utf-8")
-    from tide.cannon.reality import reality_rev as _rrv
+    from tide.canon.reality import reality_rev as _rrv
     rr1 = _rrv(tmp_project)
     assert rr0 != rr1, "precondition: reality-rev must have moved"
 
@@ -361,41 +361,41 @@ def test_gate_no_reality_drift_when_no_manifest(tmp_project):
 
 
 # ---------------------------------------------------------------------------
-# cannon_lint (unit tests)
+# canon_lint (unit tests)
 # ---------------------------------------------------------------------------
 
-def test_cannon_lint_clean_project(tmp_project):
+def test_canon_lint_clean_project(tmp_project):
     """Fresh CANON.md with no journal → no lint issues."""
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert issues == []
 
 
-def test_cannon_lint_raises_file_not_found_when_canon_missing(tmp_project):
+def test_canon_lint_raises_file_not_found_when_canon_missing(tmp_project):
     """Missing CANON.md → FileNotFoundError (oracle-error path in decide)."""
     paths.canon_file(tmp_project).unlink()
     with pytest.raises(FileNotFoundError):
-        gate.cannon_lint(tmp_project)
+        gate.canon_lint(tmp_project)
 
 
-def test_cannon_lint_detects_duplicate_heading(tmp_project):
+def test_canon_lint_detects_duplicate_heading(tmp_project):
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n## What it is\n\nA\n\n## What it is\n\nB\n\n## Cannon journal\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert any("duplicate heading" in i for i in issues)
 
 
-def test_cannon_lint_detects_placeholder(tmp_project):
+def test_canon_lint_detects_placeholder(tmp_project):
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n## What it is\n\n<fill me in>\n\n## Cannon journal\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert any("placeholder" in i for i in issues)
 
 
-def test_cannon_lint_ignores_angle_span_inside_code(tmp_project):
+def test_canon_lint_ignores_angle_span_inside_code(tmp_project):
     """`<…>` inside inline backticks / fenced blocks are examples, not placeholders.
 
     Candidate 109: the backticked goal-H1 example tripped the gate twice; the proper
@@ -411,11 +411,11 @@ def test_cannon_lint_ignores_angle_span_inside_code(tmp_project):
         "## Cannon journal\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert not any("placeholder" in i for i in issues), issues
 
 
-def test_cannon_lint_flags_bare_span_but_not_backticked_on_mixed_line(tmp_project):
+def test_canon_lint_flags_bare_span_but_not_backticked_on_mixed_line(tmp_project):
     """A bare `<…>` in prose is still flagged even when a backticked one shares the line."""
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n"
@@ -424,14 +424,14 @@ def test_cannon_lint_flags_bare_span_but_not_backticked_on_mixed_line(tmp_projec
         "## Cannon journal\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     placeholder_issues = [i for i in issues if "placeholder" in i]
     assert len(placeholder_issues) == 1
     assert "<fill me in>" in placeholder_issues[0]
     assert "<code>" not in placeholder_issues[0]
 
 
-def test_cannon_lint_detects_duplicate_journal_stamp(tmp_project):
+def test_canon_lint_detects_duplicate_journal_stamp(tmp_project):
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n"
         "## Cannon journal\n\n"
@@ -439,11 +439,11 @@ def test_cannon_lint_detects_duplicate_journal_stamp(tmp_project):
         "### 2026-01-01 · x\n\nbar\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert any("duplicate journal stamp" in i for i in issues)
 
 
-def test_cannon_lint_maintained_project_empty_sections_is_issue(tmp_project):
+def test_canon_lint_maintained_project_empty_sections_is_issue(tmp_project):
     paths.canon_file(tmp_project).write_text(
         "# CANON.md — demo\n\n"
         "## What it is\n\n"  # empty
@@ -452,14 +452,14 @@ def test_cannon_lint_maintained_project_empty_sections_is_issue(tmp_project):
         "## Cannon journal\n\n### 2026-01-01 · init\n\nentry\n",
         encoding="utf-8",
     )
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert any("empty canonical section" in i for i in issues)
     assert any("What it is" in i for i in issues)
 
 
-def test_cannon_lint_fresh_project_empty_sections_ok(tmp_project):
+def test_canon_lint_fresh_project_empty_sections_ok(tmp_project):
     """No journal entries → sections can be empty (seed state, not neglect)."""
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert issues == []
 
 
@@ -499,34 +499,34 @@ def test_open_arc_dirs_finds_sub_arc_in_open_goal(tmp_project):
 # CLI smoke tests
 # ---------------------------------------------------------------------------
 
-def test_cannon_gate_cli_exits_zero_on_current(in_project):
-    """``tide cannon gate`` exits 0 on a clean, current project."""
+def test_canon_gate_cli_exits_zero_on_current(in_project):
+    """``tide canon gate`` exits 0 on a clean, current project."""
     from tide.cli import main
-    code = main(["cannon", "gate"])
+    code = main(["canon", "gate"])
     assert code == 0
 
 
-def test_cannon_gate_cli_exits_one_on_stale(in_project):
-    """``tide cannon gate`` exits 1 when there is a stale issue."""
+def test_canon_gate_cli_exits_one_on_stale(in_project):
+    """``tide canon gate`` exits 1 when there is a stale issue."""
     _close_arc_with_delta(in_project, "alpha")
     from tide.cli import main
-    code = main(["cannon", "gate"])
+    code = main(["canon", "gate"])
     assert code == 1
 
 
-def test_cannon_gate_cli_exits_two_on_oracle_error(in_project):
-    """``tide cannon gate`` exits 2 on oracle-error (CANON.md deleted)."""
+def test_canon_gate_cli_exits_two_on_oracle_error(in_project):
+    """``tide canon gate`` exits 2 on oracle-error (CANON.md deleted)."""
     paths.canon_file(in_project).unlink()
     from tide.cli import main
-    code = main(["cannon", "gate"])
+    code = main(["canon", "gate"])
     assert code == 2
 
 
-def test_cannon_gate_cli_is_registered(in_project, capsys):
-    """``tide cannon gate --help`` shows without error."""
+def test_canon_gate_cli_is_registered(in_project, capsys):
+    """``tide canon gate --help`` shows without error."""
     from tide.cli import main
     with pytest.raises(SystemExit) as exc:
-        main(["cannon", "gate", "--help"])
+        main(["canon", "gate", "--help"])
     assert exc.value.code == 0
 
 
@@ -536,7 +536,7 @@ def test_cannon_gate_cli_is_registered(in_project, capsys):
 
 def test_gate_standing_reality_drift(tmp_project):
     """Baseline stamped, then a covered signature moves → standing prose-stale (1)."""
-    from tide.cannon import reality
+    from tide.canon import reality
 
     _write_state_covers(tmp_project, ["*.py"])
     f = tmp_project / "mod.py"
@@ -555,7 +555,7 @@ def test_gate_standing_reality_drift(tmp_project):
 
 def test_gate_no_standing_drift_on_body_only_edit(tmp_project):
     """A body-only edit keeps the API surface → no standing drift (deliberate)."""
-    from tide.cannon import reality
+    from tide.canon import reality
 
     _write_state_covers(tmp_project, ["*.py"])
     f = tmp_project / "mod.py"
@@ -581,18 +581,18 @@ def test_gate_lint_missing_baseline(tmp_project):
     _filled_canon(tmp_project)
     _write_state_covers(tmp_project, ["*.py"])
     (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert any("missing reality-rev baseline" in i for i in issues)
 
 
 def test_gate_lint_baseline_present_clears_c5(tmp_project):
-    from tide.cannon import reality
+    from tide.canon import reality
 
     _filled_canon(tmp_project)
     _write_state_covers(tmp_project, ["*.py"])
     (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
     reality.stamp_canon_baseline(tmp_project)
-    issues = gate.cannon_lint(tmp_project)
+    issues = gate.canon_lint(tmp_project)
     assert not any("missing reality-rev baseline" in i for i in issues)
 
 
@@ -600,12 +600,12 @@ def test_gate_clean_after_close_chain_with_manifest(tmp_project):
     """Risk #1: open→delta→merge→close WITH a covers manifest leaves the gate clean.
 
     contract.close merges the delta (which now stamps the reality baseline + bumps
-    cannon-rev) and re-stamps the post-merge rev onto the sealed arc. The standing
+    canon-rev) and re-stamps the post-merge rev onto the sealed arc. The standing
     baseline equals current reality and the authoring arc is closed → no churn loop.
     """
     from tide.contract import lifecycle
     from tide.contract import model
-    from tide.cannon import reality
+    from tide.canon import reality
 
     _filled_canon(tmp_project)
     _write_state_covers(tmp_project, ["*.py"])
@@ -634,7 +634,7 @@ def test_gate_no_self_drift_when_canon_covers_matches_canon_itself(tmp_project):
     must NOT create a false standing-drift loop — CANON.md is excluded from its own
     reality fingerprint, so stamping the baseline at merge never re-trips the gate.
     """
-    from tide.cannon import reality
+    from tide.canon import reality
 
     _filled_canon(tmp_project)
     _write_state_covers(tmp_project, ["**/*.md"])  # matches CANON.md + every other .md
@@ -669,7 +669,7 @@ def test_gate_oracle_error_when_git_ls_files_raises(tmp_project, monkeypatch):
     matched, so gate.decide returned 0 (current) even though the axis was dead.
     After the fix the OSError propagates and gate.decide catches it as oracle-error.
     """
-    from tide.cannon import reality as _reality
+    from tide.canon import reality as _reality
     _write_state_covers(tmp_project, ["*.md"])
 
     # Force the git-mode branch so _ls_files is actually invoked

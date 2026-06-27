@@ -9,7 +9,7 @@ line so a later ``tide reconcile`` / ``tide arc land --strict <arc>`` pays it do
 One human-readable, git-trackable file at the ``.tide/`` root; each owed arc is a
 single list line carrying the three things reconciliation needs to find it again:
 
-    - arc: <entry-dir-name>  deferred: <guards>  cannon-rev: <rev>
+    - arc: <entry-dir-name>  deferred: <guards>  canon-rev: <rev>
 
 ``<guards>`` is a comma-joined subset of ``delta``/``report``/``proof`` (the
 guards that were not satisfied at land time). The ledger is the SINGLE source of
@@ -45,9 +45,10 @@ _HEADER = (
     "\n"
 )
 
-# Parses one debt line: `- arc: NAME  deferred: a, b  cannon-rev: REV`.
+# Parses one debt line: `- arc: NAME  deferred: a, b  canon-rev: REV`.
+# Back-compat: also accepts the legacy ``cannon-rev:`` spelling in existing ledger files.
 _LINE_RE = re.compile(
-    r"^-\s*arc:\s*(?P<arc>\S+)\s+deferred:\s*(?P<deferred>.*?)\s+cannon-rev:\s*(?P<rev>\S*)\s*$"
+    r"^-\s*arc:\s*(?P<arc>\S+)\s+deferred:\s*(?P<deferred>.*?)\s+(?:canon|cannon)-rev:\s*(?P<rev>\S*)\s*$"
 )
 
 
@@ -57,7 +58,7 @@ class LedgerEntry:
 
     arc: str
     deferred: List[str]
-    cannon_rev: str
+    canon_rev: str
 
     @property
     def ref(self) -> str:
@@ -68,8 +69,8 @@ class LedgerEntry:
 def _format_line(entry: LedgerEntry) -> str:
     """Render one debt line (the inverse of :data:`_LINE_RE`)."""
     guards = ", ".join(entry.deferred) if entry.deferred else "-"
-    return "- arc: {arc}  deferred: {guards}  cannon-rev: {rev}".format(
-        arc=entry.arc, guards=guards, rev=entry.cannon_rev
+    return "- arc: {arc}  deferred: {guards}  canon-rev: {rev}".format(
+        arc=entry.arc, guards=guards, rev=entry.canon_rev
     )
 
 
@@ -80,7 +81,7 @@ def _parse_line(line: str) -> Optional[LedgerEntry]:
         return None
     raw = m.group("deferred").strip()
     deferred = [g.strip() for g in raw.split(",") if g.strip() and g.strip() != "-"]
-    return LedgerEntry(arc=m.group("arc"), deferred=deferred, cannon_rev=m.group("rev"))
+    return LedgerEntry(arc=m.group("arc"), deferred=deferred, canon_rev=m.group("rev"))
 
 
 # --- reads -----------------------------------------------------------------
@@ -125,14 +126,14 @@ def _write(root: Path, items: List[LedgerEntry]) -> None:
     _io.atomic_write(f, _HEADER + body + "\n")
 
 
-def append(root: Path, arc: str, deferred: List[str], cannon_rev: str) -> LedgerEntry:
+def append(root: Path, arc: str, deferred: List[str], canon_rev: str) -> LedgerEntry:
     """Record (or refresh) *arc*'s reconciliation debt; idempotent per-arc.
 
     Re-landing an arc that is already owed replaces its line in place (latest
     guards + rev win) rather than duplicating it, so the ledger holds at most one
     line per arc. Returns the entry written.
     """
-    new = LedgerEntry(arc=arc, deferred=list(deferred), cannon_rev=cannon_rev)
+    new = LedgerEntry(arc=arc, deferred=list(deferred), canon_rev=canon_rev)
     target = slug.entry_slug(arc)
     items = [e for e in entries(root) if e.ref != target]
     items.append(new)

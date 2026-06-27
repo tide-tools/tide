@@ -6,7 +6,7 @@ import pytest
 
 from tide import fields, paths
 from tide.arc import stream
-from tide.cannon import rev
+from tide.canon import rev
 
 from tests.conftest import strip_placeholders
 
@@ -23,9 +23,9 @@ def test_new_arc_builds_triad_and_passport(tmp_project):
     assert fields.read_field(doc, "status") == "active"
 
 
-def test_new_arc_stamps_cannon_rev(tmp_project):
+def test_new_arc_stamps_canon_rev(tmp_project):
     entry = stream.new_arc(tmp_project, "alpha")
-    stamped = fields.read_field(entry / "arc.md", "cannon-rev")
+    stamped = fields.read_field(entry / "arc.md", "canon-rev")
     assert stamped == rev.compute(tmp_project)
     assert stamped  # non-empty
 
@@ -83,15 +83,15 @@ def test_new_arc_under_closed_goal_raises(tmp_project):
 
 # --- open / resume ---------------------------------------------------------
 
-def test_open_restamps_cannon_rev_after_cannon_moves(tmp_project):
+def test_open_restamps_canon_rev_after_canon_moves(tmp_project):
     entry = stream.new_arc(tmp_project, "alpha")
-    old_rev = fields.read_field(entry / "arc.md", "cannon-rev")
-    # move the cannon → rev changes
+    old_rev = fields.read_field(entry / "arc.md", "canon-rev")
+    # move the canon → rev changes
     canon = paths.canon_file(tmp_project)
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     new_rev = stream.open_arc(tmp_project, "alpha")
     assert rev.compute(tmp_project) != old_rev
-    stamped = fields.read_field((tmp_project / ".tide/arcs/01-alpha") / "arc.md", "cannon-rev")
+    stamped = fields.read_field((tmp_project / ".tide/arcs/01-alpha") / "arc.md", "canon-rev")
     assert stamped == rev.compute(tmp_project)
 
 
@@ -287,15 +287,15 @@ def test_rm_removes_closed_arc(tmp_project):
 
 
 def test_rm_refuses_merged_delta_even_with_force(tmp_project):
-    # F8: a delta merged into cannon is history — never droppable, -f included.
-    from tide.cannon import merge
+    # F8: a delta merged into canon is history — never droppable, -f included.
+    from tide.canon import merge
 
     entry = stream.new_arc(tmp_project, "gamma")
     (entry / "delta.md").write_text("# delta\n## What it is\nhi\n", encoding="utf-8")
     merge.mark_merged(entry / "delta.md")
     with pytest.raises(stream.StreamError) as ei:
         stream.rm(tmp_project, "gamma", force=True)
-    assert "cannon" in str(ei.value)
+    assert "canon" in str(ei.value)
     assert entry.is_dir()
 
 
@@ -338,8 +338,8 @@ def test_rm_goal_with_subarc_needs_force(tmp_project):
 
 
 def test_rm_goal_refuses_when_subarc_delta_merged(tmp_project):
-    # F8: a goal whose sub-arc merged a delta is cannon-anchored — refuse, -f too.
-    from tide.cannon import merge
+    # F8: a goal whose sub-arc merged a delta is canon-anchored — refuse, -f too.
+    from tide.canon import merge
 
     stream.new_goal(tmp_project, "ship")
     sub = stream.new_arc(tmp_project, "wire", goal_slug="ship")

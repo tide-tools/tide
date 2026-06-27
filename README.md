@@ -10,7 +10,7 @@ markdown files you can read, diff, and grep — not in a chat or a database.
 ```
 tide init  →  control-home (roster + dogfood .tide/)
 tide        →  pick projects → launch a seeded orchestrator session
-arc · contract · cannon  →  do the work, bind it, fold the truth back in
+arc · contract · canon  →  do the work, bind it, fold the truth back in
 ```
 
 > **Requires Python ≥ 3.12.** Runtime is **stdlib-only** (argparse, no `click`,
@@ -81,7 +81,7 @@ errors,"* and the orchestrator runs the loop for you:
 
 ```bash
 tide arc new ship-onboarding           # carve a bounded unit (addressed by slug)
-tide arc open ship-onboarding          # select it; stamps the current cannon-rev
+tide arc open ship-onboarding          # select it; stamps the current canon-rev
 
 tide contract new  ship-onboarding     # bind goal + hard criteria
 tide contract sign ship-onboarding     # strict = you sign first; loose = synchronous
@@ -95,7 +95,7 @@ tide status            # current project — flags unmerged deltas + drift
 tide status --all      # roster-wide
 ```
 
-`arc` carves the work, `contract` binds it to a goal you sign off on, and `cannon`
+`arc` carves the work, `contract` binds it to a goal you sign off on, and `canon`
 is the single place durable truth accumulates. The merge of an arc's delta into
 `CANON.md` is the **one serialization point** — orchestrator-only, in a live
 session. You cannot open the next arc while the last one's delta is unmerged.
@@ -111,7 +111,7 @@ session. You cannot open the next arc while the last one's delta is unmerged.
 
 tide is built like a small UNIX tool, on purpose:
 
-- **One binary, namespaced subcommands.** `tide arc …`, `tide cannon …`,
+- **One binary, namespaced subcommands.** `tide arc …`, `tide canon …`,
   `tide contract …` compose the way `git <verb>` does. Each module owns its
   group via a thin `register(subparsers)`; `cli.py` only wires.
 - **Plain text is the database.** Everything is markdown under
@@ -121,7 +121,7 @@ tide is built like a small UNIX tool, on purpose:
   is argparse-free functions you can unit-test in isolation. Synchronous, exit
   codes, no hidden background magic.
 - **Least privilege by default.** Role is carried in one env var, `TIDE_ROLE`
-  (`worker` by default). Orchestrator-only operations — `cannon merge`,
+  (`worker` by default). Orchestrator-only operations — `canon merge`,
   `candidate promote`, `contract close` — refuse to run unless
   `TIDE_ROLE=orchestrator`.
 - **Composable, not a platform.** tide doesn't host your projects; it's the
@@ -139,10 +139,10 @@ tide dogfoods itself — it is led as a tide project, in its own `.tide/`.
 | `init` | unfold a control-home (roster + dogfood `.tide/`) or `--project` for a bare per-project `.tide/` |
 | `roster add\|rm\|ls` | register / list the projects you lead |
 | `menu` (`tide` with no args) | pick N projects → launch seeded sessions (`--pick`, `--adapter`, `--dry-run`) |
-| `status [--all]` | the STREAM board; flags unmerged cannon-deltas and drift on open arcs |
+| `status [--all]` | the STREAM board; flags unmerged canon-deltas and drift on open arcs |
 | `arc new\|open\|resume\|close\|reopen\|supersede\|status` | the numbered work stream (`new-goal` nests a substream) |
 | `candidate` | capture / list / **promote** future-work ideas (separate backlog) |
-| `cannon init\|status\|merge\|rev` | durable truth; `merge` and a fresh `rev` are the truth-update path |
+| `canon init\|status\|merge\|rev` | durable truth; `merge` and a fresh `rev` are the truth-update path |
 | `contract new\|sign\|report\|proof\|accept\|close\|reopen\|state\|list\|ask\|answer` | worker→arc binding + open-questions |
 | `strictness [strict\|loose]` | per-project dispatch dial (default `strict`) |
 | `install-hooks` | merge-safe wiring of the Claude Code hooks into `.claude/settings.json` |
@@ -162,7 +162,7 @@ strategy from `<project>/.tide/state/context.json` (every key optional):
 | key | half | meaning |
 |---|---|---|
 | `strict_mcp` / `mcp_config` / `allowed_tools` / `extra_args` | **tool** | what the session loads (written by `chandler add`) |
-| `read_first` | **strategy** | orientation read-order; unset ⇒ compute the default (`CLAUDE.md` + `cannon/CANON.md`, only those present) |
+| `read_first` | **strategy** | orientation read-order; unset ⇒ compute the default (`CLAUDE.md` + `canon/CANON.md`, only those present) |
 | `surface_on_entry` | **strategy** | show the open-arcs/candidates summary on entry (default `true`) |
 
 The two halves coexist in one file and never clobber each other (unknown keys
@@ -189,8 +189,8 @@ out with `--no-skip-permissions`; inspect the exact argv with `--dry-run`.
 | | **orchestrator** | **worker** |
 |---|---|---|
 | scope | cross-project session | one arc |
-| owns | roster, arc create/select, contracts, **cannon merge**, candidate **promote**, handoff | produce arc output, surface candidates, **propose cannon-delta** |
-| never | does project work directly | merges cannon, touches another arc |
+| owns | roster, arc create/select, contracts, **canon merge**, candidate **promote**, handoff | produce arc output, surface candidates, **propose canon-delta** |
+| never | does project work directly | merges canon, touches another arc |
 
 The worker is a subagent inside the orchestrator session. The launcher sets
 `TIDE_ROLE`.
@@ -203,9 +203,9 @@ Per project, under **`<project>/.tide/`**:
 
 | dir | holds |
 |---|---|
-| `cannon/` | `CANON.md` (living IS) + `config` (`lang=en`); durable truth, notes/changelog/goals folded in |
+| `canon/` | `CANON.md` (living IS) + `config` (`lang=en`); durable truth, notes/changelog/goals folded in |
 | `arcs/` | the numbered stream `NN-<slug>/` (arc) and `NN-@<slug>/` (goal); `arcs/candidates/` is a separate backlog |
-| `state/` | `strictness` + cannon-rev stamps + contract index |
+| `state/` | `strictness` + canon-rev stamps + contract index |
 
 The control-home (where `tide init` ran) adds a top-level **`roster.md`**
 (`name | path` lines) and its own dogfood `.tide/`.
@@ -219,7 +219,7 @@ The control-home (where `tide init` ran) adds a top-level **`roster.md`**
 - **Numbering** counts both `NN-*/` and `__NN-*__/` and **never reuses** a number
   (closing renames, never frees). Candidates have a **separate** counter; goal
   sub-arcs use their own local `01,02…` stream.
-- **cannon-rev** = short sha256 of **`CANON.md` only**, so note/changelog tweaks
+- **canon-rev** = short sha256 of **`CANON.md` only**, so note/changelog tweaks
   don't spam drift.
 - **Encapsulation**: an arc is `input/` → `workspace/` (disposable) → `output/`;
   outside reads `output/` only. The merge into `CANON.md` is the single

@@ -6,13 +6,13 @@ commands — the orchestrator session runs them. This is the loop you drive.
 ## The loop
 1. **`tide`** — from the control-home, see the roster and pick the project(s) to lead this
    session (`tide menu` → `pick> 1,3` or `all`). A fresh **orchestrator** session opens for each,
-   seeded with its cannon + active arc + the roster.
+   seeded with its canon + active arc + the roster.
 2. **Pick N** — choose what you're working on. The orchestrator selects or creates the arc.
 3. **Steer** — tell the orchestrator the goal. It drafts a contract (goal + criteria) and
    dispatches a worker:
    - **strict** project → it asks you to **sign** first (`👍`/confirm in the live session),
    - **loose** project → it dispatches now, you review after.
-4. **Arc done** — the worker returns output; the orchestrator **merges the cannon delta** and
+4. **Arc done** — the worker returns output; the orchestrator **merges the canon delta** and
    shows you what changed. It then offers:
    - **take another arc** — keep going in this session,
    - **promote a candidate** — turn a surfaced idea into the next arc,
@@ -22,7 +22,7 @@ commands — the orchestrator session runs them. This is the loop you drive.
 ## Things to know
 - **Candidates** are the parking lot: ideas that surfaced but aren't this arc. Say "park that" and
   the orchestrator drops a candidate; promote it later when it earns an arc.
-- **The cannon** (`CANON.md`) is the project's living truth. Every finished arc updates it through
+- **The canon** (`CANON.md`) is the project's living truth. Every finished arc updates it through
   **one merge, in front of you** — that merge is also where two arcs that disagree get reconciled.
 - **Strictness** is your dial per project: `strict` = you sign before work runs, `loose` = work
   runs, you review after. Ask the orchestrator to flip it any time.
