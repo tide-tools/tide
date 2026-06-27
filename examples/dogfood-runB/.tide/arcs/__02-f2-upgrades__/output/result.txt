@@ -1,4 +1,4 @@
-Game file: /Users/socaseinpoint/Documents/projects/tide/examples/dogfood-runB/index.html
+Game file: ~/projects/tide/examples/dogfood-runB/index.html
 Feature: upgrades shop (auto-spawner + click-multiplier), scaling costs (~1.15x), live passive auto-spawn tick.
 Verified: node --check SYNTAX_OK; DOM-stub sim ALL SIM ASSERTIONS PASSED (buy/deduct/gate/scale/passive-growth/click-multiplier).
 Open index.html in a browser: click pool to seed plankton, buy upgrades from the Shop panel, watch auto-spawner add plankton with no clicking.

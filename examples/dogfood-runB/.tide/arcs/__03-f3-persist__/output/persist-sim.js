@@ -1,5 +1,5 @@
 const fs = require('fs');
-const path = '/Users/socaseinpoint/Documents/projects/tide/examples/dogfood-runB/index.html';
+const path = '~/projects/tide/examples/dogfood-runB/index.html';
 const html = fs.readFileSync(path,'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 

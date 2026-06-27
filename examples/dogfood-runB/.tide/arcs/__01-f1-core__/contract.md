@@ -3,7 +3,7 @@
 slug: f1-core
 goal: Clicking the tide pool spawns a plankton and increments a visible plankton counter, with small visual feedback (single-file index.html, DOM or canvas).
 criteria: 1) index.html opens standalone in a browser with a visible tide-pool area and a plankton counter starting at 0; 2) clicking the pool increments the counter by 1 each click and spawns a visible plankton element/dot in the pool; 3) each click produces a small visual feedback (ripple/scale/flash); 4) no JS console errors; all logic self-contained in the one file.
-project: /Users/socaseinpoint/Documents/projects/tide/examples/dogfood-runB
+project: ~/projects/tide/examples/dogfood-runB
 state: close
 sign: orchestrator @ 2026-06-25
 # supersedes: <slug of the contract this one pivots from — optional; alias: prev:>

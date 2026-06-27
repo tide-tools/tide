@@ -2,8 +2,8 @@
 #
 # Distribution channel: Homebrew tap (installs the GitHub source tarball — no PyPI).
 # Tap this formula with:
-#   brew tap tide-cli/tide https://github.com/tide-cli/homebrew-tide
-#   brew install tide-cli/tide/tide
+#   brew tap socaseinpoint/tide https://github.com/socaseinpoint/homebrew-tide
+#   brew install socaseinpoint/tide/tide
 #
 # The url is the GitHub release tarball for the tagged version; sha256 is the
 # digest of that tarball. To cut a new version: tag vX.Y.Z, push, then update
@@ -13,9 +13,9 @@ class Tide < Formula
   include Language::Python::Virtualenv
 
   desc "Simplified, synchronous, human-driven orchestration machine (pure CLI + markdown)"
-  homepage "https://github.com/tide-cli/tide"
+  homepage "https://github.com/socaseinpoint/tide"
 
-  url "https://github.com/tide-cli/tide/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/socaseinpoint/tide/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "PLACEHOLDER_SHA256_FILL_AFTER_TAG"  # filled from the v0.1.0 tarball at publish
   license "MIT"
 
