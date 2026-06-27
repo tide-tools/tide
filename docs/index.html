@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tide — a synchronous, human-driven orchestration machine</title>
+  <meta name="description" content="tide is a pure CLI + markdown orchestration machine. Synchronous, human-driven, no autonomy. State lives in files you can read. Your judgment is spent only where it's irreplaceable. Every unit of work lands as durable truth.">
+  <meta name="color-scheme" content="dark">
+  <style>
+    /* ─── TOKENS ─────────────────────────────────────────────── */
+    :root {
+      --bg:           #0a0c0d;
+      --bg-2:         #080a0a;
+      --surface:      #0f1314;
+      --surface-hi:   #131819;
+      --border:       #1a2122;
+      --border-hi:    #28332f;
+      --text:         #d4dad8;
+      --text-soft:    #aab2af;
+      --text-muted:   #79817e;
+      --text-faint:   #444c49;
+      --accent:       #2dd4bf;   /* turquoise — the chosen identity */
+      --accent-hi:    #5eead4;
+      --accent-deep:  #14b8a6;
+      --accent-dim:   rgba(45, 212, 191, 0.16);
+      --accent-faint: rgba(45, 212, 191, 0.055);
+      --term-bg:      #070a0a;
+      --term-comment: #586663;
+
+      --mono: "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code",
+              "Menlo", "Consolas", "Liberation Mono", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+              "Helvetica Neue", Arial, sans-serif;
+
+      --max:  720px;
+      --wide: 1000px;
+    }
+
+    /* ─── RESET ──────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html {
+      font-family: var(--sans);
+      font-size: 16px;
+      background: var(--bg);
+      color: var(--text);
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body { min-height: 100vh; overflow-x: hidden; line-height: 1.6; }
+
+    ::selection { background: var(--accent-dim); color: var(--accent-hi); }
+
+    h1, h2, h3, h4 {
+      font-family: var(--mono);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+    }
+
+    p { line-height: 1.75; color: var(--text-soft); }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hi); }
+
+    code, .mono { font-family: var(--mono); }
+
+    .prose code {
+      font-size: 0.85em;
+      color: var(--accent);
+      background: var(--accent-faint);
+      padding: 0.12em 0.4em;
+      border-radius: 3px;
+      border: 1px solid rgba(45, 212, 191, 0.12);
+    }
+    strong { color: #eaf0ee; font-weight: 600; }
+    em { color: var(--text-muted); font-style: italic; }
+
+    /* ─── LAYOUT ─────────────────────────────────────────────── */
+    .container { max-width: var(--max); margin: 0 auto; padding: 0 2rem; }
+    .container--wide { max-width: var(--wide); margin: 0 auto; padding: 0 2rem; }
+
+    /* ─── ANIMATION ──────────────────────────────────────────── */
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes growRight { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+    .hero-eyebrow { animation: fadeIn 0.8s ease 0.1s both; }
+    .hero-title   { animation: fadeUp 1s ease 0.2s both; }
+    .hero-rule    { animation: growRight 1.2s ease 0.45s both; transform-origin: left; }
+    .hero-sub     { animation: fadeUp 0.85s ease 0.55s both; }
+    .hero-cta     { animation: fadeUp 0.85s ease 0.75s both; }
+    .hero-meta    { animation: fadeIn 0.9s ease 0.95s both; }
+
+    @supports (animation-timeline: view()) {
+      @media (prefers-reduced-motion: no-preference) {
+        .reveal { opacity: 0; animation: fadeUp 0.6s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 30%; }
+        .reveal-slow { opacity: 0; animation: fadeUp 0.8s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 34%; }
+        .reveal-fade { opacity: 0; animation: fadeIn 0.7s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 26%; }
+      }
+    }
+
+    /* ─── NAV ────────────────────────────────────────────────── */
+    .nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(12px);
+      background: rgba(10, 12, 13, 0.72);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 56px;
+    }
+    .nav-brand {
+      font-family: var(--mono); font-weight: 600; font-size: 0.95rem;
+      color: var(--text); letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.6rem;
+    }
+    .nav-brand .tilde { color: var(--accent); }
+    .nav-links { display: flex; gap: 1.75rem; align-items: center; }
+    .nav-link {
+      font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.04em;
+      color: var(--text-muted); text-transform: uppercase;
+    }
+    .nav-link:hover { color: var(--accent); }
+    @media (max-width: 640px) { .nav-links .nav-link:not(.nav-link--repo) { display: none; } }
+
+    /* ─── HERO ───────────────────────────────────────────────── */
+    .hero { padding: 7.5rem 0 6rem; position: relative; overflow: hidden; }
+    .hero::before {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(ellipse 75% 55% at 50% -5%, rgba(45, 212, 191, 0.06) 0%, transparent 65%);
+      pointer-events: none;
+    }
+    .hero-eyebrow {
+      font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.32em;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 2.25rem; display: flex; align-items: center; gap: 1rem;
+    }
+    .hero-eyebrow::after { content: ""; flex: 1; max-width: 64px; height: 1px; background: var(--accent); opacity: 0.4; }
+
+    .hero-title {
+      font-size: clamp(2.9rem, 8vw, 5.6rem);
+      font-weight: 700; letter-spacing: -0.045em; line-height: 0.98;
+      margin-bottom: 2.25rem; color: #eaf2ef;
+    }
+    .hero-title span { color: var(--accent); }
+
+    .hero-rule {
+      width: 100%; height: 1px; margin-bottom: 2.25rem; opacity: 0.4;
+      background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
+    }
+    .hero-sub {
+      font-size: clamp(1.02rem, 2.3vw, 1.22rem); line-height: 1.62;
+      color: var(--text-soft); max-width: 56ch; margin-bottom: 2.75rem;
+    }
+    .hero-sub strong { color: #eaf0ee; }
+
+    .hero-cta { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 3.25rem; }
+    .btn {
+      font-family: var(--mono); font-size: 0.82rem; letter-spacing: 0.01em;
+      padding: 0.8rem 1.4rem; border: 1px solid var(--border-hi);
+      display: inline-flex; align-items: center; gap: 0.6rem;
+      transition: border-color 0.2s, background 0.2s, color 0.2s;
+    }
+    .btn--primary {
+      background: var(--accent); color: #04201c; border-color: var(--accent); font-weight: 600;
+    }
+    .btn--primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); color: #04201c; }
+    .btn--ghost { color: var(--text-soft); background: transparent; }
+    .btn--ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    .hero-meta { display: flex; gap: 2.5rem; flex-wrap: wrap; }
+    .hero-meta-item { display: flex; flex-direction: column; gap: 0.35rem; }
+    .hero-meta-label { font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-faint); }
+    .hero-meta-value { font-family: var(--mono); font-size: 0.82rem; color: var(--text-muted); }
+    .hero-meta-value b { color: var(--accent); font-weight: 600; }
+
+    /* ─── CHAPTER ────────────────────────────────────────────── */
+    .chapter { padding: 5.5rem 0; border-top: 1px solid var(--border); }
+    .chapter--wide { }
+    .chapter-header { margin-bottom: 3rem; display: flex; align-items: baseline; gap: 1.5rem; }
+    .chapter-num {
+      font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.24em;
+      text-transform: uppercase; color: var(--accent); white-space: nowrap;
+      padding-top: 0.25rem; flex-shrink: 0;
+    }
+    .chapter-title { font-size: clamp(1.5rem, 3.6vw, 2.15rem); font-weight: 600; letter-spacing: -0.025em; color: #eaf2ef; line-height: 1.2; }
+    .chapter-lead { font-size: 1.05rem; color: var(--text-soft); max-width: 60ch; margin-bottom: 0.5rem; }
+
+    .prose p + p { margin-top: 1.5rem; }
+
+    /* ─── PAIN GRID ──────────────────────────────────────────── */
+    .pain-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1rem; margin-top: 2.75rem; }
+    @media (max-width: 760px) { .pain-grid { grid-template-columns: 1fr; } }
+    .pain-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-top: 2px solid rgba(196, 92, 76, 0.5);
+      padding: 1.6rem 1.5rem; position: relative;
+    }
+    .pain-glyph { font-family: var(--mono); font-size: 0.7rem; color: #c45c4c; opacity: 0.8; letter-spacing: 0.1em; margin-bottom: 0.9rem; }
+    .pain-name { font-family: var(--mono); font-size: 0.92rem; font-weight: 600; color: #e6c0b8; margin-bottom: 0.7rem; letter-spacing: -0.01em; }
+    .pain-body { font-size: 0.9rem; line-height: 1.65; color: var(--text-muted); }
+
+    /* ─── ANSWER / KEYSTONE ──────────────────────────────────── */
+    .keystone {
+      margin-top: 2.75rem; padding: 2.25rem 2.25rem 2.5rem;
+      background: var(--accent-faint); border: 1px solid rgba(45, 212, 191, 0.22);
+      position: relative; overflow: hidden;
+    }
+    .keystone::after {
+      content: "≈"; position: absolute; right: 1.75rem; bottom: 0.6rem;
+      font-size: 6rem; color: var(--accent); opacity: 0.05; line-height: 1; font-family: var(--mono);
+    }
+    .keystone-label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent); margin-bottom: 1.25rem; }
+    .answer-list { display: flex; flex-direction: column; gap: 1.1rem; }
+    .answer-row { display: flex; gap: 1rem; align-items: flex-start; }
+    .answer-mark { font-family: var(--mono); color: var(--accent); font-size: 0.85rem; padding-top: 0.18rem; flex-shrink: 0; }
+    .answer-text { font-size: 0.96rem; line-height: 1.6; color: var(--text-soft); }
+    .answer-text b { color: #eaf0ee; font-weight: 600; }
+
+    /* ─── SHOWCASE — the centerpiece ─────────────────────────── */
+    .showcase { padding: 6rem 0; border-top: 1px solid var(--border); background:
+      radial-gradient(ellipse 90% 40% at 50% 0%, rgba(45, 212, 191, 0.035), transparent 70%); }
+    .showcase-intro { max-width: 62ch; margin-bottom: 1rem; }
+
+    .flow { margin-top: 3.5rem; display: flex; flex-direction: column; gap: 0; }
+    .step { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0 1.75rem; }
+    @media (max-width: 640px) { .step { grid-template-columns: 2.5rem 1fr; gap: 0 1rem; } }
+
+    .step-rail { display: flex; flex-direction: column; align-items: center; }
+    .step-num {
+      width: 3.25rem; height: 3.25rem; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface); border: 1px solid var(--border-hi);
+      font-family: var(--mono); font-size: 0.95rem; font-weight: 700; color: var(--accent);
+      flex-shrink: 0; position: relative; z-index: 2;
+    }
+    @media (max-width: 640px) { .step-num { width: 2.5rem; height: 2.5rem; font-size: 0.8rem; } }
+    .step-line { width: 1px; flex: 1; background: linear-gradient(180deg, var(--border-hi), var(--border)); min-height: 1rem; }
+    .step:last-child .step-line { background: transparent; }
+
+    .step-body { padding-bottom: 3rem; }
+    .step:last-child .step-body { padding-bottom: 0; }
+    .step-kicker { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.5rem; }
+    .step-title { font-size: 1.25rem; font-weight: 600; color: #eaf2ef; margin-bottom: 0.7rem; letter-spacing: -0.02em; }
+    .step-desc { font-size: 0.95rem; line-height: 1.7; color: var(--text-muted); max-width: 60ch; margin-bottom: 1.25rem; }
+    .step-desc b { color: var(--text-soft); font-weight: 600; }
+
+    /* ─── TERMINAL ───────────────────────────────────────────── */
+    .term {
+      background: var(--term-bg); border: 1px solid var(--border);
+      border-radius: 7px; overflow: hidden; box-shadow: 0 14px 40px -24px rgba(0,0,0,0.9);
+    }
+    .term-bar {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.6rem 0.9rem; background: #0c1011; border-bottom: 1px solid var(--border);
+    }
+    .term-dot { width: 10px; height: 10px; border-radius: 50%; background: #232a2a; }
+    .term-dot:nth-child(1) { background: #2a3433; }
+    .term-title { margin-left: 0.6rem; font-family: var(--mono); font-size: 0.66rem; color: var(--text-faint); letter-spacing: 0.06em; }
+    .term-title .badge { color: var(--accent); }
+    .term-body {
+      padding: 1.1rem 1.25rem; font-family: var(--mono);
+      font-size: 0.82rem; line-height: 1.85; overflow-x: auto;
+    }
+    .term-body .l { white-space: pre; display: block; }
+    .term .prompt { color: var(--accent); }
+    .term .cmd { color: #e2e8e6; }
+    .term .flag { color: var(--accent-hi); }
+    .term .cmt { color: var(--term-comment); }
+    .term .out { color: var(--text-muted); }
+    .term .ok { color: var(--accent); }
+    .term .warn { color: #d9a441; }
+    .term .you { color: #9fb4cf; }
+
+    .step-note {
+      margin-top: 1rem; font-size: 0.84rem; line-height: 1.6; color: var(--text-muted);
+      border-left: 2px solid var(--border-hi); padding-left: 1rem;
+    }
+    .step-note b { color: var(--accent); font-weight: 600; }
+
+    /* payoff band */
+    .payoff {
+      margin-top: 3.5rem; padding: 2.25rem; text-align: center;
+      background: var(--accent-faint); border: 1px solid rgba(45, 212, 191, 0.22);
+    }
+    .payoff-thread {
+      font-family: var(--mono); font-size: 0.8rem; color: var(--text-muted);
+      margin-bottom: 1.25rem; letter-spacing: 0.02em; line-height: 2;
+    }
+    .payoff-thread .node { color: var(--accent); }
+    .payoff-thread .arrow { color: var(--text-faint); padding: 0 0.5rem; }
+    .payoff-line { font-size: 1.08rem; line-height: 1.6; color: var(--text-soft); max-width: 54ch; margin: 0 auto; }
+    .payoff-line b { color: #eaf0ee; }
+
+    /* ─── CAPABILITY GRID ────────────────────────────────────── */
+    .cap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 3rem; }
+    @media (max-width: 860px) { .cap-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .cap-grid { grid-template-columns: 1fr; } }
+    .cap {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 1.4rem 1.5rem; transition: border-color 0.2s, background 0.2s; position: relative; overflow: hidden;
+    }
+    .cap::before {
+      content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, var(--accent) 0%, transparent 60%);
+      opacity: 0; transition: opacity 0.2s;
+    }
+    .cap:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+    .cap:hover::before { opacity: 1; }
+    .cap-cmd { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); margin-bottom: 0.7rem; letter-spacing: -0.01em; }
+    .cap-name { font-family: var(--mono); font-size: 0.88rem; font-weight: 600; color: #e3e9e7; margin-bottom: 0.6rem; }
+    .cap-body { font-size: 0.85rem; line-height: 1.65; color: var(--text-muted); }
+
+    /* ─── UNIX PITCH ─────────────────────────────────────────── */
+    .pitch-list { margin-top: 2.5rem; display: flex; flex-direction: column; gap: 1rem; }
+    .pitch-item {
+      display: grid; grid-template-columns: minmax(0, 13rem) 1fr; gap: 1.5rem;
+      padding: 1.25rem 1.5rem; background: var(--surface); border: 1px solid var(--border); align-items: baseline;
+    }
+    @media (max-width: 640px) { .pitch-item { grid-template-columns: 1fr; gap: 0.5rem; } }
+    .pitch-key { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--accent); letter-spacing: -0.01em; }
+    .pitch-val { font-size: 0.88rem; line-height: 1.65; color: var(--text-muted); }
+    .pitch-val code { font-family: var(--mono); font-size: 0.85em; color: var(--text-soft); background: var(--accent-faint); padding: 0.08em 0.34em; border-radius: 3px; }
+
+    /* ─── INSTALL ────────────────────────────────────────────── */
+    .install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-top: 2.75rem; }
+    @media (max-width: 760px) { .install-grid { grid-template-columns: 1fr; } }
+    .install-card { background: var(--surface); border: 1px solid var(--border); padding: 1.6rem 1.6rem 1.75rem; }
+    .install-label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.4rem; }
+    .install-sub { font-size: 0.84rem; color: var(--text-muted); margin-bottom: 1.1rem; line-height: 1.55; }
+    .codeblock {
+      background: var(--term-bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 1rem 1.15rem; font-family: var(--mono); font-size: 0.79rem; line-height: 1.95; overflow-x: auto;
+    }
+    .codeblock .l { white-space: pre; display: block; }
+    .codeblock .prompt { color: var(--accent); }
+    .codeblock .cmd { color: #e2e8e6; }
+    .codeblock .flag { color: var(--accent-hi); }
+    .codeblock .cmt { color: var(--term-comment); }
+    .install-foot { margin-top: 1.75rem; font-size: 0.86rem; color: var(--text-muted); line-height: 1.65; }
+    .install-foot code { font-family: var(--mono); color: var(--accent); background: var(--accent-faint); padding: 0.1em 0.38em; border-radius: 3px; font-size: 0.9em; }
+
+    /* ─── CLOSER ─────────────────────────────────────────────── */
+    .closer { padding: 7rem 0 5rem; border-top: 1px solid var(--border); text-align: center; }
+    .closer-glyph { font-family: var(--mono); font-size: 1.5rem; color: var(--accent); opacity: 0.5; margin-bottom: 2.25rem; letter-spacing: 0.55em; }
+    .closer-title { font-size: clamp(1.5rem, 4vw, 2.3rem); font-weight: 600; letter-spacing: -0.025em; margin-bottom: 1.75rem; color: #eaf2ef; line-height: 1.25; }
+    .closer p { font-size: 1rem; line-height: 1.8; color: var(--text-muted); max-width: 52ch; margin: 0 auto; }
+    .closer p + p { margin-top: 1.25rem; }
+    .closer-cta { margin-top: 2.75rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+
+    /* ─── FOOTER ─────────────────────────────────────────────── */
+    .site-footer { padding: 2.5rem 0; border-top: 1px solid var(--border); background: var(--bg-2); }
+    .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    .footer-text { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.08em; color: var(--text-faint); }
+    .footer-text a { color: var(--text-muted); }
+    .footer-text a:hover { color: var(--accent); }
+
+    @media (max-width: 640px) {
+      .container, .container--wide { padding: 0 1.25rem; }
+      .hero { padding: 5rem 0 4rem; }
+      .chapter, .showcase { padding: 4rem 0; }
+      .hero-meta { gap: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════ NAV ═══════════════════════════════════════ -->
+  <nav class="nav">
+    <div class="container--wide nav-inner">
+      <span class="nav-brand"><span class="tilde">~</span>tide</span>
+      <div class="nav-links">
+        <a class="nav-link" href="#pain">the pain</a>
+        <a class="nav-link" href="#showcase">how it runs</a>
+        <a class="nav-link" href="#capabilities">capabilities</a>
+        <a class="nav-link" href="#install">install</a>
+        <a class="nav-link nav-link--repo" href="https://github.com/socaseinpoint/tide">github ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════════ HERO ══════════════════════════════════════ -->
+  <header class="hero">
+    <div class="container">
+      <div class="hero-eyebrow">tide · orchestration machine</div>
+      <h1 class="hero-title">
+        Stop re-explaining<br>your work <span>every<br>single time.</span>
+      </h1>
+      <div class="hero-rule"></div>
+      <p class="hero-sub">
+        Context dies between sessions. Plumbing eats the one scarce thing — your attention.
+        Work scatters across chats and is lost. <strong>tide</strong> is a synchronous,
+        human-driven orchestration machine: pure CLI + markdown, no autonomy.
+        You steer in plain words; the state lives in files you can read.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn--primary" href="#install">$ brew install tide</a>
+        <a class="btn btn--ghost" href="#showcase">Watch a real run →</a>
+      </div>
+      <div class="hero-meta">
+        <div class="hero-meta-item">
+          <span class="hero-meta-label">Surface</span>
+          <span class="hero-meta-value">pure <b>CLI + markdown</b></span>
+        </div>
+        <div class="hero-meta-item">
+          <span class="hero-meta-label">Model</span>
+          <span class="hero-meta-value">synchronous · no daemon</span>
+        </div>
+        <div class="hero-meta-item">
+          <span class="hero-meta-label">Runtime</span>
+          <span class="hero-meta-value">Python ≥ 3.12 · stdlib-only</span>
+        </div>
+        <div class="hero-meta-item">
+          <span class="hero-meta-label">License</span>
+          <span class="hero-meta-value">open source</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ─── I. THE PAIN ──────────────────────────────────────── -->
+    <section class="chapter" id="pain">
+      <div class="container">
+        <div class="chapter-header reveal">
+          <span class="chapter-num">§ 01</span>
+          <h2 class="chapter-title">Three ways the work leaks away.</h2>
+        </div>
+        <p class="chapter-lead reveal-fade">
+          You're not slow. The tools are leaking the work faster than you can do it.
+          Three leaks, every project, every week.
+        </p>
+
+        <div class="pain-grid reveal-slow">
+          <div class="pain-card">
+            <div class="pain-glyph">01 / amnesia</div>
+            <div class="pain-name">Context dies between sessions</div>
+            <div class="pain-body">
+              You open a fresh chat and re-explain the whole project from scratch — where things
+              are, what you decided, why. The thread you built yesterday is gone. You pay the
+              briefing tax again, and again.
+            </div>
+          </div>
+          <div class="pain-card">
+            <div class="pain-glyph">02 / plumbing</div>
+            <div class="pain-name">Plumbing eats your attention</div>
+            <div class="pain-body">
+              Spawning terminals, tracking what's open, remembering to merge notes — the
+              coordination overhead consumes the one thing that's actually scarce: your judgment.
+              You babysit the machine instead of steering it.
+            </div>
+          </div>
+          <div class="pain-card">
+            <div class="pain-glyph">03 / scatter</div>
+            <div class="pain-name">Work never becomes truth</div>
+            <div class="pain-body">
+              Decisions live in chat scrollback. A finished task leaves no durable trace.
+              Two weeks later nobody — not you, not an agent — can answer "what is true about
+              this project right now?" It scattered and it's gone.
+            </div>
+          </div>
+        </div>
+
+        <div class="keystone reveal">
+          <div class="keystone-label">tide's answer</div>
+          <div class="answer-list">
+            <div class="answer-row">
+              <span class="answer-mark">→</span>
+              <span class="answer-text">
+                <b>State lives in files, not in a chat.</b> Everything is plain markdown under
+                <code>.tide/</code> — <code>cat</code>, <code>grep</code>, <code>diff</code> it.
+                A session starts empty and re-hydrates by reading. The thread is never lost.
+              </span>
+            </div>
+            <div class="answer-row">
+              <span class="answer-mark">→</span>
+              <span class="answer-text">
+                <b>Your judgment is spent only where it's irreplaceable.</b> The machine runs the
+                commands, tracks the state, and merges the notes. You make the calls — sign the
+                contract, accept the work — and nothing else.
+              </span>
+            </div>
+            <div class="answer-row">
+              <span class="answer-mark">→</span>
+              <span class="answer-text">
+                <b>Every unit of work lands as durable truth.</b> Work folds into the
+                <em>canon</em> — one readable markdown file that is the project's living "what is
+                true." Closing a unit is the one moment truth gets reconciled.
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── II. THE SHOWCASE ─────────────────────────────────── -->
+    <section class="showcase" id="showcase">
+      <div class="container">
+        <div class="chapter-header reveal">
+          <span class="chapter-num">§ 02</span>
+          <h2 class="chapter-title">One real run, end to end.</h2>
+        </div>
+        <p class="showcase-intro chapter-lead reveal-fade">
+          No diagrams of an imagined system — these are the actual commands the session runs
+          on your behalf, and what you actually see. You steer in prose; tide does the rest.
+        </p>
+
+        <div class="flow">
+
+          <!-- STEP 1 -->
+          <article class="step reveal">
+            <div class="step-rail"><div class="step-num">1</div><div class="step-line"></div></div>
+            <div class="step-body">
+              <div class="step-kicker">Launch</div>
+              <h3 class="step-title">A clean, seeded session — right in your terminal</h3>
+              <p class="step-desc">
+                <code>tide terminal</code> drops you into a clean, logged-in, scoped Claude
+                session in your <b>standard terminal</b> — no new window, works in plain macOS
+                Terminal. Seeded with the right context, ready to go.
+              </p>
+              <div class="term" role="img" aria-label="Terminal: running tide terminal launches a seeded orchestrator session">
+                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+                  <span class="term-title">~/control — <span class="badge">tide</span></span></div>
+                <div class="term-body">
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide terminal</span></span>
+<span class="l"><span class="cmt">  → clean, logged-in session · TIDE_ROLE=orchestrator</span></span>
+<span class="l"><span class="cmt">  → context loaded · no new window opened</span></span>
+<span class="l"><span class="ok">  ✓ seeded. you can start talking.</span></span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <!-- STEP 2 -->
+          <article class="step reveal">
+            <div class="step-rail"><div class="step-num">2</div><div class="step-line"></div></div>
+            <div class="step-body">
+              <div class="step-kicker">Orient</div>
+              <h3 class="step-title">Oriented in seconds, not re-briefed</h3>
+              <p class="step-desc">
+                The session lands and <b>states where everything is</b> — the work stream, your
+                role, and any drift. You don't explain the project to it; it explains the project
+                to you.
+              </p>
+              <div class="term" role="img" aria-label="Terminal: tide status shows the STREAM board with role and drift">
+                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+                  <span class="term-title">SessionStart board · <span class="badge">tide status</span></span></div>
+                <div class="term-body">
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide status</span></span>
+<span class="l"><span class="out">  project   myapp            role  orchestrator</span></span>
+<span class="l"><span class="out">  cannon    rev a91c · clean read-order: CLAUDE.md · CANON.md</span></span>
+<span class="l"><span class="out">  STREAM</span></span>
+<span class="l"><span class="out">    03  ship-onboarding      </span><span class="ok">open</span><span class="out">   ← active</span></span>
+<span class="l"><span class="out">    02  search-revamp        </span><span class="out">done · merged</span></span>
+<span class="l"><span class="ok">  ✓ no unmerged deltas · no drift</span></span>
+                </div>
+              </div>
+              <p class="step-note"><b>You're oriented.</b> What to read, what's live, what's waiting on a human — computed from the files, shown on entry.</p>
+            </div>
+          </article>
+
+          <!-- STEP 3 -->
+          <article class="step reveal">
+            <div class="step-rail"><div class="step-num">3</div><div class="step-line"></div></div>
+            <div class="step-body">
+              <div class="step-kicker">Open an arc</div>
+              <h3 class="step-title">Begin a real unit of work — a signed contract</h3>
+              <p class="step-desc">
+                You say what you want in plain words. The session carves an <b>arc</b> — one
+                bounded unit — and binds a <b>contract</b>: your goal plus hard criteria. You
+                sign once. A worker subagent builds into the arc, never touching anything else.
+              </p>
+              <div class="term" role="img" aria-label="Terminal: opening an arc and binding a contract">
+                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+                  <span class="term-title">steer in prose → the session runs the verbs</span></div>
+                <div class="term-body">
+<span class="l"><span class="you">you ›</span> <span class="cmd">ship onboarding — a 3-step walkthrough, no console errors.</span></span>
+<span class="l"></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide arc new</span> ship-onboarding   <span class="cmt"># carve a bounded unit</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide arc open</span> ship-onboarding  <span class="cmt"># stamp the cannon-rev</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide contract new</span> ship-onboarding   <span class="cmt"># goal + criteria</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide contract sign</span> ship-onboarding  <span class="cmt"># you sign first</span></span>
+<span class="l"><span class="ok">  ✓ contract signed · worker dispatched → output/</span></span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <!-- STEP 4 -->
+          <article class="step reveal">
+            <div class="step-rail"><div class="step-num">4</div><div class="step-line"></div></div>
+            <div class="step-body">
+              <div class="step-kicker">Hand off</div>
+              <h3 class="step-title">The thread isn't lost — it's carried</h3>
+              <p class="step-desc">
+                The session gets heavy. You say <em>"handoff."</em> <code>tide handoff</code>
+                <b>distils the chat</b> into the arc's workspace and forks a <b>fresh terminal
+                that starts already working</b> — on the focus, not on a pile of scrollback.
+              </p>
+              <div class="term" role="img" aria-label="Terminal: warm handoff distils the chat and forks a fresh session">
+                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+                  <span class="term-title">warm handoff · adapter <span class="badge">orca</span></span></div>
+                <div class="term-body">
+<span class="l"><span class="you">you ›</span> <span class="cmd">handoff — let's continue this fresh.</span></span>
+<span class="l"></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide handoff</span> ship-onboarding <span class="flag">--mode</span> continue</span>
+<span class="l"><span class="out">  → distilling thread into arc workspace…</span></span>
+<span class="l"><span class="out">  → forking fresh session on the focus…</span></span>
+<span class="l"><span class="ok">  ✓ new terminal started — already working. thread carried.</span></span>
+                </div>
+              </div>
+              <p class="step-note"><b>Carried, not re-briefed.</b> The new session opens on the work, with the distilled thread already in its workspace.</p>
+            </div>
+          </article>
+
+          <!-- STEP 5 -->
+          <article class="step reveal">
+            <div class="step-rail"><div class="step-num">5</div><div class="step-line"></div></div>
+            <div class="step-body">
+              <div class="step-kicker">Land</div>
+              <h3 class="step-title">Close the arc — it folds into the canon</h3>
+              <p class="step-desc">
+                The fresh session finishes the work. You review the report and proof, accept,
+                and <b>land</b> it. <code>tide arc land</code> merges the arc's delta into
+                <code>CANON.md</code> — the single serialization point. You look back and see it:
+                documented, criteria passed, durable.
+              </p>
+              <div class="term" role="img" aria-label="Terminal: landing the arc merges the delta into CANON.md">
+                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+                  <span class="term-title">the one serialization point · <span class="badge">cannon merge</span></span></div>
+                <div class="term-body">
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide contract proof</span> ship-onboarding  <span class="cmt"># evidence criteria met</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide contract accept</span> ship-onboarding</span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide arc land</span> ship-onboarding</span>
+<span class="l"><span class="out">  → tide cannon merge → CANON.md  (atomic · idempotent)</span></span>
+<span class="l"><span class="ok">  ✓ landed · delta merged · rev a91c → e4f0</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide status</span></span>
+<span class="l"><span class="ok">  ✓ 03 ship-onboarding  done · merged · criteria passed</span></span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+        </div>
+
+        <!-- PAYOFF -->
+        <div class="payoff reveal">
+          <div class="payoff-thread">
+            <span class="node">terminal A</span><span class="arrow">──╮</span><br>
+            <span class="arrow">　　　　　╰─ distil ─╮</span><br>
+            <span class="node">terminal B</span><span class="arrow"> ─ land ─→ </span><span class="node">CANON.md</span>
+          </div>
+          <p class="payoff-line">
+            The thread crossed two terminals and <b>landed as durable truth</b>. Nothing was
+            re-explained. Nothing scattered. The project knows what it is — in a file you can read.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── III. CAPABILITIES ────────────────────────────────── -->
+    <section class="chapter" id="capabilities">
+      <div class="container--wide">
+        <div class="chapter-header reveal">
+          <span class="chapter-num">§ 03</span>
+          <h2 class="chapter-title">What the one binary gives you.</h2>
+        </div>
+        <p class="chapter-lead reveal-fade">
+          Namespaced subcommands that compose the way <code class="mono" style="color:var(--accent)">git&nbsp;&lt;verb&gt;</code> does. Honest and concrete — every one is real.
+        </p>
+
+        <div class="cap-grid reveal-slow">
+          <div class="cap">
+            <div class="cap-cmd">tide roster ls</div>
+            <div class="cap-name">Roster of projects</div>
+            <div class="cap-body">One control-home leads every project you run. They live anywhere on disk; the roster just holds the thread.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide status --all</div>
+            <div class="cap-name">The STREAM board</div>
+            <div class="cap-body">Per-project or roster-wide: the numbered work stream, flagging unmerged deltas and drift on open arcs.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide arc · contract</div>
+            <div class="cap-name">Arcs as contracts</div>
+            <div class="cap-body">Each unit of work is a bounded arc bound to a contract — goal plus hard criteria you sign off on.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide handoff</div>
+            <div class="cap-name">Warm handoff</div>
+            <div class="cap-body">Distil a heavy chat into the arc workspace and fork a fresh terminal that starts already working.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide cannon merge</div>
+            <div class="cap-name">Canon + drift gate</div>
+            <div class="cap-body">Durable markdown truth. The merge into <code class="mono" style="color:var(--accent)">CANON.md</code> is the single serialization point; drift is flagged, never silent.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide readme</div>
+            <div class="cap-name">README from canon</div>
+            <div class="cap-body">Generate the user-door <code class="mono" style="color:var(--accent)">README.md</code> as a projection of canon — with a <code class="mono" style="color:var(--accent)">--check</code> drift gate.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide verify --portable</div>
+            <div class="cap-name">tool ⊥ instance</div>
+            <div class="cap-body">A bright line: the shipped tool carries none of your paths, identity, or projects. The gate scans and fails loud.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">tide self-update</div>
+            <div class="cap-name">Gated self-update</div>
+            <div class="cap-body">Keep one tide current on any machine. A regression gate (portable + suite) must be green before it reinstalls.</div>
+          </div>
+          <div class="cap">
+            <div class="cap-cmd">terminal_adapter</div>
+            <div class="cap-name">Pluggable adapters</div>
+            <div class="cap-body">Sessions launch through a swappable terminal adapter — <code class="mono" style="color:var(--accent)">orca</code> by default, <code class="mono" style="color:var(--accent)">tmux</code> as fallback.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── IV. WHY THIS SHAPE ───────────────────────────────── -->
+    <section class="chapter" id="shape">
+      <div class="container">
+        <div class="chapter-header reveal">
+          <span class="chapter-num">§ 04</span>
+          <h2 class="chapter-title">Built like a small UNIX tool, on purpose.</h2>
+        </div>
+        <div class="pitch-list reveal-slow">
+          <div class="pitch-item">
+            <span class="pitch-key">One binary</span>
+            <span class="pitch-val"><code>tide arc …</code>, <code>tide cannon …</code>, <code>tide contract …</code> — namespaced verbs that compose like <code>git</code>. No platform to host, just the point you lead from.</span>
+          </div>
+          <div class="pitch-item">
+            <span class="pitch-key">Plain text is the DB</span>
+            <span class="pitch-val">Everything is markdown under <code>&lt;project&gt;/.tide/</code>. No daemon, no server, no lock file. <code>cat</code>, <code>grep</code>, <code>diff</code> and <code>git</code> all just work on your state.</span>
+          </div>
+          <div class="pitch-item">
+            <span class="pitch-key">Synchronous</span>
+            <span class="pitch-val">Exit codes, no hidden background magic. The human steers; the agent runs the module CLI. You never type the inner verbs by hand.</span>
+          </div>
+          <div class="pitch-item">
+            <span class="pitch-key">Least privilege</span>
+            <span class="pitch-val">Role is carried in one env var, <code>TIDE_ROLE</code>. Orchestrator-only ops — <code>cannon merge</code>, <code>contract close</code> — refuse to run as a worker.</span>
+          </div>
+          <div class="pitch-item">
+            <span class="pitch-key">Dogfooded</span>
+            <span class="pitch-val">tide is led as a tide project, in its own <code>.tide/</code>. The machine runs itself.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── V. INSTALL ───────────────────────────────────────── -->
+    <section class="chapter" id="install">
+      <div class="container">
+        <div class="chapter-header reveal">
+          <span class="chapter-num">§ 05</span>
+          <h2 class="chapter-title">Install in under a minute.</h2>
+        </div>
+        <p class="chapter-lead reveal-fade">
+          Requires Python ≥ 3.12. Runtime is stdlib-only — no <code>click</code>, no web deps.
+        </p>
+
+        <div class="install-grid reveal-slow">
+          <div class="install-card">
+            <div class="install-label">Homebrew</div>
+            <div class="install-sub">Tap and install — the formula pins the immutable release sdist.</div>
+            <div class="codeblock" role="img" aria-label="Homebrew install commands">
+<span class="l"><span class="prompt">$</span> <span class="cmd">brew tap socaseinpoint/tide \</span></span>
+<span class="l">    <span class="cmd">https://github.com/socaseinpoint/homebrew-tide</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">brew install socaseinpoint/tide/tide</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide</span> <span class="flag">--version</span></span>
+<span class="l"><span class="cmt"># tide 0.1.0</span></span>
+            </div>
+          </div>
+
+          <div class="install-card">
+            <div class="install-label">From source</div>
+            <div class="install-sub">Puts <code class="mono" style="color:var(--accent)">tide</code> on your PATH under a 3.12 interpreter. Idempotent.</div>
+            <div class="codeblock" role="img" aria-label="From-source install commands">
+<span class="l"><span class="prompt">$</span> <span class="cmd">git clone https://github.com/socaseinpoint/tide</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">cd tide</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">./install.sh</span></span>
+<span class="l"><span class="prompt">$</span> <span class="cmd">tide</span> <span class="flag">--version</span></span>
+<span class="l"><span class="cmt"># tide 0.1.0</span></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="install-foot reveal-fade">
+          Then unfold a control-home: <code>mkdir ~/control &amp;&amp; cd ~/control</code> →
+          <code>tide init --name control</code> → <code>tide roster add myapp ~/code/myapp</code>
+          → run <code>tide</code> and start steering. The full command tree lives in
+          <code>tide help</code>.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ═══════════ CLOSER ════════════════════════════════════ -->
+  <section class="closer">
+    <div class="container">
+      <div class="closer-glyph reveal">≈ ≈ ≈</div>
+      <h2 class="closer-title reveal">The thread doesn't break.<br>The truth doesn't scatter.</h2>
+      <div class="reveal-slow">
+        <p>
+          tide doesn't ask you to be more disciplined about context, plumbing, or notes.
+          It removes the work that required the discipline.
+        </p>
+        <p>
+          State lives in files. Your judgment is spent only where it's irreplaceable.
+          Every unit of work lands as durable truth you can read.
+        </p>
+      </div>
+      <div class="closer-cta reveal-fade">
+        <a class="btn btn--primary" href="https://github.com/socaseinpoint/tide">View on GitHub ↗</a>
+        <a class="btn btn--ghost" href="#install">Install →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ FOOTER ════════════════════════════════════ -->
+  <footer class="site-footer">
+    <div class="container--wide">
+      <div class="footer-inner">
+        <span class="footer-text">~tide · pure CLI + markdown · synchronous · human-driven</span>
+        <span class="footer-text"><a href="https://github.com/socaseinpoint/tide">github.com/socaseinpoint/tide</a></span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
