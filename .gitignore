@@ -25,3 +25,6 @@ htmlcov/
 *.swp
 .idea/
 .vscode/
+
+# internal dogfood workspace — never publish
+.tide/
