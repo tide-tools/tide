@@ -34,6 +34,79 @@ def test_dirty_does_not_change_identity():
     assert clean.identity == dirty.identity
 
 
+# --- version ordering (newer-only staleness for the published channel) ------
+
+
+def test_version_is_newer_true_for_higher_patch():
+    assert src.version_is_newer("1.0.2", "1.0.1") is True
+
+
+def test_version_is_newer_false_for_lower_version():
+    # the regression this fix is about: an installed build AHEAD of the channel
+    # must NOT read as "newer available" (no downgrade nudge).
+    assert src.version_is_newer("1.0.1", "1.0.2") is False
+
+
+def test_version_is_newer_false_for_equal_version():
+    assert src.version_is_newer("1.0.2", "1.0.2") is False
+
+
+def test_version_is_newer_zero_pads_unequal_lengths():
+    # 1.0 == 1.0.0 — neither is newer than the other.
+    assert src.version_is_newer("1.0", "1.0.0") is False
+    assert src.version_is_newer("1.0.0", "1.0") is False
+    assert src.version_is_newer("1.0.1", "1.0") is True
+
+
+def test_version_is_newer_defensive_on_non_numeric():
+    # odd/non-numeric components fall back to "not newer" rather than crash.
+    assert src.version_is_newer("1.0.0-rc1", "1.0.0") is False
+    assert src.version_is_newer("2.0.0", "abc") is False
+    assert src.version_is_newer("", "1.0.0") is False
+
+
+def test_version_tuple_rejects_unicode_digits_without_crash():
+    # str.isdigit() accepts non-ASCII digits (e.g. "²") that int() then rejects —
+    # the ascii gate must treat them as non-numeric (None), never raise ValueError.
+    assert src._version_tuple("1.0.²") is None  # "1.0.²"
+
+
+def test_version_is_newer_defensive_on_unicode_digits():
+    assert src.version_is_newer("1.0.²", "1.0.0") is False
+    assert src.version_is_newer("1.0.0", "1.0.²") is False
+
+
+def test_revision_is_stale_newer_only_never_flags_downgrade():
+    installed = src.Revision("1.0.2")
+    available = src.Revision("1.0.1")
+    assert src.revision_is_stale(installed, available, newer_only=True) is False
+    assert src.revision_is_stale(installed, available, newer_only=False) is True  # identity differs
+
+
+def test_revision_is_stale_newer_only_flags_genuine_upgrade():
+    assert src.revision_is_stale(
+        src.Revision("1.0.1"), src.Revision("1.0.2"), newer_only=True
+    ) is True
+
+
+def test_revision_is_stale_identity_axis_flags_new_commit_same_version():
+    installed = src.Revision("1.0.0", "aaaa")
+    available = src.Revision("1.0.0", "bbbb")
+    assert src.revision_is_stale(installed, available, newer_only=False) is True
+
+
+def test_prefers_newer_only_per_source_type(tmp_path: Path):
+    local = _checkout(tmp_path, editable=True, marker=tmp_path / "m.json")
+    assert src.prefers_newer_only(local) is False
+    published = src.PublishedChannelSource(
+        python_exe="/py",
+        marker_path=tmp_path / "marker.json",
+        cache_path=tmp_path / "cache.json",
+        rollback_path=tmp_path / "rb.json",
+    )
+    assert src.prefers_newer_only(published) is True
+
+
 # --- pyproject + git probes -------------------------------------------------
 
 

@@ -39,8 +39,10 @@ from .source import (
     PublishedChannelSource,
     Revision,
     VersionSource,
+    prefers_newer_only,
     read_rollback,
     resolve_source,
+    revision_is_stale,
     write_rollback,
 )
 
@@ -180,7 +182,9 @@ def check_for_update(source: VersionSource) -> UpdateStatus:
         source_name=source.name(),
         installed=installed,
         available=available,
-        stale=installed.identity != available.identity,
+        stale=revision_is_stale(
+            installed, available, newer_only=prefers_newer_only(source)
+        ),
     )
 
 
