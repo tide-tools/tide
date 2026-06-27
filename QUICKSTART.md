@@ -33,8 +33,8 @@ tide --version
 ### Via Homebrew tap (live)
 
 ```bash
-brew tap socaseinpoint/tide https://github.com/socaseinpoint/homebrew-tide
-brew install socaseinpoint/tide/tide
+brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide
+brew install tide-tools/tide/tide
 tide --version
 ```
 

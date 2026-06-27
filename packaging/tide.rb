@@ -2,8 +2,8 @@
 #
 # Distribution channel: Homebrew tap (installs the published release sdist — no PyPI).
 # Tap this formula with:
-#   brew tap socaseinpoint/tide https://github.com/socaseinpoint/homebrew-tide
-#   brew install socaseinpoint/tide/tide
+#   brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide
+#   brew install tide-tools/tide/tide
 #
 # The url pins the IMMUTABLE release-asset sdist uploaded to the GitHub release
 # (NOT the /archive/ tarball — its sha is unstable across force-pushes). To cut a

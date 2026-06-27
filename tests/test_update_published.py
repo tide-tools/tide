@@ -71,7 +71,7 @@ def _published(
         marker_path=tmp_path / "install-marker.json",
         cache_path=tmp_path / "cache.json",
         rollback_path=tmp_path / "rollback.json",
-        repo="socaseinpoint/tide",
+        repo="tide-tools/tide",
         homebrew=homebrew,
         opener=opener if opener is not None else _opener(_feed("v1.0.1")),
     )
@@ -258,12 +258,12 @@ def test_install_command_pip_from_git_when_not_brew(tmp_path: Path):
     s = _published(tmp_path, homebrew=False)
     cmd = s.install_command()
     assert cmd[:5] == ["/py", "-m", "pip", "install", "--upgrade"]
-    assert cmd[-1] == "git+https://github.com/socaseinpoint/tide@v1.0.1"
+    assert cmd[-1] == "git+https://github.com/tide-tools/tide@v1.0.1"
 
 
 def test_install_command_brew_when_homebrew(tmp_path: Path):
     s = _published(tmp_path, homebrew=True)
-    assert s.install_command() == ["brew", "upgrade", "socaseinpoint/tide/tide"]
+    assert s.install_command() == ["brew", "upgrade", "tide-tools/tide/tide"]
 
 
 def test_detect_homebrew_from_cellar_path():
@@ -278,7 +278,7 @@ def test_rollback_command_pins_installed_version(tmp_path: Path):
     src.write_marker((tmp_path / "install-marker.json"), Revision("0.1.0"), tmp_path)
     s = _published(tmp_path)
     cmd = s.rollback_command()
-    assert cmd[-1] == "git+https://github.com/socaseinpoint/tide@v0.1.0"
+    assert cmd[-1] == "git+https://github.com/tide-tools/tide@v0.1.0"
 
 
 def test_record_install_stamps_version_only(tmp_path: Path):
@@ -310,10 +310,10 @@ def _make_release_tarball(build_root: Path, version: str = "1.0.1") -> bytes:
 def test_tarball_url():
     s = PublishedChannelSource(
         python_exe="/py", marker_path=Path("/m"), cache_path=Path("/c"),
-        rollback_path=Path("/r"), repo="socaseinpoint/tide",
+        rollback_path=Path("/r"), repo="tide-tools/tide",
     )
     assert s.tarball_url("v1.0.1") == (
-        "https://github.com/socaseinpoint/tide/archive/refs/tags/v1.0.1.tar.gz"
+        "https://github.com/tide-tools/tide/archive/refs/tags/v1.0.1.tar.gz"
     )
 
 
@@ -376,7 +376,7 @@ def test_published_update_green_gate_installs_stamps_and_records_rollback(tmp_pa
     assert src.read_marker(s.marker_path)["version"] == "1.0.1"
     rollback = src.read_rollback(s.rollback_path)
     assert rollback["version"] == "0.1.0"
-    assert rollback["command"][-1] == "git+https://github.com/socaseinpoint/tide@v0.1.0"
+    assert rollback["command"][-1] == "git+https://github.com/tide-tools/tide@v0.1.0"
 
 
 def test_published_update_brew_channel_uses_brew_install(tmp_path: Path):
@@ -453,7 +453,7 @@ def test_rollback_replays_pinned_command_and_smokes(tmp_path: Path):
     marker = tmp_path / "rollback.json"
     src.write_rollback(
         marker, "0.1.0",
-        ["/py", "-m", "pip", "install", "--upgrade", "git+https://github.com/socaseinpoint/tide@v0.1.0"],
+        ["/py", "-m", "pip", "install", "--upgrade", "git+https://github.com/tide-tools/tide@v0.1.0"],
     )
     runner = FakeRunner(install=(0, ""), smoke=(0, "tide 0.1.0"))
     res = core.rollback(marker, runner=runner)
