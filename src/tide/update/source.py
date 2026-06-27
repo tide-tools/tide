@@ -38,7 +38,7 @@ import tomllib
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, ClassVar, List, Optional, Protocol, Tuple
 
 from .. import __version__ as _PKG_FALLBACK_VERSION
 from .. import io as _io
@@ -93,9 +93,78 @@ class VersionSource(Protocol):
         """The argv that (re)installs ``tide`` from this source."""
 
 
+def _version_tuple(version: str) -> Optional[Tuple[int, ...]]:
+    """Parse a dotted version into a tuple of ints, or None when not all-numeric.
+
+    DEFENSIVE: any non-numeric component (a pre-release suffix like ``1.0.0-rc1``,
+    an empty piece, garbage) yields None so the caller can fall back to "not newer"
+    rather than guess an ordering. The numeric test is ``isascii() and isdigit()``:
+    ``str.isdigit()`` alone accepts non-ASCII digits (e.g. ``"²"``) that ``int()``
+    then rejects with ValueError — so we gate on ASCII to keep this crash-free.
+    """
+    if not isinstance(version, str):
+        return None
+    parts = version.strip().split(".")
+    out: List[int] = []
+    for part in parts:
+        if not (part.isascii() and part.isdigit()):
+            return None
+        out.append(int(part))
+    return tuple(out) if out else None
+
+
+def version_is_newer(available: str, installed: str) -> bool:
+    """True iff *available* is a STRICTLY newer version than *installed*.
+
+    Compares dotted numeric components (``1.0.2`` > ``1.0.1``), zero-padding the
+    shorter so ``1.0`` and ``1.0.0`` read as equal (not newer). DEFENSIVE: an
+    unparseable version on either side falls back to ``False`` — we would rather
+    NOT nudge than crash or misread a downgrade as an upgrade.
+    """
+    a = _version_tuple(available)
+    i = _version_tuple(installed)
+    if a is None or i is None:
+        return False
+    width = max(len(a), len(i))
+    a = a + (0,) * (width - len(a))
+    i = i + (0,) * (width - len(i))
+    return a > i
+
+
+def prefers_newer_only(source: VersionSource) -> bool:
+    """Whether *source* judges staleness by a strictly-newer version only.
+
+    A version-only axis (the published channel) must NEVER flag a downgrade; a
+    commit-bearing axis (the local checkout) treats any different identity as an
+    update. The default is False (identity-inequality) so unknown sources keep the
+    historical behaviour.
+    """
+    return bool(getattr(source, "newer_only", False))
+
+
+def revision_is_stale(installed: Revision, available: Revision, *, newer_only: bool) -> bool:
+    """True when *available* warrants an update over *installed*.
+
+    ``newer_only`` (the published channel): stale ONLY when ``available.version``
+    is strictly newer — an installed build AHEAD of the channel is NOT stale (no
+    downgrade nudge). Otherwise (the local checkout): any different identity is an
+    update, since a new commit at the same version still ships.
+    """
+    if newer_only:
+        return version_is_newer(available.version, installed.version)
+    return installed.identity != available.identity
+
+
 def is_stale(source: VersionSource) -> bool:
-    """Pure comparison: True when the source offers a revision != the installed one."""
-    return source.installed().identity != source.available().identity
+    """Pure comparison: True when the source offers a revision worth updating to.
+
+    Delegates the COMPARISON to the source's staleness policy (see
+    :func:`prefers_newer_only` / :func:`revision_is_stale`): the published channel
+    is newer-only; the local checkout is identity-inequality.
+    """
+    return revision_is_stale(
+        source.installed(), source.available(), newer_only=prefers_newer_only(source)
+    )
 
 
 # --- git / pyproject / metadata probes --------------------------------------
@@ -258,6 +327,10 @@ class LocalSourceCheckout:
     editable: bool
     marker_path: Path
 
+    # Version+commit axis: any different identity (e.g. a new commit at the same
+    # version) is an update — staleness is identity-inequality, not newer-only.
+    newer_only: ClassVar[bool] = False
+
     def name(self) -> str:
         return "local-source"
 
@@ -411,6 +484,11 @@ class PublishedChannelSource:
     repo: str = _FALLBACK_REPO
     homebrew: bool = False
     opener: Opener = urllib.request.urlopen
+
+    # Version-only axis (a release tag, commit always None): staleness means a
+    # strictly NEWER published version — an installed build ahead of the channel is
+    # NOT stale, so self-update never nudges a downgrade to an older release.
+    newer_only: ClassVar[bool] = True
 
     def name(self) -> str:
         return "published-channel"

@@ -170,6 +170,44 @@ def test_stale_when_marker_lags_published(tmp_path: Path):
     assert src.is_stale(s) is True
 
 
+def test_not_stale_when_installed_ahead_of_published(tmp_path: Path):
+    # installed 1.0.2, channel-latest 1.0.1 → AHEAD, not stale (no downgrade nudge).
+    src.write_marker((tmp_path / "install-marker.json"), Revision("1.0.2"), tmp_path)
+    _fresh_cache(tmp_path / "cache.json", "v1.0.1")
+    s = _published(tmp_path)
+    assert src.is_stale(s) is False
+    assert core.check_for_update(s).stale is False
+
+
+def test_not_stale_when_installed_equals_published(tmp_path: Path):
+    src.write_marker((tmp_path / "install-marker.json"), Revision("1.0.1"), tmp_path)
+    _fresh_cache(tmp_path / "cache.json", "v1.0.1")
+    s = _published(tmp_path)
+    assert src.is_stale(s) is False
+
+
+def test_session_note_silent_when_installed_ahead_of_published(tmp_path: Path):
+    # the SessionStart surface must NOT nudge a downgrade.
+    src.write_marker((tmp_path / "install-marker.json"), Revision("1.0.2"), tmp_path)
+    _fresh_cache(tmp_path / "cache.json", "v1.0.1")
+    s = _published(tmp_path, opener=_boom_opener)
+    assert core.session_note(resolver=lambda: s) is None
+
+
+def test_self_update_published_ahead_of_channel_is_noop_not_downgrade(tmp_path: Path):
+    # installed ahead of the channel → no fetch, no gate, no install (no downgrade).
+    src.write_marker((tmp_path / "install-marker.json"), Revision("1.0.2"), tmp_path)
+    _fresh_cache(tmp_path / "cache.json", "v1.0.1")
+    s = _published(tmp_path, opener=_boom_opener)
+    runner = FakeRunner()
+    res = core.self_update_published(s, runner=runner, workdir_factory=_wd_factory(tmp_path))
+    assert res.accepted is True
+    assert res.applied is False
+    assert res.stale is False
+    assert runner.calls == []  # never fetched/gated/installed an older release
+    assert src.read_marker(s.marker_path)["version"] == "1.0.2"  # unchanged
+
+
 # --- repo discovery (no hardcoded instance-token in shipped source) ---------
 
 
