@@ -11,6 +11,8 @@ see what the session is doing on your behalf.
 
 ## 1. Install
 
+### From source (current, before PyPI/Homebrew release)
+
 ```bash
 cd tide
 ./install.sh
@@ -20,6 +22,25 @@ tide --version        # tide 0.1.0
 `install.sh` puts `tide` on your PATH under a 3.12 interpreter (pipx if you have it,
 otherwise a private venv + symlink). If `~/.local/bin` isn't on your PATH yet, the
 script prints the one line to add.
+
+### Via pip (once published to PyPI — human-gated, requires token rotation)
+
+```bash
+pip install tide          # or: pipx install tide
+tide --version
+```
+
+### Via Homebrew tap (once the release tarball is published)
+
+```bash
+brew tap tide-project/tide https://github.com/tide-project/tide
+brew install tide-project/tide/tide
+tide --version
+```
+
+The Homebrew formula lives at `packaging/tide.rb`. The `url` and `sha256` in that
+file are placeholders marked `# TODO(publish)` — fill them from the released PyPI
+sdist before cutting a tap release.
 
 ---
 

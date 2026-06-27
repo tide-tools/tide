@@ -15,6 +15,24 @@ keywords = ["orchestration", "cli", "arcs", "cannon", "contracts"]
 # Runtime: STDLIB ONLY. No web deps, no click — argparse is the CLI surface.
 dependencies = []
 
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Utilities",
+]
+
+# TODO(publish): update Source to the real public repository URL before PyPI release.
+[project.urls]
+Source = "https://github.com/tide-project/tide"
+Changelog = "https://github.com/tide-project/tide/blob/main/QUICKSTART.md"
+
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
 
