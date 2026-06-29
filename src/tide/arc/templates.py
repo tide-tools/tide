@@ -59,6 +59,35 @@ def prism_goal_md(slug: str) -> str:
     ).format(slug=slug)
 
 
+def routine_md(slug: str) -> str:
+    """Seed text for a routine's goal doc — a ``kind: routine`` reusable procedure.
+
+    A *routine* (рутина) is work you did once and now re-run, with its own
+    accumulated internal experience. Like a prism it is goal-shaped and holds its
+    items — here **runs** — as sub-arcs in the nested ``arcs/``; ``kind: routine``
+    marks it so the picker offers routines (not prisms/work-goals). ``## steps`` is
+    the runbook (the reproducible procedure); ``## experience`` accrues lessons
+    across runs so the routine gets smarter each time it is run.
+    """
+    return (
+        "# {slug}-routine — <рутина: the reusable procedure this routine carries>\n"
+        "\n"
+        "goal: <one line — what this routine does each run; ≤12 words>\n"
+        "status: active\n"
+        "kind: routine\n"
+        "\n"
+        "# The routine's items = its runs (NN-slug in arcs/), chained by from:.\n"
+        "# A run is one execution; re-run the steps below, then append what you\n"
+        "# learned to ## experience.\n"
+        "\n"
+        "## steps\n"
+        "<the runbook — the reproducible procedure to follow each run>\n"
+        "\n"
+        "## experience\n"
+        "<lessons that accrue across runs — append what each run taught you>\n"
+    ).format(slug=slug)
+
+
 def session_md(name: str) -> str:
     """Seed text for a session's ``arc.md`` passport (one run inside a prism).
 

@@ -1,0 +1,88 @@
+"""U-routine unit — рутина (routine): a reusable-procedure container + its runs.
+
+A routine is a goal-shaped container (``NN-@slug/`` + nested ``arcs/``) tagged
+``kind: routine`` — work you did once and now re-run, with its own accumulated
+``## experience``. Its **runs** are sub-arcs in that nested stream: a run IS a
+session inside the routine, so runs reuse :func:`new_session` /
+:func:`session_entries` / :func:`last_session` unchanged, numbered in order and
+chained by ``from:``.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tide import fields
+from tide.arc import stream
+
+
+# --- routine (container) ---------------------------------------------------
+
+def test_new_routine_is_a_kind_routine_container(tmp_project):
+    entry = stream.new_routine(tmp_project, "invite codes")
+    assert entry.name == "01-@invite-codes"          # goal-shaped (@ sigil)
+    assert (entry / "arcs").is_dir()                  # nested run substream
+    pp = stream.passport_path(entry)
+    assert pp.name == "invite-codes-goal.md"
+    assert fields.read_field(pp, "kind") == "routine"
+    body = pp.read_text(encoding="utf-8")
+    assert "## steps" in body          # the runbook
+    assert "## experience" in body     # accrues lessons across runs
+
+
+def test_entry_kind_routine_wins_over_goal(tmp_project):
+    arc = stream.new_arc(tmp_project, "a")
+    goal = stream.new_goal(tmp_project, "g")
+    prism = stream.new_prism(tmp_project, "t")
+    routine = stream.new_routine(tmp_project, "r")
+    assert stream.entry_kind(arc) == stream.KIND_ARC
+    assert stream.entry_kind(goal) == stream.KIND_GOAL
+    assert stream.entry_kind(prism) == stream.KIND_PRISM
+    assert stream.entry_kind(routine) == stream.KIND_ROUTINE
+    assert stream.is_routine(routine) and not stream.is_routine(goal)
+    assert not stream.is_routine(prism)  # a routine is not a prism
+
+
+def test_routine_entries_filters_routines_only(tmp_project):
+    stream.new_goal(tmp_project, "real-goal")
+    stream.new_arc(tmp_project, "work")
+    stream.new_prism(tmp_project, "a-prism")
+    r1 = stream.new_routine(tmp_project, "routine-one")
+    r2 = stream.new_routine(tmp_project, "routine-two")
+    names = [p.name for p in stream.routine_entries(tmp_project)]
+    assert names == [r1.name, r2.name]
+
+
+def test_new_routine_empty_slug_raises(tmp_project):
+    with pytest.raises(stream.StreamError):
+        stream.new_routine(tmp_project, "   ")
+
+
+# --- runs (sessions inside a routine) --------------------------------------
+
+def test_run_lives_inside_routine_substream(tmp_project):
+    stream.new_routine(tmp_project, "invite-codes")
+    run = stream.new_session(tmp_project, "invite-codes", "batch")
+    assert run.name == "01-batch"
+    assert run.parent.name == "arcs"
+    assert run.parent.parent.name == "01-@invite-codes"
+    assert (run / "arc.md").is_file()
+
+
+def test_runs_number_in_order_and_chain_from(tmp_project):
+    stream.new_routine(tmp_project, "invite-codes")
+    r1 = stream.new_session(tmp_project, "invite-codes", "first")
+    r2 = stream.new_session(tmp_project, "invite-codes", "second")
+    assert r1.name == "01-first"
+    assert r2.name == "02-second"
+    # the lineage: run 2 came from run 1 (by slug ref)
+    assert fields.read_field(r2 / "arc.md", "from") == "first"
+    assert fields.read_field(r1 / "arc.md", "from") is None
+
+
+def test_session_entries_lists_routine_runs_in_order(tmp_project):
+    stream.new_routine(tmp_project, "invite-codes")
+    stream.new_session(tmp_project, "invite-codes", "one")
+    stream.new_session(tmp_project, "invite-codes", "two")
+    names = [p.name for p in stream.session_entries(tmp_project, "invite-codes")]
+    assert names == ["01-one", "02-two"]

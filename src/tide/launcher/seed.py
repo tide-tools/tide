@@ -119,6 +119,7 @@ def build_seed(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     prism_name: Optional[str] = None,
+    container_kind: str = "prism",
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
 ) -> str:
@@ -128,8 +129,10 @@ def build_seed(
     prompt or the fallback reminder), the project ``CANON.md``, the active entry
     passport (only when *arc_ref* is given), the control-home roster (only when
     *roster_text* is given), and a closing launch hint. When *prism_name* is given
-    the active entry is framed as a **session inside a prism (призма)** — the
-    session's ``## cursor`` is the resume point. Empty pieces render as an explicit
+    the active entry is framed as a **session inside a prism (призма)** — or, when
+    *container_kind* is ``"routine"``, as a **routine run** (a reusable procedure:
+    its ``## steps`` are the runbook, ``## experience`` accrues across runs). The
+    ``## cursor`` is the resume point either way. Empty pieces render as an explicit
     ``(…)`` note so the shape is stable for snapshot tests.
     """
     lines: List[str] = [
@@ -147,7 +150,19 @@ def build_seed(
     ]
 
     if arc_ref:
-        if prism_name:
+        if prism_name and container_kind == "routine":
+            lines += [
+                "",
+                "## Active routine run — {0}  (routine: {1})".format(arc_ref, prism_name),
+                "You are running the routine (рутина) **{0}** — a reusable procedure "
+                "you re-run each time. Follow the routine's `## steps`, mind its "
+                "`## experience` (lessons from prior runs), and append what this run "
+                "teaches back to `## experience`. Resume from this run's `## cursor`; "
+                "keep the cursor + `## context` updated.".format(prism_name),
+                "",
+                arc_text.strip() if (arc_text and arc_text.strip()) else "(no run passport found)",
+            ]
+        elif prism_name:
             lines += [
                 "",
                 "## Active session — {0}  (prism: {1})".format(arc_ref, prism_name),
@@ -190,6 +205,7 @@ def seed_for_project(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     prism_name: Optional[str] = None,
+    container_kind: str = "prism",
     role: str = ROLE_ORCHESTRATOR,
     control_home: Optional[Path] = None,
 ) -> str:
@@ -230,6 +246,7 @@ def seed_for_project(
         arc_ref=arc_ref,
         arc_text=arc_text,
         prism_name=prism_name,
+        container_kind=container_kind,
         prompt_text=prompt_text,
         launch_cmd=launch_command(project_name, arc_ref),
     )

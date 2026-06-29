@@ -53,6 +53,10 @@ TRIAD = ("input", "workspace", "output")
 KIND_ARC = "arc"
 KIND_GOAL = "goal"
 KIND_PRISM = "prism"
+# A ``routine`` (рутина) is a reusable-procedure container: goal-shaped, tagged
+# ``kind: routine`` in its passport, holding its **runs** as sub-arcs in nested
+# ``arcs/`` (exactly like a prism holds sessions). See :data:`KIND_ROUTINE`.
+KIND_ROUTINE = "routine"
 
 
 class StreamError(Exception):
@@ -110,17 +114,21 @@ def passport_path(entry_dir: Path) -> Path:
 # --- entry kind (arc / goal / prism) --------------------------------------
 
 def entry_kind(entry_dir: Path) -> str:
-    """Classify an entry: ``prism`` (``kind: prism`` in its passport — a
-    container of sessions), ``goal`` (a goal doc without that mark), else ``arc``.
+    """Classify an entry: ``prism`` (``kind: prism`` — a container of sessions),
+    ``routine`` (``kind: routine`` — a container of runs), ``goal`` (a goal doc
+    without either mark), else ``arc``.
 
-    Kind is read from the on-disk passport, so the ``kind: prism`` mark wins even
-    on a goal-shaped container — a prism IS a goal-with-nested-sessions, just
-    tagged. See :data:`KIND_PRISM`.
+    Kind is read from the on-disk passport, so the ``kind: prism``/``kind:
+    routine`` mark wins even on a goal-shaped container — a prism (and a routine)
+    IS a goal-with-nested-children, just tagged. See :data:`KIND_PRISM` /
+    :data:`KIND_ROUTINE`.
     """
     pp = passport_path(entry_dir)
     k = (fields.read_field(pp, "kind") or "").strip().lower()
     if k == KIND_PRISM:
         return KIND_PRISM
+    if k == KIND_ROUTINE:
+        return KIND_ROUTINE
     if pp.name.endswith("-goal.md"):
         return KIND_GOAL
     return KIND_ARC
@@ -129,6 +137,11 @@ def entry_kind(entry_dir: Path) -> str:
 def is_prism(entry_dir: Path) -> bool:
     """True when *entry_dir* is a prism (a kind: prism container of sessions)."""
     return entry_kind(entry_dir) == KIND_PRISM
+
+
+def is_routine(entry_dir: Path) -> bool:
+    """True when *entry_dir* is a routine (a kind: routine container of runs)."""
+    return entry_kind(entry_dir) == KIND_ROUTINE
 
 
 def prism_entries(root: Path, *, closed: bool = False) -> List[Path]:
@@ -143,6 +156,24 @@ def prism_entries(root: Path, *, closed: bool = False) -> List[Path]:
         p
         for p in _entries(arcs)
         if slug.is_closed_entry(p.name) == closed and is_prism(p)
+    ]
+    # NN prefixes are zero-padded, so a lexical name sort is numeric order.
+    return sorted(out, key=lambda p: p.name)
+
+
+def routine_entries(root: Path, *, closed: bool = False) -> List[Path]:
+    """Project routines (рутины) in the top stream, open by default, numeric order.
+
+    A routine is a goal-shaped container tagged ``kind: routine``; its **runs** are
+    the sub-arcs in its nested ``arcs/`` (a run IS a session inside the routine).
+    Mirrors :func:`prism_entries` but filters ``kind == routine`` — used by the
+    picker to offer routines (not prisms/goals/arcs) for run/continue.
+    """
+    arcs = paths.arcs_dir(root)
+    out = [
+        p
+        for p in _entries(arcs)
+        if slug.is_closed_entry(p.name) == closed and is_routine(p)
     ]
     # NN prefixes are zero-padded, so a lexical name sort is numeric order.
     return sorted(out, key=lambda p: p.name)
@@ -270,6 +301,30 @@ def new_prism(root: Path, raw_slug: str) -> Path:
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "{0}-goal.md".format(s), templates.prism_goal_md(s))
+    stamp_rev(entry, root)
+    return entry
+
+
+def new_routine(root: Path, raw_slug: str) -> Path:
+    """Create a routine ``NN-@<slug>/`` — a goal-shaped container of runs.
+
+    A routine (рутина) is a reusable procedure: it holds its **runs** as sub-arcs
+    in a nested ``arcs/`` (exactly like a prism holds sessions), and is tagged
+    ``kind: routine`` in its passport so the picker can tell routines from prisms
+    and work-goals. The passport carries the runbook (``## steps``) + accruing
+    ``## experience``. Lives in the top stream. Stamps canon-rev. Runs are added
+    with :func:`new_session` (a run IS a session inside the routine).
+    """
+    s = slug.slugify(raw_slug)
+    if not s:
+        raise StreamError("new routine: empty slug after slugify")
+    arcs = paths.arcs_dir(root)
+    arcs.mkdir(parents=True, exist_ok=True)
+    nn = numbering.next_num(arcs)
+    entry = arcs / "{0}-@{1}".format(nn, s)
+    for sub in (*TRIAD, paths.ARCS_DIRNAME):
+        (entry / sub).mkdir(parents=True, exist_ok=True)
+    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.routine_md(s))
     stamp_rev(entry, root)
     return entry
 
@@ -674,6 +729,12 @@ def _cmd_new_prism(args) -> int:
     return 0
 
 
+def _cmd_new_routine(args) -> int:
+    entry = new_routine(_root(), args.slug)
+    print("tide: created routine {0}".format(entry))
+    return 0
+
+
 def _cmd_new_session(args) -> int:
     entry = new_session(_root(), args.prism, args.slug, from_ref=getattr(args, "from_ref", None))
     print("tide: created session {0}".format(entry))
@@ -742,6 +803,10 @@ def register(arc_subparsers) -> None:
     tp = arc_subparsers.add_parser("new-prism", help="create a prism NN-@<slug>/ (kind: prism — a container of sessions)")
     tp.add_argument("slug")
     tp.set_defaults(func=_cmd_new_prism, _cmd="arc new-prism")
+
+    rtp = arc_subparsers.add_parser("new-routine", help="create a routine NN-@<slug>/ (kind: routine — a reusable procedure whose runs are sessions)")
+    rtp.add_argument("slug")
+    rtp.set_defaults(func=_cmd_new_routine, _cmd="arc new-routine")
 
     snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a prism (-p prism), chained from the last (or --from)")
     snp.add_argument("slug")
