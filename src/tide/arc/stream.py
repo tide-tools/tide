@@ -274,27 +274,35 @@ def new_prism(root: Path, raw_slug: str) -> Path:
     return entry
 
 
-def new_session(root: Path, prism_slug: str, raw_slug: str) -> Path:
+def new_session(
+    root: Path, prism_slug: str, raw_slug: str, from_ref: Optional[str] = None
+) -> Path:
     """Create a session ``NN-<slug>/`` inside *prism_slug*'s substream.
 
-    A session is one orchestrator run within a prism. It is chained to the
-    prism's previous session via ``from:`` (so the picker shows the lineage) and
-    carries a ``## cursor`` resume slot. Deliberately skips the unmerged-delta
-    barrier — a session is not a work delta. The prism must be open.
+    A session is one orchestrator run within a prism. ``from:`` records its
+    lineage so the picker shows how one session led to the next: *from_ref* sets
+    it explicitly (branch/handoff fork from a chosen session); when omitted it
+    chains to the prism's previous session. Carries a ``## cursor`` resume slot.
+    Deliberately skips the unmerged-delta barrier — a session is not a work delta.
+    The prism must be open.
     """
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new session: empty slug after slugify")
     sub = _open_goal_substream(root, prism_slug)  # raises if the prism is closed/absent
     sub.mkdir(parents=True, exist_ok=True)
-    prev = last_session(root, prism_slug)
+    if from_ref:
+        from_slug = slug.entry_slug(from_ref) if "-" in from_ref else slug.slugify(from_ref)
+    else:
+        prev = last_session(root, prism_slug)
+        from_slug = slug.entry_slug(prev.name) if prev is not None else None
     nn = numbering.next_num(sub)
     entry = sub / "{0}-{1}".format(nn, s)
     for t in TRIAD:
         (entry / t).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "arc.md", templates.session_md(entry.name))
-    if prev is not None:
-        fields.set_field(entry / "arc.md", "from", slug.entry_slug(prev.name))
+    if from_slug:
+        fields.set_field(entry / "arc.md", "from", from_slug)
     stamp_rev(entry, root)
     return entry
 
@@ -667,7 +675,7 @@ def _cmd_new_prism(args) -> int:
 
 
 def _cmd_new_session(args) -> int:
-    entry = new_session(_root(), args.prism, args.slug)
+    entry = new_session(_root(), args.prism, args.slug, from_ref=getattr(args, "from_ref", None))
     print("tide: created session {0}".format(entry))
     return 0
 
@@ -735,9 +743,10 @@ def register(arc_subparsers) -> None:
     tp.add_argument("slug")
     tp.set_defaults(func=_cmd_new_prism, _cmd="arc new-prism")
 
-    snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a prism (-t prism), chained from the last")
+    snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a prism (-p prism), chained from the last (or --from)")
     snp.add_argument("slug")
     snp.add_argument("-p", "--prism", required=True, help="the prism (призма) to add the session to")
+    snp.add_argument("--from", dest="from_ref", metavar="REF", help="fork lineage from this session (branch/handoff); default = previous session")
     snp.set_defaults(func=_cmd_new_session, _cmd="arc new-session")
 
     op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")

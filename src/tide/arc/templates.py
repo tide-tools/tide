@@ -72,15 +72,21 @@ def session_md(name: str) -> str:
     return (
         "# {name}\n"
         "\n"
+        "title: <human title — set on handoff/offload so the picker reads well>\n"
         "goal: <one line — what this session is for>\n"
         "status: active\n"
-        "# from: <prior session slug — set automatically when the prism has one>\n"
+        "offloaded-at: 0\n"
+        "# from: <prior session slug — set automatically, or by branch/handoff --from>\n"
+        "\n"
+        "## summary\n"
+        "<a few plain sentences: what got done, what's unfinished, where it's heading —\n"
+        "written on handoff; longer if the session is large>\n"
         "\n"
         "## cursor — resume here\n"
         "<where this session left off; the next concrete step to pick up>\n"
         "\n"
         "## context\n"
-        "<session memory — handoff distillations and context offloads land here>\n"
+        "<session memory — offload (флот) appends new context here, incrementally>\n"
     ).format(name=name)
 
 

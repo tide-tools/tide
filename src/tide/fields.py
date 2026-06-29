@@ -56,6 +56,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "kind",         # arc kind marker — "prism" tags a session-memory arc
         "merged",
         "mode",
+        "offloaded-at",  # session offload marker — transcript size at last флот (offload)
         "orca-base-branch",
         "orca-issue",
         "orca-workspace",
@@ -66,6 +67,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "state",
         "status",
         "supersedes",
+        "title",        # session human title (set on handoff/offload)
         # Contract deliverable fields.
         "accepted",
         # Worktree adapter fields.

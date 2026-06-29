@@ -90,6 +90,15 @@ def test_last_session_is_newest_or_none(tmp_project):
     assert stream.last_session(tmp_project, "prz").name == s2.name
 
 
+def test_new_session_from_ref_sets_explicit_lineage(tmp_project):
+    stream.new_prism(tmp_project, "prz")
+    stream.new_session(tmp_project, "prz", "one")
+    stream.new_session(tmp_project, "prz", "two")
+    # branch a third session explicitly forked from the FIRST, not the previous
+    s3 = stream.new_session(tmp_project, "prz", "branch", from_ref="one")
+    assert fields.read_field(s3 / "arc.md", "from") == "one"
+
+
 def test_new_session_requires_open_prism(tmp_project):
     with pytest.raises(stream.StreamError):
         stream.new_session(tmp_project, "ghost", "x")

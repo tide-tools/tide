@@ -149,13 +149,19 @@ def list_prisms(project: Path) -> List[Dict[str, str]]:
 
 
 def list_sessions(project: Path, prism_slug: str) -> List[Dict[str, str]]:
-    """A prism's open sessions: ``[{slug, name, from, path}, …]`` in numeric order."""
+    """A prism's open sessions: ``[{slug, name, title, from, path}, …]`` in order."""
     out = []
     for entry in stream.session_entries(project, prism_slug):
-        frm = (fields.read_field(entry / "arc.md", "from") or "").strip()
-        out.append(
-            {"slug": slug.entry_slug(entry.name), "name": entry.name, "from": frm, "path": str(entry)}
-        )
+        pp = entry / "arc.md"
+        frm = (fields.read_field(pp, "from") or "").strip()
+        title = (fields.read_field(pp, "title") or "").strip()
+        out.append({
+            "slug": slug.entry_slug(entry.name),
+            "name": entry.name,
+            "title": "" if title.startswith("<") else title,
+            "from": frm,
+            "path": str(entry),
+        })
     return out
 
 
@@ -175,8 +181,9 @@ def render_session_menu(prism_slug: str, sessions: List[Dict[str, str]]) -> str:
     lines = ["Session in prism {0} — 0 = new session, or continue one:".format(prism_slug)]
     lines.append("  0) + new session")
     for i, s in enumerate(sessions, start=1):
+        title = " — {0}".format(s["title"]) if s.get("title") else ""
         lineage = " (from {0})".format(s["from"]) if s.get("from") else ""
-        lines.append("  {0}) {1}{2}".format(i, s["slug"], lineage))
+        lines.append("  {0}) {1}{2}{3}".format(i, s["slug"], title, lineage))
     return "\n".join(lines)
 
 
