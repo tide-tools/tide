@@ -35,6 +35,11 @@ DRY_RUN_SEED_FILE = "<seed-file>"
 
 DEFAULT_ROLE = seed.ROLE_ORCHESTRATOR
 
+# Picker sessions are head/orchestrator sessions (like `tide terminal`), so they
+# default to skipping the permission prompts. Spliced right after the program
+# name; toggled off with `tide menu --no-skip-permissions`.
+SKIP_PERMISSIONS = "--dangerously-skip-permissions"
+
 
 class MenuError(StreamError):
     """A menu/selection error (empty roster, out-of-range or unparsable pick).
@@ -231,15 +236,18 @@ def build_launch(
     control_home: Path,
     role: str = DEFAULT_ROLE,
     arc_ref: Optional[str] = None,
+    skip_permissions: bool = True,
     dry_run: bool = False,
 ) -> List[str]:
     """Resolve seed + context profile into the scoped ``claude …`` argv for *project*.
 
     When *arc_ref* names a thread (нить), the seed carries that thread's passport
-    so the session opens already bound to it. On a real launch the seed is
-    persisted (so the new session can read it by path); on a dry-run nothing is
-    written and a placeholder seed-file token is used, so the printed command
-    still shows the exact scoped shape.
+    so the session opens already bound to it. *skip_permissions* (default True)
+    splices ``--dangerously-skip-permissions`` right after the program — a head
+    session runs unattended. On a real launch the seed is persisted (so the new
+    session can read it by path); on a dry-run nothing is written and a
+    placeholder seed-file token is used, so the printed command still shows the
+    exact scoped shape.
     """
     s = seed.seed_for_project(
         project, role=role, control_home=control_home, arc_ref=arc_ref
@@ -247,7 +255,10 @@ def build_launch(
     title = "tide-{0}".format(project.name)
     seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
     profile = context.load_profile(project)
-    return context.build_launch_command(seed_file, profile)
+    command = context.build_launch_command(seed_file, profile)
+    if skip_permissions and SKIP_PERMISSIONS not in command:
+        command[1:1] = [SKIP_PERMISSIONS]  # after the program, before the flags
+    return command
 
 
 def launch_entry(
@@ -256,12 +267,14 @@ def launch_entry(
     adapter,
     control_home: Path,
     role: str = DEFAULT_ROLE,
+    skip_permissions: bool = True,
     dry_run: bool = False,
 ) -> SpawnResult:
     """Build the scoped launch command for one rostered project and spawn it.
 
     A resolved thread is carried on the entry under the ``"thread"`` key (the
-    arc_ref the seed binds to); absent ⇒ no thread binding.
+    arc_ref the seed binds to); absent ⇒ no thread binding. The session is
+    spawned with ``cwd`` = the project dir (so its ``CLAUDE.md`` loads).
     """
     project = Path(entry["path"]).expanduser()
     command = build_launch(
@@ -269,6 +282,7 @@ def launch_entry(
         control_home=control_home,
         role=role,
         arc_ref=entry.get("thread"),
+        skip_permissions=skip_permissions,
         dry_run=dry_run,
     )
     title = "tide-{0}".format(entry["name"])
@@ -283,6 +297,7 @@ def launch_entries(
     control_home: Path,
     adapter_name: Optional[str] = None,
     role: str = DEFAULT_ROLE,
+    skip_permissions: bool = True,
     dry_run: bool = False,
 ) -> List[SpawnResult]:
     """Spawn a seeded session for each chosen project; return one result per project."""
@@ -293,6 +308,7 @@ def launch_entries(
             adapter=adapter,
             control_home=control_home,
             role=role,
+            skip_permissions=skip_permissions,
             dry_run=dry_run,
         )
         for e in entries
@@ -332,6 +348,7 @@ def launch_preview(
     *,
     control_home: Path,
     role: str = DEFAULT_ROLE,
+    skip_permissions: bool = True,
 ) -> List[tuple]:
     """The scoped command(s) the human would enter with — for ``--dry-run`` /
     ``--debug`` display.
@@ -348,6 +365,7 @@ def launch_preview(
             control_home=control_home,
             role=role,
             arc_ref=entry.get("thread"),
+            skip_permissions=skip_permissions,
             dry_run=True,
         )
         out.append((entry["name"], " ".join(command)))
@@ -381,6 +399,7 @@ def cmd_menu(args) -> int:
     adapter_name = resolve_adapter_name(root, getattr(args, "adapter", None))
     dry_run = bool(getattr(args, "dry_run", False))
     debug = bool(getattr(args, "debug", False))
+    skip_permissions = not getattr(args, "no_skip_permissions", False)
     role = getattr(args, "role", None) or DEFAULT_ROLE
 
     # Bind a thread (нить) to each chosen project: continue an open one or start
@@ -403,7 +422,9 @@ def cmd_menu(args) -> int:
     # what scoped session will run — the resolved claude argv (strict MCP scoping
     # visible, no global MCP loaded) — BEFORE the terminal opens.
     if dry_run or debug:
-        for name, command in launch_preview(chosen, control_home=root, role=role):
+        for name, command in launch_preview(
+            chosen, control_home=root, role=role, skip_permissions=skip_permissions
+        ):
             print("tide: {0} scoped command:".format(name))
             print("  {0}".format(command))
 
@@ -412,6 +433,7 @@ def cmd_menu(args) -> int:
         control_home=root,
         adapter_name=adapter_name,
         role=role,
+        skip_permissions=skip_permissions,
         dry_run=dry_run,
     )
     for entry, res in zip(chosen, results):
@@ -454,5 +476,11 @@ def register(subparsers) -> None:
         "--debug",
         action="store_true",
         help="print the full scoped launch command before opening the terminal",
+    )
+    p.add_argument(
+        "--no-skip-permissions",
+        action="store_true",
+        dest="no_skip_permissions",
+        help="keep permission prompts on (default: --dangerously-skip-permissions, like tide terminal)",
     )
     p.set_defaults(func=cmd_menu, _cmd="menu")

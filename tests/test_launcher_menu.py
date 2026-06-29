@@ -161,7 +161,7 @@ def test_cli_menu_debug_prints_scoped_command(home_with_project, monkeypatch, ca
     assert rc == 0
     out = capsys.readouterr().out
     assert "proj scoped command:" in out
-    assert "claude --strict-mcp-config" in out
+    assert "claude --dangerously-skip-permissions --strict-mcp-config" in out
 
 
 # --- thread (нить) selection -----------------------------------------------
@@ -231,9 +231,38 @@ def test_cli_menu_new_thread_creates_and_binds(home_with_project, monkeypatch, c
     assert [t["slug"] for t in menu.list_threads(proj)] == ["kickoff"]
 
 
-def test_build_launch_is_scoped_lean_by_default(home_with_project):
+def test_build_launch_skips_permissions_by_default(home_with_project):
     home, proj = home_with_project
     command = menu.build_launch(proj, control_home=home, dry_run=True)
+    assert menu.SKIP_PERMISSIONS in command
+    assert command[1] == menu.SKIP_PERMISSIONS  # right after the program
+
+
+def test_build_launch_no_skip_permissions_opt_out(home_with_project):
+    home, proj = home_with_project
+    command = menu.build_launch(
+        proj, control_home=home, skip_permissions=False, dry_run=True
+    )
+    assert menu.SKIP_PERMISSIONS not in command
+
+
+def test_cli_menu_no_skip_permissions_flag(home_with_project, monkeypatch, capsys):
+    home, _ = home_with_project
+    monkeypatch.chdir(home)
+    rc = cli.main(
+        ["menu", "--pick", "1", "--adapter", "tmux", "--dry-run", "--no-skip-permissions"]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "--dangerously-skip-permissions" not in out
+    assert "claude --strict-mcp-config" in out  # back to the lean shape
+
+
+def test_build_launch_is_scoped_lean_by_default(home_with_project):
+    home, proj = home_with_project
+    command = menu.build_launch(
+        proj, control_home=home, skip_permissions=False, dry_run=True
+    )
     assert command[0] == "claude"
     assert "--strict-mcp-config" in command
     assert "--mcp-config" not in command
@@ -264,7 +293,7 @@ def test_cli_menu_dry_run_launches_picked_project(home_with_project, monkeypatch
     assert "proj" in out and "ok" in out
     # criterion 4: the human SEES the full scoped command on dry-run
     assert "scoped command:" in out
-    assert "claude --strict-mcp-config" in out
+    assert "claude --dangerously-skip-permissions --strict-mcp-config" in out
     assert "--append-system-prompt @<seed-file>" in out
 
 
