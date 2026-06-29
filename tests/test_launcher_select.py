@@ -33,6 +33,20 @@ def test_is_interactive_tty_false_when_streams_piped(non_tty):
     assert select.is_interactive_tty() is False
 
 
+def test_curses_failure_degrades_to_numbered_fallback(monkeypatch):
+    # On a tty where curses blows up (narrow/remote/mobile terminal), select must
+    # NOT crash the menu — it falls back to the numbered-list prompt.
+    monkeypatch.setattr(select.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(select.sys.stdout, "isatty", lambda: True)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("addnstr() returned ERR")  # a curses-style failure
+
+    monkeypatch.setattr(select, "_run_curses", _boom)
+    _feed(monkeypatch, "2")
+    assert select.select("pick", ["a", "b", "c"]) == 1  # fell back, no crash
+
+
 def test_non_tty_never_enters_curses(non_tty, monkeypatch):
     # If curses were touched the import/wrapper would blow up under pytest; force
     # the issue by making any curses use explode, then prove fallback is taken.

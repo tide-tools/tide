@@ -68,7 +68,14 @@ def select(
     (when allowed), ``1..len`` → index, raising :class:`SelectError` otherwise.
     """
     if is_interactive_tty() and (options or allow_new):
-        return _run_curses(title, list(options), allow_new, new_label, allow_back)
+        try:
+            return _run_curses(title, list(options), allow_new, new_label, allow_back)
+        except Exception:  # noqa: BLE001
+            # curses can fail on narrow / remote / non-standard terminals (e.g. a
+            # mobile Orca tab): addnstr ERR, setupterm, a 0-size window. Never crash
+            # the whole menu for it — curses.wrapper has already restored the
+            # terminal, so degrade to the numbered-list prompt below.
+            pass
     return _fallback(title, list(options), allow_new, new_label, allow_back)
 
 
