@@ -35,6 +35,25 @@ def test_get_adapter_default_auto_detects_orca_when_on_path(monkeypatch):
     assert a.name == "orca"
 
 
+def test_orca_pastes_command_not_keystrokes_it():
+    """The Orca launch line is delivered via the clipboard + Cmd-V, never typed.
+
+    `keystroke "<line>"` types through the active keyboard layout, so a non-Latin
+    input source mangles the command (the φφφ bug). A clipboard paste is
+    layout-independent.
+    """
+    script = OrcaAdapter().build_script(
+        cwd="/Users/g/Documents/projects/mitehq",
+        command=["claude", "--dangerously-skip-permissions", "@/tmp/seed.md"],
+    )
+    assert "set the clipboard to" in script
+    assert 'keystroke "v" using command down' in script  # paste
+    # the command must NOT be typed character-by-character
+    assert 'keystroke "cd ' not in script
+    # the real command + cwd ride along on the clipboard line
+    assert "cd /Users/g/Documents/projects/mitehq && claude" in script
+
+
 def test_get_adapter_by_name():
     assert isinstance(adapters.get_adapter("tmux"), TmuxAdapter)
     assert isinstance(adapters.get_adapter("ORCA"), OrcaAdapter)  # case-insensitive

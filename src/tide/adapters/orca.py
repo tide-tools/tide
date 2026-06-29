@@ -23,15 +23,26 @@ from typing import List
 
 from .base import SpawnResult, TerminalAdapter, safe_title
 
-# AppleScript: activate Orca, open a new tab (Cmd-T), then type the launch line.
-# Kept as a template so the dry-run can show the exact script that would run.
+# AppleScript: activate Orca, open a new tab (Cmd-T), then deliver the launch line
+# via the CLIPBOARD + Cmd-V — NOT `keystroke "<line>"`. `keystroke` types through
+# the active keyboard layout, so a non-Latin input source (Greek/Russian/…) mangles
+# `claude … /Users/…` into garbage; a clipboard paste inserts the literal text
+# regardless of layout. Kept as a template so the dry-run can show the exact script.
 _OSASCRIPT_TEMPLATE = """tell application "Orca" to activate
+delay 0.2
+set the clipboard to "{launch_line}"
 tell application "System Events"
     keystroke "t" using command down
     delay 0.4
-    keystroke "cd {cwd} && {launch_line}"
+    keystroke "v" using command down
+    delay 0.1
     key code 36
 end tell"""
+
+
+def _as_applescript_string(s: str) -> str:
+    """Escape *s* for embedding inside an AppleScript ``"…"`` literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 class OrcaAdapter(TerminalAdapter):
@@ -40,10 +51,9 @@ class OrcaAdapter(TerminalAdapter):
     name = "orca"
 
     def build_script(self, *, cwd: str, command: List[str]) -> str:
-        """Render the AppleScript that opens the tab and types ``cd <cwd> && <command>``."""
-        return _OSASCRIPT_TEMPLATE.format(
-            cwd=shlex.quote(cwd), launch_line=shlex.join(command)
-        )
+        """Render the AppleScript that opens a tab and pastes ``cd <cwd> && <command>``."""
+        launch_line = "cd {0} && {1}".format(shlex.quote(cwd), shlex.join(command))
+        return _OSASCRIPT_TEMPLATE.format(launch_line=_as_applescript_string(launch_line))
 
     def spawn(
         self,
