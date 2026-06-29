@@ -142,11 +142,16 @@ def _ask(prompt: str) -> str:
 
 
 def list_prisms(project: Path) -> List[Dict[str, str]]:
-    """A project's open prisms for the picker: ``[{slug, goal, path}, …]`` in order."""
+    """A project's open prisms for the picker: ``[{slug, name, goal, path}, …]``."""
     out = []
     for entry in stream.prism_entries(project):
         goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
-        out.append({"slug": slug.entry_slug(entry.name), "goal": goal, "path": str(entry)})
+        out.append({
+            "slug": slug.entry_slug(entry.name),
+            "name": entry.name,
+            "goal": goal,
+            "path": str(entry),
+        })
     return out
 
 
@@ -190,10 +195,12 @@ def render_session_menu(prism_slug: str, sessions: List[Dict[str, str]]) -> str:
 
 
 def _prism_label(p: Dict[str, str]) -> str:
-    """One prism row's label for the arrow picker (``slug — goal``), goal optional."""
+    """One prism row's label for the arrow picker — numeric index first: ``NN  slug — goal``."""
+    index = p["name"].split("-", 1)[0] if p.get("name") else ""
     goal = p.get("goal") or ""
     suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
-    return "{0}{1}".format(p["slug"], suffix)
+    head = "{0}  ".format(index) if index else ""
+    return "{0}{1}{2}".format(head, p["slug"], suffix)
 
 
 def _session_label(s: Dict[str, str]) -> str:
