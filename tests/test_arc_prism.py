@@ -26,6 +26,16 @@ def test_new_prism_is_a_kind_prism_container(tmp_project):
     assert fields.read_field(pp, "kind") == "prism"
 
 
+def test_new_prism_refuses_duplicate_open_slug(tmp_project):
+    # Anti-mess gate (candidate 05): re-creating the same open prism is refused.
+    stream.new_prism(tmp_project, "kickoff")
+    with pytest.raises(stream.StreamError, match="already exists"):
+        stream.new_prism(tmp_project, "kickoff")
+    # --force allows the rare legitimate second one
+    dup = stream.new_prism(tmp_project, "kickoff", force=True)
+    assert dup.name == "02-@kickoff"
+
+
 def test_entry_kind_prism_wins_over_goal(tmp_project):
     arc = stream.new_arc(tmp_project, "a")
     goal = stream.new_goal(tmp_project, "g")

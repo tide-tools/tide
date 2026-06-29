@@ -30,6 +30,19 @@ def test_new_routine_is_a_kind_routine_container(tmp_project):
     assert "## experience" in body     # accrues lessons across runs
 
 
+def test_new_routine_refuses_duplicate_open_slug(tmp_project):
+    # Anti-mess gate (candidate 05): re-creating the same open routine is refused.
+    stream.new_routine(tmp_project, "invite codes")
+    with pytest.raises(stream.StreamError, match="already exists"):
+        stream.new_routine(tmp_project, "invite-codes")
+
+
+def test_new_routine_force_allows_duplicate(tmp_project):
+    stream.new_routine(tmp_project, "invite-codes")
+    dup = stream.new_routine(tmp_project, "invite-codes", force=True)
+    assert dup.name == "02-@invite-codes"  # second one created under --force
+
+
 def test_entry_kind_routine_wins_over_goal(tmp_project):
     arc = stream.new_arc(tmp_project, "a")
     goal = stream.new_goal(tmp_project, "g")

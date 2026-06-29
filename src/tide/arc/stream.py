@@ -283,17 +283,44 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     return entry
 
 
-def new_prism(root: Path, raw_slug: str) -> Path:
+def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bool) -> None:
+    """Refuse a new prism/routine when an OPEN one of the same slug already exists.
+
+    The anti-mess gate for candidate 05 (``arc-spawn-runaway-empty-dups``): a
+    spawner re-created the same ``@invite-codes`` routine / ``@kickoff`` prism over
+    and over instead of reusing the live one, flooding the tree with empty dups.
+    Refuse when an OPEN container of the same *kind* + *slug* already exists, and
+    point the caller at REUSE (add a run/session) rather than a duplicate. *force*
+    overrides for the rare legitimate second container.
+    """
+    if force:
+        return
+    existing = routine_entries(root) if kind == KIND_ROUTINE else prism_entries(root)
+    for e in existing:
+        if slug.entry_slug(e.name) == slug_s:
+            run = "run" if kind == KIND_ROUTINE else "session"
+            raise StreamError(
+                "{0} '@{1}' already exists ({2}) — reuse it: add a {3} with "
+                "`tide arc new-session <slug> -p {1}`, don't spawn a duplicate "
+                "(pass --force only if you truly mean a second one).".format(
+                    kind, slug_s, e.name, run
+                )
+            )
+
+
+def new_prism(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     """Create a prism ``NN-@<slug>/`` — a goal-shaped container of sessions.
 
     A prism (призма) is a durable work-line: it holds its sessions as sub-arcs in a
     nested ``arcs/`` (exactly like a goal), and is tagged ``kind: prism`` in its
     passport so the picker can tell prisms from work-goals. Lives in the top
-    stream. Stamps canon-rev. Sessions are added with :func:`new_session`.
+    stream. Stamps canon-rev. Sessions are added with :func:`new_session`. Refuses a
+    duplicate of an OPEN same-slug prism (anti-mess gate); *force* overrides.
     """
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new prism: empty slug after slugify")
+    _refuse_duplicate_container(root, s, kind=KIND_PRISM, force=force)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
@@ -305,7 +332,7 @@ def new_prism(root: Path, raw_slug: str) -> Path:
     return entry
 
 
-def new_routine(root: Path, raw_slug: str) -> Path:
+def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     """Create a routine ``NN-@<slug>/`` — a goal-shaped container of runs.
 
     A routine (рутина) is a reusable procedure: it holds its **runs** as sub-arcs
@@ -313,11 +340,13 @@ def new_routine(root: Path, raw_slug: str) -> Path:
     ``kind: routine`` in its passport so the picker can tell routines from prisms
     and work-goals. The passport carries the runbook (``## steps``) + accruing
     ``## experience``. Lives in the top stream. Stamps canon-rev. Runs are added
-    with :func:`new_session` (a run IS a session inside the routine).
+    with :func:`new_session` (a run IS a session inside the routine). Refuses a
+    duplicate of an OPEN same-slug routine (anti-mess gate); *force* overrides.
     """
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new routine: empty slug after slugify")
+    _refuse_duplicate_container(root, s, kind=KIND_ROUTINE, force=force)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
@@ -724,13 +753,13 @@ def _cmd_new_goal(args) -> int:
 
 
 def _cmd_new_prism(args) -> int:
-    entry = new_prism(_root(), args.slug)
+    entry = new_prism(_root(), args.slug, force=getattr(args, "force", False))
     print("tide: created prism {0}".format(entry))
     return 0
 
 
 def _cmd_new_routine(args) -> int:
-    entry = new_routine(_root(), args.slug)
+    entry = new_routine(_root(), args.slug, force=getattr(args, "force", False))
     print("tide: created routine {0}".format(entry))
     return 0
 
@@ -802,10 +831,12 @@ def register(arc_subparsers) -> None:
 
     tp = arc_subparsers.add_parser("new-prism", help="create a prism NN-@<slug>/ (kind: prism — a container of sessions)")
     tp.add_argument("slug")
+    tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug prism")
     tp.set_defaults(func=_cmd_new_prism, _cmd="arc new-prism")
 
     rtp = arc_subparsers.add_parser("new-routine", help="create a routine NN-@<slug>/ (kind: routine — a reusable procedure whose runs are sessions)")
     rtp.add_argument("slug")
+    rtp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug routine")
     rtp.set_defaults(func=_cmd_new_routine, _cmd="arc new-routine")
 
     snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a prism (-p prism), chained from the last (or --from)")

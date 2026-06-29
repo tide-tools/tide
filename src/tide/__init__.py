@@ -10,7 +10,7 @@ follows and where on-disk state lives (per-project ``.tide/{canon,arcs,state}``)
 
 from __future__ import annotations
 
-_FALLBACK_VERSION = "1.0.18"
+_FALLBACK_VERSION = "1.0.19"
 
 try:  # installed package → read from metadata
     from importlib.metadata import PackageNotFoundError, version
