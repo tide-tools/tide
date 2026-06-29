@@ -27,7 +27,7 @@ from ..adapters import SETTINGS_KEY, SpawnResult, get_adapter, resolve_from_sett
 from ..adapters.base import persist_seed
 from ..arc import stream
 from ..arc.stream import StreamError
-from . import context, seed
+from . import context, seed, select
 
 # Placeholder seed-file token used in dry-run (nothing is persisted to disk then),
 # so the printed command shows the @<seed-file> shape without a real temp path.
@@ -187,6 +187,20 @@ def render_session_menu(prism_slug: str, sessions: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _prism_label(p: Dict[str, str]) -> str:
+    """One prism row's label for the arrow picker (``slug — goal``), goal optional."""
+    goal = p.get("goal") or ""
+    suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
+    return "{0}{1}".format(p["slug"], suffix)
+
+
+def _session_label(s: Dict[str, str]) -> str:
+    """One session row's label for the arrow picker (``slug — title (from …)``)."""
+    title = " — {0}".format(s["title"]) if s.get("title") else ""
+    lineage = " (from {0})".format(s["from"]) if s.get("from") else ""
+    return "{0}{1}{2}".format(s["slug"], title, lineage)
+
+
 def parse_pick(raw: str, count: int):
     """Map a pick to :data:`PICK_NEW` or a 1-based index.
 
@@ -226,11 +240,15 @@ def _resolve_prism(project, project_name, *, prism_ref, new_prism, interactive):
     if not interactive:
         return None
     prisms = list_prisms(project)
-    print(render_prism_menu(project_name, prisms))
-    choice = parse_pick(_ask("prism> "), len(prisms))
-    if choice == PICK_NEW:
+    choice = select.select(
+        "Prism (призма) for {0} — continue one, or start new:".format(project_name),
+        [_prism_label(p) for p in prisms],
+        allow_new=True,
+        new_label="+ new prism",
+    )
+    if choice == select.NEW:
         return _create_prism(project, _ask("new prism name> "))
-    return prisms[choice - 1]["slug"]
+    return prisms[choice]["slug"]
 
 
 def _resolve_session(project, prism_slug, *, session_ref, new_session, interactive):
@@ -246,11 +264,15 @@ def _resolve_session(project, prism_slug, *, session_ref, new_session, interacti
         # entering a prism non-interactively means a fresh session in it
         return _create_session(project, prism_slug, "session")
     sessions = list_sessions(project, prism_slug)
-    print(render_session_menu(prism_slug, sessions))
-    choice = parse_pick(_ask("session> "), len(sessions))
-    if choice == PICK_NEW:
+    choice = select.select(
+        "Session in prism {0} — continue one, or start new:".format(prism_slug),
+        [_session_label(s) for s in sessions],
+        allow_new=True,
+        new_label="+ new session",
+    )
+    if choice == select.NEW:
         return _create_session(project, prism_slug, _ask("new session name> "))
-    chosen = sessions[choice - 1]
+    chosen = sessions[choice]
     return chosen["slug"], chosen["path"]
 
 
@@ -467,11 +489,23 @@ def cmd_menu(args) -> int:
 
     raw = getattr(args, "pick", None)
     if not raw:
-        print(render_menu(entries))
-        try:
-            raw = input("pick> ")
-        except EOFError:
-            raw = ""
+        if select.is_interactive_tty():
+            # TTY: navigate the roster with arrows (single pick). The downstream
+            # parse_selection still drives off a pick string, so map the chosen
+            # 0-based index back to its 1-based row (no "+ new" for projects).
+            idx = select.select(
+                "Pick a project to lead this session:",
+                ["{0} → {1}".format(e["name"], e["path"]) for e in entries],
+                allow_new=False,
+            )
+            raw = str(int(idx) + 1)
+        else:
+            # non-TTY: keep the typed multi-pick ('1,3' / 'all') behavior intact.
+            print(render_menu(entries))
+            try:
+                raw = input("pick> ")
+            except EOFError:
+                raw = ""
 
     chosen = select_entries(entries, raw)
     adapter_name = resolve_adapter_name(root, getattr(args, "adapter", None))
