@@ -86,6 +86,23 @@ def test_confirm_hook_is_silent_noop_with_nothing_pending(tmp_project, monkeypat
     assert cli.main(["hook", "handoff-confirm"]) == 0
 
 
+def test_menu_banner_surfaces_pending_handoffs(tmp_control_home):
+    from tide.launcher import menu
+
+    hq.offer(tmp_control_home, "cont", arc="01-x", project="tide-stack", seed="/s/seed.md")
+    entries = [{"name": "tide-stack", "path": "/p/tide-stack"}]
+    banner = menu.render_pending_handoffs(tmp_control_home, entries)
+    assert "pending handoffs" in banner
+    assert "01-cont" in banner and "tide-stack" in banner
+    assert "/p/tide-stack" in banner and "/s/seed.md" in banner  # actionable pickup cmd
+
+
+def test_menu_banner_empty_when_nothing_offered(tmp_control_home):
+    from tide.launcher import menu
+
+    assert menu.render_pending_handoffs(tmp_control_home, []) == ""
+
+
 def test_install_hooks_wires_user_prompt_submit(tmp_project):
     from tide.hooks.install import install_hooks, HANDOFF_CONFIRM_CMD, USER_PROMPT_EVENT
     import json

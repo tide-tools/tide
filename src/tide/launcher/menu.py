@@ -58,6 +58,33 @@ def list_entries(root: Path) -> List[Dict[str, str]]:
     return roster.read_roster(root)
 
 
+def render_pending_handoffs(root: Path, entries: List[Dict[str, str]]) -> str:
+    """A banner of OFFERED handoffs hanging in the control-home, with a pickup hint.
+
+    Empty string when nothing is offered — so it adds no noise to an ordinary menu.
+    Each line carries the offer + the one-shot command to pick it up (cd the owning
+    project + launch claude with the seed); the first message there confirms it (the
+    UserPromptSubmit hook flips offered → taken). Full arrow-pick from the menu is a
+    later slice (candidate handoff-skill-uses-offer); this makes them VISIBLE now.
+    """
+    from .. import handoff_queue  # lazy: avoid import cycle at module load
+
+    pending = handoff_queue.list_offers(root, status=handoff_queue.STATUS_OFFERED)
+    if not pending:
+        return ""
+    by_name = {e["name"]: e.get("path", "?") for e in entries}
+    lines = ["⌛ pending handoffs (offered — pick up to resume):"]
+    for r in pending:
+        lines.append("  {0}  [{1}]  {2} · arc {3}".format(
+            r["name"], r["mode"], r["project"], r["arc"]))
+        proj_path = by_name.get(r["project"], "<{0}-path>".format(r["project"]))
+        if r["seed"] and r["seed"] != "-":
+            lines.append('    pick up: cd {0} && claude --dangerously-skip-permissions '
+                         '"$(cat {1})"'.format(proj_path, r["seed"]))
+    lines.append("  (first message in that session confirms it · `tide handoffs list`)")
+    return "\n".join(lines)
+
+
 def is_active(entry: Dict[str, str]) -> bool:
     """True unless the entry carries ``status=archived`` (default is active)."""
     return entry.get("status", roster.STATUS_ACTIVE) != roster.STATUS_ARCHIVED
@@ -807,6 +834,13 @@ def cmd_menu(args) -> int:
     all_entries = list_entries(root)
     include_archived = bool(getattr(args, "all", False))
     entries = all_entries if include_archived else active_entries(all_entries)
+
+    # Surface any hanging handoff offers up top (two-stage handoff pull model).
+    banner = render_pending_handoffs(root, all_entries)
+    if banner:
+        print(banner)
+        print()
+
     if not entries:
         if not all_entries:
             print(render_menu([]))  # truly empty roster
