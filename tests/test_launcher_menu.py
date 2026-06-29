@@ -220,6 +220,34 @@ def test_resolve_session_new_prism_and_session(home_with_project):
     assert "## cursor" in (bound["arc_text"] or "")
 
 
+def test_new_session_pins_claude_session_id_for_later_resume(home_with_project):
+    home, proj = home_with_project
+    bound = menu.resolve_session(proj, "proj", new_prism="prz", new_session="kickoff")
+    assert bound["resume"] is False
+    assert bound["session_id"]  # a fresh uuid was minted + persisted
+    cmd = menu.build_launch(
+        proj, control_home=home, dry_run=True,
+        session_id=bound["session_id"], resume=False,
+    )
+    assert "--session-id" in cmd and bound["session_id"] in cmd
+
+
+def test_continue_session_with_id_resumes_same_conversation(home_with_project):
+    home, proj = home_with_project
+    from tide.arc import stream
+    from tide import fields
+    stream.new_prism(proj, "prz")
+    sess = stream.new_session(proj, "prz", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "abc-123")
+    bound = menu.resolve_session(proj, "proj", prism_ref="prz", session_ref="work")
+    assert bound["resume"] is True
+    assert bound["session_id"] == "abc-123"
+    cmd = menu.build_launch(proj, control_home=home, dry_run=True, session_id="abc-123", resume=True)
+    assert cmd[0] == "claude"
+    assert "--resume" in cmd and "abc-123" in cmd
+    assert "--append-system-prompt" not in cmd  # resume carries no fresh seed
+
+
 def test_build_launch_binds_session_into_seed(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream

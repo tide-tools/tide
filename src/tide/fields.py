@@ -49,6 +49,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         # Arc passport / goal passport fields.
         "canon-rev",    # new canonical spelling
         "cannon-rev",   # legacy spelling — kept for back-compat parsing
+        "claude-session",  # pinned claude --session-id of a session (for --resume)
         "criteria",
         "deferred",
         "from",

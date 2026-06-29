@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -252,17 +253,23 @@ def _resolve_prism(project, project_name, *, prism_ref, new_prism, interactive):
 
 
 def _resolve_session(project, prism_slug, *, session_ref, new_session, interactive):
-    """Continue/create a session inside *prism_slug*. Returns (slug, path)."""
+    """Continue/create a session inside *prism_slug*. Returns (slug, path, is_new).
+
+    ``is_new`` is True when the session was just created (so it gets a fresh pinned
+    claude session-id); False when continuing an existing one (so it resumes).
+    """
     if new_session:
-        return _create_session(project, prism_slug, new_session)
+        slug_, path_ = _create_session(project, prism_slug, new_session)
+        return slug_, path_, True
     if session_ref:
         for s in list_sessions(project, prism_slug):
             if s["slug"] == session_ref:
-                return session_ref, s["path"]
-        return session_ref, None
+                return session_ref, s["path"], False
+        return session_ref, None, False
     if not interactive:
         # entering a prism non-interactively means a fresh session in it
-        return _create_session(project, prism_slug, "session")
+        slug_, path_ = _create_session(project, prism_slug, "session")
+        return slug_, path_, True
     sessions = list_sessions(project, prism_slug)
     choice = select.select(
         "Session in prism {0} — continue one, or start new:".format(prism_slug),
@@ -271,9 +278,27 @@ def _resolve_session(project, prism_slug, *, session_ref, new_session, interacti
         new_label="+ new session",
     )
     if choice == select.NEW:
-        return _create_session(project, prism_slug, _ask("new session name> "))
+        slug_, path_ = _create_session(project, prism_slug, _ask("new session name> "))
+        return slug_, path_, True
     chosen = sessions[choice]
-    return chosen["slug"], chosen["path"]
+    return chosen["slug"], chosen["path"], False
+
+
+def _bind_claude_session(session_path, *, is_new):
+    """Resolve the pinned claude session-id for a session → (session_id, resume).
+
+    Continuing an existing session that already carries a ``claude-session:`` id →
+    resume that exact claude conversation. A new session (or a legacy one with no
+    id) → mint/keep an id, launch fresh, and persist it so the NEXT entry resumes.
+    """
+    pp = Path(session_path) / "arc.md"
+    stored = (fields.read_field(pp, "claude-session") or "").strip()
+    has_id = bool(stored) and not stored.startswith("<")
+    if has_id and not is_new:
+        return stored, True  # return to the same conversation
+    sid = stored if has_id else str(uuid.uuid4())
+    fields.set_field(pp, "claude-session", sid)
+    return sid, False  # fresh launch, but pinned so the next entry resumes
 
 
 def resolve_session(
@@ -288,27 +313,37 @@ def resolve_session(
 ) -> Optional[Dict[str, Optional[str]]]:
     """Bind a session for one project: resolve a prism, then a session inside it.
 
-    Returns ``{"arc_ref", "arc_text", "prism"}`` (the session slug, its passport
-    text for the seed, and the owning prism name), or None when nothing is bound
-    (no flags + non-interactive, or the human skipped with a blank name).
+    Returns ``{"arc_ref", "arc_text", "prism", "session_id", "resume"}`` — the
+    session slug, its passport text for the seed, the owning prism, the pinned
+    claude session-id, and whether to ``--resume`` that conversation (continuing an
+    existing session) vs launch fresh (new session). None when nothing is bound.
     """
     prism = _resolve_prism(
         project, project_name, prism_ref=prism_ref, new_prism=new_prism, interactive=interactive
     )
     if prism is None:
         return None
-    sess_slug, sess_path = _resolve_session(
+    sess_slug, sess_path, is_new = _resolve_session(
         project, prism, session_ref=session_ref, new_session=new_session, interactive=interactive
     )
     if sess_slug is None:
         return None
     arc_text = None
+    session_id = None
+    resume = False
     if sess_path:
         try:
             arc_text = (Path(sess_path) / "arc.md").read_text(encoding="utf-8")
         except OSError:
             arc_text = None
-    return {"arc_ref": sess_slug, "arc_text": arc_text, "prism": prism}
+        session_id, resume = _bind_claude_session(sess_path, is_new=is_new)
+    return {
+        "arc_ref": sess_slug,
+        "arc_text": arc_text,
+        "prism": prism,
+        "session_id": session_id,
+        "resume": resume,
+    }
 
 
 # --- launch ----------------------------------------------------------------
@@ -321,43 +356,53 @@ def build_launch(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     prism_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    resume: bool = False,
     skip_permissions: bool = True,
     dry_run: bool = False,
 ) -> List[str]:
-    """Resolve seed + context profile into the scoped ``claude …`` argv for *project*.
+    """Resolve the scoped ``claude …`` argv for *project*.
 
-    When a session is bound, *arc_ref*/*arc_text* carry its passport and
-    *prism_name* frames the seed as a session inside that prism (призма), so the
-    new session opens already on the session's cursor. *skip_permissions* (default
-    True) splices ``--dangerously-skip-permissions`` right after the program — a
-    head session runs unattended. On a real launch the seed is persisted; on a
-    dry-run a placeholder seed-file token is used so the printed command still
-    shows the exact scoped shape.
+    Two shapes, both scoped + (by default) ``--dangerously-skip-permissions``:
+
+    * **resume** (``resume`` + *session_id*): ``claude --resume <id>`` — return to
+      the SAME conversation. No seed (the conversation already holds its context).
+    * **fresh** (otherwise): a seeded launch (*arc_ref*/*arc_text* carry the bound
+      session's passport, *prism_name* frames it). When *session_id* is given it is
+      pinned via ``--session-id`` so a later entry can ``--resume`` this exact
+      conversation. On dry-run a placeholder seed-file token is used.
     """
-    s = seed.seed_for_project(
-        project,
-        role=role,
-        control_home=control_home,
-        arc_ref=arc_ref,
-        arc_text=arc_text,
-        prism_name=prism_name,
-    )
-    title = "tide-{0}".format(project.name)
-    seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
-    profile = context.load_profile(project)
-    command = context.build_launch_command(seed_file, profile)
+    if resume and session_id:
+        command = [context.SESSION_PROGRAM, "--resume", session_id, "--strict-mcp-config"]
+    else:
+        s = seed.seed_for_project(
+            project,
+            role=role,
+            control_home=control_home,
+            arc_ref=arc_ref,
+            arc_text=arc_text,
+            prism_name=prism_name,
+        )
+        title = "tide-{0}".format(project.name)
+        seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
+        profile = context.load_profile(project)
+        command = context.build_launch_command(seed_file, profile)
+        if session_id:
+            command[1:1] = ["--session-id", session_id]  # pin for a future --resume
     if skip_permissions and SKIP_PERMISSIONS not in command:
         command[1:1] = [SKIP_PERMISSIONS]  # after the program, before the flags
     return command
 
 
 def _session_launch_kwargs(entry: Dict) -> Dict:
-    """Pull the bound-session seed kwargs off an entry (``{}`` when none bound)."""
+    """Pull the bound-session launch kwargs off an entry (``{}`` when none bound)."""
     s = entry.get("session") or {}
     return {
         "arc_ref": s.get("arc_ref"),
         "arc_text": s.get("arc_text"),
         "prism_name": s.get("prism"),
+        "session_id": s.get("session_id"),
+        "resume": bool(s.get("resume")),
     }
 
 
