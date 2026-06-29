@@ -80,6 +80,20 @@ def build_tide_skeleton(root: Path, *, name: str, control_home: bool = False) ->
     return tide
 
 
+@pytest.fixture(autouse=True)
+def _isolate_real_tide_home(monkeypatch):
+    """Never let a test touch the developer's REAL ``$TIDE_HOME`` control-home.
+
+    ``paths.control_home()`` PREFERS ``$TIDE_HOME`` over the cwd climb, so a test
+    that only ``chdir``'s into a tmp control-home would otherwise read/write the
+    real roster — leaking junk entries (``demo``/``alpha``/``bb`` …) into it on
+    every run. Unset it so resolution falls back to the cwd climb (the test's own
+    tmp home). Tests that need a specific home ``setenv`` it themselves (their
+    monkeypatch runs after this autouse one, so it wins).
+    """
+    monkeypatch.delenv("TIDE_HOME", raising=False)
+
+
 @pytest.fixture
 def tmp_project(tmp_path: Path) -> Path:
     """A tmp dir with a fresh ``.tide/`` skeleton; returns the project root."""
