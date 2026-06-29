@@ -131,7 +131,7 @@ def test_run_handoff_continue_dry_run_writes_and_builds_spawn(tmp_project):
     # the adapter command was built (dry-run) without executing
     assert res.spawn.commands
     # the seed it would carry resumes THIS arc
-    assert any("osascript" in c[0] for c in res.spawn.commands)
+    assert any(c[0] == "orca" for c in res.spawn.commands)
 
 
 def test_run_handoff_close_does_not_spawn(tmp_project):

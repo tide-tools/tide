@@ -289,7 +289,7 @@ def test_launch_entries_default_adapter_is_orca(home_with_project):
     home, _ = home_with_project
     entries = menu.list_entries(home)
     results = menu.launch_entries(entries, control_home=home, dry_run=True)
-    assert results[0].commands[0][0] == "osascript"
+    assert results[0].commands[0][:3] == ["orca", "terminal", "create"]
 
 
 def test_resolve_adapter_name_override_wins(home_with_project):

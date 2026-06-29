@@ -35,23 +35,24 @@ def test_get_adapter_default_auto_detects_orca_when_on_path(monkeypatch):
     assert a.name == "orca"
 
 
-def test_orca_pastes_command_not_keystrokes_it():
-    """The Orca launch line is delivered via the clipboard + Cmd-V, never typed.
+def test_orca_uses_terminal_create_not_keystroke():
+    """Orca tabs open via `orca terminal create`, never AppleScript keystroke.
 
-    `keystroke "<line>"` types through the active keyboard layout, so a non-Latin
-    input source mangles the command (the φφφ bug). A clipboard paste is
-    layout-independent.
+    keystroke types through the active keyboard layout (the φφφ bug) and can hit
+    the wrong window; the native CLI runs the command directly in the right tab.
     """
-    script = OrcaAdapter().build_script(
+    argv = OrcaAdapter().build_command(
         cwd="/Users/g/Documents/projects/mitehq",
         command=["claude", "--dangerously-skip-permissions", "@/tmp/seed.md"],
+        title="tide-mitehq",
     )
-    assert "set the clipboard to" in script
-    assert 'keystroke "v" using command down' in script  # paste
-    # the command must NOT be typed character-by-character
-    assert 'keystroke "cd ' not in script
-    # the real command + cwd ride along on the clipboard line
-    assert "cd /Users/g/Documents/projects/mitehq && claude" in script
+    assert argv[:3] == ["orca", "terminal", "create"]
+    assert "--worktree" in argv
+    assert "path:/Users/g/Documents/projects/mitehq" in argv
+    # the scoped command rides on --command as one shell-quoted string
+    i = argv.index("--command")
+    assert "claude --dangerously-skip-permissions @/tmp/seed.md" == argv[i + 1]
+    assert "--focus" in argv
 
 
 def test_get_adapter_by_name():
@@ -118,18 +119,17 @@ def test_tmux_build_commands_is_pure():
 
 # --- orca dry-run ----------------------------------------------------------
 
-def test_orca_spawn_dry_run_builds_osascript_without_executing():
+def test_orca_spawn_dry_run_builds_terminal_create_without_executing():
     a = OrcaAdapter()
     res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x", dry_run=True)
     assert res.ok is True
     cmd = res.commands[0]
-    assert cmd[0] == "osascript" and cmd[1] == "-e"
-    script = cmd[2]
-    assert "Orca" in script
-    assert "/p/x" in script
-    assert base.SESSION_PROGRAM in script
-    # the scoped flags are visible in the typed launch line
-    assert "--strict-mcp-config" in script
+    assert cmd[:3] == ["orca", "terminal", "create"]
+    assert "path:/p/x" in cmd
+    # the scoped command (with flags) rides on --command
+    launch = cmd[cmd.index("--command") + 1]
+    assert base.SESSION_PROGRAM in launch
+    assert "--strict-mcp-config" in launch
 
 
 # --- SpawnResult / helpers -------------------------------------------------
