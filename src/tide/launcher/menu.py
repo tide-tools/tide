@@ -183,7 +183,12 @@ def list_prisms(project: Path) -> List[Dict[str, str]]:
 
 
 def list_sessions(project: Path, prism_slug: str) -> List[Dict[str, str]]:
-    """A prism's open sessions: ``[{slug, name, title, from, path}, …]`` in order."""
+    """A prism's open sessions newest-first: ``[{slug, name, title, from, path}, …]``.
+
+    ``stream.session_entries`` numbers the substream NN ascending (oldest first —
+    chaining relies on that order); the picker reverses it so the freshest session
+    — the one a handoff just seeded — sits at the top, older ones aging downward.
+    """
     out = []
     for entry in stream.session_entries(project, prism_slug):
         pp = entry / "arc.md"
@@ -196,6 +201,7 @@ def list_sessions(project: Path, prism_slug: str) -> List[Dict[str, str]]:
             "from": frm,
             "path": str(entry),
         })
+    out.reverse()  # newest-first for the picker
     return out
 
 

@@ -206,7 +206,7 @@ def test_render_session_menu_shows_lineage(home_with_project):
     stream.new_session(proj, "prz", "second")
     out = menu.render_session_menu("prz", menu.list_sessions(proj, "prz"))
     assert "0) + new session" in out
-    assert "1) first" in out
+    assert "1) second" in out  # newest-first: the latest session leads
     assert "(from first)" in out  # session 2 lineage
 
 
@@ -441,6 +441,23 @@ def test_cli_menu_new_prism_session_creates_and_binds(home_with_project, monkeyp
     assert rc == 0
     assert [p["slug"] for p in menu.list_prisms(proj)] == ["kickoff"]
     assert [s["slug"] for s in menu.list_sessions(proj, "kickoff")] == ["start"]
+
+
+def test_list_sessions_newest_first(home_with_project):
+    """The session picker surfaces sessions newest-first (handoff/fresh on top).
+
+    The on-disk substream is numbered NN ascending (oldest first — stream-level
+    chaining relies on that); the picker reverses it so the freshest session — the
+    one a handoff just seeded — sits at the top, with older ones aging downward.
+    """
+    from tide.arc import stream
+    _, proj = home_with_project
+    stream.new_prism(proj, "kickoff")
+    stream.new_session(proj, "kickoff", "one")
+    stream.new_session(proj, "kickoff", "two")
+    stream.new_session(proj, "kickoff", "three")
+    slugs = [s["slug"] for s in menu.list_sessions(proj, "kickoff")]
+    assert slugs == ["three", "two", "one"]  # newest first, oldest last
 
 
 def test_build_launch_skips_permissions_by_default(home_with_project):
