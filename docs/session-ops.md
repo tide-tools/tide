@@ -1,15 +1,15 @@
 # Session operations — offload / handoff / spark
 
 > Naming: the dump op is **offload** (not "флот"); the new-work-line op is **spark**
-> (was "branch" — an idea sparks a new prism).
+> (was "branch" — an idea sparks a new thread).
 
-The three human-triggered operations on a **session** (one run inside a prism).
+The three human-triggered operations on a **session** (one run inside a thread).
 Outside these, the agent leaves the stream alone (minimal mode). Captured from the
 design conversation; OPEN questions marked ⛏.
 
 ## Model recap
-- **prism (призма)** — container, the arc through which arcs are managed.
-- **session** — one run inside a prism; numbered; chained by `from:`.
+- **thread (треда)** — container, the arc through which arcs are managed.
+- **session** — one run inside a thread; numbered; chained by `from:`.
 - Each session passport carries `## cursor` (resume point) + `## context` (memory).
 
 ## offload
@@ -24,18 +24,18 @@ design conversation; OPEN questions marked ⛏.
   - Split of labor: the **skill** measures the transcript size (Claude Code session internals) and
     distills the slice; the **CLI** stores/reads the marker + appends text (deterministic, testable).
 
-## handoff = continue the SAME prism in a fresh session
+## handoff = continue the SAME thread in a fresh session
 - Use when you want to keep going on this work-line but in a clean session.
-- offload first, then create a NEW **session** in the **same prism** with `from: <this session>`.
+- offload first, then create a NEW **session** in the **same thread** with `from: <this session>`.
 - Opens a fresh **Orca terminal** (the existing `/handoff` skill already does this).
 - Writes the session `title:` + `## summary`: **what was done · what's left undone · where it's
   heading** (longer if the session is large). The new session is seeded with that.
 
-## spark = start a NEW prism from an idea that surfaced here
+## spark = start a NEW thread from an idea that surfaced here
 - Use when a tangential idea pops up that you do NOT want to continue in this work-line — spin it
-  into its **own new prism** (a new нить), quickly, and jump there.
-- offload first, then create a NEW **prism** (+ its first session) recording where it came from.
-- Name: **spark** (an idea sparks a new prism; light-through-a-prism theme).
+  into its **own new thread** (a new нить), quickly, and jump there.
+- offload first, then create a NEW **thread** (+ its first session) recording where it came from.
+- Name: **spark** (an idea sparks a new thread; light-through-a-thread theme).
 
 ## picker sub-choice (on continuing an existing session)
 - When you pick an existing session in `tide menu`, it asks:
@@ -52,7 +52,7 @@ design conversation; OPEN questions marked ⛏.
 
 ## Interactive TUI picker (UX — requested)
 - The picker must be **arrow-key navigable** (move ↑/↓ between options, Enter to choose) and
-  nicely formatted — not "type a number". Applies to project → prism → session steps.
+  nicely formatted — not "type a number". Applies to project → thread → session steps.
 - Stdlib-only constraint → `curses` (no deps). Must **degrade gracefully**: when stdin/stdout is
   not a TTY (pipes, `--pick`, tests) fall back to the current numbered/`0=new` text path.
 
@@ -62,8 +62,8 @@ When continuing an existing session the picker asks: **same context** or **hando
 from the arc/cursor? Different mechanisms — needs a decision before the sub-choice is built.
 
 ## Build sketch (once OPEN questions close)
-- CLI primitive: `tide session offload <prism> <session> --at <N> [text]` — appends text under
+- CLI primitive: `tide session offload <thread> <session> --at <N> [text]` — appends text under
   `## context` + stores `offloaded-at: N` (marker B). The skill measures `N` (transcript size) and
   distills the slice. `tide arc new-session --from <ref>` already sets `from:` (shipped).
-- Skills: `/offload`, `/spark` (and wire `/handoff` to write the prism session + set `from:`).
+- Skills: `/offload`, `/spark` (and wire `/handoff` to write the thread session + set `from:`).
 - Minimal: no contracts, no canon, no auto-actions.

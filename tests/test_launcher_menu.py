@@ -164,7 +164,7 @@ def test_cli_menu_debug_prints_scoped_command(home_with_project, monkeypatch, ca
     assert "claude --dangerously-skip-permissions --strict-mcp-config" in out
 
 
-# --- prism (призма) + session selection ------------------------------------
+# --- thread (тред) + session selection ------------------------------------
 
 def test_parse_pick_zero_and_keywords_are_new():
     assert menu.parse_pick("0", 2) == menu.PICK_NEW
@@ -180,49 +180,49 @@ def test_parse_pick_index_and_bad():
         menu.parse_pick("x", 3)
 
 
-def test_list_prisms_only_prisms(home_with_project):
+def test_list_threads_only_threads(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
     stream.new_arc(proj, "just-work")
-    stream.new_prism(proj, "morning")
-    prisms = menu.list_prisms(proj)
-    assert [p["slug"] for p in prisms] == ["morning"]
+    stream.new_thread(proj, "morning")
+    threads = menu.list_threads(proj)
+    assert [p["slug"] for p in threads] == ["morning"]
 
 
-def test_render_prism_menu_zero_is_new(home_with_project):
+def test_render_thread_menu_zero_is_new(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_prism(proj, "morning")
-    out = menu.render_prism_menu("proj", menu.list_prisms(proj))
-    assert "0) + new prism" in out
+    stream.new_thread(proj, "morning")
+    out = menu.render_thread_menu("proj", menu.list_threads(proj))
+    assert "0) + new thread" in out
     assert "1) morning" in out
 
 
 def test_render_session_menu_shows_lineage(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     stream.new_session(proj, "prz", "first")
     stream.new_session(proj, "prz", "second")
     out = menu.render_session_menu("prz", menu.list_sessions(proj, "prz"))
     assert "0) + new session" in out
-    assert "1) first" in out
+    assert "1) second" in out  # newest-first: the latest session leads
     assert "(from first)" in out  # session 2 lineage
 
 
-def test_resolve_session_new_prism_and_session(home_with_project):
+def test_resolve_session_new_thread_and_session(home_with_project):
     _, proj = home_with_project
     bound = menu.resolve_session(
-        proj, "proj", new_prism="deep work", new_session="kickoff"
+        proj, "proj", new_thread="deep work", new_session="kickoff"
     )
-    assert bound["prism"] == "deep-work"
+    assert bound["thread"] == "deep-work"
     assert bound["arc_ref"] == "kickoff"
     assert "## cursor" in (bound["arc_text"] or "")
 
 
 def test_new_session_pins_claude_session_id_for_later_resume(home_with_project):
     home, proj = home_with_project
-    bound = menu.resolve_session(proj, "proj", new_prism="prz", new_session="kickoff")
+    bound = menu.resolve_session(proj, "proj", new_thread="prz", new_session="kickoff")
     assert bound["resume"] is False
     assert bound["session_id"]  # a fresh uuid was minted + persisted
     cmd = menu.build_launch(
@@ -236,10 +236,10 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
     from tide import fields
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     sess = stream.new_session(proj, "prz", "work")
     fields.set_field(sess / "arc.md", "claude-session", "abc-123")
-    bound = menu.resolve_session(proj, "proj", prism_ref="prz", session_ref="work")
+    bound = menu.resolve_session(proj, "proj", thread_ref="prz", session_ref="work")
     assert bound["resume"] is True
     assert bound["session_id"] == "abc-123"
     cmd = menu.build_launch(proj, control_home=home, dry_run=True, session_id="abc-123", resume=True)
@@ -270,19 +270,19 @@ def test_resume_reapplies_scoped_mcp_config(home_with_project):
     assert "mcp.json" in resume_part
 
 
-def test_navigate_back_from_prism_returns_to_type(home_with_project, monkeypatch):
+def test_navigate_back_from_thread_returns_to_type(home_with_project, monkeypatch):
     home, proj = home_with_project
     from tide.arc import stream
     from tide.launcher import select as sel
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     stream.new_session(proj, "prz", "one")
-    # project=0, type=0(Task), prism=BACK (→ back to type), type=0(Task), prism=0, session=0
+    # project=0, type=0(Task), thread=BACK (→ back to type), type=0(Task), thread=0, session=0
     seq = iter([0, 0, sel.BACK, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
     assert entry["name"] == "proj"
-    assert bound["prism"] == "prz"
-    assert bound["kind"] == "prism"
+    assert bound["thread"] == "prz"
+    assert bound["kind"] == "thread"
     assert bound["arc_ref"] == "one"
 
 
@@ -292,7 +292,7 @@ def test_list_routines_only_routines(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
     stream.new_arc(proj, "just-work")
-    stream.new_prism(proj, "morning")
+    stream.new_thread(proj, "morning")
     stream.new_routine(proj, "invite-codes")
     routines = menu.list_routines(proj)
     assert [r["slug"] for r in routines] == ["invite-codes"]
@@ -310,14 +310,14 @@ def test_routine_label_shows_gear_marker(home_with_project):
 def test_navigate_type_routes_task(home_with_project, monkeypatch):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     stream.new_session(proj, "prz", "one")
-    # project=0, type=0(Task), prism=0, session=0
+    # project=0, type=0(Task), thread=0, session=0
     seq = iter([0, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
-    assert bound["kind"] == "prism"
-    assert bound["prism"] == "prz"
+    assert bound["kind"] == "thread"
+    assert bound["thread"] == "prz"
     assert bound["arc_ref"] == "one"
 
 
@@ -331,7 +331,7 @@ def test_navigate_type_routes_routine_run(home_with_project, monkeypatch):
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
     assert bound["kind"] == "routine"
-    assert bound["prism"] == "invite-codes"  # container slug rides the prism slot
+    assert bound["thread"] == "invite-codes"  # container slug rides the thread slot
     assert bound["arc_ref"] == "run-one"
 
 
@@ -341,13 +341,13 @@ def test_navigate_back_from_routine_returns_to_type(home_with_project, monkeypat
     from tide.launcher import select as sel
     stream.new_routine(proj, "invite-codes")
     stream.new_session(proj, "invite-codes", "run-one")
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     stream.new_session(proj, "prz", "one")
-    # project=0, type=1(Routine), routine=BACK (→ back to type), type=0(Task), prism=0, session=0
+    # project=0, type=1(Routine), routine=BACK (→ back to type), type=0(Task), thread=0, session=0
     seq = iter([0, 1, sel.BACK, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
-    assert bound["kind"] == "prism"
+    assert bound["kind"] == "thread"
     assert bound["arc_ref"] == "one"
 
 
@@ -366,7 +366,7 @@ def test_resolve_session_new_routine_binds_run(home_with_project):
         proj, "proj", new_routine="invite codes", new_session="run"
     )
     assert bound["kind"] == "routine"
-    assert bound["prism"] == "invite-codes"
+    assert bound["thread"] == "invite-codes"
     assert bound["arc_ref"] == "run"
     from tide.arc import stream
     assert [r["slug"] for r in menu.list_routines(proj)] == ["invite-codes"]
@@ -380,7 +380,7 @@ def test_routine_run_seed_frames_procedure(home_with_project):
     arc_text = (run / "arc.md").read_text(encoding="utf-8")
     command = menu.build_launch(
         proj, control_home=home, arc_ref="run-one", arc_text=arc_text,
-        prism_name="invite-codes", container_kind="routine",
+        thread_name="invite-codes", container_kind="routine",
     )
     seed_text = Path(command[-1][1:]).read_text(encoding="utf-8")
     assert "Active routine run" in seed_text
@@ -389,7 +389,7 @@ def test_routine_run_seed_frames_procedure(home_with_project):
 
 def test_tab_title_marks_routine_run():
     entry = {"name": "proj", "session": {
-        "prism": "invite-codes", "kind": "routine",
+        "thread": "invite-codes", "kind": "routine",
         "arc_ref": "run-one", "session_index": "01", "session_title": "",
     }}
     title = menu._tab_title(entry)
@@ -419,28 +419,101 @@ def test_navigate_back_from_project_cancels(home_with_project, monkeypatch):
 def test_build_launch_binds_session_into_seed(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
-    stream.new_prism(proj, "prz")
+    stream.new_thread(proj, "prz")
     sess = stream.new_session(proj, "prz", "work one")
     arc_text = (sess / "arc.md").read_text(encoding="utf-8")
     command = menu.build_launch(
-        proj, control_home=home, arc_ref="work-one", arc_text=arc_text, prism_name="prz"
+        proj, control_home=home, arc_ref="work-one", arc_text=arc_text, thread_name="prz"
     )
     seed_arg = command[-1]
     assert seed_arg.startswith("@")
     seed_text = Path(seed_arg[1:]).read_text(encoding="utf-8")
-    assert "Active session" in seed_text and "prism: prz" in seed_text and "cursor" in seed_text
+    assert "Active session" in seed_text and "thread: prz" in seed_text and "cursor" in seed_text
 
 
-def test_cli_menu_new_prism_session_creates_and_binds(home_with_project, monkeypatch, capsys):
+def test_cli_menu_new_thread_session_creates_and_binds(home_with_project, monkeypatch, capsys):
     home, proj = home_with_project
     monkeypatch.chdir(home)
     rc = cli.main(
-        ["menu", "--pick", "1", "--new-prism", "kickoff", "--new-session", "start",
+        ["menu", "--pick", "1", "--new-thread", "kickoff", "--new-session", "start",
          "--adapter", "tmux", "--debug", "--dry-run"]
     )
     assert rc == 0
-    assert [p["slug"] for p in menu.list_prisms(proj)] == ["kickoff"]
+    assert [p["slug"] for p in menu.list_threads(proj)] == ["kickoff"]
     assert [s["slug"] for s in menu.list_sessions(proj, "kickoff")] == ["start"]
+
+
+def test_list_sessions_newest_first(home_with_project):
+    """The session picker surfaces sessions newest-first (handoff/fresh on top).
+
+    The on-disk substream is numbered NN ascending (oldest first — stream-level
+    chaining relies on that); the picker reverses it so the freshest session — the
+    one a handoff just seeded — sits at the top, with older ones aging downward.
+    """
+    from tide.arc import stream
+    _, proj = home_with_project
+    stream.new_thread(proj, "kickoff")
+    stream.new_session(proj, "kickoff", "one")
+    stream.new_session(proj, "kickoff", "two")
+    stream.new_session(proj, "kickoff", "three")
+    slugs = [s["slug"] for s in menu.list_sessions(proj, "kickoff")]
+    assert slugs == ["three", "two", "one"]  # newest first, oldest last
+
+
+def test_pick_session_empty_thread_auto_creates_first(home_with_project):
+    """Thread law: an EMPTY thread's first session is born automatically.
+
+    The first session begins the narrative — no '+ new session' prompt needed.
+    """
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "kickoff")
+    slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
+    assert is_new is True
+    assert slug_  # a first session was created
+    assert [s["slug"] for s in menu.list_sessions(proj, "kickoff")] == [slug_]
+
+
+def test_pick_session_nonempty_thread_is_resume_only(home_with_project, monkeypatch):
+    """Thread law: a thread WITH sessions offers resume-only — no blank '+ new'.
+
+    Non-first sessions are born from handoffs (real context transfer), not from a
+    blank picker entry, so the session step must not advertise '+ new session'.
+    """
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "kickoff")
+    stream.new_session(proj, "kickoff", "one")
+    captured = {}
+
+    def fake_select(title, options, **kwargs):
+        captured.update(kwargs)
+        return 0  # resume the first (only) session
+
+    monkeypatch.setattr(menu.select, "select", fake_select)
+    slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
+    assert is_new is False  # resumed, not created
+    assert captured.get("allow_new") is False  # '+ new session' NOT offered
+
+
+def test_pick_run_routine_keeps_new_run(home_with_project, monkeypatch):
+    """Routines do NOT inherit the thread law: '+ new run' stays (a run is fresh work)."""
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_routine(proj, "deploy")
+    stream.new_session(proj, "deploy", "run-one")  # routine already has a run
+    captured = {}
+
+    def fake_select(title, options, **kwargs):
+        captured.update(kwargs)
+        return menu.select.NEW  # pick "+ new run"
+
+    monkeypatch.setattr(menu.select, "select", fake_select)
+    slug_, path_, is_new = menu._pick_session_interactive(
+        proj, "deploy", allow_new=True, new_label="+ new run", item="Run", container="routine"
+    )
+    assert captured.get("allow_new") is True  # '+ new run' IS offered (unlike threads)
+    assert is_new is True  # a fresh run was created
 
 
 def test_build_launch_skips_permissions_by_default(home_with_project):

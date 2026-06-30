@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ from .arc.stream import StreamError
 
 STATUS_OFFERED = "offered"
 STATUS_TAKEN = "taken"
+STATUS_DROPPED = "dropped"  # soft-archived: dismissed without pickup (record kept)
 DEFAULT_MODE = "continue"
 
 # A handoff record file: NN-<slug>.md (2+ digit number, base-10 padding).
@@ -179,6 +181,52 @@ def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, ob
     return _mark_taken(_resolve(home, key), session=session)
 
 
+def _prune_untouched_session(rec: Dict[str, object]) -> bool:
+    """Remove the offer's seeded session dir IFF it was never engaged. Best-effort.
+
+    The session lives at ``<session>/`` and the handoff seed at
+    ``<session>/input/<seed>.md`` (so ``Path(seed).parent.parent`` is the session
+    dir, exactly as :func:`tide.launcher.menu.launch_handoff` resolves it). It
+    counts as **untouched** when ``workspace/`` and ``output/`` are both empty — only
+    the seed sits in ``input/``. A session with real work is left intact (the drop
+    then degrades to "just dismiss the offer"). Returns True when a dir was removed.
+    """
+    seed = rec.get("seed")
+    if not seed or seed == "-":
+        return False
+    session_dir = Path(str(seed)).parent.parent
+    if not (session_dir / "input").is_dir():
+        return False  # seed path doesn't look like <session>/input/<file> — don't touch
+    for sub in ("workspace", "output"):
+        d = session_dir / sub
+        if d.is_dir() and any(d.iterdir()):
+            return False  # real work present — keep the session
+    shutil.rmtree(session_dir, ignore_errors=True)
+    return True
+
+
+def drop(home: Path, key: str, *, prune_untouched: bool = True) -> "tuple[Dict[str, object], bool]":
+    """Soft-archive offer *key* (status → dropped); optionally prune its dead session.
+
+    The dismiss path the queue was missing: an offer you decide NOT to pick up.
+    The record is KEPT (flipped to ``dropped``) so it stops surfacing in the menu /
+    pending list but stays auditable — never a hard delete (the distil pointer is
+    preserved). When *prune_untouched* and the seeded session was never engaged
+    (empty ``workspace/`` + ``output/``), its dir is removed too so a thread doesn't
+    accrue ghost tips (B-with-guard). Refuses a TAKEN offer (nothing to dismiss).
+    Returns ``(record, pruned)``.
+    """
+    rec = _resolve(home, key)
+    if rec["status"] == STATUS_TAKEN:
+        raise HandoffError(
+            "handoff: {0} already taken — nothing to drop".format(rec["name"])
+        )
+    _set_field(rec["path"], "status", STATUS_DROPPED)
+    rec = _parse(rec["path"])
+    pruned = _prune_untouched_session(rec) if prune_untouched else False
+    return rec, pruned
+
+
 def reserve(home: Path, key: str, *, session: str) -> Dict[str, object]:
     """Reserve an OFFERED handoff for a specific *session* (set ``pickup-session``).
 
@@ -225,6 +273,10 @@ def render_list(home: Path) -> str:
         if r["status"] == STATUS_TAKEN:
             lines.append("  ✓ {0}  [{1}]  {2}  (taken {3} by {4})".format(
                 r["name"], r["mode"], r["project"], r["taken_at"], r["taken_by"]))
+    for r in recs:
+        if r["status"] == STATUS_DROPPED:
+            lines.append("  ✗ {0}  [{1}]  {2}  (dropped)".format(
+                r["name"], r["mode"], r["project"]))
     return "\n".join(lines)
 
 
@@ -253,6 +305,13 @@ def _cmd_list(args) -> int:
 def _cmd_take(args) -> int:
     rec = take(_home(), args.key, session=getattr(args, "session", None))
     print("tide: handoff {0} → taken".format(rec["name"]))
+    return 0
+
+
+def _cmd_drop(args) -> int:
+    rec, pruned = drop(_home(), args.key)
+    tail = " (+ empty session removed)" if pruned else ""
+    print("tide: handoff {0} → dropped{1}".format(rec["name"], tail))
     return 0
 
 
@@ -307,6 +366,10 @@ def register(subparsers) -> None:
     tp.add_argument("key")
     tp.add_argument("--session", help="claiming session id (recorded as taken-by)")
     tp.set_defaults(func=_cmd_take, _cmd="handoffs take")
+
+    dp = hsub.add_parser("drop", help="dismiss an offer (soft-archive; prune its dead session)")
+    dp.add_argument("key")
+    dp.set_defaults(func=_cmd_drop, _cmd="handoffs drop")
 
     # bare `tide handoffs` behaves like `tide handoffs list`
     p.set_defaults(func=_cmd_list, _cmd="handoffs")

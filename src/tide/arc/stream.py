@@ -48,14 +48,18 @@ from . import templates
 TRIAD = ("input", "workspace", "output")
 
 # The three arc kinds. ``goal`` is detected by its ``*-goal.md`` passport; a
-# ``prism`` (призма — one session's memory) is a normal arc tagged ``kind: prism``
+# ``thread`` (тред — one session's memory) is a normal arc tagged ``kind: thread``
 # in its passport; everything else is a plain work ``arc``.
 KIND_ARC = "arc"
 KIND_GOAL = "goal"
-KIND_PRISM = "prism"
+KIND_THREAD = "thread"
+# Legacy on-disk kind value — a thread used to be a ``prism`` (renamed). Old
+# containers still carry ``kind: prism`` in their passport; read-compat maps it to
+# KIND_THREAD so pre-rename projects keep working (migrate.py rewrites on demand).
+KIND_THREAD_LEGACY = "prism"
 # A ``routine`` (рутина) is a reusable-procedure container: goal-shaped, tagged
 # ``kind: routine`` in its passport, holding its **runs** as sub-arcs in nested
-# ``arcs/`` (exactly like a prism holds sessions). See :data:`KIND_ROUTINE`.
+# ``arcs/`` (exactly like a thread holds sessions). See :data:`KIND_ROUTINE`.
 KIND_ROUTINE = "routine"
 
 
@@ -111,22 +115,22 @@ def passport_path(entry_dir: Path) -> Path:
     return Path(entry_dir) / "arc.md"
 
 
-# --- entry kind (arc / goal / prism) --------------------------------------
+# --- entry kind (arc / goal / thread) --------------------------------------
 
 def entry_kind(entry_dir: Path) -> str:
-    """Classify an entry: ``prism`` (``kind: prism`` — a container of sessions),
+    """Classify an entry: ``thread`` (``kind: thread`` — a container of sessions),
     ``routine`` (``kind: routine`` — a container of runs), ``goal`` (a goal doc
     without either mark), else ``arc``.
 
-    Kind is read from the on-disk passport, so the ``kind: prism``/``kind:
-    routine`` mark wins even on a goal-shaped container — a prism (and a routine)
-    IS a goal-with-nested-children, just tagged. See :data:`KIND_PRISM` /
+    Kind is read from the on-disk passport, so the ``kind: thread``/``kind:
+    routine`` mark wins even on a goal-shaped container — a thread (and a routine)
+    IS a goal-with-nested-children, just tagged. See :data:`KIND_THREAD` /
     :data:`KIND_ROUTINE`.
     """
     pp = passport_path(entry_dir)
     k = (fields.read_field(pp, "kind") or "").strip().lower()
-    if k == KIND_PRISM:
-        return KIND_PRISM
+    if k in (KIND_THREAD, KIND_THREAD_LEGACY):  # read-compat: old ``kind: prism``
+        return KIND_THREAD
     if k == KIND_ROUTINE:
         return KIND_ROUTINE
     if pp.name.endswith("-goal.md"):
@@ -134,9 +138,9 @@ def entry_kind(entry_dir: Path) -> str:
     return KIND_ARC
 
 
-def is_prism(entry_dir: Path) -> bool:
-    """True when *entry_dir* is a prism (a kind: prism container of sessions)."""
-    return entry_kind(entry_dir) == KIND_PRISM
+def is_thread(entry_dir: Path) -> bool:
+    """True when *entry_dir* is a thread (a kind: thread container of sessions)."""
+    return entry_kind(entry_dir) == KIND_THREAD
 
 
 def is_routine(entry_dir: Path) -> bool:
@@ -144,18 +148,18 @@ def is_routine(entry_dir: Path) -> bool:
     return entry_kind(entry_dir) == KIND_ROUTINE
 
 
-def prism_entries(root: Path, *, closed: bool = False) -> List[Path]:
-    """Project prisms (призмы) in the top stream, open by default, in numeric order.
+def thread_entries(root: Path, *, closed: bool = False) -> List[Path]:
+    """Project threads (треды) in the top stream, open by default, in numeric order.
 
-    A prism is a goal-shaped container tagged ``kind: prism``; its sessions are
-    the sub-arcs in its nested ``arcs/``. Pass ``closed=True`` for sealed prisms.
-    Used by the picker to offer prisms (not all arcs) for continue/new.
+    A thread is a goal-shaped container tagged ``kind: thread``; its sessions are
+    the sub-arcs in its nested ``arcs/``. Pass ``closed=True`` for sealed threads.
+    Used by the picker to offer threads (not all arcs) for continue/new.
     """
     arcs = paths.arcs_dir(root)
     out = [
         p
         for p in _entries(arcs)
-        if slug.is_closed_entry(p.name) == closed and is_prism(p)
+        if slug.is_closed_entry(p.name) == closed and is_thread(p)
     ]
     # NN prefixes are zero-padded, so a lexical name sort is numeric order.
     return sorted(out, key=lambda p: p.name)
@@ -166,8 +170,8 @@ def routine_entries(root: Path, *, closed: bool = False) -> List[Path]:
 
     A routine is a goal-shaped container tagged ``kind: routine``; its **runs** are
     the sub-arcs in its nested ``arcs/`` (a run IS a session inside the routine).
-    Mirrors :func:`prism_entries` but filters ``kind == routine`` — used by the
-    picker to offer routines (not prisms/goals/arcs) for run/continue.
+    Mirrors :func:`thread_entries` but filters ``kind == routine`` — used by the
+    picker to offer routines (not threads/goals/arcs) for run/continue.
     """
     arcs = paths.arcs_dir(root)
     out = [
@@ -179,15 +183,15 @@ def routine_entries(root: Path, *, closed: bool = False) -> List[Path]:
     return sorted(out, key=lambda p: p.name)
 
 
-# --- sessions (sub-arcs inside a prism) -----------------------------------
+# --- sessions (sub-arcs inside a thread) -----------------------------------
 
-def session_entries(root: Path, prism_slug: str, *, closed: bool = False) -> List[Path]:
-    """The sessions (sub-arcs) of a prism, open by default, in numeric order.
+def session_entries(root: Path, thread_slug: str, *, closed: bool = False) -> List[Path]:
+    """The sessions (sub-arcs) of a thread, open by default, in numeric order.
 
-    Sessions live in the prism container's nested ``arcs/`` substream; their
+    Sessions live in the thread container's nested ``arcs/`` substream; their
     ``from:`` field chains one to the next so the picker can show the lineage.
     """
-    sub = _search_dir(root, prism_slug)  # the prism's arcs/ substream
+    sub = _search_dir(root, thread_slug)  # the thread's arcs/ substream
     out = [
         p
         for p in _entries(sub)
@@ -196,12 +200,12 @@ def session_entries(root: Path, prism_slug: str, *, closed: bool = False) -> Lis
     return sorted(out, key=lambda p: p.name)
 
 
-def last_session(root: Path, prism_slug: str) -> Optional[Path]:
-    """The newest session of a prism (open or closed), or None when it has none.
+def last_session(root: Path, thread_slug: str) -> Optional[Path]:
+    """The newest session of a thread (open or closed), or None when it has none.
 
     Used to chain a new session's ``from:`` to its predecessor.
     """
-    sub = _search_dir(root, prism_slug)
+    sub = _search_dir(root, thread_slug)
     everything = sorted(_entries(sub), key=lambda p: p.name)
     return everything[-1] if everything else None
 
@@ -284,10 +288,10 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
 
 
 def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bool) -> None:
-    """Refuse a new prism/routine when an OPEN one of the same slug already exists.
+    """Refuse a new thread/routine when an OPEN one of the same slug already exists.
 
     The anti-mess gate for candidate 05 (``arc-spawn-runaway-empty-dups``): a
-    spawner re-created the same ``@invite-codes`` routine / ``@kickoff`` prism over
+    spawner re-created the same ``@invite-codes`` routine / ``@kickoff`` thread over
     and over instead of reusing the live one, flooding the tree with empty dups.
     Refuse when an OPEN container of the same *kind* + *slug* already exists, and
     point the caller at REUSE (add a run/session) rather than a duplicate. *force*
@@ -295,7 +299,7 @@ def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bo
     """
     if force:
         return
-    existing = routine_entries(root) if kind == KIND_ROUTINE else prism_entries(root)
+    existing = routine_entries(root) if kind == KIND_ROUTINE else thread_entries(root)
     for e in existing:
         if slug.entry_slug(e.name) == slug_s:
             run = "run" if kind == KIND_ROUTINE else "session"
@@ -308,26 +312,26 @@ def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bo
             )
 
 
-def new_prism(root: Path, raw_slug: str, *, force: bool = False) -> Path:
-    """Create a prism ``NN-@<slug>/`` — a goal-shaped container of sessions.
+def new_thread(root: Path, raw_slug: str, *, force: bool = False) -> Path:
+    """Create a thread ``NN-@<slug>/`` — a goal-shaped container of sessions.
 
-    A prism (призма) is a durable work-line: it holds its sessions as sub-arcs in a
-    nested ``arcs/`` (exactly like a goal), and is tagged ``kind: prism`` in its
-    passport so the picker can tell prisms from work-goals. Lives in the top
+    A thread (тред) is a durable work-line: it holds its sessions as sub-arcs in a
+    nested ``arcs/`` (exactly like a goal), and is tagged ``kind: thread`` in its
+    passport so the picker can tell threads from work-goals. Lives in the top
     stream. Stamps canon-rev. Sessions are added with :func:`new_session`. Refuses a
-    duplicate of an OPEN same-slug prism (anti-mess gate); *force* overrides.
+    duplicate of an OPEN same-slug thread (anti-mess gate); *force* overrides.
     """
     s = slug.slugify(raw_slug)
     if not s:
-        raise StreamError("new prism: empty slug after slugify")
-    _refuse_duplicate_container(root, s, kind=KIND_PRISM, force=force)
+        raise StreamError("new thread: empty slug after slugify")
+    _refuse_duplicate_container(root, s, kind=KIND_THREAD, force=force)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
     entry = arcs / "{0}-@{1}".format(nn, s)
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
-    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.prism_goal_md(s))
+    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.thread_goal_md(s))
     stamp_rev(entry, root)
     return entry
 
@@ -336,8 +340,8 @@ def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     """Create a routine ``NN-@<slug>/`` — a goal-shaped container of runs.
 
     A routine (рутина) is a reusable procedure: it holds its **runs** as sub-arcs
-    in a nested ``arcs/`` (exactly like a prism holds sessions), and is tagged
-    ``kind: routine`` in its passport so the picker can tell routines from prisms
+    in a nested ``arcs/`` (exactly like a thread holds sessions), and is tagged
+    ``kind: routine`` in its passport so the picker can tell routines from threads
     and work-goals. The passport carries the runbook (``## steps``) + accruing
     ``## experience``. Lives in the top stream. Stamps canon-rev. Runs are added
     with :func:`new_session` (a run IS a session inside the routine). Refuses a
@@ -359,26 +363,26 @@ def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
 
 
 def new_session(
-    root: Path, prism_slug: str, raw_slug: str, from_ref: Optional[str] = None
+    root: Path, thread_slug: str, raw_slug: str, from_ref: Optional[str] = None
 ) -> Path:
-    """Create a session ``NN-<slug>/`` inside *prism_slug*'s substream.
+    """Create a session ``NN-<slug>/`` inside *thread_slug*'s substream.
 
-    A session is one orchestrator run within a prism. ``from:`` records its
+    A session is one orchestrator run within a thread. ``from:`` records its
     lineage so the picker shows how one session led to the next: *from_ref* sets
     it explicitly (branch/handoff fork from a chosen session); when omitted it
-    chains to the prism's previous session. Carries a ``## cursor`` resume slot.
+    chains to the thread's previous session. Carries a ``## cursor`` resume slot.
     Deliberately skips the unmerged-delta barrier — a session is not a work delta.
-    The prism must be open.
+    The thread must be open.
     """
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new session: empty slug after slugify")
-    sub = _open_goal_substream(root, prism_slug)  # raises if the prism is closed/absent
+    sub = _open_goal_substream(root, thread_slug)  # raises if the thread is closed/absent
     sub.mkdir(parents=True, exist_ok=True)
     if from_ref:
         from_slug = slug.entry_slug(from_ref) if "-" in from_ref else slug.slugify(from_ref)
     else:
-        prev = last_session(root, prism_slug)
+        prev = last_session(root, thread_slug)
         from_slug = slug.entry_slug(prev.name) if prev is not None else None
     nn = numbering.next_num(sub)
     entry = sub / "{0}-{1}".format(nn, s)
@@ -752,9 +756,9 @@ def _cmd_new_goal(args) -> int:
     return 0
 
 
-def _cmd_new_prism(args) -> int:
-    entry = new_prism(_root(), args.slug, force=getattr(args, "force", False))
-    print("tide: created prism {0}".format(entry))
+def _cmd_new_thread(args) -> int:
+    entry = new_thread(_root(), args.slug, force=getattr(args, "force", False))
+    print("tide: created thread {0}".format(entry))
     return 0
 
 
@@ -765,7 +769,7 @@ def _cmd_new_routine(args) -> int:
 
 
 def _cmd_new_session(args) -> int:
-    entry = new_session(_root(), args.prism, args.slug, from_ref=getattr(args, "from_ref", None))
+    entry = new_session(_root(), args.thread, args.slug, from_ref=getattr(args, "from_ref", None))
     print("tide: created session {0}".format(entry))
     return 0
 
@@ -829,19 +833,19 @@ def register(arc_subparsers) -> None:
     gp.add_argument("slug")
     gp.set_defaults(func=_cmd_new_goal, _cmd="arc new-goal")
 
-    tp = arc_subparsers.add_parser("new-prism", help="create a prism NN-@<slug>/ (kind: prism — a container of sessions)")
+    tp = arc_subparsers.add_parser("new-thread", help="create a thread NN-@<slug>/ (kind: thread — a container of sessions)")
     tp.add_argument("slug")
-    tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug prism")
-    tp.set_defaults(func=_cmd_new_prism, _cmd="arc new-prism")
+    tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug thread")
+    tp.set_defaults(func=_cmd_new_thread, _cmd="arc new-thread")
 
     rtp = arc_subparsers.add_parser("new-routine", help="create a routine NN-@<slug>/ (kind: routine — a reusable procedure whose runs are sessions)")
     rtp.add_argument("slug")
     rtp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug routine")
     rtp.set_defaults(func=_cmd_new_routine, _cmd="arc new-routine")
 
-    snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a prism (-p prism), chained from the last (or --from)")
+    snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a thread (-p thread), chained from the last (or --from)")
     snp.add_argument("slug")
-    snp.add_argument("-p", "--prism", required=True, help="the prism (призма) to add the session to")
+    snp.add_argument("-p", "--thread", required=True, help="the thread (тред) to add the session to")
     snp.add_argument("--from", dest="from_ref", metavar="REF", help="fork lineage from this session (branch/handoff); default = previous session")
     snp.set_defaults(func=_cmd_new_session, _cmd="arc new-session")
 

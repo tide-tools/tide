@@ -105,9 +105,9 @@ def test_fallback_no_new_returns_index(non_tty, monkeypatch):
 
 def test_fallback_prints_numbered_list_with_new_row(non_tty, monkeypatch, capsys):
     _feed(monkeypatch, "1")
-    select.select("Title here", ["alpha", "beta"], new_label="+ new prism")
+    select.select("Title here", ["alpha", "beta"], new_label="+ new thread")
     out = capsys.readouterr().out
     assert "Title here" in out
-    assert "0) + new prism" in out
+    assert "0) + new thread" in out
     assert "1) alpha" in out
     assert "2) beta" in out

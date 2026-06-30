@@ -46,20 +46,20 @@ def test_new_routine_force_allows_duplicate(tmp_project):
 def test_entry_kind_routine_wins_over_goal(tmp_project):
     arc = stream.new_arc(tmp_project, "a")
     goal = stream.new_goal(tmp_project, "g")
-    prism = stream.new_prism(tmp_project, "t")
+    thread = stream.new_thread(tmp_project, "t")
     routine = stream.new_routine(tmp_project, "r")
     assert stream.entry_kind(arc) == stream.KIND_ARC
     assert stream.entry_kind(goal) == stream.KIND_GOAL
-    assert stream.entry_kind(prism) == stream.KIND_PRISM
+    assert stream.entry_kind(thread) == stream.KIND_THREAD
     assert stream.entry_kind(routine) == stream.KIND_ROUTINE
     assert stream.is_routine(routine) and not stream.is_routine(goal)
-    assert not stream.is_routine(prism)  # a routine is not a prism
+    assert not stream.is_routine(thread)  # a routine is not a thread
 
 
 def test_routine_entries_filters_routines_only(tmp_project):
     stream.new_goal(tmp_project, "real-goal")
     stream.new_arc(tmp_project, "work")
-    stream.new_prism(tmp_project, "a-prism")
+    stream.new_thread(tmp_project, "a-thread")
     r1 = stream.new_routine(tmp_project, "routine-one")
     r2 = stream.new_routine(tmp_project, "routine-two")
     names = [p.name for p in stream.routine_entries(tmp_project)]
@@ -126,7 +126,7 @@ def test_routine_run_seed_carries_the_procedure(tmp_project):
         tmp_project,
         arc_ref="first-run",
         arc_text=(run / "arc.md").read_text(encoding="utf-8"),
-        prism_name="invite-codes",
+        thread_name="invite-codes",
         container_kind="routine",
     )
     assert "### Routine procedure" in s

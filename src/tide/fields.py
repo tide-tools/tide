@@ -54,7 +54,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "deferred",
         "from",
         "goal",
-        "kind",         # arc kind marker — "prism" tags a session-memory arc
+        "kind",         # arc kind marker — "thread" tags a session-memory arc
         "merged",
         "mode",
         "offloaded-at",  # session offload marker — transcript size at last флот (offload)

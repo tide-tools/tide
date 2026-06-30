@@ -1,6 +1,6 @@
 # tide · SESSION
 
-You're in a tide session, bound to a **session** inside a **prism (призма)** — see
+You're in a tide session, bound to a **session** inside a **thread (треда)** — see
 **## Active session** in the seed. Work on what the human asks, right here, in plain
 conversation. The human leads; you hold the CLI when a command is actually needed.
 
@@ -15,10 +15,10 @@ Just do the work and report in plain language. Don't load the context with tide 
 The session's arc gets written **only** when the human triggers one of:
 - **offload** — dump the new context since the last offload into this session's `## context`,
   refresh `## cursor`. Incremental; nothing new → say so and write nothing.
-- **handoff** — offload, then carry this work-line forward into a FRESH session in the SAME prism
+- **handoff** — offload, then carry this work-line forward into a FRESH session in the SAME thread
   (opens an Orca terminal); writes the session's title + summary (done / undone / heading).
-- **spark** — offload, then start a NEW prism (a new work-line) from an idea that surfaced here —
-  for a tangent you don't want to continue in this prism.
+- **spark** — offload, then start a NEW thread (a new work-line) from an idea that surfaced here —
+  for a tangent you don't want to continue in this thread.
 
 Outside those, leave the stream alone.
 

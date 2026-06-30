@@ -136,8 +136,8 @@ def build_seed(
     roster_text: Optional[str] = None,
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
-    prism_name: Optional[str] = None,
-    container_kind: str = "prism",
+    thread_name: Optional[str] = None,
+    container_kind: str = "thread",
     procedure_text: Optional[str] = None,
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
@@ -147,8 +147,8 @@ def build_seed(
     Sections, in order: a header naming the project + role, the role block (shipped
     prompt or the fallback reminder), the project ``CANON.md``, the active entry
     passport (only when *arc_ref* is given), the control-home roster (only when
-    *roster_text* is given), and a closing launch hint. When *prism_name* is given
-    the active entry is framed as a **session inside a prism (призма)** — or, when
+    *roster_text* is given), and a closing launch hint. When *thread_name* is given
+    the active entry is framed as a **session inside a thread (тред)** — or, when
     *container_kind* is ``"routine"``, as a **routine run** (a reusable procedure:
     its ``## steps`` are the runbook, ``## experience`` accrues across runs). The
     ``## cursor`` is the resume point either way. Empty pieces render as an explicit
@@ -169,31 +169,31 @@ def build_seed(
     ]
 
     if arc_ref:
-        if prism_name and container_kind == "routine":
+        if thread_name and container_kind == "routine":
             lines += [
                 "",
-                "## Active routine run — {0}  (routine: {1})".format(arc_ref, prism_name),
+                "## Active routine run — {0}  (routine: {1})".format(arc_ref, thread_name),
                 "This session IS a run of the reusable routine (рутина) **{0}** — that "
                 "is your job here: execute the procedure below WITH the human (this is "
                 "the one place you act, not stay passive). Follow the `## steps`; mind "
                 "`## experience` (lessons from prior runs); when done, append what this "
-                "run taught back to `## experience` and update this run's `## cursor`.".format(prism_name),
+                "run taught back to `## experience` and update this run's `## cursor`.".format(thread_name),
                 "",
-                "### Routine procedure — {0}".format(prism_name),
+                "### Routine procedure — {0}".format(thread_name),
                 procedure_text.strip() if (procedure_text and procedure_text.strip())
                 else "(routine procedure not found — read its goal doc in .tide/arcs/)",
                 "",
                 "### This run — {0}".format(arc_ref),
                 arc_text.strip() if (arc_text and arc_text.strip()) else "(no run passport found)",
             ]
-        elif prism_name:
+        elif thread_name:
             lines += [
                 "",
-                "## Active session — {0}  (prism: {1})".format(arc_ref, prism_name),
-                "You are continuing a **session** inside the prism (призма) **{0}** — "
+                "## Active session — {0}  (thread: {1})".format(arc_ref, thread_name),
+                "You are continuing a **session** inside the thread (тред) **{0}** — "
                 "the arc through which this work-line is managed. Resume from the "
                 "session's `## cursor`; keep the cursor + `## context` updated as you "
-                "work so the next session can pick up.".format(prism_name),
+                "work so the next session can pick up.".format(thread_name),
                 "",
                 arc_text.strip() if (arc_text and arc_text.strip()) else "(no session passport found)",
             ]
@@ -234,8 +234,8 @@ def seed_for_project(
     *,
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
-    prism_name: Optional[str] = None,
-    container_kind: str = "prism",
+    thread_name: Optional[str] = None,
+    container_kind: str = "thread",
     role: str = ROLE_ORCHESTRATOR,
     control_home: Optional[Path] = None,
 ) -> str:
@@ -244,10 +244,10 @@ def seed_for_project(
     *control_home* (when given and a real control-home) supplies the roster block
     so a cross-project orchestrator session sees the whole portfolio. *arc_text*,
     when given, is used verbatim as the active entry's passport (the picker passes
-    a session's passport directly, since sessions live in a prism substream that
+    a session's passport directly, since sessions live in a thread substream that
     the top-stream ``read_arc_passport`` would not find); otherwise the passport is
-    read by *arc_ref*. *prism_name* frames the entry as a session inside that
-    prism. A missing CANON.md / prompt / arc all degrade to explicit notes — a
+    read by *arc_ref*. *thread_name* frames the entry as a session inside that
+    thread. A missing CANON.md / prompt / arc all degrade to explicit notes — a
     seed is always producible.
     """
     root = Path(root)
@@ -261,8 +261,8 @@ def seed_for_project(
     # A routine run must carry the routine's procedure (## steps / ## experience),
     # which lives on the routine container — NOT on the run sub-arc's passport.
     procedure_text = None
-    if container_kind == "routine" and prism_name:
-        procedure_text = read_routine_procedure(root, prism_name)
+    if container_kind == "routine" and thread_name:
+        procedure_text = read_routine_procedure(root, thread_name)
     prompt_text = read_role_prompt(role)
 
     roster_text: Optional[str] = None
@@ -280,7 +280,7 @@ def seed_for_project(
         roster_text=roster_text,
         arc_ref=arc_ref,
         arc_text=arc_text,
-        prism_name=prism_name,
+        thread_name=thread_name,
         container_kind=container_kind,
         procedure_text=procedure_text,
         prompt_text=prompt_text,

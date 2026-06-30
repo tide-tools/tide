@@ -37,25 +37,25 @@ def arc_md(name: str) -> str:
     ).format(name=name)
 
 
-def prism_goal_md(slug: str) -> str:
-    """Seed text for a prism's goal doc — a ``kind: prism`` container of sessions.
+def thread_goal_md(slug: str) -> str:
+    """Seed text for a thread's goal doc — a ``kind: thread`` container of sessions.
 
-    A *prism* (призма) is a durable work-line. Like a goal it holds its items —
-    here **sessions** — as sub-arcs in the nested ``arcs/``; ``kind: prism`` marks
-    it so the picker offers prisms (not work-goals). ``## where we are`` is the
+    A *thread* (тред) is a durable work-line. Like a goal it holds its items —
+    here **sessions** — as sub-arcs in the nested ``arcs/``; ``kind: thread`` marks
+    it so the picker offers threads (not work-goals). ``## where we are`` is the
     only mutable narrative; the live resume point lives on each session's cursor.
     """
     return (
-        "# {slug}-prism — <призма: the work-line this prism carries>\n"
+        "# {slug}-thread — <тред: the work-line this thread carries>\n"
         "\n"
-        "goal: <one line — what this prism is about; ≤12 words>\n"
+        "goal: <one line — what this thread is about; ≤12 words>\n"
         "status: active\n"
-        "kind: prism\n"
+        "kind: thread\n"
         "\n"
-        "# The prism's items = its sessions (NN-slug in arcs/), chained by from:.\n"
+        "# The thread's items = its sessions (NN-slug in arcs/), chained by from:.\n"
         "\n"
         "## where we are\n"
-        "<the live state of this prism across its sessions>\n"
+        "<the live state of this thread across its sessions>\n"
     ).format(slug=slug)
 
 
@@ -63,9 +63,9 @@ def routine_md(slug: str) -> str:
     """Seed text for a routine's goal doc — a ``kind: routine`` reusable procedure.
 
     A *routine* (рутина) is work you did once and now re-run, with its own
-    accumulated internal experience. Like a prism it is goal-shaped and holds its
+    accumulated internal experience. Like a thread it is goal-shaped and holds its
     items — here **runs** — as sub-arcs in the nested ``arcs/``; ``kind: routine``
-    marks it so the picker offers routines (not prisms/work-goals). ``## steps`` is
+    marks it so the picker offers routines (not threads/work-goals). ``## steps`` is
     the runbook (the reproducible procedure); ``## experience`` accrues lessons
     across runs so the routine gets smarter each time it is run.
     """
@@ -89,9 +89,9 @@ def routine_md(slug: str) -> str:
 
 
 def session_md(name: str) -> str:
-    """Seed text for a session's ``arc.md`` passport (one run inside a prism).
+    """Seed text for a session's ``arc.md`` passport (one run inside a thread).
 
-    A *session* is one orchestrator entry within a prism. Its ``## cursor`` is the
+    A *session* is one orchestrator entry within a thread. Its ``## cursor`` is the
     resume slot — re-entering the session drops you back here. ``from:`` chains it
     to the prior session so the lineage is visible. Context offloads / handoff
     distillations accrue in ``## context`` over the session's life.

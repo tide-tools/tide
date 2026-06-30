@@ -1,22 +1,22 @@
 # Routines (рутины) — a reusable-procedure arc kind
 
-A **routine** is a fourth arc kind (alongside arc / goal / prism): a **reusable
+A **routine** is a fourth arc kind (alongside arc / goal / thread): a **reusable
 procedure** — work you did once in an arc and now want to re-run, with its own
 accumulated internal experience. Example: **invite-codes** (a runbook you re-run
 each batch).
 
 ## Model
-- A routine is a `kind: routine` container (goal-shaped, like a prism): a
+- A routine is a `kind: routine` container (goal-shaped, like a thread): a
   procedure passport + a nested `arcs/` whose sub-arcs are its **runs**.
 - The procedure passport holds the **steps** (the runbook) + a `## experience`
   section that accrues lessons across runs (so the routine gets smarter).
 - A **run** is one execution of the routine (a session-like sub-arc). Runs are
-  numbered and chained by `from:`, exactly like prism sessions.
+  numbered and chained by `from:`, exactly like thread sessions.
 
 ## Picker flow
 ```
 tide menu → project → TYPE: [ task | routine ]
-   task    → prism → session         (the existing flow)
+   task    → thread → session         (the existing flow)
    routine → routine → run/continue  (new)
 ```
 - After the project, the human picks a **type**: Task (regular work) or Routine
