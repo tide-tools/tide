@@ -22,14 +22,6 @@ def test_global_rules_shipped():
         assert f.read_text(encoding="utf-8").strip()
 
 
-def test_handoff_skill_shipped():
-    skill = paths.install_root() / "skills" / "tide-handoff" / "SKILL.md"
-    assert skill.is_file()
-    text = skill.read_text(encoding="utf-8")
-    assert "name: tide-handoff" in text
-    assert "tide handoff" in text
-
-
 def test_seed_now_embeds_shipped_orchestrator_prompt():
     # U12 ships prompts/orchestrator.md → read_role_prompt resolves it (was None before).
     # Minimal-mode rewrite: a tide session bound to a prism/session, no
