@@ -232,6 +232,16 @@ def test_new_session_pins_claude_session_id_for_later_resume(home_with_project):
     assert "--session-id" in cmd and bound["session_id"] in cmd
 
 
+def _persist_convo(proj, session_id):
+    """Fake a claude conversation on disk so the resume-gate chooses --resume."""
+    import os
+    base = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    encoded = str(proj).replace("/", "-").replace(".", "-")
+    f = base / "projects" / encoded / "{0}.jsonl".format(session_id)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("{}\n", encoding="utf-8")
+
+
 def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
@@ -239,9 +249,29 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     stream.new_thread(proj, "prz")
     sess = stream.new_session(proj, "prz", "work")
     fields.set_field(sess / "arc.md", "claude-session", "abc-123")
+    _persist_convo(proj, "abc-123")  # the conversation exists → resume, not fresh
     bound = menu.resolve_session(proj, "proj", thread_ref="prz", session_ref="work")
     assert bound["resume"] is True
     assert bound["session_id"] == "abc-123"
+
+
+def test_never_engaged_session_launches_fresh(home_with_project):
+    """A pinned-but-never-persisted id → FRESH launch, not resume (no 'No conversation found').
+
+    The resume-gate checks whether claude actually has the conversation on disk; a
+    session that was pinned but never really opened has none, so we launch fresh
+    (keeping the id pinned for the next, engaged, entry).
+    """
+    home, proj = home_with_project
+    from tide.arc import stream
+    from tide import fields
+    stream.new_thread(proj, "prz")
+    sess = stream.new_session(proj, "prz", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "ghost-999")
+    # no _persist_convo → CLAUDE_CONFIG_DIR has no conversation for ghost-999
+    bound = menu.resolve_session(proj, "proj", thread_ref="prz", session_ref="work")
+    assert bound["resume"] is False       # never engaged → fresh, no scary resume error
+    assert bound["session_id"] == "ghost-999"  # id kept, pinned for next time
     cmd = menu.build_launch(proj, control_home=home, dry_run=True, session_id="abc-123", resume=True)
     # resume is wrapped so it falls back to a fresh launch if the convo is gone
     assert cmd[0] == "sh" and cmd[1] == "-c"
@@ -514,6 +544,28 @@ def test_pick_run_routine_keeps_new_run(home_with_project, monkeypatch):
     )
     assert captured.get("allow_new") is True  # '+ new run' IS offered (unlike threads)
     assert is_new is True  # a fresh run was created
+
+
+def test_new_thread_requires_confirmation(home_with_project, monkeypatch):
+    """Guard: a mis-tapped '+ new thread' must NOT materialise a thread without a Yes."""
+    _, proj = home_with_project
+    monkeypatch.setattr(menu, "_ask", lambda p: "oops a voice note")
+    seq = iter([menu.select.NEW, 1])  # pick '+ new thread', then 'No' on the confirm
+    monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
+    res = menu._pick_thread_interactive(proj, "proj")
+    assert res is None                    # declined → nothing returned to the caller
+    assert menu.list_threads(proj) == []  # and nothing was created on disk
+
+
+def test_new_thread_created_on_confirm(home_with_project, monkeypatch):
+    """Guard: confirming '+ new thread' DOES create it."""
+    _, proj = home_with_project
+    monkeypatch.setattr(menu, "_ask", lambda p: "real idea")
+    seq = iter([menu.select.NEW, 0])  # '+ new thread', then 'Yes'
+    monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
+    res = menu._pick_thread_interactive(proj, "proj")
+    assert res == "real-idea"
+    assert [t["slug"] for t in menu.list_threads(proj)] == ["real-idea"]
 
 
 def test_build_launch_skips_permissions_by_default(home_with_project):

@@ -156,22 +156,22 @@ def test_menu_banner_empty_when_nothing_offered(tmp_control_home):
     assert menu.render_pending_handoffs(tmp_control_home, []) == ""
 
 
-def test_navigate_root_lists_projects_only(monkeypatch):
-    """Root screen lists projects ONLY — pending handoffs no longer clutter it."""
-    from tide.launcher import menu, select
+def test_root_offers_fast_continue(monkeypatch):
+    """Pending handoffs LEAD the root as ⇄ continue rows — resume in one click."""
+    from tide.launcher import menu
 
     captured = {}
 
     def fake_select(title, options, **kwargs):
         captured["options"] = list(options)
-        return select.BACK  # cancel after capturing the first screen
+        return 0  # pick the first row = the fast-continue handoff
 
     monkeypatch.setattr(menu.select, "select", fake_select)
     rec = {"slug": "stab", "project": "p", "mode": "continue", "seed": "-"}
     res = menu.navigate_interactive([{"name": "p", "path": "/p"}], handoffs=[rec])
-    assert res is None  # cancelled out
-    assert captured["options"] == ["p → /p"]  # only the project — no ⇄ handoff row
-    assert all("handoff" not in o and "⇄" not in o for o in captured["options"])
+    assert res[0] == menu.HANDOFF_PICK and res[1] is rec  # 1-click pickup
+    assert captured["options"][0].startswith("⇄ continue")  # continue row leads
+    assert captured["options"][-1] == "p → /p"  # project below it
 
 
 def test_project_offers_maps_seed_to_thread_and_session(tmp_path):
@@ -210,8 +210,9 @@ def test_pickup_offered_session_inside_thread_returns_handoff_pick(tmp_path, mon
     seed.write_text("# distil\n", encoding="utf-8")
     rec = {"slug": "h", "project": "proj", "mode": "continue", "seed": str(seed)}
 
-    # scripted picks: project(0) → Threads(0) → thread kickoff(0) → session ⇄(0) → pick up(0)
-    seq = iter([0, 0, 0, 0, 0])
+    # root leads with the ⇄ continue row (index 0); pick the PROJECT (index 1) to go
+    # via the IN-THREAD path: project(1) → Threads(0) → thread(0) → session ⇄(0) → pick up(0)
+    seq = iter([1, 0, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     res = menu.navigate_interactive([{"name": "proj", "path": str(proj)}], handoffs=[rec])
     assert res[0] == menu.HANDOFF_PICK and res[1] is rec
@@ -234,9 +235,10 @@ def test_dismiss_offered_session_from_menu_drops_it(tmp_control_home, tmp_path, 
     hq.offer(tmp_control_home, "h", arc="kickoff/work", project="proj", seed=str(seed))
     rec = hq.list_offers(tmp_control_home)[0]
 
-    # project(0) → Threads(0) → thread(0) → session ⇄(0) → dismiss(1); thread then
+    # root now leads with the ⇄ continue row, so the project is index 1:
+    # project(1) → Threads(0) → thread(0) → session ⇄(0) → dismiss(1); thread then
     # empties → the session step auto-creates a fresh first session (thread law).
-    seq = iter([0, 0, 0, 0, 1])
+    seq = iter([1, 0, 0, 0, 1])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     menu.navigate_interactive([{"name": "proj", "path": str(proj)}], handoffs=[rec])
 

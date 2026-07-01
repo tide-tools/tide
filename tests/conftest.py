@@ -81,8 +81,8 @@ def build_tide_skeleton(root: Path, *, name: str, control_home: bool = False) ->
 
 
 @pytest.fixture(autouse=True)
-def _isolate_real_tide_home(monkeypatch):
-    """Never let a test touch the developer's REAL ``$TIDE_HOME`` control-home.
+def _isolate_real_tide_home(monkeypatch, tmp_path):
+    """Never let a test touch the developer's REAL ``$TIDE_HOME`` / ``~/.claude``.
 
     ``paths.control_home()`` PREFERS ``$TIDE_HOME`` over the cwd climb, so a test
     that only ``chdir``'s into a tmp control-home would otherwise read/write the
@@ -90,8 +90,14 @@ def _isolate_real_tide_home(monkeypatch):
     every run. Unset it so resolution falls back to the cwd climb (the test's own
     tmp home). Tests that need a specific home ``setenv`` it themselves (their
     monkeypatch runs after this autouse one, so it wins).
+
+    Also point ``CLAUDE_CONFIG_DIR`` at a per-test tmp dir so the resume-gate
+    (``menu._claude_conversation_exists``) reads an ISOLATED store — by default no
+    conversation exists (→ fresh launch); a test that wants resume creates the
+    ``projects/<encoded>/<id>.jsonl`` file under this dir itself.
     """
     monkeypatch.delenv("TIDE_HOME", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
 
 
 @pytest.fixture

@@ -18,6 +18,7 @@ testable (a dry-run adapter proves the wiring without opening a terminal);
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import uuid
@@ -369,21 +370,48 @@ def _resolve_session(project, thread_slug, *, session_ref, new_session, interact
     return chosen["slug"], chosen["path"], False
 
 
+def _project_cwd_of(session_path) -> Optional[Path]:
+    """The project dir a session lives under (parent of ``.tide/``), or None."""
+    for parent in Path(session_path).resolve().parents:
+        if parent.name == ".tide":
+            return parent.parent
+    return None
+
+
+def _claude_conversation_exists(session_path, session_id: str) -> bool:
+    """True when claude has a PERSISTED conversation for *session_id* in this project.
+
+    claude stores each conversation at
+    ``~/.claude/projects/<cwd-with-/-and-.-as-dashes>/<session-id>.jsonl``. A pinned
+    id whose conversation was never actually engaged has no such file, so
+    ``--resume`` would fail ("No conversation found") and only recover via a fallback
+    that flashes that scary error — so we treat "no file" as **launch fresh** instead.
+    """
+    proj = _project_cwd_of(session_path)
+    if proj is None:
+        return False
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+    encoded = str(proj).replace("/", "-").replace(".", "-")
+    return (base / "projects" / encoded / "{0}.jsonl".format(session_id)).is_file()
+
+
 def _bind_claude_session(session_path, *, is_new):
     """Resolve the pinned claude session-id for a session → (session_id, resume).
 
-    Continuing an existing session that already carries a ``claude-session:`` id →
-    resume that exact claude conversation. A new session (or a legacy one with no
-    id) → mint/keep an id, launch fresh, and persist it so the NEXT entry resumes.
+    Resume only when the session carries an id AND claude actually has that
+    conversation persisted (:func:`_claude_conversation_exists`) — a pinned-but-
+    never-engaged id has no conversation, so ``--resume`` would fail and flash "No
+    conversation found"; we launch **fresh** there instead (clean, no error), keeping
+    the pinned id so the NEXT entry — once the conversation exists — resumes cleanly.
     """
     pp = Path(session_path) / "arc.md"
     stored = (fields.read_field(pp, "claude-session") or "").strip()
     has_id = bool(stored) and not stored.startswith("<")
-    if has_id and not is_new:
-        return stored, True  # return to the same conversation
+    if has_id and not is_new and _claude_conversation_exists(session_path, stored):
+        return stored, True  # a real persisted conversation → resume it
     sid = stored if has_id else str(uuid.uuid4())
     fields.set_field(pp, "claude-session", sid)
-    return sid, False  # fresh launch, but pinned so the next entry resumes
+    return sid, False  # fresh launch, but pinned so a later (engaged) entry resumes
 
 
 def resolve_session(
@@ -507,12 +535,39 @@ def project_offers(handoffs: List[Dict], project: Path) -> List[Dict]:
     return out
 
 
+def _confirm(prompt: str) -> bool:
+    """A Yes/No guard via the picker (default No). True only on an explicit Yes.
+
+    Guards accidental materialisation: a fat-fingered "+ new thread" (or a voice note
+    landing in the name prompt) shouldn't silently create a thread + session + Orca
+    tab. BACK / No / cancel all mean "don't".
+    """
+    choice = select.select(prompt, ["Yes", "No"], allow_new=False, allow_back=True)
+    return choice == 0
+
+
+def _new_container(project, ask_prompt, confirm_noun, create):
+    """Shared '+ new' flow with a guard: ask name → confirm → create. None if aborted.
+
+    *create* is :func:`_create_thread` / :func:`_create_routine`. Returns the new
+    slug, or None when the name is blank or the human declines the confirm (so the
+    caller re-shows the picker — nothing gets materialised on a mis-tap).
+    """
+    name = _ask(ask_prompt).strip()
+    if not name:
+        return None
+    if not _confirm("Create new {0} '{1}' and start it?".format(confirm_noun, name)):
+        return None
+    return create(project, name)
+
+
 def _pick_thread_interactive(project, project_name, offer_threads=frozenset()):
-    """Arrow-pick a thread: return its slug, create on NEW, or :data:`select.BACK`.
+    """Arrow-pick a thread: return its slug, create on NEW (guarded), or :data:`select.BACK`.
 
     Threads carrying a pending handoff (slug in *offer_threads*) are marked ``⊕`` and
     floated to the top, so a thread you can resume-from-handoff is the first thing
-    you see (after ``+ new thread``).
+    you see (after ``+ new thread``). Creating a new thread is **guarded** by a
+    confirm so a mis-tap can't materialise a junk thread + session + tab.
     """
     threads = list_threads(project)
     flagged = [t for t in threads if t["slug"] in offer_threads]
@@ -530,7 +585,7 @@ def _pick_thread_interactive(project, project_name, offer_threads=frozenset()):
     if choice == select.BACK:
         return select.BACK
     if choice == select.NEW:
-        return _create_thread(project, _ask("new thread name> "))
+        return _new_container(project, "new thread name> ", "thread", _create_thread)
     return ordered[choice]["slug"]
 
 
@@ -650,7 +705,7 @@ def _pick_routine_interactive(project, project_name):
     if choice == select.BACK:
         return select.BACK
     if choice == select.NEW:
-        return _create_routine(project, _ask("new routine name> "))
+        return _new_container(project, "new routine name> ", "routine", _create_routine)
     return routines[choice]["slug"]
 
 
@@ -711,26 +766,37 @@ def _navigate_type(project, project_name, offers=None):
 HANDOFF_PICK = "handoff"
 
 
+def _root_continue_label(rec: Dict) -> str:
+    """A root-screen fast-continue row for a pending handoff (1-click pickup)."""
+    return "⇄ continue · {0} → {1}".format(rec["slug"], rec["project"])
+
+
 def navigate_interactive(entries, handoffs=None):
     """Full project→type→(thread→session | routine→run) arrow flow with Back.
 
-    The root screen lists **projects only** — pending *handoffs* no longer clutter it.
-    Each offer instead surfaces INSIDE its own thread: after a project is picked, its
-    offers (mapped by :func:`project_offers`) mark/float the thread (⊕) and the
-    offered session (⇄), and picking that session up returns ``(HANDOFF_PICK, record)``
-    for a seed-based launch. Returns ``(entry, bound)``, ``(HANDOFF_PICK, record)``,
+    The root screen leads with a short **Continue** section — pending *handoffs* as
+    ``⇄ continue · …`` rows — so resuming a handed-off work-line is **one click** (not
+    project → Threads → thread → session). Picking one returns ``(HANDOFF_PICK,
+    record)``. Below them: the project list, for deliberate Threads/Routines nav
+    (each offer ALSO still surfaces inside its own thread there — the fast path and the
+    structured home coexist). Returns ``(entry, bound)``, ``(HANDOFF_PICK, record)``,
     or None (cancel).
     """
     handoffs = handoffs or []
     while True:
-        labels = ["{0} → {1}".format(e["name"], e["path"]) for e in entries]
-        choice = select.select(
-            "Pick a project to lead this session:", labels,
-            allow_new=False, allow_back=True,
+        labels = [_root_continue_label(h) for h in handoffs] + [
+            "{0} → {1}".format(e["name"], e["path"]) for e in entries
+        ]
+        title = (
+            "Continue a handoff, or pick a project to lead this session:"
+            if handoffs else "Pick a project to lead this session:"
         )
+        choice = select.select(title, labels, allow_new=False, allow_back=True)
         if choice == select.BACK:
             return None  # back out of the first step = cancel
-        entry = entries[choice]
+        if choice < len(handoffs):
+            return (HANDOFF_PICK, handoffs[choice])  # 1-click fast continue
+        entry = entries[choice - len(handoffs)]
         project = Path(entry["path"]).expanduser()
         nav = _navigate_type(project, entry["name"], project_offers(handoffs, project))
         if nav == select.BACK:
