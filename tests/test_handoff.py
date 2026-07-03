@@ -89,77 +89,82 @@ def test_candidate_reminder_empty(tmp_project):
     assert "(no candidates)" in handoff.candidate_reminder(tmp_project)
 
 
-def test_fork_offer_names_all_three():
-    text = handoff.fork_offer("ship-it")
-    assert "continue" in text and "new" in text and "close" in text
-    assert "ship-it" in text
-
-
-# --- autospawn toggle ------------------------------------------------------
-
-def test_autospawn_default_off():
-    # Auto-opening terminals is OFF by default — only an explicit on enables.
-    assert handoff.autospawn_from_text(None) is False
-    assert handoff.autospawn_from_text("") is False
-    assert handoff.autospawn_from_text("off") is False
-    assert handoff.autospawn_from_text("on") is True
-    assert handoff.autospawn_from_text("true") is True
-
-
-def test_read_autospawn_default_off_when_absent(tmp_project):
-    assert handoff.read_autospawn(tmp_project) is False  # no opt-in file → off
-
-
-def test_read_autospawn_opt_in_via_state_file(tmp_project):
-    from tide import paths
-
-    state = paths.state_dir(tmp_project)
-    state.mkdir(parents=True, exist_ok=True)
-    (state / handoff.AUTOSPAWN_FILE).write_text("on\n", encoding="utf-8")
-    assert handoff.read_autospawn(tmp_project) is True
-
-
 # --- run_handoff orchestration ---------------------------------------------
+# ONE path into the loop (cand 05): handoff distils, then hangs an offer in the
+# control-home queue. It NEVER spawns a terminal — pickup is pull (tide menu).
 
-def test_run_handoff_continue_dry_run_writes_and_builds_spawn(tmp_project):
+def _queue_home(monkeypatch, tmp_path):
+    """A control-home for the offer queue, wired via $TIDE_HOME."""
+    from tests.conftest import build_tide_skeleton
+
+    home = tmp_path / "control-home"
+    home.mkdir()
+    build_tide_skeleton(home, name="home", control_home=True)
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    return home
+
+
+def test_run_handoff_continue_hangs_offer_in_queue(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
     stream.new_arc(tmp_project, "ship-it")
     res = handoff.run_handoff(
-        tmp_project, arc_ref="ship-it", mode="continue", dry_run=True, autospawn=True
+        tmp_project, arc_ref="ship-it", mode="continue", from_session="origin-123"
     )
     assert res.summary_path.exists()
     assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
-    assert res.autospawn is True
-    assert res.spawn is not None and res.spawn.ok
-    # the adapter command was built (dry-run) without executing
-    assert res.spawn.commands
-    # the seed it would carry resumes THIS arc
-    assert any(c[0] == "orca" for c in res.spawn.commands)
+    assert res.offer_path is not None and res.offer_path.exists()
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["status"] == "offered"
+    assert rec["mode"] == "continue"
+    assert rec["arc"] == "ship-it"
+    # the distil doubles as the seed pointer + the origin is recorded for the
+    # multiples detector
+    assert rec["seed"] == str(res.summary_path)
+    assert rec["from_session"] == "origin-123"
 
 
-def test_run_handoff_close_does_not_spawn(tmp_project):
+def test_run_handoff_new_mode_hangs_offer(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_arc(tmp_project, "ship-it")
+    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="new")
+    assert res.offer_path is not None
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["mode"] == "new"
+
+
+def test_run_handoff_close_hangs_no_offer(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
     stream.new_arc(tmp_project, "ship-it")
     res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="close")
     assert res.summary_path.exists()
-    assert res.spawn is None
-    assert any("no spawn" in n for n in res.notes)
+    assert res.offer_path is None
+    assert handoff_queue.list_offers(home) == []
+    assert any("no offer" in n for n in res.notes)
 
 
-def test_run_handoff_toggle_off_skips_spawn(tmp_project):
+def test_run_handoff_dry_run_leaves_queue_untouched(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
     stream.new_arc(tmp_project, "ship-it")
     res = handoff.run_handoff(
-        tmp_project, arc_ref="ship-it", mode="continue", autospawn=False
+        tmp_project, arc_ref="ship-it", mode="continue", dry_run=True
     )
-    assert res.summary_path.exists()
-    assert res.spawn is None
-    assert res.autospawn is False
+    assert res.summary_path.exists()   # the distil is still written
+    assert res.offer_path is None
+    assert handoff_queue.list_offers(home) == []
 
 
-def test_run_handoff_new_mode_spawns_orchestrator(tmp_project):
+def test_run_handoff_no_control_home_fails_loud(tmp_project):
     stream.new_arc(tmp_project, "ship-it")
-    res = handoff.run_handoff(
-        tmp_project, arc_ref="ship-it", mode="new", dry_run=True, autospawn=True
-    )
-    assert res.spawn is not None and res.spawn.ok
+    with pytest.raises(handoff.HandoffError, match="control-home"):
+        handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue")
 
 
 def test_run_handoff_unknown_mode_raises(tmp_project):
@@ -191,10 +196,25 @@ def test_cli_handoff_dry_run_smoke(tmp_project, monkeypatch, capsys):
     assert rc == 0
     assert "handoff [continue]" in out
     assert "Candidates backlog" in out
-    assert "Fork —" in out
+    assert "queue untouched" in out
     # the distil landed in the arc workspace
     ws = handoff.resolve_open_entry(tmp_project, "ship-it") / "workspace"
     assert any(p.name.startswith("handoff-") for p in ws.iterdir())
+
+
+def test_cli_handoff_offers_and_notes_retired_flags(tmp_project, monkeypatch, tmp_path, capsys):
+    from tide import cli, handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_arc(tmp_project, "ship-it")
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["handoff", "ship-it", "--no-spawn"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "offer hung" in out
+    assert "--no-spawn is retired" in out
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["status"] == "offered"
 
 
 def test_cli_handoff_summary_file(tmp_project, monkeypatch, tmp_path):
@@ -213,70 +233,27 @@ def test_cli_handoff_summary_file(tmp_project, monkeypatch, tmp_path):
     assert written.read_text(encoding="utf-8") == "# prepared distil\n"
 
 
-# --- arc-worktree cwd + cross-project resolution ---------------------------
+# --- cross-project resolution ----------------------------------------------
 
-def _spawn_blob(res) -> str:
-    """Flatten a dry-run SpawnResult's built commands into one searchable string."""
-    return " ".join(" ".join(c) for c in (res.spawn.commands or []))
-
-
-def test_run_handoff_continue_lands_in_arc_worktree_cwd(tmp_project):
-    from tide.adapters.orca_worktree import WORKSPACE_FIELD
-    from tide.arc import worktree
-
-    arc = stream.new_arc(tmp_project, "ship-it")
-    ws = tmp_project / "orca-ws"
-    ws.mkdir()
-    from tide import fields
-    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
-
-    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue", dry_run=True, autospawn=True)
-    # the spawn cwd reflects the arc's orca workspace, not the bare project root
-    assert str(ws) in _spawn_blob(res)
-
-
-def test_run_handoff_new_mode_uses_root_cwd(tmp_project):
-    arc = stream.new_arc(tmp_project, "ship-it")
-    from tide.adapters.orca_worktree import WORKSPACE_FIELD
-    from tide.arc import worktree
-    from tide import fields
-
-    ws = tmp_project / "orca-ws"
-    ws.mkdir()
-    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
-
-    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="new", dry_run=True, autospawn=True)
-    blob = _spawn_blob(res)
-    # new mode seeds a project-level orchestrator at the root — never the arc worktree
-    assert str(ws) not in blob
-    assert str(tmp_project.resolve()) in blob
-
-
-def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, tmp_path):
-    from tide import roster
+def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, tmp_path, monkeypatch):
+    from tide import handoff_queue, roster
     from tests.conftest import build_tide_skeleton
-
-    from tide import fields
-    from tide.adapters.orca_worktree import WORKSPACE_FIELD
-    from tide.arc import worktree
 
     proj = tmp_path / "owner-proj"
     proj.mkdir()
     build_tide_skeleton(proj, name="owner")
-    arc = stream.new_arc(proj, "remote-thread")
-    # Record the arc's worktree so the cross-project spawn cwd resolves to it.
-    ws = proj / "orca-ws"
-    ws.mkdir()
-    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+    stream.new_arc(proj, "remote-thread")
     roster.add(tmp_control_home, "owner", str(proj))
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
 
     # Fired from the control-home; the distil must land in the OWNING project's arc.
     res = handoff.run_handoff(
-        tmp_control_home, arc_ref="remote-thread", mode="continue", dry_run=True, autospawn=True
+        tmp_control_home, arc_ref="remote-thread", mode="continue"
     )
     assert str(proj) in str(res.summary_path)
     assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
     assert res.summary_path.exists()
-    # the cross-project spawn cwd is the OWNING project's arc worktree, not the
-    # control-home root (mirrors the same-project worktree-cwd assertion)
-    assert str(ws) in _spawn_blob(res)
+    # ...and the offer names the OWNING project, so pickup lands there too
+    (rec,) = handoff_queue.list_offers(tmp_control_home)
+    assert rec["project"] == "owner-proj"
+    assert rec["seed"] == str(res.summary_path)

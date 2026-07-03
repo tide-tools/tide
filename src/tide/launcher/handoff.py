@@ -1,7 +1,9 @@
 """tide.launcher.handoff — the ``/tide-handoff`` engine (warm chat → fresh session).
 
-The handoff turns a bloated live chat into a clean, already-working session on an
-arc. Per design §12 it does four things, in order:
+The handoff turns a bloated live chat into a clean continuation. ONE path into
+the loop (cand 05 consolidated the CLI): distil the chat, then hang an offer in
+the control-home queue — the same queue ``tide handoffs`` manages and the
+``/handoff`` skill drives. Three things, in order:
 
 1. **distill → workspace** — write the conversation summary into the arc's
    ``workspace/handoff-<date>.md`` (handoff is *continuation*, not an ending, so
@@ -10,22 +12,20 @@ arc. Per design §12 it does four things, in order:
 2. **remind candidates** — surface the candidates backlog so anything worth
    keeping for canon/method gets dropped via ``tide candidate add`` before the
    chat is abandoned.
-3. **offer a fork** — ``continue`` (resume THIS arc in a fresh session) ·
-   ``new`` (a fresh orchestrator session to pick a candidate) · ``close`` (just
-   distil, no spawn).
-4. **auto-spawn (toggle, default OFF)** — for ``continue``/``new`` build the seed
-   (:mod:`tide.launcher.seed`) and, ONLY when a project opts in via
-   ``.tide/state/autospawn``, hand it to the configured terminal adapter
-   (:mod:`tide.adapters`, Orca default). Off by default: the spawn is fragile, so
-   the pull model (offer + ``tide handoffs``) is the default; ``close`` never spawns.
+3. **hang the offer** — ``continue`` (resume THIS arc) / ``new`` (fresh
+   orchestrator to pick a candidate) land a record in the queue
+   (:mod:`tide.handoff_queue`); ``close`` just distils. This command NEVER opens
+   a terminal — the fresh session is pulled from ``tide menu`` (offer → take),
+   which is what keeps one holder per thread (no Mickey-17 multiples).
 
-Two layers as everywhere else: pure functions (``build_summary``, ``fork_offer``,
-``autospawn_enabled`` …) are argparse- and disk-free and snapshot-testable;
-:func:`run_handoff` is the disk+adapter orchestration; :func:`cmd_handoff` is the
-thin CLI handler wired by ``cli.py``.
+Two layers as everywhere else: pure functions (``build_summary`` …) are argparse-
+and disk-free and snapshot-testable; :func:`run_handoff` is the disk
+orchestration; :func:`cmd_handoff` is the thin CLI handler wired by ``cli.py``.
 """
 
 from __future__ import annotations
+
+import argparse
 
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -33,11 +33,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import io as _io, paths, slug
-from ..adapters import SpawnResult, get_adapter
-from ..adapters.base import persist_seed
 from ..arc import candidate
 from ..arc.stream import StreamError
-from . import context, seed
 
 WORKSPACE_DIRNAME = "workspace"
 SUMMARY_PREFIX = "handoff-"
@@ -165,77 +162,22 @@ def candidate_reminder(root: Path) -> str:
     )
 
 
-def fork_offer(arc_ref: str) -> str:
-    """The three-way fork prompt (continue / new / close) for *arc_ref*."""
-    return "\n".join(
-        [
-            "Fork — how to carry the thread:",
-            "  continue → resume arc {0} in a fresh seeded session".format(arc_ref),
-            "  new      → a fresh orchestrator session to promote a candidate",
-            "  close    → stop here; thread distilled, no spawn",
-        ]
-    )
-
-
-# --- auto-spawn toggle ------------------------------------------------------
-
-# Per-project opt-in file: .tide/state/autospawn. Auto-opening a new Orca terminal
-# on handoff is OFF by default (the spawn is fragile; the pull model — offer +
-# `tide handoffs` — is the default). Opt a project IN with `on` in this file.
-AUTOSPAWN_FILE = "autospawn"
-_AUTOSPAWN_ON = {"on", "true", "1", "yes"}
-
-
-def autospawn_from_text(text: Optional[str]) -> bool:
-    """Parse an autospawn toggle value (default OFF; only an explicit on enables)."""
-    if not text:
-        return False
-    return text.strip().lower() in _AUTOSPAWN_ON
-
-
-def read_autospawn(root: Path) -> bool:
-    """The effective auto-spawn toggle for *root* — OFF unless ``.tide/state/autospawn``
-    opts in (``on``/``true``/``1``). Auto-opening terminals is opt-in per project."""
-    from .. import paths  # lazy: keep module import-light
-
-    f = paths.state_dir(Path(root)) / AUTOSPAWN_FILE
-    try:
-        return autospawn_from_text(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-
-
-# --- orca workspace focus (best-effort) -------------------------------------
-
-def _maybe_activate_orca(arc_dir: Path) -> bool:
-    """Best-effort focus of the arc's Orca workspace (never raises / blocks entry)."""
-    try:
-        from ..adapters import orca_worktree
-        return orca_worktree.activate_workspace(Path(arc_dir))
-    except Exception:  # noqa: BLE001  a failed focus must never block the handoff
-        return False
-
-
 # --- orchestration ----------------------------------------------------------
 
 @dataclass
 class HandoffResult:
-    """Outcome of a handoff: where the distil landed + whether a session spawned.
+    """Outcome of a handoff: where the distil landed + the offer hung in the queue.
 
     * ``mode`` — the chosen fork (continue / new / close).
     * ``summary_path`` — the workspace file the distil was written to.
     * ``candidate_reminder`` — the backlog reminder text (always computed).
-    * ``fork_offer`` — the three-way fork prompt text.
-    * ``autospawn`` — the effective toggle value used.
-    * ``spawn`` — the adapter :class:`SpawnResult` (None for ``close`` / toggle-off).
+    * ``offer_path`` — the queue record (None for ``close`` and ``dry_run``).
     """
 
     mode: str
     summary_path: Path
     candidate_reminder: str
-    fork_offer: str
-    autospawn: bool
-    spawn: Optional[SpawnResult] = None
+    offer_path: Optional[Path] = None
     notes: List[str] = field(default_factory=list)
 
 
@@ -245,19 +187,19 @@ def run_handoff(
     arc_ref: str,
     mode: str = FORK_CONTINUE,
     summary: Optional[str] = None,
-    autospawn: Optional[bool] = None,
-    adapter_name: Optional[str] = None,
+    from_session: Optional[str] = None,
     dry_run: bool = False,
     date: Optional[str] = None,
 ) -> HandoffResult:
-    """Run a handoff: distil → workspace, remind candidates, offer fork, maybe spawn.
+    """Run a handoff: distil → workspace, remind candidates, hang the offer.
 
     *summary* is the distilled markdown (the caller prepares it); when absent a
     minimal stub is built from *mode*/*arc_ref* so the call never silently writes
-    nothing. For ``continue``/``new`` and an effective auto-spawn toggle a fresh
-    session is spawned via the adapter — ``continue`` seeds THIS arc, ``new`` seeds
-    a project-level orchestrator (no arc) so it can pick a candidate. ``close``
-    never spawns. ``dry_run`` builds the adapter command without driving any UI.
+    nothing. For ``continue``/``new`` the offer lands in the control-home queue
+    (:func:`tide.handoff_queue.offer`) and is picked up from ``tide menu`` /
+    ``tide handoffs take`` — this function NEVER opens a terminal (pull model;
+    one holder per thread). ``close`` just distils. ``dry_run`` distils but
+    leaves the queue untouched.
     """
     root = Path(root)
     if mode not in FORK_MODES:
@@ -271,60 +213,46 @@ def run_handoff(
     # handoff fired from the control-home anchors to the RIGHT project's arc, and
     # the distil lands in that project's arc workspace — not the control-home root.
     from ..arc import worktree
-    owner_root, arc_entry = worktree.resolve_project_and_arc(root, arc_ref)
+    owner_root, _arc_entry = worktree.resolve_project_and_arc(root, arc_ref)
 
     text = summary if summary is not None else build_summary(
         mode=mode, arc_ref=arc_ref, date=date
     )
     summary_path = write_summary(owner_root, arc_ref, text, date=date)
 
-    effective_spawn = read_autospawn(owner_root) if autospawn is None else bool(autospawn)
     result = HandoffResult(
         mode=mode,
         summary_path=summary_path,
         candidate_reminder=candidate_reminder(root),
-        fork_offer=fork_offer(arc_ref),
-        autospawn=effective_spawn,
     )
 
     if mode == FORK_CLOSE:
-        result.notes.append("close: thread distilled to {0}; no spawn".format(summary_path))
+        result.notes.append("close: thread distilled to {0}; no offer".format(summary_path))
         return result
-    if not effective_spawn:
-        result.notes.append(
-            "auto-spawn off (default) — offer hung; pick it up via 'tide handoffs' "
-            "or opt a project in with `on` in .tide/state/{0}".format(AUTOSPAWN_FILE)
-        )
+    if dry_run:
+        result.notes.append("dry-run: distil written; queue untouched")
         return result
 
-    # continue seeds THIS arc in its OWNING project (land in its worktree); new seeds
-    # a project-level orchestrator at the control-home (pick a candidate, no arc).
-    spawn_arc = arc_ref if mode == FORK_CONTINUE else None
-    seed_root = owner_root if mode == FORK_CONTINUE else root
-    control_home = seed_root if paths.is_control_home(seed_root) else None
-    seed_text = seed.seed_for_project(
-        seed_root, arc_ref=spawn_arc, role=seed.ROLE_ORCHESTRATOR, control_home=control_home
-    )
-    adapter = get_adapter(adapter_name)
-    title = "tide-handoff-{0}".format(slug.slugify(arc_ref) or "session")
-    seed_file = "<seed-file>" if dry_run else str(persist_seed(seed_text, title))
-    command = context.build_launch_command(seed_file, context.load_profile(seed_root))
-
-    if mode == FORK_CONTINUE:
-        spawn_cwd = worktree.resolve_cwd(owner_root, arc_entry)
-        if not dry_run and arc_entry is not None:
-            _maybe_activate_orca(arc_entry)
-    else:
-        spawn_cwd = root.resolve()
-
-    result.spawn = adapter.spawn(
-        command=command, cwd=str(spawn_cwd), title=title, dry_run=dry_run
+    from .. import handoff_queue  # lazy: keep module import-light
+    try:
+        home = paths.control_home(root)
+    except FileNotFoundError as exc:
+        raise HandoffError(
+            "handoff: no control-home for the offer queue — {0}".format(exc)
+        ) from exc
+    result.offer_path = handoff_queue.offer(
+        home,
+        arc_ref,
+        arc=arc_ref,
+        project=owner_root.name,
+        seed=str(summary_path),
+        mode=mode,
+        from_session=from_session,
     )
     result.notes.append(
-        "{0}: {1}".format(
-            "spawned" if result.spawn.ok and not dry_run else
-            ("dry-run" if dry_run else "spawn FAILED"),
-            result.spawn.detail,
+        "offer hung: {0} — pick it up from 'tide menu' "
+        "(or 'tide handoffs take {1}')".format(
+            result.offer_path.name, result.offer_path.stem
         )
     )
     return result
@@ -344,33 +272,39 @@ def _read_summary_arg(args) -> Optional[str]:
 
 
 def cmd_handoff(args) -> int:
-    """``tide handoff <arc>`` — distil to workspace, remind, offer fork, maybe spawn."""
+    """``tide handoff <arc>`` — distil to workspace, remind, hang the offer."""
     root = paths.require_tide_root()
     summary = _read_summary_arg(args)
-    autospawn = False if getattr(args, "no_spawn", False) else None
+    retired = [
+        "--{0}".format(flag.replace("_", "-"))
+        for flag in ("no_spawn", "adapter")
+        if getattr(args, flag, None)
+    ]
     result = run_handoff(
         root,
         arc_ref=args.arc,
         mode=getattr(args, "mode", None) or FORK_CONTINUE,
         summary=summary,
-        autospawn=autospawn,
-        adapter_name=getattr(args, "adapter", None),
+        from_session=getattr(args, "from_session", None),
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     print("tide: handoff [{0}] → {1}".format(result.mode, result.summary_path))
     print(result.candidate_reminder)
-    print(result.fork_offer)
+    for flag in retired:
+        print(
+            "  note: {0} is retired — handoff never spawns; the queue "
+            "('tide handoffs') is the one path in".format(flag)
+        )
     for note in result.notes:
         print("  {0}".format(note))
-    spawned_ok = result.spawn is None or result.spawn.ok
-    return 0 if spawned_ok else 1
+    return 0
 
 
 def register(subparsers) -> None:
     """Add the ``handoff`` command to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
         "handoff",
-        help="warm-handoff: distil chat → arc workspace, then fork (continue|new|close)",
+        help="warm-handoff: distil chat → arc workspace, hang an offer in the queue",
     )
     p.add_argument("arc", help="the open arc to anchor the handoff on")
     p.add_argument(
@@ -385,16 +319,19 @@ def register(subparsers) -> None:
         help="path to the prepared distil markdown (default: a minimal stub)",
     )
     p.add_argument(
-        "--no-spawn",
-        action="store_true",
-        dest="no_spawn",
-        help="force the auto-spawn toggle off for this run",
+        "--from-session",
+        dest="from_session",
+        help="origin session id — recorded on the offer for the multiples detector",
     )
-    p.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
+    # retired flags (cand 05): accepted so old invocations don't crash, but inert —
+    # the handoff never opens a terminal any more
+    p.add_argument("--no-spawn", action="store_true", dest="no_spawn",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--adapter", help=argparse.SUPPRESS)
     p.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="build the seed + adapter command without opening a terminal",
+        help="distil only — leave the offer queue untouched",
     )
     p.set_defaults(func=cmd_handoff, _cmd="handoff")
