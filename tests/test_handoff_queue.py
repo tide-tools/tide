@@ -156,22 +156,22 @@ def test_menu_banner_empty_when_nothing_offered(tmp_control_home):
     assert menu.render_pending_handoffs(tmp_control_home, []) == ""
 
 
-def test_root_offers_fast_continue(monkeypatch):
-    """Pending handoffs LEAD the root as ⇄ continue rows — resume in one click."""
+def test_root_marks_project_with_offer(monkeypatch):
+    """Pending handoffs no longer lead the root — the owning project is marked ⊕N instead."""
     from tide.launcher import menu
 
     captured = {}
 
     def fake_select(title, options, **kwargs):
         captured["options"] = list(options)
-        return 0  # pick the first row = the fast-continue handoff
+        return menu.select.BACK  # inspect the root, then cancel
 
     monkeypatch.setattr(menu.select, "select", fake_select)
     rec = {"slug": "stab", "project": "p", "mode": "continue", "seed": "-"}
     res = menu.navigate_interactive([{"name": "p", "path": "/p"}], handoffs=[rec])
-    assert res[0] == menu.HANDOFF_PICK and res[1] is rec  # 1-click pickup
-    assert captured["options"][0].startswith("⇄ continue")  # continue row leads
-    assert captured["options"][-1] == "p → /p"  # project below it
+    assert res is None  # backed out
+    assert captured["options"] == ["p → /p  ⊕1"]  # project marked, no ⇄ continue row
+    assert not any("⇄ continue" in o for o in captured["options"])
 
 
 def test_project_offers_maps_seed_to_thread_and_session(tmp_path):
@@ -195,6 +195,29 @@ def test_project_offers_maps_seed_to_thread_and_session(tmp_path):
     assert menu.project_offers([{"slug": "x", "seed": "/elsewhere/in/s.md"}], proj) == []
 
 
+def test_project_offers_resolves_by_arc_even_if_seed_misplaced(tmp_path):
+    """The arc field — not the seed location — decides the offer's home. A seed put in
+    the wrong dir can no longer hide an offer from the menu (regression guard)."""
+    from tide.launcher import menu
+    from tide.arc import stream
+    from tide.init_home import scaffold_project
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    scaffold_project(proj, name="proj")
+    thread = stream.new_thread(proj, "kickoff")
+    stream.new_session(proj, "kickoff", "work")
+    # seed dumped in the THREAD's input (the wrong place), not the session's
+    bad_seed = thread / "input" / "handoff-seed.md"
+    bad_seed.parent.mkdir(parents=True, exist_ok=True)
+    bad_seed.write_text("# distil\n", encoding="utf-8")
+    rec = {"slug": "h", "arc": "kickoff/work", "seed": str(bad_seed)}
+
+    offers = menu.project_offers([rec], proj)
+    assert len(offers) == 1  # still found — resolved by the arc field
+    assert offers[0]["thread"] == "kickoff" and offers[0]["session"] == "work"
+
+
 def test_pickup_offered_session_inside_thread_returns_handoff_pick(tmp_path, monkeypatch):
     """A handoff is picked up from INSIDE its thread (project → Threads → thread → ⇄ → pick up)."""
     from tide.launcher import menu
@@ -210,9 +233,10 @@ def test_pickup_offered_session_inside_thread_returns_handoff_pick(tmp_path, mon
     seed.write_text("# distil\n", encoding="utf-8")
     rec = {"slug": "h", "project": "proj", "mode": "continue", "seed": str(seed)}
 
-    # root leads with the ⇄ continue row (index 0); pick the PROJECT (index 1) to go
-    # via the IN-THREAD path: project(1) → Threads(0) → thread(0) → session ⇄(0) → pick up(0)
-    seq = iter([1, 0, 0, 0, 0])
+    # the project (marked ⊕1) is index 0; go via the IN-THREAD path. The type step now
+    # leads with "⇄ Handoffs (1)"(0), so Threads is index 1:
+    # project(0) → Threads(1) → thread(0) → session ⇄(0) → pick up(0)
+    seq = iter([0, 1, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     res = menu.navigate_interactive([{"name": "proj", "path": str(proj)}], handoffs=[rec])
     assert res[0] == menu.HANDOFF_PICK and res[1] is rec
@@ -235,10 +259,11 @@ def test_dismiss_offered_session_from_menu_drops_it(tmp_control_home, tmp_path, 
     hq.offer(tmp_control_home, "h", arc="kickoff/work", project="proj", seed=str(seed))
     rec = hq.list_offers(tmp_control_home)[0]
 
-    # root now leads with the ⇄ continue row, so the project is index 1:
-    # project(1) → Threads(0) → thread(0) → session ⇄(0) → dismiss(1); thread then
+    # the project (marked ⊕1) is index 0; the type step leads with "⇄ Handoffs (1)"(0),
+    # so Threads is index 1:
+    # project(0) → Threads(1) → thread(0) → session ⇄(0) → dismiss(1); thread then
     # empties → the session step auto-creates a fresh first session (thread law).
-    seq = iter([1, 0, 0, 0, 1])
+    seq = iter([0, 1, 0, 0, 1])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     menu.navigate_interactive([{"name": "proj", "path": str(proj)}], handoffs=[rec])
 
@@ -247,7 +272,7 @@ def test_dismiss_offered_session_from_menu_drops_it(tmp_control_home, tmp_path, 
     assert not sess.exists()  # untouched seeded session pruned
 
 
-def test_launch_handoff_seeds_but_stays_offered_until_confirmed(tmp_control_home, tmp_path):
+def test_launch_handoff_takes_offer_on_success(tmp_control_home, tmp_path):
     from tide.launcher import menu
     from tide.adapters import SpawnResult
     from tide.init_home import scaffold_project
@@ -275,10 +300,68 @@ def test_launch_handoff_seeds_but_stays_offered_until_confirmed(tmp_control_home
     assert res.ok
     assert str(seed) in " ".join(captured["command"])   # session seeded from the distil
     assert captured["cwd"] == str(proj)
-    # CRITICAL: launching does NOT consume the offer — it stays OFFERED until the
-    # picked-up session's first message confirms it (the confirm hook).
-    assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
-    assert not hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)
+    # opened = continued: a successful pickup TAKES the offer out of the handoffs list.
+    assert not hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)
+
+
+def test_launch_handoff_leaves_offer_on_failed_launch(tmp_control_home, tmp_path):
+    """A FAILED launch does NOT consume the offer — it stays offered, recoverable."""
+    from tide.launcher import menu
+    from tide.adapters import SpawnResult
+    from tide.init_home import scaffold_project
+
+    proj = tmp_path / "p"
+    proj.mkdir()
+    scaffold_project(proj, name="p")
+    seed = tmp_path / "seed.md"
+    seed.write_text("# distil\n", encoding="utf-8")
+    hq.offer(tmp_control_home, "stab", arc="01-x", project="p", seed=str(seed))
+    rec = hq.list_offers(tmp_control_home)[0]
+
+    class FailAdapter:
+        def spawn(self, *, command, cwd, title, dry_run):
+            return SpawnResult(ok=False, detail="spawn failed", commands=[command])
+
+    res = menu.launch_handoff(
+        rec, [{"name": "p", "path": str(proj)}], control_home=tmp_control_home,
+        adapter=FailAdapter(), dry_run=False,
+    )
+    assert not res.ok
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)  # still recoverable
+
+
+def test_handoffs_shown_at_type_step(tmp_path, monkeypatch):
+    """A project's offers are their OWN option at the type step: ⇄ Handoffs (N)."""
+    from tide.launcher import menu
+    from tide.arc import stream
+    from tide.init_home import scaffold_project
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    scaffold_project(proj, name="proj")
+    stream.new_thread(proj, "kickoff")
+    sess = stream.new_session(proj, "kickoff", "work")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# distil\n", encoding="utf-8")
+    rec = {"slug": "h", "project": "proj", "mode": "continue", "seed": str(seed)}
+
+    seen = {}
+
+    def fake_select(title, options, **kwargs):
+        if title.startswith("What in"):
+            seen["type"] = list(options)
+            return 0  # ⇄ Handoffs (1)
+        if title.startswith("Handoff to continue"):
+            seen["offers"] = list(options)
+            return 0  # the one offer
+        return 0
+
+    monkeypatch.setattr(menu.select, "select", fake_select)
+    res = menu.navigate_interactive([{"name": "proj", "path": str(proj)}], handoffs=[rec])
+    assert res[0] == menu.HANDOFF_PICK and res[1] is rec  # picked up from the type step
+    assert seen["type"][0].startswith("⇄ Handoffs")  # a first-class option there
+    assert seen["offers"] and "kickoff" in seen["offers"][0]  # labelled by its thread
 
 
 def test_launch_handoff_pins_session_id_for_menu_resume(tmp_control_home, tmp_path):
@@ -325,3 +408,42 @@ def test_install_hooks_wires_user_prompt_submit(tmp_project):
         for h in g.get("hooks", [])
     ]
     assert HANDOFF_CONFIRM_CMD in cmds
+
+
+# --- multiples detection: one holder per thread (Mickey 17 guard) ----------
+
+def test_is_dissolved_true_after_origin_offer_is_taken(tmp_control_home):
+    hq.offer(tmp_control_home, "pass-it", arc="t/02", project="p", seed="-",
+             from_session="origin-A")
+    hq.take(tmp_control_home, "pass-it", session="successor-B")
+    rec = hq.is_dissolved(tmp_control_home, "origin-A")
+    assert rec is not None and rec["taken_by"] == "successor-B"
+    # the successor itself is NOT dissolved; an unrelated session isn't either
+    assert hq.is_dissolved(tmp_control_home, "successor-B") is None
+    assert hq.is_dissolved(tmp_control_home, "someone-else") is None
+
+
+def test_is_dissolved_none_while_offer_only_offered(tmp_control_home):
+    hq.offer(tmp_control_home, "pending", arc="t/02", project="p", seed="-",
+             from_session="origin-A")
+    # still merely offered (successor not live) → origin has NOT dissolved yet
+    assert hq.is_dissolved(tmp_control_home, "origin-A") is None
+
+
+def test_multiples_lists_taken_origin_successor_pairs(tmp_control_home):
+    hq.offer(tmp_control_home, "one", arc="t/02", project="p", seed="-",
+             from_session="A")
+    hq.take(tmp_control_home, "one", session="B")
+    hq.offer(tmp_control_home, "two", arc="t/03", project="p", seed="-")  # no origin
+    hq.take(tmp_control_home, "two", session="C")
+    ms = hq.multiples(tmp_control_home)
+    assert [r["slug"] for r in ms] == ["one"]  # only the one with a known origin
+    assert ms[0]["from_session"] == "A" and ms[0]["taken_by"] == "B"
+
+
+def test_list_shows_origin_lineage_for_taken(tmp_control_home):
+    hq.offer(tmp_control_home, "liney", arc="t/02", project="p", seed="-",
+             from_session="A")
+    hq.take(tmp_control_home, "liney", session="B")
+    out = hq.render_list(tmp_control_home)
+    assert "from A" in out and "by B" in out

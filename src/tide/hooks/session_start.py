@@ -149,6 +149,27 @@ def _arc_first_warnings(root: Path, role: str) -> List[str]:
     ]
 
 
+def _multiple_warnings(session: Optional[str]) -> List[str]:
+    """Pinch a 'Mickey 17' MULTIPLE: a session that offered a handoff which was then
+    TAKEN has dissolved into its successor — one orchestrator per thread, so it must
+    stand down. Fully defensive (lazy import, swallow all) — a hook never breaks a
+    session; silent unless this exact session id handed the thread off."""
+    if not session:
+        return []
+    try:
+        from .. import handoff_queue as hq
+        rec = hq.is_dissolved(paths.control_home(), session)
+    except Exception:  # noqa: BLE001 — a hook must never raise
+        return []
+    if not rec:
+        return []
+    return [
+        "  ⚠ MULTIPLE (Mickey 17): эта сессия отдала нить (оффер {0} → держит {1}). "
+        "Один оркестратор на нить — встань в сторону, или дропни оффер и держи сам.".format(
+            rec.get("name"), rec.get("taken_by"))
+    ]
+
+
 def _onboarding_nudge(root: Path) -> List[str]:
     """First-run nudge: ONE line pointing at ``tide onboarding`` until it is passed.
 
@@ -165,7 +186,47 @@ def _onboarding_nudge(root: Path) -> List[str]:
         return []
 
 
-def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
+def _open_board_notes(root: Path) -> List[str]:
+    """Surface any open focus board (доска wake) with its phone URL + focus count.
+
+    Peripheral add-on (mirrors :func:`_onboarding_nudge`): scans arc workspaces for
+    a ``board.json`` and emits one line per open board — its thread, the focus
+    count, and the published Artifact URL when present (so the phone surface is one
+    glance away on entry). Fully defensive + lazy: a broken/edited board never
+    breaks session-start, and this whole add-on deletes in one edit (this function
+    + its call site in :func:`render`).
+    """
+    try:
+        import json as _json
+
+        arcs = paths.arcs_dir(root)
+        if not arcs.is_dir():
+            return []
+        notes: List[str] = []
+        for bf in sorted(arcs.rglob("workspace/board.json")):
+            # skip boards under a sealed (closed) arc — any __name__ path segment
+            if any(seg.startswith("__") and seg.endswith("__") for seg in bf.parts):
+                continue
+            try:
+                data = _json.loads(bf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            focus = data.get("focus") or {}
+            cards = focus.get("cards") or []
+            limit = focus.get("limit", 7)
+            thread = bf.parent.parent.name  # arc dir holding workspace/
+            line = "  доска {0} (фокус {1}/{2})".format(thread, len(cards), limit)
+            url = data.get("artifact_url")
+            if url:
+                line += " → " + url
+            notes.append(line)
+        return notes
+    except Exception:
+        return []
+
+
+def render(root: Path, role: str, update_note: Optional[str] = None,
+           session: Optional[str] = None) -> str:
     """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings.
 
     *update_note*, when present, is a non-blocking "tide update available" line
@@ -182,6 +243,7 @@ def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
         + _deferred_warnings(root)
         + _readme_drift_warnings(root)
         + _arc_first_warnings(root, role)
+        + _multiple_warnings(session)
     )
     if warnings:
         lines.append("")
@@ -192,6 +254,14 @@ def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
         lines.append("")
         lines.append("UPDATE")
         lines.append(update_note)
+
+    # Peripheral board add-on (deletable with _open_board_notes above): surface any
+    # open focus board + its phone URL on entry (silent when there is none).
+    board_notes = _open_board_notes(root)
+    if board_notes:
+        lines.append("")
+        lines.append("BOARD")
+        lines.extend(board_notes)
 
     # Peripheral onboarding add-on (deletable with _onboarding_nudge above): one
     # first-run advisory line, silent once onboarding is passed.
@@ -222,8 +292,24 @@ def cmd_session_start(args) -> int:
     root: Optional[Path] = paths.find_tide_root()
     if root is None:
         return 0
-    print(render(root, _current_role(), update_note=_update_note()))
+    print(render(root, _current_role(), update_note=_update_note(), session=_hook_session()))
     return 0
+
+
+def _hook_session() -> Optional[str]:
+    """Best-effort current session id from the SessionStart hook's stdin JSON.
+
+    TTY-guarded so a manual ``tide hook session-start`` never blocks on a read, and
+    fully defensive — any hiccup yields None (no session pinch), never a break."""
+    try:
+        import sys as _sys
+        if _sys.stdin is None or _sys.stdin.isatty():
+            return None
+        import json as _json
+        payload = _json.loads(_sys.stdin.read() or "{}")
+        return payload.get("session_id") or payload.get("session")
+    except Exception:  # noqa: BLE001 — a hook must never raise
+        return None
 
 
 def _update_note() -> Optional[str]:

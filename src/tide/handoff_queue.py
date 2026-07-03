@@ -205,6 +205,33 @@ def _prune_untouched_session(rec: Dict[str, object]) -> bool:
     return True
 
 
+def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, object]]:
+    """If *session* offered a handoff that was then TAKEN, return that record — the
+    session has DISSOLVED into a successor and must NOT keep orchestrating this thread
+    (one holder per thread; the 'Mickey 17' multiple). None when it still holds.
+
+    Pure/read-only: the caller (SessionStart pinch, `handoffs multiples`) decides what
+    to do. This never mutates the queue, so it cannot break an in-flight handoff."""
+    if not session:
+        return None
+    for r in list_offers(home, status=STATUS_TAKEN):
+        if r.get("from_session") == session:
+            return r
+    return None
+
+
+def multiples(home: Path) -> List[Dict[str, object]]:
+    """Every taken offer whose ORIGIN session is recorded and differs from the taker —
+    each is a handed-off origin that, if still acting, is a forbidden multiple. The
+    detector that makes 'one orchestrator per thread' enforceable by the harness."""
+    out: List[Dict[str, object]] = []
+    for r in list_offers(home, status=STATUS_TAKEN):
+        frm = r.get("from_session")
+        if frm and frm != "-" and frm != r.get("taken_by"):
+            out.append(r)
+    return out
+
+
 def drop(home: Path, key: str, *, prune_untouched: bool = True) -> "tuple[Dict[str, object], bool]":
     """Soft-archive offer *key* (status → dropped); optionally prune its dead session.
 
@@ -271,8 +298,10 @@ def render_list(home: Path) -> str:
                 r["name"], r["mode"], r["project"], r["arc"], r["created"]))
     for r in recs:
         if r["status"] == STATUS_TAKEN:
-            lines.append("  ✓ {0}  [{1}]  {2}  (taken {3} by {4})".format(
-                r["name"], r["mode"], r["project"], r["taken_at"], r["taken_by"]))
+            frm = r.get("from_session")
+            lineage = "  ⟵ from {0}".format(frm) if frm and frm != "-" else ""
+            lines.append("  ✓ {0}  [{1}]  {2}  (taken {3} by {4}){5}".format(
+                r["name"], r["mode"], r["project"], r["taken_at"], r["taken_by"], lineage))
     for r in recs:
         if r["status"] == STATUS_DROPPED:
             lines.append("  ✗ {0}  [{1}]  {2}  (dropped)".format(
@@ -313,6 +342,19 @@ def _cmd_drop(args) -> int:
     tail = " (+ empty session removed)" if pruned else ""
     print("tide: handoff {0} → dropped{1}".format(rec["name"], tail))
     return 0
+
+
+def _cmd_multiples(args) -> int:
+    ms = multiples(_home())
+    if not ms:
+        print("tide: no handoff multiples — one holder per thread ✓")
+        return 0
+    print("tide: ⚠ handoff MULTIPLES (Mickey 17) — an origin handed the thread off but")
+    print("      may still be acting. One holder per thread — the origin must stand down:")
+    for r in ms:
+        print("  {0}: origin {1} → held now by {2}  (thread {3})".format(
+            r["name"], r["from_session"], r["taken_by"], r["arc"]))
+    return 1
 
 
 def cmd_handoff_confirm(args) -> int:
@@ -370,6 +412,9 @@ def register(subparsers) -> None:
     dp = hsub.add_parser("drop", help="dismiss an offer (soft-archive; prune its dead session)")
     dp.add_argument("key")
     dp.set_defaults(func=_cmd_drop, _cmd="handoffs drop")
+
+    mp = hsub.add_parser("multiples", help="detect 'Mickey 17' multiples — origins that handed off but may still act")
+    mp.set_defaults(func=_cmd_multiples, _cmd="handoffs multiples")
 
     # bare `tide handoffs` behaves like `tide handoffs list`
     p.set_defaults(func=_cmd_list, _cmd="handoffs")

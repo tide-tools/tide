@@ -12,6 +12,40 @@ from tide.hooks import session_start
 from tests.conftest import strip_placeholders
 
 
+def _seed_board(tmp_project, slug, **extra):
+    """Write a minimal board.json into an arc's workspace (for board-announce tests)."""
+    import json
+
+    arc = stream.new_arc(tmp_project, slug)
+    ws = arc / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    board = {"focus": {"limit": 7, "cards": [{"id": "c1", "text": "x"}], "backlog": []}}
+    board.update(extra)
+    (ws / "board.json").write_text(json.dumps(board, ensure_ascii=False), encoding="utf-8")
+    return arc
+
+
+def test_render_announces_open_board_with_url(tmp_project):
+    _seed_board(tmp_project, "make-board", artifact_url="https://claude.ai/code/artifact/abc")
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "BOARD" in text
+    assert "фокус 1/7" in text
+    assert "https://claude.ai/code/artifact/abc" in text
+
+
+def test_render_announces_board_without_url(tmp_project):
+    _seed_board(tmp_project, "make-board")  # no artifact_url yet
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "BOARD" in text
+    assert "01-make-board" in text
+
+
+def test_render_no_board_section_when_none(tmp_project):
+    stream.new_arc(tmp_project, "do-thing")
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "\nBOARD\n" not in text
+
+
 def test_render_includes_board_and_role_reminder(tmp_project):
     stream.new_arc(tmp_project, "do-thing")
     text = session_start.render(tmp_project, "orchestrator")
@@ -194,3 +228,23 @@ def test_readme_drift_warning_emits_stderr_advisory_on_exception(
     err = capsys.readouterr().err
     assert "session-start" in err
     assert "readme-drift" in err
+
+
+# --- Mickey 17 multiple pinch (one orchestrator per thread) -----------------
+
+def test_multiple_warnings_silent_for_none_or_unknown_session(monkeypatch, tmp_path):
+    # no session id, and any unknown session, must never warn (fully defensive)
+    monkeypatch.setattr(session_start.paths, "control_home", lambda: tmp_path)
+    assert session_start._multiple_warnings(None) == []
+    assert session_start._multiple_warnings("never-handed-off") == []
+
+
+def test_multiple_warnings_pinches_a_dissolved_origin(monkeypatch, tmp_path):
+    from tide import handoff_queue as hq
+    monkeypatch.setattr(session_start.paths, "control_home", lambda: tmp_path)
+    hq.offer(tmp_path, "pass-it", arc="t/02", project="p", seed="-", from_session="origin-A")
+    hq.take(tmp_path, "pass-it", session="successor-B")
+    warns = session_start._multiple_warnings("origin-A")
+    assert warns and "MULTIPLE" in warns[0] and "successor-B" in warns[0]
+    # the successor is NOT pinched
+    assert session_start._multiple_warnings("successor-B") == []
