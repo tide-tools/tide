@@ -255,3 +255,15 @@ def test_session_note_swallows_errors():
         raise RuntimeError("metadata explosion")
 
     assert core.session_note(resolver=boom) is None
+
+
+def test_gate_python_prefers_source_dev_venv(tmp_path):
+    # A uv-tool sandbox python has no pytest — the checkout's .venv gates instead.
+    venv_py = tmp_path / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("")
+    assert core._gate_python(tmp_path, "/sandbox/python") == str(venv_py)
+
+
+def test_gate_python_falls_back_to_source_python(tmp_path):
+    assert core._gate_python(tmp_path, "/sandbox/python") == "/sandbox/python"

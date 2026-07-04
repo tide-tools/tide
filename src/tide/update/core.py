@@ -78,6 +78,21 @@ def _source_env(source_dir: Path) -> dict:
     return env
 
 
+def _gate_python(source_dir: Path, python_exe: str) -> str:
+    """The interpreter to GATE with: the checkout's own dev venv when it has one.
+
+    A uv-tool sandbox python can run tide but has neither pip nor pytest — gating
+    with it always ends in "CANNOT RUN" (cand 08). The source checkout's
+    ``.venv`` carries the dev deps (pytest), so it is the honest gate runner;
+    without one we fall back to *python_exe* and fail loud as before.
+    """
+    for rel in ("bin/python", "Scripts/python.exe"):
+        cand = Path(source_dir) / ".venv" / rel
+        if cand.exists():
+            return str(cand)
+    return python_exe
+
+
 # --- the regression gate ----------------------------------------------------
 
 
@@ -126,7 +141,7 @@ def run_regression_gate(
             ],
         )
     source_dir = Path(source_dir)
-    python_exe = getattr(source, "python_exe")
+    python_exe = _gate_python(source_dir, getattr(source, "python_exe"))
     env = _source_env(source_dir)
     result = GateResult(portable_ok=False, suite_ok=False, suite_ran=False)
 
@@ -155,8 +170,9 @@ def run_regression_gate(
     if _pytest_unavailable(rc, out):
         result.suite_ok = False
         result.messages.append(
-            "suite: CANNOT RUN — pytest not importable by {0} (install 'tide[test]'); "
-            "an unverified update is REFUSED, not accepted".format(python_exe)
+            "suite: CANNOT RUN — pytest not importable by {0} (install 'tide[test]' "
+            "or create a dev venv with pytest at {1}/.venv); "
+            "an unverified update is REFUSED, not accepted".format(python_exe, source_dir)
         )
         result.messages.append(_indent(out))
         return result

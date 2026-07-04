@@ -374,13 +374,17 @@ class LocalSourceCheckout:
     python_exe: str
     editable: bool
     marker_path: Path
+    # The install lives in a `uv tool` sandbox (cand 08): its venv has neither
+    # pip nor pytest, so the reinstall must go through `uv tool install` and the
+    # gate must borrow an interpreter that CAN run the suite (see core._gate_python).
+    uv_tool: bool = False
 
     # Version+commit axis: any different identity (e.g. a new commit at the same
     # version) is an update — staleness is identity-inequality, not newer-only.
     newer_only: ClassVar[bool] = False
 
     def name(self) -> str:
-        return "local-source"
+        return "local-source (uv-tool)" if self.uv_tool else "local-source"
 
     def available(self) -> Revision:
         version = read_pyproject_version(self.source_dir) or installed_metadata_version()
@@ -403,6 +407,14 @@ class LocalSourceCheckout:
         return Revision(version=installed_metadata_version(), commit=commit)
 
     def install_command(self) -> List[str]:
+        if self.uv_tool:
+            # A uv-tool sandbox has no pip — `python -m pip` dies with
+            # "No module named pip". uv itself owns the tool env; --reinstall
+            # (not just --force) makes same-version code changes actually land.
+            return [
+                "uv", "tool", "install", "--force", "--reinstall",
+                str(self.source_dir),
+            ]
         cmd = [self.python_exe, "-m", "pip", "install", "--upgrade"]
         if self.editable:
             cmd.append("-e")
@@ -783,6 +795,22 @@ def editable_origin() -> Optional[tuple[Path, bool]]:
     return source_dir, editable
 
 
+def is_uv_tool_python(python_exe: str, env: Optional[dict] = None) -> bool:
+    """True when *python_exe* lives inside a ``uv tool`` sandbox (cand 08).
+
+    Checks ``$UV_TOOL_DIR`` first (uv's explicit override), then the canonical
+    ``…/uv/tools/…`` path segment. Deliberately string-based on the UNresolved
+    path: the sandbox's ``bin/python`` is a symlink to uv's shared interpreter,
+    so resolving it first would erase the very evidence we're looking for.
+    """
+    env = env if env is not None else os.environ
+    p = str(Path(python_exe).expanduser())
+    tool_dir = (env.get("UV_TOOL_DIR") or "").strip()
+    if tool_dir and p.startswith(str(Path(tool_dir).expanduser()) + os.sep):
+        return True
+    return "{0}uv{0}tools{0}".format(os.sep) in p
+
+
 def _walk_up_to_checkout(start: Path) -> Optional[Path]:
     """Climb from *start* to the nearest dir holding both ``.git`` and pyproject.toml."""
     here = Path(start).resolve()
@@ -840,6 +868,7 @@ def resolve_source(
             python_exe=python_exe,
             editable=origin_editable,
             marker_path=marker_path,
+            uv_tool=is_uv_tool_python(python_exe, env),
         )
 
     # No local source → the published channel becomes the source-of-truth.

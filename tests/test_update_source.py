@@ -277,3 +277,41 @@ def test_resolve_source_falls_back_to_published_when_no_local(tmp_path: Path, mo
     assert isinstance(source, src.PublishedChannelSource)
     assert source.name() == "published-channel"
     assert source.cache_path == tmp_path / "published-channel-cache.json"
+
+
+# --- uv-tool installs (cand 08) ----------------------------------------------
+
+
+def test_is_uv_tool_python_by_path():
+    assert src.is_uv_tool_python(
+        "/Users/x/.local/share/uv/tools/tide/bin/python", env={}
+    ) is True
+    assert src.is_uv_tool_python("/usr/bin/python3", env={}) is False
+
+
+def test_is_uv_tool_python_by_env_override(tmp_path: Path):
+    exe = tmp_path / "sandbox" / "tide" / "bin" / "python"
+    assert src.is_uv_tool_python(
+        str(exe), env={"UV_TOOL_DIR": str(tmp_path / "sandbox")}
+    ) is True
+
+
+def test_install_command_uv_tool_uses_uv_not_pip(tmp_path: Path):
+    co = _checkout(tmp_path, editable=False, marker=tmp_path / "m.json")
+    co.uv_tool = True
+    cmd = co.install_command()
+    assert cmd[:4] == ["uv", "tool", "install", "--force"]
+    assert "--reinstall" in cmd
+    assert cmd[-1] == str(tmp_path)
+    assert "pip" not in cmd  # the sandbox has no pip — never route through it
+
+
+def test_resolve_source_detects_uv_tool(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n', encoding="utf-8")
+    source = src.resolve_source(
+        env={"TIDE_SOURCE": str(tmp_path)},
+        python_exe="/Users/x/.local/share/uv/tools/tide/bin/python",
+        marker_path=tmp_path / "m.json",
+    )
+    assert source.uv_tool is True
+    assert source.install_command()[0] == "uv"
