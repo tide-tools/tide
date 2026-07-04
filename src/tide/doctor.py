@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import paths
+from . import paths, placeholders
 from .canon import store
 from .hooks import install
 from .update.source import default_marker_path, resolve_source
@@ -145,6 +145,24 @@ def check_canon(root: Optional[Path]) -> CheckResult:
         return CheckResult(
             "canon", STATUS_WARN,
             "CANON.md readable but missing sections: {0}".format(", ".join(missing)),
+        )
+    # Honest health (cand: doctor-warn-over-empty-canon): sections merely EXISTING
+    # is not a canon. A fresh `canon init` skeleton has all four headings with
+    # blank bodies — saying OK over it teaches people to trust an empty file.
+    # ("Canon journal" is the merge anchor and is INTENTIONALLY empty — exempt.)
+    content = {t: b for t, b in sections.items() if t != store.JOURNAL_SECTION}
+    if content and all(not body.strip() for body in content.values()):
+        return CheckResult(
+            "canon", STATUS_WARN,
+            "CANON.md is an empty skeleton (all sections blank) — write the canon "
+            "before trusting it ('tide canon show' to see, edit CANON.md to fill)",
+        )
+    leftovers = placeholders.find_in_text(text)
+    if leftovers:
+        return CheckResult(
+            "canon", STATUS_WARN,
+            "CANON.md still carries {0} template placeholder(s) — scaffolding, "
+            "not canon (first: {1})".format(len(leftovers), leftovers[0]),
         )
     return CheckResult("canon", STATUS_OK, "CANON.md readable ({0} sections)".format(len(sections)))
 

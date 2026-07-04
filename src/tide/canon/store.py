@@ -29,13 +29,17 @@ from .. import io as _io, paths
 
 DEFAULT_LANG = "en"
 
+# The merge anchor — intentionally empty in a fresh canon (deltas land here),
+# so honesty checks (doctor's empty-skeleton warn) must exempt it.
+JOURNAL_SECTION = "Canon journal"
+
 # Canonical H2 section titles, in order. Kept in sync with the conftest skeleton
 # template so a hand-built fixture and a real ``canon init`` agree byte-for-byte.
 SECTIONS: List[str] = [
     "What it is",
     "State & components",
     "Interfaces / how used",
-    "Canon journal",
+    JOURNAL_SECTION,
 ]
 
 

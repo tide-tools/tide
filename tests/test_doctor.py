@@ -110,7 +110,42 @@ def test_check_structure_fails_on_missing_subdir(tmp_project):
 # --- canon readable check --------------------------------------------------
 
 
-def test_check_canon_passes_on_readable_canon(tmp_project):
+def _written_canon(tmp_project, extra=""):
+    """A canon with REAL content in every section (journal stays empty by design)."""
+    (tmp_project / ".tide" / "canon" / "CANON.md").write_text(
+        "# CANON.md — demo\n\n"
+        "## What it is\nA demo project for tests.\n\n"
+        "## State & components\nOne module, one test.\n\n"
+        "## Interfaces / how used\nRun it.\n{0}\n"
+        "## Canon journal\n".format(extra),
+        encoding="utf-8",
+    )
+
+
+def test_check_canon_passes_on_written_canon(tmp_project):
+    _written_canon(tmp_project)
+    res = doctor.check_canon(tmp_project)
+    assert res.status == doctor.STATUS_OK
+
+
+def test_check_canon_warns_on_empty_skeleton(tmp_project):
+    # A fresh `canon init` skeleton: all sections present, all bodies blank.
+    # Saying OK over it teaches people to trust an empty file — warn, honestly.
+    res = doctor.check_canon(tmp_project)
+    assert res.status == doctor.STATUS_WARN
+    assert "empty skeleton" in res.detail
+
+
+def test_check_canon_warns_on_leftover_placeholders(tmp_project):
+    _written_canon(tmp_project, extra="\n<fill in the deploy story>\n")
+    res = doctor.check_canon(tmp_project)
+    assert res.status == doctor.STATUS_WARN
+    assert "placeholder" in res.detail
+
+
+def test_check_canon_empty_journal_is_fine(tmp_project):
+    # The journal is the merge anchor — intentionally empty in a fresh canon.
+    _written_canon(tmp_project)
     res = doctor.check_canon(tmp_project)
     assert res.status == doctor.STATUS_OK
 
