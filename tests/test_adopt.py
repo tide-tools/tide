@@ -185,3 +185,51 @@ def test_render_report_has_ready_line(home, target, monkeypatch):
     report = adopt.adopt(target, name="demo")
     out = adopt.render_report(report)
     assert "ready: tide menu → demo" in out
+
+
+# --- first commit: adoption makes the repo worktree-ready (cand 32) ---------
+
+def _real_git(root, *argv):
+    subprocess.run(["git", "-C", str(root), *argv], check=True, capture_output=True)
+
+
+def test_adopt_makes_first_commit_worktree_ready(home, target, monkeypatch):
+    # Real git: init happens, scaffold lands, then the FIRST COMMIT rides —
+    # `git worktree add` (the tide menu spawn path) needs HEAD to exist.
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # skip orca only
+
+    report = adopt.adopt(target, do_orca=False)
+
+    assert report.step("git").status == adopt.DONE
+    assert report.step("commit").status == adopt.DONE
+    head = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True,
+    )
+    assert head.returncode == 0  # worktree-ready
+    # the scaffold rode into the birth commit
+    tracked = subprocess.run(
+        ["git", "-C", str(target), "ls-files"], capture_output=True, text=True
+    ).stdout
+    assert ".tide/canon/CANON.md" in tracked
+
+
+def test_adopt_skips_commit_when_repo_has_history(home, target, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    _real_git(target, "init", "-q")
+    _real_git(target, "config", "user.email", "t@example.com")
+    _real_git(target, "config", "user.name", "t")
+    (target / "a.txt").write_text("x\n", encoding="utf-8")
+    _real_git(target, "add", ".")
+    _real_git(target, "commit", "-qm", "existing")
+
+    report = adopt.adopt(target, do_orca=False)
+    assert report.step("commit").status == adopt.SKIPPED
+    assert "already has commits" in report.step("commit").detail
+
+
+def test_adopt_no_git_skips_commit_step(home, target, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp())
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    report = adopt.adopt(target, do_git=False)
+    assert report.step("commit").status == adopt.SKIPPED

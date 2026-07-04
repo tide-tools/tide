@@ -33,6 +33,31 @@ from .base import SpawnResult, TerminalAdapter, safe_title
 _SELECTOR_NOT_FOUND = "selector_not_found"
 
 
+def _worktree_blocker(cwd: str) -> str:
+    """'' when *cwd* is a git repo with a commit; else the one-line human diagnosis.
+
+    ``orca terminal create --worktree`` runs ``git worktree add``, which needs a
+    repo with HEAD — a bare or freshly-init'ed project dir dies with a raw orca
+    trace otherwise (cand 32). Preflight it and say the CAUSE + the fix, not the
+    failed command line. A missing git binary returns '' — let orca speak then.
+    """
+    try:
+        probe = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--verify", "--quiet", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if probe.returncode == 0:
+        return ""
+    return (
+        "{0} is not a git repo with a commit — Orca worktrees need one. "
+        "Fix: `tide adopt {0}` (git init + first commit + scaffold), then retry; "
+        "or use '--adapter tmux'".format(cwd)
+    )
+
+
 def _is_unregistered_repo(exc: BaseException) -> bool:
     """True when *exc* is an Orca failure caused by an unregistered repo path.
 
@@ -89,6 +114,10 @@ class OrcaAdapter(TerminalAdapter):
                 ok=False,
                 detail="orca CLI not found — install Orca or use '--adapter tmux'",
             )
+
+        blocker = _worktree_blocker(cwd)
+        if blocker:
+            return SpawnResult(ok=False, detail=blocker, commands=[argv])
 
         try:
             subprocess.run(argv, check=True, capture_output=True, text=True)

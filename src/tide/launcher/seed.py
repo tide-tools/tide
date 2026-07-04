@@ -215,6 +215,14 @@ def build_seed(
             "`tide candidate add <slug> \"<the idea>\" --project <roster-name>`. It lands "
             "in that project's backlog (tagged with where it came from) for its "
             "orchestrator to promote later. Capturing is cheap; promoting stays local.",
+            "",
+            "A NEW PROJECT ≠ a new thread. A thread (`NN-@slug` in `.tide/arcs/`) is a "
+            "work-line INSIDE a project and never shows in the project picker — the "
+            "picker is exactly this roster. When the human says «заводим проект», run "
+            "`tide adopt <abs-path> [--name <roster-name>]`: git init + first commit + "
+            "`.tide/` scaffold + roster row, idempotent — the project appears in the "
+            "picker and is worktree-ready. Creating a thread instead strands them "
+            "looking for a project that isn't there.",
         ]
 
     lines += [

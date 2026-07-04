@@ -153,9 +153,11 @@ def test_orca_self_heals_unregistered_repo(monkeypatch):
     calls = []
 
     def fake_run(argv, **kwargs):
+        if argv[:1] == ["git"]:  # worktree preflight probe — repo is ready
+            return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         calls.append(argv)
-        # 1st call: terminal create → fail with selector_not_found.
-        # 2nd call: repo add → ok. 3rd call: terminal create retry → ok.
+        # 1st orca call: terminal create → fail with selector_not_found.
+        # 2nd: repo add → ok. 3rd: terminal create retry → ok.
         if argv[:3] == ["orca", "terminal", "create"] and len(calls) == 1:
             raise _selector_error()
         return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
@@ -182,6 +184,8 @@ def test_orca_non_selector_failure_does_not_register_or_retry(monkeypatch):
     calls = []
 
     def fake_run(argv, **kwargs):
+        if argv[:1] == ["git"]:  # worktree preflight probe — repo is ready
+            return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         calls.append(argv)
         raise _sp.CalledProcessError(returncode=1, cmd=argv, output="boom", stderr="boom")
 
@@ -205,6 +209,8 @@ def test_orca_self_heal_retry_still_fails_returns_graceful(monkeypatch):
     calls = []
 
     def fake_run(argv, **kwargs):
+        if argv[:1] == ["git"]:  # worktree preflight probe — repo is ready
+            return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         calls.append(argv)
         if argv[:3] == ["orca", "terminal", "create"]:
             raise _selector_error()

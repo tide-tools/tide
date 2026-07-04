@@ -551,3 +551,62 @@ class TestActivateWorkspace:
         )
         assert activate_workspace(arc) is False
         assert not called
+
+
+# --- worktree preflight: no raw trace on a non-git project (cand 32) --------
+
+class TestWorktreePreflight:
+    def _mk_repo(self, root, with_commit=True):
+        import subprocess as sp
+
+        sp.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
+        if with_commit:
+            sp.run(["git", "-C", str(root), "config", "user.email", "t@example.com"],
+                   check=True, capture_output=True)
+            sp.run(["git", "-C", str(root), "config", "user.name", "t"],
+                   check=True, capture_output=True)
+            (root / "a.txt").write_text("x\n", encoding="utf-8")
+            sp.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True)
+            sp.run(["git", "-C", str(root), "commit", "-qm", "birth"],
+                   check=True, capture_output=True)
+
+    def test_blocker_names_cause_and_fix_for_bare_dir(self, tmp_path):
+        from tide.adapters.orca import _worktree_blocker
+
+        msg = _worktree_blocker(str(tmp_path))
+        assert "not a git repo with a commit" in msg
+        assert "tide adopt" in msg          # the fix, not the failed command line
+
+    def test_blocker_flags_repo_without_head(self, tmp_path):
+        from tide.adapters.orca import _worktree_blocker
+
+        self._mk_repo(tmp_path, with_commit=False)
+        assert "tide adopt" in _worktree_blocker(str(tmp_path))
+
+    def test_blocker_empty_for_ready_repo(self, tmp_path):
+        from tide.adapters.orca import _worktree_blocker
+
+        self._mk_repo(tmp_path, with_commit=True)
+        assert _worktree_blocker(str(tmp_path)) == ""
+
+    def test_spawn_short_circuits_before_orca_on_bare_dir(self, tmp_path, monkeypatch):
+        import shutil as _shutil
+        import subprocess as sp
+
+        from tide.adapters.orca import OrcaAdapter
+
+        monkeypatch.setattr(_shutil, "which", lambda name: "/usr/local/bin/orca")
+        orca_calls = []
+        real_run = sp.run
+
+        def guard_run(argv, **kwargs):
+            if argv[:1] == ["orca"]:
+                orca_calls.append(argv)
+                raise AssertionError("orca must not be called on a bare dir")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(sp, "run", guard_run)
+        res = OrcaAdapter().spawn(command=["claude"], cwd=str(tmp_path), title="t")
+        assert not res.ok
+        assert "tide adopt" in res.detail
+        assert orca_calls == []

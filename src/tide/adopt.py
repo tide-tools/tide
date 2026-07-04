@@ -84,6 +84,49 @@ def _git_step(path: Path, do_git: bool) -> AdoptStep:
     return AdoptStep("git", DONE, "git init")
 
 
+def _first_commit_step(path: Path, do_git: bool) -> AdoptStep:
+    """Ensure the repo has a FIRST COMMIT (runs after scaffold so ``.tide/`` rides in).
+
+    ``git worktree add`` — the Orca spawn path under ``tide menu`` — refuses a
+    repo without HEAD, so a freshly-init'ed project shows up in the picker but
+    dies with a raw trace the moment a thread is spawned in it (cand 32).
+    Adoption isn't done until the dir is worktree-ready. Skips: opted out, not
+    a repo, repo already has commits.
+    """
+    if not do_git:
+        return AdoptStep("commit", SKIPPED, "skipped (--no-git)")
+    if not (path / ".git").exists():
+        return AdoptStep("commit", SKIPPED, "not a git repo")
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--verify", "--quiet", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode == 0:
+            return AdoptStep("commit", SKIPPED, "repo already has commits")
+        subprocess.run(
+            ["git", "-C", str(path), "add", "-A"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "--quiet",
+             "-m", "chore: tide adopt — project birth"],
+            check=True, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return AdoptStep("commit", WARN, "git not found — left without a commit")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        return AdoptStep(
+            "commit", WARN,
+            "first commit failed ({0}) — make one by hand; worktree spawn needs it".format(
+                " ".join(detail.split())[:120]
+            ),
+        )
+    return AdoptStep("commit", DONE, "first commit (worktree-ready)")
+
+
 def _scaffold_step(path: Path, name: str) -> AdoptStep:
     """Lay down ``.tide/`` when absent (idempotent via scaffold_project)."""
     existed = paths.tide_dir(path).is_dir()
@@ -151,6 +194,7 @@ def adopt(
     report = AdoptReport(path=abs_path, name=proj_name)
     report.steps.append(_git_step(abs_path, do_git))
     report.steps.append(_scaffold_step(abs_path, proj_name))
+    report.steps.append(_first_commit_step(abs_path, do_git))
     report.steps.append(_orca_step(abs_str, do_orca))
     report.steps.append(_roster_step(proj_name, abs_str))
     return report
