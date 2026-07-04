@@ -98,6 +98,29 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     """
     monkeypatch.delenv("TIDE_HOME", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    # Tests legitimately create many arcs per second (a rate only a runaway loop
+    # produces in real life) — lift the spawn backpressure for the suite; the
+    # gate's own tests in test_arc_gates.py set a low limit explicitly.
+    monkeypatch.setenv("TIDE_SPAWN_LIMIT", "0")
+
+
+def fill_entry(entry: Path, goal: str = "a real goal for the picker") -> Path:
+    """Give a test entry a REAL formulation so it passes the draft gate (cand 04).
+
+    Fresh templates classify as drafts and are hidden from the picker; tests that
+    need an entry to be pickable fill its goal (and a routine's ``## steps``) the
+    way real flows do.
+    """
+    from tide import fields
+    from tide.arc import stream as _stream
+
+    pp = _stream.passport_path(entry)
+    fields.set_field(pp, "goal", goal)
+    text = pp.read_text(encoding="utf-8")
+    marker = "<the runbook — the reproducible procedure to follow each run>"
+    if marker in text:
+        pp.write_text(text.replace(marker, "1. go"), encoding="utf-8")
+    return entry
 
 
 @pytest.fixture

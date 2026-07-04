@@ -249,15 +249,17 @@ def _register_arc(sub) -> None:
     # dial: land.register_land adds the atomic, strictness-gated `land`.
     # TODO(U4): tide.arc.candidate is a separate top-level group; status is U8.
     from .arc.board import cmd_status as arc_status
+    from .arc.gc import register as register_gc
     from .arc.land import register_land
     from .arc.stream import register as register_stream
     from .arc.worktree import register as register_worktree
 
-    p = sub.add_parser("arc", help="work stream: new/open/close/reopen/supersede/work/land")
+    p = sub.add_parser("arc", help="work stream: new/open/close/reopen/supersede/work/land/gc")
     asub = p.add_subparsers(dest="arc_cmd")
     register_stream(asub)
     register_worktree(asub)
     register_land(asub)
+    register_gc(asub)
     sp = asub.add_parser("status", help="render the STREAM board")
     sp.add_argument("--json", action="store_true", help="emit the board as JSON (canon/drift projection)")
     sp.set_defaults(func=arc_status, _cmd="arc status")
@@ -276,6 +278,15 @@ def _register_candidate(sub) -> None:
     from .arc.candidate import register as register_candidate
 
     register_candidate(sub)
+
+
+def _register_plan(sub) -> None:
+    # 19-tide-plan-board: the focus board (доска wake) bound to a goal-arc —
+    # board.json in the arc workspace with ≤7 focus + ≤3 path + a distill axis.
+    # Provisional name `tide plan` (final name is the human's; cand 27).
+    from .arc.plan import register as register_plan
+
+    register_plan(sub)
 
 
 def _register_handoffs(sub) -> None:
@@ -364,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_arc(subparsers)
     _register_reconcile(subparsers)
     _register_candidate(subparsers)
+    _register_plan(subparsers)
     _register_handoffs(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)

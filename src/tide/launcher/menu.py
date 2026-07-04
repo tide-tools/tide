@@ -170,9 +170,18 @@ def _ask(prompt: str) -> str:
 
 
 def list_threads(project: Path) -> List[Dict[str, str]]:
-    """A project's open threads for the picker: ``[{slug, name, goal, path}, …]``."""
+    """A project's open threads for the picker, newest-first.
+
+    ``stream.thread_entries`` numbers the stream NN ascending (oldest first);
+    the picker reverses it so the freshest thread sits at the top, like sessions.
+    Drafts (unfilled template shells, cand 04) are NOT offered — fill the goal
+    (the entry activates on the next read) or sweep with ``tide arc gc``; the
+    board still shows them as ``[draft]`` so nothing vanishes silently.
+    """
     out = []
     for entry in stream.thread_entries(project):
+        if not stream.goal_filled(entry):
+            continue
         goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
         out.append({
             "slug": slug.entry_slug(entry.name),
@@ -180,6 +189,7 @@ def list_threads(project: Path) -> List[Dict[str, str]]:
             "goal": goal,
             "path": str(entry),
         })
+    out.reverse()  # newest-first for the picker
     return out
 
 
@@ -241,9 +251,15 @@ ROUTINE_MARKER = "⚙ "  # routine rows are gear-marked so they read differently
 
 
 def list_routines(project: Path) -> List[Dict[str, str]]:
-    """A project's open routines for the picker: ``[{slug, name, goal, path}, …]``."""
+    """A project's open routines for the picker: ``[{slug, name, goal, path}, …]``.
+
+    Drafts (no real goal/steps yet, cand 04) are NOT offered — a runbook-less
+    routine cannot be run; fill it or sweep with ``tide arc gc``.
+    """
     out = []
     for entry in stream.routine_entries(project):
+        if not stream.goal_filled(entry):
+            continue
         goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
         out.append({
             "slug": slug.entry_slug(entry.name),
@@ -251,6 +267,7 @@ def list_routines(project: Path) -> List[Dict[str, str]]:
             "goal": goal,
             "path": str(entry),
         })
+    out.reverse()  # newest-first for the picker
     return out
 
 
@@ -300,14 +317,21 @@ def _create_thread(project: Path, name: str) -> Optional[str]:
     name = (name or "").strip()
     if not name:
         return None
-    return slug.entry_slug(stream.new_thread(project, name).name)
+    entry = stream.new_thread(project, name)
+    # The human's typed idea IS the thread's goal — write it, don't discard it.
+    # Otherwise the fresh container is born an unfilled draft and the picker
+    # hides what they just created (gates, cand 04).
+    fields.set_field(stream.passport_path(entry), "goal", name)
+    return slug.entry_slug(entry.name)
 
 
 def _create_routine(project: Path, name: str) -> Optional[str]:
     name = (name or "").strip()
     if not name:
         return None
-    return slug.entry_slug(stream.new_routine(project, name).name)
+    entry = stream.new_routine(project, name)
+    fields.set_field(stream.passport_path(entry), "goal", name)
+    return slug.entry_slug(entry.name)
 
 
 def _create_session(project: Path, thread_slug: str, name: str):
@@ -507,31 +531,50 @@ def _offer_session_dir(rec: Dict) -> Optional[Path]:
     return sd if sd.is_dir() else None
 
 
-def project_offers(handoffs: List[Dict], project: Path) -> List[Dict]:
-    """Offers whose seeded session lives under *project*, annotated with thread/session.
+def _session_by_slug(arcs: Path, tslug: str, sslug: str) -> Optional[Path]:
+    """The session dir ``<thread>/arcs/<session>`` under *arcs*, matched by slug, or None."""
+    thread_dir = stream._find(arcs, tslug, goal=True, closed=False)
+    if thread_dir is None:
+        return None
+    sub = thread_dir / paths.ARCS_DIRNAME
+    if not sub.is_dir():
+        return None
+    for e in sorted(sub.iterdir()):
+        if e.is_dir() and slug.entry_slug(e.name) == sslug:
+            return e
+    return None
 
-    Returns ``[{"record", "thread", "session"}, …]`` — the thread/session entry
-    slugs derived from the seed path. Only records with a resolvable session in
-    this project's stream are included (others belong to a different project or are
-    seed-less). Lets the picker float/mark the offer inside its own thread.
+
+def project_offers(handoffs: List[Dict], project: Path) -> List[Dict]:
+    """Offers that belong to *project*, annotated with their thread/session slugs.
+
+    Resolution is by the offer's ``arc`` field (``<thread>/<session>``) — the
+    AUTHORITATIVE pointer, verified against the stream — with a seed-path fallback for
+    older records that carry no arc. The seed's location no longer decides visibility:
+    a seed placed in the wrong dir can't hide an offer from the menu anymore. Only
+    offers whose thread+session actually exist here are returned.
+    Shape: ``[{"record", "thread", "session"}, …]``.
     """
     arcs = paths.arcs_dir(project).resolve()
     out: List[Dict] = []
     for rec in handoffs or []:
-        sd = _offer_session_dir(rec)
-        if sd is None:
-            continue
-        sd = sd.resolve()
-        if sd.parent.name != paths.ARCS_DIRNAME:
-            continue
-        thread_dir = sd.parent.parent
-        if thread_dir.parent != arcs:
-            continue
-        out.append({
-            "record": rec,
-            "thread": slug.entry_slug(thread_dir.name),
-            "session": slug.entry_slug(sd.name),
-        })
+        tslug = sslug = None
+        # primary: the arc field, resolved against the stream
+        arc = str(rec.get("arc") or "")
+        tpart, _, spart = arc.partition("/")
+        if tpart and spart:
+            t, s = slug.entry_slug(tpart), slug.entry_slug(spart)
+            if _session_by_slug(arcs, t, s) is not None:
+                tslug, sslug = t, s
+        # fallback: derive from the seed path (<session>/input/<seed>)
+        if tslug is None:
+            sd = _offer_session_dir(rec)
+            if sd is not None:
+                sd = sd.resolve()
+                if sd.parent.name == paths.ARCS_DIRNAME and sd.parent.parent.parent == arcs:
+                    tslug, sslug = slug.entry_slug(sd.parent.parent.name), slug.entry_slug(sd.name)
+        if tslug is not None:
+            out.append({"record": rec, "thread": tslug, "session": sslug})
     return out
 
 
@@ -738,22 +781,45 @@ def _navigate_routine(project, project_name):
         )
 
 
-def _navigate_type(project, project_name, offers=None):
-    """The TYPE step (Threads vs Routines) after a project, with Back to the project.
+def _pick_offer_interactive(offers):
+    """List this project's pending handoffs → pick one to continue (or Back).
 
-    *offers* (the project's pending handoffs) flow into the Threads side so an offer
-    surfaces inside its thread. Returns the bound dict, ``(HANDOFF_PICK, record)`` on
-    a pickup, or :data:`select.BACK` to go back to the project picker.
+    A flat, findable list of the project's offers (labelled by their thread). Picking
+    one returns ``(HANDOFF_PICK, record)`` — the caller launches it (and the pickup
+    takes it out of the handoffs list). ``BACK`` returns to the type step.
     """
+    labels = []
+    for o in offers:
+        rec = o.get("record", o)
+        where = o.get("thread") or rec.get("arc") or ""
+        labels.append("⇄ {0}{1}".format(rec.get("slug", "?"), " · " + where if where else ""))
+    choice = select.select("Handoff to continue:", labels, allow_new=False, allow_back=True)
+    if choice == select.BACK:
+        return select.BACK
+    picked = offers[choice]
+    return (HANDOFF_PICK, picked.get("record", picked))  # the launchable offer record
+
+
+def _navigate_type(project, project_name, offers=None):
+    """The TYPE step after a project: Handoffs (if any) · Threads · Routines, with Back.
+
+    Pending *offers* for the project are their OWN option here — ``⇄ Handoffs (N)`` —
+    so they are seen and picked up right where you choose Threads/Routines (they ALSO
+    still surface inside their own thread). Returns the bound dict, ``(HANDOFF_PICK,
+    record)`` on a pickup, or :data:`select.BACK` back to the project picker.
+    """
+    offers = offers or []
     while True:
+        opts = (["⇄ Handoffs ({0})".format(len(offers))] if offers else []) + ["Threads", "Routines"]
         choice = select.select(
-            "What in {0}?".format(project_name),
-            ["Threads", "Routines"],
-            allow_new=False, allow_back=True,
+            "What in {0}?".format(project_name), opts, allow_new=False, allow_back=True,
         )
         if choice == select.BACK:
             return select.BACK  # back to the project picker
-        if choice == 0:  # Threads → the thread→session flow (carries handoffs)
+        picked = opts[choice]
+        if picked.startswith("⇄ Handoffs"):
+            nav = _pick_offer_interactive(offers)
+        elif picked == "Threads":  # the thread→session flow (also carries handoffs)
             nav = _navigate_session(project, project_name, offers)
         else:  # Routines → the routine→run flow
             nav = _navigate_routine(project, project_name)
@@ -766,37 +832,27 @@ def _navigate_type(project, project_name, offers=None):
 HANDOFF_PICK = "handoff"
 
 
-def _root_continue_label(rec: Dict) -> str:
-    """A root-screen fast-continue row for a pending handoff (1-click pickup)."""
-    return "⇄ continue · {0} → {1}".format(rec["slug"], rec["project"])
-
-
 def navigate_interactive(entries, handoffs=None):
     """Full project→type→(thread→session | routine→run) arrow flow with Back.
 
-    The root screen leads with a short **Continue** section — pending *handoffs* as
-    ``⇄ continue · …`` rows — so resuming a handed-off work-line is **one click** (not
-    project → Threads → thread → session). Picking one returns ``(HANDOFF_PICK,
-    record)``. Below them: the project list, for deliberate Threads/Routines nav
-    (each offer ALSO still surfaces inside its own thread there — the fast path and the
-    structured home coexist). Returns ``(entry, bound)``, ``(HANDOFF_PICK, record)``,
-    or None (cancel).
+    Pending *handoffs* do NOT lead the root — each surfaces INSIDE its own project
+    (project → Threads → thread ⊕ → session ⇄ → pick up). A project carrying pending
+    offers is marked ``⊕N`` in the root list so it stands out at a glance. Returns
+    ``(entry, bound)``, ``(HANDOFF_PICK, record)``, or None (cancel).
     """
     handoffs = handoffs or []
     while True:
-        labels = [_root_continue_label(h) for h in handoffs] + [
-            "{0} → {1}".format(e["name"], e["path"]) for e in entries
-        ]
-        title = (
-            "Continue a handoff, or pick a project to lead this session:"
-            if handoffs else "Pick a project to lead this session:"
+        labels = []
+        for e in entries:
+            n = sum(1 for h in handoffs if h.get("project") == e["name"])
+            mark = "  ⊕{0}".format(n) if n else ""
+            labels.append("{0} → {1}{2}".format(e["name"], e["path"], mark))
+        choice = select.select(
+            "Pick a project to lead this session:", labels, allow_new=False, allow_back=True
         )
-        choice = select.select(title, labels, allow_new=False, allow_back=True)
         if choice == select.BACK:
             return None  # back out of the first step = cancel
-        if choice < len(handoffs):
-            return (HANDOFF_PICK, handoffs[choice])  # 1-click fast continue
-        entry = entries[choice - len(handoffs)]
+        entry = entries[choice]
         project = Path(entry["path"]).expanduser()
         nav = _navigate_type(project, entry["name"], project_offers(handoffs, project))
         if nav == select.BACK:
@@ -822,12 +878,10 @@ def launch_handoff(
     seeded by the handoff seed file (``--append-system-prompt`` so it starts already
     oriented), with a pinned session id.
 
-    It deliberately does NOT mark the offer taken here. "Spawn returned ok" only means
-    the launch command was issued — not that a session really opened and a human
-    engaged. The offer flips to ``taken`` only on the REAL confirmation: the first
-    human message in the picked-up session (the UserPromptSubmit ``handoff-confirm``
-    hook claims it by project). So a launch that errors or never opens leaves the
-    offer hanging, recoverable — exactly the two-stage guarantee.
+    On a SUCCESSFUL launch it marks the offer ``taken`` — a picked-up handoff leaves
+    the handoffs list at once (the thread is now a live, resumable session: its
+    claude id is pinned to the passport). A FAILED launch (``res.ok`` false) leaves
+    the offer hanging, recoverable — the two-stage guarantee kicks in only on errors.
     """
     proj_entry = next((e for e in entries if e["name"] == record["project"]), None)
     if proj_entry is None:
@@ -853,14 +907,6 @@ def launch_handoff(
     # lives at <session>/input/<seed>, so the passport is <session>/arc.md. After the
     # first turn persists the conversation, `tide menu → … → that session` resumes it.
     if not dry_run:
-        # Reserve the offer for THIS session id so only it can confirm (the confirm
-        # hook matches pickup-session) — no other project session vacuums it. Status
-        # stays offered until that session's first message flips it to taken.
-        from .. import handoff_queue  # lazy: avoid import cycle
-        try:
-            handoff_queue.reserve(control_home, record["name"], session=session_id)
-        except Exception:  # noqa: BLE001  best-effort, never fatal
-            pass
         # Register the picked-up session as RESUMABLE from the menu: pin the new
         # claude session id onto the handoff's target session passport. The seed
         # lives at <session>/input/<seed>, so the passport is <session>/arc.md.
@@ -871,13 +917,19 @@ def launch_handoff(
                 fields.set_field(passport, "claude-session", session_id)
         except Exception:  # noqa: BLE001  registration is best-effort, never fatal
             pass
-    # NB: no handoff_queue.take() here — the offer stays OFFERED until the picked-up
-    # session's first message confirms it (handoff-confirm hook). Issuing the spawn
-    # is not proof the session opened.
-    return adapter.spawn(
+    res = adapter.spawn(
         command=command, cwd=str(project),
         title="handoff · {0}".format(record["slug"]), dry_run=dry_run,
     )
+    # Opened = continued: a successful pickup takes the offer OUT of the handoffs list
+    # (it is now a live, resumable session). A failed launch leaves it hanging.
+    if res.ok and not dry_run:
+        try:
+            from .. import handoff_queue  # lazy: avoid import cycle
+            handoff_queue.take(control_home, record["name"], session=session_id)
+        except Exception:  # noqa: BLE001  best-effort, never fatal
+            pass
+    return res
 
 
 # --- launch ----------------------------------------------------------------

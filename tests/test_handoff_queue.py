@@ -6,6 +6,8 @@ import io
 
 import pytest
 
+from tests.conftest import fill_entry
+
 from tide import cli, handoff_queue as hq, paths
 
 
@@ -183,7 +185,7 @@ def test_project_offers_maps_seed_to_thread_and_session(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
     scaffold_project(proj, name="proj")
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     sess = stream.new_session(proj, "kickoff", "work")
     seed = sess / "input" / "handoff-seed.md"
     seed.write_text("# distil\n", encoding="utf-8")
@@ -205,7 +207,7 @@ def test_project_offers_resolves_by_arc_even_if_seed_misplaced(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
     scaffold_project(proj, name="proj")
-    thread = stream.new_thread(proj, "kickoff")
+    thread = fill_entry(stream.new_thread(proj, "kickoff"))
     stream.new_session(proj, "kickoff", "work")
     # seed dumped in the THREAD's input (the wrong place), not the session's
     bad_seed = thread / "input" / "handoff-seed.md"
@@ -227,7 +229,7 @@ def test_pickup_offered_session_inside_thread_returns_handoff_pick(tmp_path, mon
     proj = tmp_path / "proj"
     proj.mkdir()
     scaffold_project(proj, name="proj")
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     sess = stream.new_session(proj, "kickoff", "work")
     seed = sess / "input" / "handoff-seed.md"
     seed.write_text("# distil\n", encoding="utf-8")
@@ -252,7 +254,7 @@ def test_dismiss_offered_session_from_menu_drops_it(tmp_control_home, tmp_path, 
     proj.mkdir()
     scaffold_project(proj, name="proj")
     monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     sess = stream.new_session(proj, "kickoff", "work")
     seed = sess / "input" / "handoff-seed.md"
     seed.write_text("# distil\n", encoding="utf-8")
@@ -340,7 +342,7 @@ def test_handoffs_shown_at_type_step(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     scaffold_project(proj, name="proj")
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     sess = stream.new_session(proj, "kickoff", "work")
     seed = sess / "input" / "handoff-seed.md"
     seed.write_text("# distil\n", encoding="utf-8")

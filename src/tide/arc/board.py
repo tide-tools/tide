@@ -74,11 +74,15 @@ def _field(entry_dir: Path, key: str) -> Optional[str]:
 
 
 def _status(entry_dir: Path) -> str:
-    """The entry's ``status:`` (``done`` for a closed dir whose field is missing)."""
-    s = _field(entry_dir, "status")
-    if s:
-        return s
-    return "done" if slug.is_closed_entry(entry_dir.name) else "active"
+    """The entry's EFFECTIVE status: ``draft`` for an unfilled open entry.
+
+    Routes through :func:`stream.effective_status` (gates, cand 04) so a
+    template-shell болванка shows ``[draft]`` on the board instead of posing as
+    live work; ``done`` for a closed dir whose field is missing.
+    """
+    if slug.is_closed_entry(entry_dir.name):
+        return _field(entry_dir, "status") or "done"
+    return stream.effective_status(entry_dir)
 
 
 def _goal_line(entry_dir: Path) -> str:

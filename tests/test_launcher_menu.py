@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import fill_entry
+
 from tide import cli, roster
 from tide.init_home import scaffold_project
 from tide.launcher import menu
@@ -184,7 +186,7 @@ def test_list_threads_only_threads(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
     stream.new_arc(proj, "just-work")
-    stream.new_thread(proj, "morning")
+    fill_entry(stream.new_thread(proj, "morning"))
     threads = menu.list_threads(proj)
     assert [p["slug"] for p in threads] == ["morning"]
 
@@ -192,7 +194,7 @@ def test_list_threads_only_threads(home_with_project):
 def test_render_thread_menu_zero_is_new(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "morning")
+    fill_entry(stream.new_thread(proj, "morning"))
     out = menu.render_thread_menu("proj", menu.list_threads(proj))
     assert "0) + new thread" in out
     assert "1) morning" in out
@@ -201,7 +203,7 @@ def test_render_thread_menu_zero_is_new(home_with_project):
 def test_render_session_menu_shows_lineage(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "first")
     stream.new_session(proj, "prz", "second")
     out = menu.render_session_menu("prz", menu.list_sessions(proj, "prz"))
@@ -246,7 +248,7 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
     from tide import fields
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     sess = stream.new_session(proj, "prz", "work")
     fields.set_field(sess / "arc.md", "claude-session", "abc-123")
     _persist_convo(proj, "abc-123")  # the conversation exists → resume, not fresh
@@ -265,7 +267,7 @@ def test_never_engaged_session_launches_fresh(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
     from tide import fields
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     sess = stream.new_session(proj, "prz", "work")
     fields.set_field(sess / "arc.md", "claude-session", "ghost-999")
     # no _persist_convo → CLAUDE_CONFIG_DIR has no conversation for ghost-999
@@ -304,7 +306,7 @@ def test_navigate_back_from_thread_returns_to_type(home_with_project, monkeypatc
     home, proj = home_with_project
     from tide.arc import stream
     from tide.launcher import select as sel
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "one")
     # project=0, type=0(Task), thread=BACK (→ back to type), type=0(Task), thread=0, session=0
     seq = iter([0, 0, sel.BACK, 0, 0, 0])
@@ -322,8 +324,8 @@ def test_list_routines_only_routines(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
     stream.new_arc(proj, "just-work")
-    stream.new_thread(proj, "morning")
-    stream.new_routine(proj, "invite-codes")
+    fill_entry(stream.new_thread(proj, "morning"))
+    fill_entry(stream.new_routine(proj, "invite-codes"))
     routines = menu.list_routines(proj)
     assert [r["slug"] for r in routines] == ["invite-codes"]
 
@@ -331,7 +333,7 @@ def test_list_routines_only_routines(home_with_project):
 def test_routine_label_shows_gear_marker(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_routine(proj, "invite-codes")
+    fill_entry(stream.new_routine(proj, "invite-codes"))
     label = menu._routine_label(menu.list_routines(proj)[0])
     assert label.startswith(menu.ROUTINE_MARKER)  # ⚙ distinguishes routines from tasks
     assert "invite-codes" in label
@@ -340,7 +342,7 @@ def test_routine_label_shows_gear_marker(home_with_project):
 def test_navigate_type_routes_task(home_with_project, monkeypatch):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "one")
     # project=0, type=0(Task), thread=0, session=0
     seq = iter([0, 0, 0, 0])
@@ -354,7 +356,7 @@ def test_navigate_type_routes_task(home_with_project, monkeypatch):
 def test_navigate_type_routes_routine_run(home_with_project, monkeypatch):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_routine(proj, "invite-codes")
+    fill_entry(stream.new_routine(proj, "invite-codes"))
     stream.new_session(proj, "invite-codes", "run-one")
     # project=0, type=1(Routine), routine=0, run=0
     seq = iter([0, 1, 0, 0])
@@ -369,9 +371,9 @@ def test_navigate_back_from_routine_returns_to_type(home_with_project, monkeypat
     _, proj = home_with_project
     from tide.arc import stream
     from tide.launcher import select as sel
-    stream.new_routine(proj, "invite-codes")
+    fill_entry(stream.new_routine(proj, "invite-codes"))
     stream.new_session(proj, "invite-codes", "run-one")
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "one")
     # project=0, type=1(Routine), routine=BACK (→ back to type), type=0(Task), thread=0, session=0
     seq = iter([0, 1, sel.BACK, 0, 0, 0])
@@ -405,7 +407,7 @@ def test_resolve_session_new_routine_binds_run(home_with_project):
 def test_routine_run_seed_frames_procedure(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
-    stream.new_routine(proj, "invite-codes")
+    fill_entry(stream.new_routine(proj, "invite-codes"))
     run = stream.new_session(proj, "invite-codes", "run one")
     arc_text = (run / "arc.md").read_text(encoding="utf-8")
     command = menu.build_launch(
@@ -449,7 +451,7 @@ def test_navigate_back_from_project_cancels(home_with_project, monkeypatch):
 def test_build_launch_binds_session_into_seed(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "prz")
+    fill_entry(stream.new_thread(proj, "prz"))
     sess = stream.new_session(proj, "prz", "work one")
     arc_text = (sess / "arc.md").read_text(encoding="utf-8")
     command = menu.build_launch(
@@ -482,7 +484,7 @@ def test_list_sessions_newest_first(home_with_project):
     """
     from tide.arc import stream
     _, proj = home_with_project
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     stream.new_session(proj, "kickoff", "one")
     stream.new_session(proj, "kickoff", "two")
     stream.new_session(proj, "kickoff", "three")
@@ -497,7 +499,7 @@ def test_pick_session_empty_thread_auto_creates_first(home_with_project):
     """
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
     assert is_new is True
     assert slug_  # a first session was created
@@ -512,7 +514,7 @@ def test_pick_session_nonempty_thread_is_resume_only(home_with_project, monkeypa
     """
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "kickoff")
+    fill_entry(stream.new_thread(proj, "kickoff"))
     stream.new_session(proj, "kickoff", "one")
     captured = {}
 
@@ -530,7 +532,7 @@ def test_pick_run_routine_keeps_new_run(home_with_project, monkeypatch):
     """Routines do NOT inherit the thread law: '+ new run' stays (a run is fresh work)."""
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_routine(proj, "deploy")
+    fill_entry(stream.new_routine(proj, "deploy"))
     stream.new_session(proj, "deploy", "run-one")  # routine already has a run
     captured = {}
 

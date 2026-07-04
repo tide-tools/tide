@@ -36,8 +36,11 @@ wires the thin CLI handlers.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -141,6 +144,94 @@ def entry_kind(entry_dir: Path) -> str:
 def is_thread(entry_dir: Path) -> bool:
     """True when *entry_dir* is a thread (a kind: thread container of sessions)."""
     return entry_kind(entry_dir) == KIND_THREAD
+
+
+# --- draft classification (gates: cand 04) ----------------------------------
+# A DRAFT is COMPUTED, never stored: an open entry whose formulation is still the
+# template placeholder is a болванка regardless of what ``status:`` says. Computing
+# it (instead of a new on-disk status) means every existing project's abandoned
+# shells classify correctly with zero migration, and there is no promotion write
+# to forget — fill the goal and the entry IS active on the next read.
+
+STATUS_DRAFT = "draft"
+
+_SECTION_RE_TMPL = r"^##\s+{0}\s*\n(.*?)(?=^##\s|\Z)"
+
+
+def _section_body(text: str, title: str) -> str:
+    """The body of the ``## <title>`` section in *text* ('' when absent)."""
+    m = re.search(_SECTION_RE_TMPL.format(re.escape(title)), text, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def goal_filled(entry_dir: Path) -> bool:
+    """True when the entry's ``goal:`` line is REAL (non-empty, placeholder-free).
+
+    The picker's bar: a container with a stated goal is somebody's intent and must
+    stay reachable, even while (say) a routine's steps are still being written.
+    """
+    goal = (fields.read_field(passport_path(entry_dir), "goal") or "").strip()
+    return bool(goal) and not placeholders.find_in_text("goal: {0}".format(goal))
+
+
+def passport_filled(entry_dir: Path) -> bool:
+    """True when the entry's formulation is REAL — not template scaffolding.
+
+    ``goal:`` must be non-empty and placeholder-free; a routine must also carry a
+    real ``## steps`` runbook (a routine without steps cannot be run, so it is
+    still a draft even with a goal line).
+    """
+    pp = passport_path(entry_dir)
+    try:
+        text = pp.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not goal_filled(entry_dir):
+        return False
+    if entry_kind(entry_dir) == KIND_ROUTINE:
+        steps = _section_body(text, "steps")
+        if not steps or placeholders.find_in_text(steps):
+            return False
+    return True
+
+
+def _is_nested_item(entry_dir: Path) -> bool:
+    """True for an entry INSIDE a container (a session/run/goal sub-arc).
+
+    Nested items are exempt from draft classification: a fresh session is born by
+    the handoff machinery and works before its goal line is polished — hiding it
+    from the picker would break pickup. The болванка problem lives in the TOP
+    stream (abandoned thread/routine/goal shells).
+    """
+    grandparent = Path(entry_dir).parent.parent
+    return passport_path(grandparent).is_file()
+
+
+def effective_status(entry_dir: Path) -> str:
+    """The status surfaces should show — ``draft`` for an unfilled open entry.
+
+    Reads ``status:`` from the passport; an ``active`` TOP-STREAM entry whose
+    formulation is still template placeholders classifies as :data:`STATUS_DRAFT`.
+    Everything else passes through unchanged.
+    """
+    raw = (fields.read_field(passport_path(entry_dir), "status") or "active").strip()
+    raw = raw or "active"
+    if raw != "active":
+        return raw
+    if _is_nested_item(entry_dir) or passport_filled(entry_dir):
+        return raw
+    return STATUS_DRAFT
+
+
+def draft_entries(root: Path) -> List[Path]:
+    """Open top-stream entries that classify as drafts (болванки), numeric order."""
+    arcs = paths.arcs_dir(root)
+    out = [
+        p
+        for p in _entries(arcs)
+        if not slug.is_closed_entry(p.name) and effective_status(p) == STATUS_DRAFT
+    ]
+    return sorted(out, key=lambda p: p.name)
 
 
 def is_routine(entry_dir: Path) -> bool:
@@ -261,6 +352,63 @@ def stamp_rev(entry_dir: Path, root: Path) -> str:
     return r
 
 
+# --- anti-runaway backpressure (gates: cand 04) ------------------------------
+# The mite incident: an automated loop created SEVEN empty arcs in two minutes —
+# no human works at that rate. Every birth is stamped into ``.tide/state/births``;
+# when the window overflows, creation REFUSES with an escalation message instead
+# of silently flooding the tree. Env-tunable; a limit of 0 disables the gate.
+
+SPAWN_LIMIT_ENV = "TIDE_SPAWN_LIMIT"
+SPAWN_WINDOW_ENV = "TIDE_SPAWN_WINDOW"
+DEFAULT_SPAWN_LIMIT = 8        # births allowed per window per project
+DEFAULT_SPAWN_WINDOW = 600     # seconds
+BIRTHS_FILE = "births"
+
+
+def _spawn_tuning() -> "tuple[int, int]":
+    """The (limit, window-seconds) pair, env-overridable; bad values fall back."""
+    try:
+        limit = int(os.environ.get(SPAWN_LIMIT_ENV, DEFAULT_SPAWN_LIMIT))
+    except ValueError:
+        limit = DEFAULT_SPAWN_LIMIT
+    try:
+        window = int(os.environ.get(SPAWN_WINDOW_ENV, DEFAULT_SPAWN_WINDOW))
+    except ValueError:
+        window = DEFAULT_SPAWN_WINDOW
+    return limit, window
+
+
+def record_birth_and_guard(root: Path) -> None:
+    """Stamp one arc birth for *root*; REFUSE when the window is already full.
+
+    Raises :class:`StreamError` (the escalation) when *limit* births already
+    happened inside *window* seconds — a rate only a runaway loop produces. The
+    refused birth is NOT stamped, so a human retry after cleanup passes.
+    """
+    limit, window = _spawn_tuning()
+    if limit <= 0:
+        return
+    f = paths.state_dir(Path(root)) / BIRTHS_FILE
+    now = time.time()
+    try:
+        stamps = [float(x) for x in f.read_text(encoding="utf-8").split()]
+    except (OSError, ValueError):
+        stamps = []
+    stamps = [t for t in stamps if now - t < window]
+    if len(stamps) >= limit:
+        raise StreamError(
+            "arc spawn RUNAWAY: {n} arcs born in the last {w}s (limit {lim}) — "
+            "that rate is a loop, not a human. STOP and escalate to the human; "
+            "fill or sweep the drafts first ('tide arc gc'). If this volume is "
+            "truly intended, raise ${env} for this run.".format(
+                n=len(stamps), w=window, lim=limit, env=SPAWN_LIMIT_ENV
+            )
+        )
+    stamps.append(now)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    _io.atomic_write(f, "\n".join("{0:.3f}".format(t) for t in stamps) + "\n")
+
+
 # --- create ----------------------------------------------------------------
 
 def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
@@ -276,6 +424,7 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     from .. import sync  # lazy: tide.sync imports this module at top.
 
     sync.block_new_arc_if_unmerged_delta(root)
+    record_birth_and_guard(root)
     stream_dir = _open_goal_substream(root, goal_slug) if goal_slug else paths.arcs_dir(root)
     stream_dir.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(stream_dir)
@@ -325,6 +474,7 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     if not s:
         raise StreamError("new thread: empty slug after slugify")
     _refuse_duplicate_container(root, s, kind=KIND_THREAD, force=force)
+    record_birth_and_guard(root)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
@@ -351,6 +501,7 @@ def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     if not s:
         raise StreamError("new routine: empty slug after slugify")
     _refuse_duplicate_container(root, s, kind=KIND_ROUTINE, force=force)
+    record_birth_and_guard(root)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
@@ -378,6 +529,7 @@ def new_session(
     if not s:
         raise StreamError("new session: empty slug after slugify")
     sub = _open_goal_substream(root, thread_slug)  # raises if the thread is closed/absent
+    record_birth_and_guard(root)
     sub.mkdir(parents=True, exist_ok=True)
     if from_ref:
         from_slug = slug.entry_slug(from_ref) if "-" in from_ref else slug.slugify(from_ref)
@@ -404,6 +556,7 @@ def new_goal(root: Path, raw_slug: str) -> Path:
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new goal: empty slug after slugify")
+    record_birth_and_guard(root)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num(arcs)
