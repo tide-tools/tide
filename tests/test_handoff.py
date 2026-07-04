@@ -253,7 +253,8 @@ def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, 
     assert str(proj) in str(res.summary_path)
     assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
     assert res.summary_path.exists()
-    # ...and the offer names the OWNING project, so pickup lands there too
+    # ...and the offer names the OWNING project by its ROSTER name — the dir
+    # name 'owner-proj' is a dev alias pickup would die on (cand 17).
     (rec,) = handoff_queue.list_offers(tmp_control_home)
-    assert rec["project"] == "owner-proj"
+    assert rec["project"] == "owner"
     assert rec["seed"] == str(res.summary_path)

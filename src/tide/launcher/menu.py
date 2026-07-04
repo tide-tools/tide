@@ -169,6 +169,37 @@ def _ask(prompt: str) -> str:
         return ""
 
 
+def _offered_thread_slugs(project: Path) -> set:
+    """Bare slugs of threads a LIVE offered handoff points into (cand 28).
+
+    Resolves this *project*'s roster name by path, then collects the thread
+    part of every ``offered`` record's arc ref. Fully defensive: any failure
+    (no control-home, no roster, empty queue) is just an empty set — this only
+    ever ADDS visibility, never hides or breaks the picker.
+    """
+    from .. import handoff_queue  # lazy: avoid import cycle at module load
+    try:
+        home = paths.control_home()
+        pending = handoff_queue.list_offers(home, status=handoff_queue.STATUS_OFFERED)
+        if not pending:
+            return set()
+        want = Path(project).expanduser().resolve()
+        names = {
+            e["name"] for e in roster.read_roster(home)
+            if Path(e.get("path", "")).expanduser().resolve() == want
+        }
+    except (OSError, StreamError):
+        return set()
+    out = set()
+    for r in pending:
+        if r.get("project") not in names:
+            continue
+        top = str(r.get("arc") or "").split("/", 1)[0]
+        if top and top != "-":
+            out.add(slug.entry_slug(top))
+    return out
+
+
 def list_threads(project: Path) -> List[Dict[str, str]]:
     """A project's open threads for the picker, newest-first.
 
@@ -177,10 +208,16 @@ def list_threads(project: Path) -> List[Dict[str, str]]:
     Drafts (unfilled template shells, cand 04) are NOT offered — fill the goal
     (the entry activates on the next read) or sweep with ``tide arc gc``; the
     board still shows them as ``[draft]`` so nothing vanishes silently.
+
+    EXCEPT a draft with a LIVE offered handoff inside (cand 28): a thread the
+    handoff machinery just seeded is somebody's real intent mid-flight — hiding
+    it strands the pickup ('а где тред-то?'). It stays pickable, ⌛-marked.
     """
+    offered = _offered_thread_slugs(project)
     out = []
     for entry in stream.thread_entries(project):
-        if not stream.goal_filled(entry):
+        has_offer = slug.entry_slug(entry.name) in offered
+        if not stream.goal_filled(entry) and not has_offer:
             continue
         goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
         out.append({
@@ -188,6 +225,7 @@ def list_threads(project: Path) -> List[Dict[str, str]]:
             "name": entry.name,
             "goal": goal,
             "path": str(entry),
+            "offered": "⌛" if has_offer else "",
         })
     out.reverse()  # newest-first for the picker
     return out
@@ -222,7 +260,12 @@ def render_thread_menu(project_name: str, threads: List[Dict[str, str]]) -> str:
     lines.append("  0) + new thread")
     for i, p in enumerate(threads, start=1):
         goal = p.get("goal") or ""
-        suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
+        if goal and not goal.startswith("<"):
+            suffix = " — {0}".format(goal)
+        elif p.get("offered"):
+            suffix = " — ⌛ offered handoff inside"
+        else:
+            suffix = ""
         lines.append("  {0}) {1}{2}".format(i, p["slug"], suffix))
     return "\n".join(lines)
 
@@ -239,10 +282,19 @@ def render_session_menu(thread_slug: str, sessions: List[Dict[str, str]]) -> str
 
 
 def _thread_label(p: Dict[str, str]) -> str:
-    """One thread row's label for the arrow picker — numeric index first: ``NN  slug — goal``."""
+    """One thread row's label for the arrow picker — numeric index first: ``NN  slug — goal``.
+
+    A thread surfaced only because of its live offer (draft goal, cand 28) says
+    so: ``⌛ offered handoff inside`` replaces the missing goal suffix.
+    """
     index = p["name"].split("-", 1)[0] if p.get("name") else ""
     goal = p.get("goal") or ""
-    suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
+    if goal and not goal.startswith("<"):
+        suffix = " — {0}".format(goal)
+    elif p.get("offered"):
+        suffix = " — ⌛ offered handoff inside"
+    else:
+        suffix = ""
     head = "{0}  ".format(index) if index else ""
     return "{0}{1}{2}".format(head, p["slug"], suffix)
 
@@ -317,11 +369,10 @@ def _create_thread(project: Path, name: str) -> Optional[str]:
     name = (name or "").strip()
     if not name:
         return None
-    entry = stream.new_thread(project, name)
     # The human's typed idea IS the thread's goal — write it, don't discard it.
     # Otherwise the fresh container is born an unfilled draft and the picker
     # hides what they just created (gates, cand 04).
-    fields.set_field(stream.passport_path(entry), "goal", name)
+    entry = stream.new_thread(project, name, goal=name)
     return slug.entry_slug(entry.name)
 
 
@@ -329,8 +380,7 @@ def _create_routine(project: Path, name: str) -> Optional[str]:
     name = (name or "").strip()
     if not name:
         return None
-    entry = stream.new_routine(project, name)
-    fields.set_field(stream.passport_path(entry), "goal", name)
+    entry = stream.new_routine(project, name, goal=name)
     return slug.entry_slug(entry.name)
 
 

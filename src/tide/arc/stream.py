@@ -461,7 +461,8 @@ def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bo
             )
 
 
-def new_thread(root: Path, raw_slug: str, *, force: bool = False) -> Path:
+def new_thread(root: Path, raw_slug: str, *, force: bool = False,
+               goal: Optional[str] = None) -> Path:
     """Create a thread ``NN-@<slug>/`` — a goal-shaped container of sessions.
 
     A thread (тред) is a durable work-line: it holds its sessions as sub-arcs in a
@@ -469,6 +470,10 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     passport so the picker can tell threads from work-goals. Lives in the top
     stream. Stamps canon-rev. Sessions are added with :func:`new_session`. Refuses a
     duplicate of an OPEN same-slug thread (anti-mess gate); *force* overrides.
+
+    *goal* fills the passport's ``goal:`` line at birth — a thread created for an
+    immediate handoff offer must NOT be born a draft placeholder, or the picker
+    hides it while the offer hangs inside (cand 28).
     """
     s = slug.slugify(raw_slug)
     if not s:
@@ -482,11 +487,14 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "{0}-goal.md".format(s), templates.thread_goal_md(s))
+    if goal and goal.strip():
+        fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
     stamp_rev(entry, root)
     return entry
 
 
-def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
+def new_routine(root: Path, raw_slug: str, *, force: bool = False,
+                goal: Optional[str] = None) -> Path:
     """Create a routine ``NN-@<slug>/`` — a goal-shaped container of runs.
 
     A routine (рутина) is a reusable procedure: it holds its **runs** as sub-arcs
@@ -509,12 +517,15 @@ def new_routine(root: Path, raw_slug: str, *, force: bool = False) -> Path:
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "{0}-goal.md".format(s), templates.routine_md(s))
+    if goal and goal.strip():
+        fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
     stamp_rev(entry, root)
     return entry
 
 
 def new_session(
-    root: Path, thread_slug: str, raw_slug: str, from_ref: Optional[str] = None
+    root: Path, thread_slug: str, raw_slug: str, from_ref: Optional[str] = None,
+    goal: Optional[str] = None,
 ) -> Path:
     """Create a session ``NN-<slug>/`` inside *thread_slug*'s substream.
 
@@ -543,6 +554,8 @@ def new_session(
     _io.atomic_write(entry / "arc.md", templates.session_md(entry.name))
     if from_slug:
         fields.set_field(entry / "arc.md", "from", from_slug)
+    if goal and goal.strip():
+        fields.set_field(entry / "arc.md", "goal", goal.strip())
     stamp_rev(entry, root)
     return entry
 
@@ -910,19 +923,23 @@ def _cmd_new_goal(args) -> int:
 
 
 def _cmd_new_thread(args) -> int:
-    entry = new_thread(_root(), args.slug, force=getattr(args, "force", False))
+    entry = new_thread(_root(), args.slug, force=getattr(args, "force", False),
+                       goal=getattr(args, "goal_text", None))
     print("tide: created thread {0}".format(entry))
     return 0
 
 
 def _cmd_new_routine(args) -> int:
-    entry = new_routine(_root(), args.slug, force=getattr(args, "force", False))
+    entry = new_routine(_root(), args.slug, force=getattr(args, "force", False),
+                        goal=getattr(args, "goal_text", None))
     print("tide: created routine {0}".format(entry))
     return 0
 
 
 def _cmd_new_session(args) -> int:
-    entry = new_session(_root(), args.thread, args.slug, from_ref=getattr(args, "from_ref", None))
+    entry = new_session(_root(), args.thread, args.slug,
+                        from_ref=getattr(args, "from_ref", None),
+                        goal=getattr(args, "goal_text", None))
     print("tide: created session {0}".format(entry))
     return 0
 
@@ -993,17 +1010,20 @@ def register(arc_subparsers) -> None:
     )
     tp.add_argument("slug")
     tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug thread")
+    tp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the passport's goal: at birth (no draft placeholder — cand 28)")
     tp.set_defaults(func=_cmd_new_thread, _cmd="arc new-thread")
 
     rtp = arc_subparsers.add_parser("new-routine", help="create a routine NN-@<slug>/ (kind: routine — a reusable procedure whose runs are sessions)")
     rtp.add_argument("slug")
     rtp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug routine")
+    rtp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the passport's goal: at birth (steps still make it runnable or not)")
     rtp.set_defaults(func=_cmd_new_routine, _cmd="arc new-routine")
 
     snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a thread (-p thread), chained from the last (or --from)")
     snp.add_argument("slug")
     snp.add_argument("-p", "--thread", required=True, help="the thread (тред) to add the session to")
     snp.add_argument("--from", dest="from_ref", metavar="REF", help="fork lineage from this session (branch/handoff); default = previous session")
+    snp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the session's goal: at birth")
     snp.set_defaults(func=_cmd_new_session, _cmd="arc new-session")
 
     op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")

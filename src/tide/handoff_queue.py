@@ -123,6 +123,82 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
     }
 
 
+# --- offer-target validation (fail-fast, cands 16/17) -----------------------
+# An offer that names a project not in the roster, or an arc that resolves to
+# nothing, LOOKS green at offer time and then dies (or lands under the wrong
+# thread) at pickup — in front of the human. The seam must fail on the offering
+# side, where the agent can still fix it. Kept OUT of :func:`offer` itself so
+# the pure queue op stays fixture-friendly; the CLI/launcher boundaries call it.
+
+def _match_entry(dirs: List[Path], ref: str) -> Optional[Path]:
+    """The dir in *dirs* that *ref* names (exact dir name or bare-slug match)."""
+    for d in dirs:
+        if d.name == ref or slug.entry_slug(d.name) == slug.entry_slug(ref):
+            return d
+    return None
+
+
+def _open_entries(parent: Path) -> List[Path]:
+    """Open stream-entry dirs directly under *parent* (closed ``__…__`` skipped)."""
+    if not parent.is_dir():
+        return []
+    return [
+        d for d in sorted(parent.iterdir())
+        if d.is_dir() and slug.is_entry(d.name) and not slug.is_closed_entry(d.name)
+    ]
+
+
+def validate_target(home: Path, *, project: Optional[str], arc: Optional[str]) -> None:
+    """Refuse an offer whose target would break at pickup (fail-fast, not fail-later).
+
+    * *project* must be a ROSTER name (cand 17: ``--project ai-hot`` was accepted
+      silently, then pickup died — the roster knew it as ``x``).
+    * *arc* must resolve to a real open entry in that project — ``thread`` or
+      ``thread/session`` (cand 16: an unresolvable ``--arc`` was silently mapped
+      onto the ACTIVE session, surfacing the offer under a stranger thread).
+
+    Skips what it cannot check (empty/``-`` fields, no roster) — the guard adds
+    safety, never a new way to break a legitimate offer.
+    """
+    from . import roster as _roster  # local: keep queue importable without roster deps
+
+    if not project or project == "-":
+        return
+    entries = _roster.read_roster(Path(home))
+    if not entries:
+        return  # no roster to validate against (bare home) — nothing to enforce
+    names = [e["name"] for e in entries]
+    entry = next((e for e in entries if e["name"] == project), None)
+    if entry is None:
+        raise HandoffError(
+            "handoff: project {0!r} not in roster — offer refused (pickup would die "
+            "on it). Valid roster names: {1}".format(project, ", ".join(names))
+        )
+    if not arc or arc == "-":
+        return
+    proj_root = Path(entry.get("path", "")).expanduser()
+    arcs_dir = proj_root / ".tide" / "arcs"
+    if not arcs_dir.is_dir():
+        return  # target project has no stream yet — arc can't be checked
+    parts = [p for p in str(arc).split("/") if p and p != "arcs"]
+    tops = _open_entries(arcs_dir)
+    top = _match_entry(tops, parts[0]) if parts else None
+    if top is None:
+        raise HandoffError(
+            "handoff: --arc {0!r} does not resolve in project {1!r} — offer refused "
+            "(it would surface under the wrong thread). Open entries: {2}".format(
+                arc, project, ", ".join(d.name for d in tops) or "(none)")
+        )
+    if len(parts) >= 2:
+        subs = _open_entries(top / "arcs")
+        if _match_entry(subs, parts[1]) is None:
+            raise HandoffError(
+                "handoff: --arc {0!r}: no session {1!r} inside {2} — offer refused. "
+                "Sessions there: {3}".format(
+                    arc, parts[1], top.name, ", ".join(d.name for d in subs) or "(none)")
+            )
+
+
 # --- operations (pure-ish: read/write the queue dir) -----------------------
 
 def offer(home: Path, raw_slug: str, *, arc: str, project: str, seed: str,
@@ -317,6 +393,7 @@ def _home() -> Path:
 
 def _cmd_offer(args) -> int:
     note = " ".join(args.note) if getattr(args, "note", None) else None
+    validate_target(_home(), project=args.project, arc=args.arc)
     path = offer(
         _home(), args.slug, arc=args.arc or "-", project=args.project or "-",
         seed=args.seed or "-", mode=getattr(args, "mode", DEFAULT_MODE) or DEFAULT_MODE,

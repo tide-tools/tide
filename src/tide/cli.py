@@ -297,6 +297,15 @@ def _register_handoffs(sub) -> None:
     register_handoffs(sub)
 
 
+def _register_lookback(sub) -> None:
+    # отлив (cand 10): the reading watermark — refs/lookback/<reader>/<scope>,
+    # status/mark/log. ON-DEMAND ONLY (no daemon, no hook, no LLM): the routine's
+    # full pass moves the mark; the entry line only reads the gap. Git plumbing.
+    from .lookback import register as register_lookback
+
+    register_lookback(sub)
+
+
 def _register_canon(sub) -> None:
     # U2: real canon group (init/rev/merge live; status stubbed for U8).
     # ``cannon`` is a hidden CLI alias registered inside commands.register().
@@ -377,6 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_candidate(subparsers)
     _register_plan(subparsers)
     _register_handoffs(subparsers)
+    _register_lookback(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)
 

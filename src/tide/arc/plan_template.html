@@ -1,0 +1,210 @@
+<style>
+  /* доска wake — editorial-mono dark house style (honors dashboard tokens).
+     Fragment: no <html>/<head>/<body> — the Artifact skeleton (or build wrapper) supplies them. */
+  :root{
+    --bg:oklch(16% 0.012 250);--bg-raise:oklch(20% 0.014 250);--bg-card:oklch(23% 0.016 250);
+    --line:oklch(32% 0.018 250);--line-soft:oklch(27% 0.014 250);
+    --ink:oklch(94% 0.01 250);--ink-dim:oklch(70% 0.012 250);--ink-faint:oklch(54% 0.012 250);
+    --accent:oklch(80% 0.16 78);        /* amber — the one bold hue */
+    --teal:oklch(72% 0.15 200);
+    --open:oklch(82% 0.17 145);         /* live/green */
+    --goal:oklch(78% 0.17 320);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --radius:13px;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:oklch(97% 0.006 250);--bg-raise:oklch(99% 0.004 250);--bg-card:oklch(100% 0 0);
+      --line:oklch(86% 0.01 250);--line-soft:oklch(91% 0.008 250);
+      --ink:oklch(24% 0.02 250);--ink-dim:oklch(44% 0.02 250);--ink-faint:oklch(58% 0.016 250);
+      --accent:oklch(62% 0.15 66);--teal:oklch(55% 0.13 210);--open:oklch(58% 0.16 150);--goal:oklch(56% 0.17 322);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:oklch(16% 0.012 250);--bg-raise:oklch(20% 0.014 250);--bg-card:oklch(23% 0.016 250);
+    --line:oklch(32% 0.018 250);--line-soft:oklch(27% 0.014 250);
+    --ink:oklch(94% 0.01 250);--ink-dim:oklch(70% 0.012 250);--ink-faint:oklch(54% 0.012 250);
+    --accent:oklch(80% 0.16 78);--teal:oklch(72% 0.15 200);--open:oklch(82% 0.17 145);--goal:oklch(78% 0.17 320);
+  }
+  :root[data-theme="light"]{
+    --bg:oklch(97% 0.006 250);--bg-raise:oklch(99% 0.004 250);--bg-card:oklch(100% 0 0);
+    --line:oklch(86% 0.01 250);--line-soft:oklch(91% 0.008 250);
+    --ink:oklch(24% 0.02 250);--ink-dim:oklch(44% 0.02 250);--ink-faint:oklch(58% 0.016 250);
+    --accent:oklch(62% 0.15 66);--teal:oklch(55% 0.13 210);--open:oklch(58% 0.16 150);--goal:oklch(56% 0.17 322);
+  }
+  *{box-sizing:border-box}
+  #wake{
+    background:radial-gradient(1100px 560px at 85% -12%,oklch(70% 0.16 78 /.10),transparent 60%),var(--bg);
+    color:var(--ink);font-family:var(--mono);-webkit-font-smoothing:antialiased;line-height:1.45;
+    min-height:100vh;padding:20px 16px 56px;
+  }
+  #wake .wrap{max-width:760px;margin:0 auto}
+  #wake .brand{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+  #wake .brand h1{font-size:19px;margin:0;font-weight:600;letter-spacing:-.01em}
+  #wake .brand h1 .dot{color:var(--accent)}
+  #wake .brand .thread{font-size:11px;color:var(--ink-faint);letter-spacing:.02em}
+  #wake .goalline{font-size:12.5px;color:var(--ink-dim);margin:0 0 22px;line-height:1.5}
+
+  #wake h2{display:flex;align-items:center;gap:9px;font-size:11px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-faint);margin:26px 0 12px;font-weight:600}
+  #wake h2 .ic{width:15px;height:15px;flex:none;color:var(--accent)}
+  #wake h2 .n{margin-left:auto;letter-spacing:.04em;color:var(--ink-dim);font-variant-numeric:tabular-nums}
+  #wake h2 .n.full{color:var(--accent)}
+
+  /* focus grid */
+  #wake .focus{display:grid;grid-template-columns:1fr;gap:10px}
+  @media (min-width:560px){#wake .focus{grid-template-columns:1fr 1fr}}
+  #wake .card{background:linear-gradient(160deg,oklch(82% 0.17 145 /.05),transparent 70%),var(--bg-raise);
+    border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;display:flex;flex-direction:column;gap:7px}
+  #wake .card .cid{display:inline-flex;align-items:center;gap:6px;font-size:10px;color:var(--ink-faint)}
+  #wake .card .cid .id{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--ink-dim)}
+  #wake .card .cid .lv{background:oklch(78% 0.17 320 /.16);border:1px solid var(--goal);color:var(--goal);border-radius:99px;padding:1px 7px}
+  #wake .card .txt{font-size:14px;color:var(--ink);line-height:1.4;text-wrap:balance}
+  #wake .empty{color:var(--ink-faint);font-size:12.5px;border:1px dashed var(--line-soft);border-radius:var(--radius);padding:14px}
+
+  /* path — a real sequence, numbered */
+  #wake .path{display:flex;flex-direction:column;gap:0;counter-reset:step}
+  #wake .step{display:flex;gap:12px;padding:9px 0;position:relative}
+  #wake .step:not(:last-child)::before{content:"";position:absolute;left:11px;top:26px;bottom:-4px;width:1.5px;background:var(--line)}
+  #wake .step .num{counter-increment:step;flex:none;width:23px;height:23px;border-radius:50%;
+    background:var(--bg-card);border:1px solid var(--line);color:var(--teal);font-size:11px;
+    display:grid;place-items:center;font-variant-numeric:tabular-nums}
+  #wake .step .num::after{content:counter(step)}
+  #wake .step .st{font-size:13.5px;color:var(--ink);padding-top:2px;line-height:1.4}
+
+  /* compression axis */
+  #wake .comp{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  #wake .lvl{background:var(--bg-card);border:1px solid var(--line);border-radius:99px;padding:5px 11px;font-size:12px;color:var(--ink);max-width:100%}
+  #wake .arrow{color:var(--ink-faint);flex:none}
+  #wake .lvl.now{border-color:var(--accent);color:var(--accent)}
+
+  /* threads strip — attention weight */
+  #wake .threads{display:flex;flex-direction:column;gap:7px}
+  #wake .thr{display:flex;align-items:center;gap:10px}
+  #wake .thr .nm{font-size:12px;color:var(--ink-dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 0 46%}
+  #wake .thr .nm .proj{color:var(--teal);font-size:10px}
+  #wake .thr .bar{height:6px;border-radius:99px;background:linear-gradient(90deg,var(--teal),var(--accent));flex:none}
+  #wake .thr .bar.track{background:var(--line-soft);flex:1}
+  #wake .thr .w{font-size:10px;color:var(--ink-faint);font-variant-numeric:tabular-nums}
+
+  /* backlog */
+  #wake .backlog{display:flex;flex-wrap:wrap;gap:6px}
+  #wake .bchip{font-size:11px;color:var(--ink-faint);background:var(--bg-raise);border:1px solid var(--line-soft);
+    border-radius:8px;padding:3px 9px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #wake .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line-soft);
+    font-size:10.5px;color:var(--ink-faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+</style>
+
+<div id="wake"><div class="wrap">
+  <div class="brand">
+    <h1><span class="dot">◆</span> <span id="bname">wake</span></h1>
+    <span class="thread" id="bthread"></span>
+  </div>
+  <p class="goalline" id="bgoal"></p>
+
+  <h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9" opacity=".4"/></svg>
+    Фокус <span class="n" id="fn"></span></h2>
+  <div class="focus" id="focus"></div>
+
+  <h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    Путь к цели <span class="n" id="pn"></span></h2>
+  <div id="pathwrap"></div>
+
+  <div id="compwrap" hidden>
+    <h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16M7 12h10M10 19h4"/></svg>
+      Сжатие</h2>
+    <div class="comp" id="comp"></div>
+  </div>
+
+  <div id="thrwrap" hidden>
+    <h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      Нити · вес внимания</h2>
+    <div class="threads" id="threads"></div>
+  </div>
+
+  <div id="blwrap" hidden>
+    <h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16v12H4zM4 10h16"/></svg>
+      Backlog <span class="n" id="bn"></span></h2>
+    <div class="backlog" id="backlog"></div>
+  </div>
+
+  <div class="foot"><span id="fmeta"></span><span>доска wake · tide plan</span></div>
+</div></div>
+
+<script>
+  const BOARD = __BOARD_JSON__;
+  const META = __META_JSON__;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
+    {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+
+  const focus = BOARD.focus || {cards:[], backlog:[], limit:7};
+  const cards = focus.cards || [];
+  const limit = focus.limit || 7;
+
+  $("bname").textContent = META.name || "wake";
+  $("bthread").textContent = META.thread ? "· " + META.thread : "";
+  $("bgoal").textContent = META.goal || "";
+
+  // focus
+  const fn = $("fn"); fn.textContent = cards.length + "/" + limit;
+  if (cards.length >= limit) fn.classList.add("full");
+  const fc = $("focus");
+  if (cards.length){
+    fc.innerHTML = cards.map((c) => (
+      '<div class="card"><span class="cid"><span class="id">' + esc(c.id) + '</span>' +
+      (c.level ? '<span class="lv">L' + esc(c.level) + '</span>' : '') +
+      '</span><span class="txt">' + esc(c.text) + '</span></div>'
+    )).join("");
+  } else {
+    fc.outerHTML = '<div class="empty">Фокус пуст — добавь карточку: <code>tide plan add</code></div>';
+  }
+
+  // path
+  const plan = BOARD.plan || [];
+  $("pn").textContent = plan.length + "/3";
+  const pw = $("pathwrap");
+  if (plan.length){
+    pw.innerHTML = '<div class="path">' + plan.map((s) => (
+      '<div class="step"><span class="num"></span><span class="st">' + esc(s.text) + '</span></div>'
+    )).join("") + '</div>';
+  } else {
+    pw.innerHTML = '<div class="empty">Пути нет — задай ≤3 шага к цели: <code>tide plan step</code></div>';
+  }
+
+  // compression
+  const levels = (BOARD.compression || {}).levels || [];
+  if (levels.length){
+    $("compwrap").hidden = false;
+    $("comp").innerHTML = levels.map((l, i) => (
+      (i ? '<span class="arrow">→</span>' : '') +
+      '<span class="lvl' + (i === levels.length - 1 ? ' now' : '') + '">' + esc(l) + '</span>'
+    )).join("");
+  }
+
+  // threads + attention weight (louder = wider bar)
+  const threads = (BOARD.threads || []).slice().sort((a, b) => (b.weight || 0) - (a.weight || 0));
+  if (threads.length){
+    $("thrwrap").hidden = false;
+    const maxW = Math.max.apply(null, threads.map((t) => t.weight || 0).concat([1]));
+    $("threads").innerHTML = threads.map((t) => {
+      const pct = Math.round(((t.weight || 0) / maxW) * 100);
+      const label = (t.project ? '<span class="proj">' + esc(t.project) + '</span> ' : '') + esc(t.name);
+      return '<div class="thr"><span class="nm">' + label + '</span>' +
+        '<span class="bar" style="width:' + Math.max(pct, 6) + '%"></span>' +
+        '<span class="bar track"></span><span class="w">' + esc(t.weight != null ? t.weight : "") + '</span></div>';
+    }).join("");
+  }
+
+  // backlog
+  const backlog = focus.backlog || [];
+  if (backlog.length){
+    $("blwrap").hidden = false;
+    $("bn").textContent = String(backlog.length);
+    $("backlog").innerHTML = backlog.map((c) => (
+      '<span class="bchip">' + esc(c.id) + " · " + esc(c.text) + '</span>'
+    )).join("");
+  }
+
+  $("fmeta").textContent = (META.project ? META.project + " · " : "") + (META.built || "");
+</script>

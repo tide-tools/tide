@@ -59,6 +59,25 @@ def _today(date: Optional[str]) -> str:
     return date or _date.today().isoformat()
 
 
+def _roster_project_name(home: Path, owner_root: Path) -> str:
+    """The ROSTER name for *owner_root*, falling back to its dir name.
+
+    The offer record must carry the roster name: pickup resolves the project
+    through the roster, so a dev dir-name alias dies there — offered as
+    ``ai-hot``, rostered as ``x`` (cand 17). Path-match the roster first; the
+    dir name is only the last resort for a project the roster doesn't know.
+    """
+    from .. import roster as _roster
+    try:
+        want = Path(owner_root).expanduser().resolve()
+        for e in _roster.read_roster(Path(home)):
+            if Path(e.get("path", "")).expanduser().resolve() == want:
+                return e["name"]
+    except OSError:
+        pass
+    return Path(owner_root).name
+
+
 def summary_filename(date: Optional[str] = None) -> str:
     """The workspace filename for a handoff distil (``handoff-<date>.md``)."""
     return "{0}{1}.md".format(SUMMARY_PREFIX, _today(date))
@@ -244,7 +263,7 @@ def run_handoff(
         home,
         arc_ref,
         arc=arc_ref,
-        project=owner_root.name,
+        project=_roster_project_name(home, owner_root),
         seed=str(summary_path),
         mode=mode,
         from_session=from_session,

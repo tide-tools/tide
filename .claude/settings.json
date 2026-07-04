@@ -19,6 +19,25 @@
             "command": "tide hook edit-gate"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tide hook role-gate"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tide hook handoff-confirm"
+          }
+        ]
       }
     ]
   }

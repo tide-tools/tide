@@ -650,3 +650,45 @@ def test_cli_bare_still_prints_help(capsys):
     out = capsys.readouterr().out.lower()
     assert "usage" in out
     assert "menu" in out  # the new command shows up in help
+
+
+# --- draft thread with a LIVE offer stays pickable (cand 28) ----------------
+
+def test_list_threads_hides_plain_draft(home_with_project):
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "empty-shell")  # placeholder goal, no offer
+    assert menu.list_threads(proj) == []
+
+
+def test_list_threads_shows_draft_with_live_offer(home_with_project, monkeypatch):
+    # cand 28: handoff fork 'new' seeds a thread + offered session, but the
+    # draft gate hid the thread from the picker — 'а где тред-то?'
+    home, proj = home_with_project
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    from tide import handoff_queue as hq
+    from tide.arc import stream
+
+    entry = stream.new_thread(proj, "redesign")          # born a draft
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    hq.offer(home, "kickoff", project="proj", seed="-",
+             arc="{0}/{1}".format(entry.name, sess.name))
+    threads = menu.list_threads(proj)
+    assert [t["slug"] for t in threads] == ["redesign"]
+    assert threads[0]["offered"]
+    assert "⌛" in menu._thread_label(threads[0])
+    assert "⌛" in menu.render_thread_menu("proj", threads)
+
+
+def test_list_threads_hides_draft_again_after_drop(home_with_project, monkeypatch):
+    home, proj = home_with_project
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    from tide import handoff_queue as hq
+    from tide.arc import stream
+
+    entry = stream.new_thread(proj, "redesign")
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    hq.offer(home, "kickoff", project="proj", seed="-",
+             arc="{0}/{1}".format(entry.name, sess.name))
+    hq.drop(home, "kickoff")
+    assert menu.list_threads(proj) == []  # no live offer → draft gate applies again

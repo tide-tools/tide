@@ -449,3 +449,93 @@ def test_list_shows_origin_lineage_for_taken(tmp_control_home):
     hq.take(tmp_control_home, "liney", session="B")
     out = hq.render_list(tmp_control_home)
     assert "from A" in out and "by B" in out
+
+
+# --- offer-target validation (fail-fast, cands 16/17) -----------------------
+
+def _rostered_project(home, name="x", dirname="realproj"):
+    """A scaffolded project dir rostered under *name*; returns its root."""
+    from tide.arc import stream
+
+    proj = home / dirname
+    (proj / ".tide" / "arcs").mkdir(parents=True)
+    (home / "roster.md").write_text(
+        "# tide roster\n{0} | {1}\n".format(name, proj), encoding="utf-8"
+    )
+    return proj
+
+
+def test_validate_target_rejects_unrostered_project(tmp_control_home):
+    # cand 17: offered as the dev dir-name 'ai-hot', rostered as 'x' — must
+    # refuse AT OFFER TIME, naming the valid roster names.
+    _rostered_project(tmp_control_home, name="x")
+    with pytest.raises(hq.HandoffError, match="not in roster.*x"):
+        hq.validate_target(tmp_control_home, project="ai-hot", arc="-")
+
+
+def test_validate_target_passes_rostered_project_without_arc(tmp_control_home):
+    _rostered_project(tmp_control_home, name="x")
+    hq.validate_target(tmp_control_home, project="x", arc="-")  # no raise
+
+
+def test_validate_target_skips_blank_project_and_empty_roster(tmp_control_home):
+    hq.validate_target(tmp_control_home, project=None, arc="whatever")
+    hq.validate_target(tmp_control_home, project="-", arc="whatever")
+    # roster.md holds no entries → nothing to enforce
+    hq.validate_target(tmp_control_home, project="ghost", arc="-")
+
+
+def test_validate_target_rejects_unresolvable_arc(tmp_control_home):
+    # cand 16: an --arc that resolves to nothing was silently mapped onto the
+    # ACTIVE session — the offer surfaced under a stranger thread.
+    from tide.arc import stream
+
+    proj = _rostered_project(tmp_control_home, name="x")
+    stream.new_thread(proj, "understand")
+    with pytest.raises(hq.HandoffError, match="does not resolve"):
+        hq.validate_target(tmp_control_home, project="x", arc="99-@ghost/01-s")
+
+
+def test_validate_target_accepts_thread_and_session_by_name_or_slug(tmp_control_home):
+    from tide.arc import stream
+
+    proj = _rostered_project(tmp_control_home, name="x")
+    entry = stream.new_thread(proj, "redesign")
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    hq.validate_target(tmp_control_home, project="x",
+                       arc="{0}/{1}".format(entry.name, sess.name))  # dir names
+    hq.validate_target(tmp_control_home, project="x", arc="redesign/kickoff")  # slugs
+    hq.validate_target(tmp_control_home, project="x", arc=entry.name)  # thread only
+
+
+def test_validate_target_rejects_missing_session_inside_thread(tmp_control_home):
+    from tide.arc import stream
+
+    proj = _rostered_project(tmp_control_home, name="x")
+    entry = stream.new_thread(proj, "redesign")
+    stream.new_session(proj, "redesign", "kickoff")
+    with pytest.raises(hq.HandoffError, match="no session"):
+        hq.validate_target(tmp_control_home, project="x",
+                           arc="{0}/77-ghost".format(entry.name))
+
+
+def test_cli_offer_fails_fast_on_bad_project(tmp_control_home, monkeypatch, capsys):
+    _rostered_project(tmp_control_home, name="x")
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
+    rc = cli.main(["handoffs", "offer", "oops", "--project", "ai-hot", "--arc", "-"])
+    assert rc == 1
+    assert "not in roster" in capsys.readouterr().err
+    assert hq.list_offers(tmp_control_home) == []  # nothing hung
+
+
+def test_cli_offer_still_hangs_valid_offer(tmp_control_home, monkeypatch, capsys):
+    from tide.arc import stream
+
+    proj = _rostered_project(tmp_control_home, name="x")
+    entry = stream.new_thread(proj, "redesign")
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
+    rc = cli.main(["handoffs", "offer", "kickoff", "--project", "x",
+                   "--arc", "{0}/{1}".format(entry.name, sess.name)])
+    assert rc == 0
+    assert [r["slug"] for r in hq.list_offers(tmp_control_home)] == ["kickoff"]

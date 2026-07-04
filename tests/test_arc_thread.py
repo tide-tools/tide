@@ -119,3 +119,48 @@ def test_session_opens_via_arc_open_under_thread(tmp_project):
     stream.new_session(tmp_project, "prz", "resumable")
     entry = stream.open_arc(tmp_project, "resumable", goal_slug="prz")
     assert entry.name == "01-resumable"
+
+
+# --- goal at birth (cand 28: no draft placeholder for offer-bound threads) --
+
+def test_new_thread_goal_fills_passport_at_birth(tmp_project):
+    from tide.arc import stream
+
+    entry = stream.new_thread(tmp_project, "redesign", goal="redesign the app")
+    assert stream.goal_filled(entry)
+    assert stream.effective_status(entry) == "active"  # not a draft
+
+
+def test_new_session_goal_param_sets_field(tmp_project):
+    from tide import fields
+    from tide.arc import stream
+
+    stream.new_thread(tmp_project, "redesign", goal="redesign the app")
+    sess = stream.new_session(tmp_project, "redesign", "kickoff",
+                              goal="kick off the redesign")
+    assert fields.read_field(sess / "arc.md", "goal") == "kick off the redesign"
+
+
+def test_cli_new_thread_goal_flag(tmp_project, monkeypatch, capsys):
+    from tide import cli
+    from tide.arc import stream
+
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["arc", "new-thread", "redesign", "--goal", "redesign the app"])
+    assert rc == 0
+    entry = stream.thread_entries(tmp_project)[0]
+    assert stream.goal_filled(entry)
+
+
+def test_cli_new_routine_goal_flag_still_draft_without_steps(tmp_project, monkeypatch):
+    # --goal fills the goal line, but a routine without real ## steps stays a
+    # draft (it cannot be run) — the goal flag must not weaken that gate.
+    from tide import cli
+    from tide.arc import stream
+
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["arc", "new-routine", "deploy", "--goal", "ship to prod"])
+    assert rc == 0
+    entry = stream.routine_entries(tmp_project)[0]
+    assert stream.goal_filled(entry)
+    assert stream.effective_status(entry) == "draft"
