@@ -36,6 +36,7 @@ HOOKS_KEY = "hooks"
 SESSION_START_EVENT = "SessionStart"
 PRE_TOOL_USE_EVENT = "PreToolUse"
 USER_PROMPT_EVENT = "UserPromptSubmit"
+STOP_EVENT = "Stop"
 
 SESSION_START_CMD = "tide hook session-start"
 EDIT_GATE_CMD = "tide hook edit-gate"
@@ -43,6 +44,7 @@ EDIT_MATCHER = "Edit|Write|MultiEdit"
 ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
 HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
+OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
 
 
 class InstallError(StreamError):
@@ -154,6 +156,21 @@ def merge_user_prompt(hooks: dict) -> bool:
     return True
 
 
+def merge_stop_nudge(hooks: dict) -> bool:
+    """Append the Stop offload-nudge entry to *hooks*; return whether it changed.
+
+    The по-ходовая выгрузка enforcer (cand 40): at end-of-turn, when the arc's
+    workspace moved but its passport went untouched past the window, the stop is
+    blocked ONCE with the exact ``tide offload`` command. ``stop_hook_active``
+    is the anti-loop. No-op (False) when already wired.
+    """
+    groups = hooks.setdefault(STOP_EVENT, [])
+    if _command_present(groups, OFFLOAD_NUDGE_CMD):
+        return False
+    groups.append({HOOKS_KEY: [_hook_block(OFFLOAD_NUDGE_CMD)]})
+    return True
+
+
 def merge_hooks(data: dict) -> List[str]:
     """Merge both tide hook entries into a settings *data* dict; return notes.
 
@@ -178,6 +195,8 @@ def merge_hooks(data: dict) -> List[str]:
         )
     if merge_user_prompt(hooks):
         notes.append("{0} → {1}".format(USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD))
+    if merge_stop_nudge(hooks):
+        notes.append("{0} → {1}".format(STOP_EVENT, OFFLOAD_NUDGE_CMD))
     return notes
 
 
@@ -247,3 +266,10 @@ def register_hook_group(subparsers) -> None:
     )
     from ..handoff_queue import cmd_handoff_confirm  # lazy: avoid import cycle
     hc.set_defaults(func=cmd_handoff_confirm, _cmd="hook handoff-confirm")
+
+    on = hsub.add_parser(
+        "offload-nudge",
+        help="Stop: block once when the arc's workspace moved but its passport is stale",
+    )
+    from ..offload import cmd_offload_nudge  # lazy: keep hook wiring import-light
+    on.set_defaults(func=cmd_offload_nudge, _cmd="hook offload-nudge")

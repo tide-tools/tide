@@ -33,8 +33,8 @@ def test_merge_hooks_into_empty_writes_both_entries():
         g for g in pre if g.get("matcher") == install.ROLE_GATE_MATCHER
     )
     assert role_gate_group["hooks"][0]["command"] == install.ROLE_GATE_CMD
-    # Four notes: SessionStart + edit-gate + role-gate + UserPromptSubmit handoff-confirm.
-    assert len(notes) == 4
+    # Five notes: SessionStart + edit-gate + role-gate + handoff-confirm + Stop offload-nudge.
+    assert len(notes) == 5
     # UserPromptSubmit carries the handoff-confirm command.
     up_cmd = hooks[install.USER_PROMPT_EVENT][0]["hooks"][0]["command"]
     assert up_cmd == install.HANDOFF_CONFIRM_CMD
@@ -93,7 +93,7 @@ def test_install_hooks_writes_valid_settings_file(tmp_project):
     assert "PreToolUse" in parsed["hooks"]
     assert "UserPromptSubmit" in parsed["hooks"]
     # Four entries: SessionStart + edit-gate + role-gate + handoff-confirm.
-    assert len(notes) == 4
+    assert len(notes) == 5
 
 
 def test_install_hooks_rerun_idempotent(tmp_project):

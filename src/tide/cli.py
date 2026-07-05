@@ -297,6 +297,14 @@ def _register_handoffs(sub) -> None:
     register_handoffs(sub)
 
 
+def _register_offload(sub) -> None:
+    # cand 40: по-ходовая выгрузка — одна быстрая команда (строка в ## context +
+    # --cursor + штамп offloaded-at); её энфорсер — Stop-хук offload-nudge.
+    from .offload import register as register_offload
+
+    register_offload(sub)
+
+
 def _register_lookback(sub) -> None:
     # отлив (cand 10): the reading watermark — refs/lookback/<reader>/<scope>,
     # status/mark/log. ON-DEMAND ONLY (no daemon, no hook, no LLM): the routine's
@@ -386,6 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_candidate(subparsers)
     _register_plan(subparsers)
     _register_handoffs(subparsers)
+    _register_offload(subparsers)
     _register_lookback(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)
