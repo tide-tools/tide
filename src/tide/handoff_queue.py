@@ -221,7 +221,13 @@ def offer(home: Path, raw_slug: str, *, arc: str, project: str, seed: str,
 
 
 def list_offers(home: Path, *, status: Optional[str] = None) -> List[Dict[str, object]]:
-    """Return queue records (filename order), optionally filtered by *status*."""
+    """Return queue records NEWEST-FIRST, optionally filtered by *status*.
+
+    Newest-first is the house sorting law (cand 35): the fresh offer is the one
+    being picked up right now — it must sit on top of every list/picker, not
+    under a scroll. Sorted by the record number (int, not string — zero-padding
+    stops helping past 99).
+    """
     cdir = paths.handoffs_dir(Path(home))
     if not cdir.is_dir():
         return []
@@ -230,6 +236,7 @@ def list_offers(home: Path, *, status: Optional[str] = None) -> List[Dict[str, o
         rec = _parse(p)
         if rec and (status is None or rec["status"] == status):
             out.append(rec)
+    out.sort(key=lambda r: int(str(r["num"])), reverse=True)
     return out
 
 

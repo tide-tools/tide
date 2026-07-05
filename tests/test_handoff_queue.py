@@ -539,3 +539,14 @@ def test_cli_offer_still_hangs_valid_offer(tmp_control_home, monkeypatch, capsys
                    "--arc", "{0}/{1}".format(entry.name, sess.name)])
     assert rc == 0
     assert [r["slug"] for r in hq.list_offers(tmp_control_home)] == ["kickoff"]
+
+
+def test_list_offers_newest_first(tmp_control_home):
+    # cand 35: the fresh offer is the one being picked up NOW — top, not under
+    # a scroll. House law: newest-first everywhere.
+    hq.offer(tmp_control_home, "old", arc="-", project="p", seed="-")
+    hq.offer(tmp_control_home, "mid", arc="-", project="p", seed="-")
+    hq.offer(tmp_control_home, "new", arc="-", project="p", seed="-")
+    assert [r["slug"] for r in hq.list_offers(tmp_control_home)] == ["new", "mid", "old"]
+    out = hq.render_list(tmp_control_home)
+    assert out.index("new") < out.index("mid") < out.index("old")
