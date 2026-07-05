@@ -131,31 +131,57 @@ def unfold_control_home(
 
     if git:
         if _git_init(root):
-            created.append("git repo")
+            created.append("git repo (birth commit)")
 
     return created
 
 
 def _git_init(root: Path) -> bool:
-    """``git init`` *root* when it is not already a repo; return True if created.
+    """Make *root* a git repo WITH a first commit; return True when anything was done.
 
-    A best-effort convenience: a missing/failing ``git`` is swallowed (the
-    control-home is fully usable without version control), so init never hard-fails
-    on a machine without git.
+    ``git init`` alone leaves a mine: the repo exists but ``git worktree add``
+    (the thread-spawn path) refuses a HEAD-less repo — the project sits in the
+    picker and dies at pickup (mitehq, 2026-07-05). So init here means
+    worktree-ready: init when missing, then a birth commit when HEAD is absent.
+    Best-effort as before: a missing/failing ``git`` is swallowed.
     """
     root = Path(root)
-    if (root / ".git").exists():
-        return False
+    did = False
     try:
-        subprocess.run(
-            ["git", "init", "--quiet", str(root)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if not (root / ".git").exists():
+            subprocess.run(
+                ["git", "init", "--quiet", str(root)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            did = True
+        if not is_worktree_ready(root):
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "--quiet",
+                 "-m", "chore: tide init — birth commit"],
+                check=True, capture_output=True,
+            )
+            did = True
     except (OSError, subprocess.CalledProcessError):
+        return did
+    return did
+
+
+def is_worktree_ready(root: Path) -> bool:
+    """True when *root* is a git repo with HEAD — i.e. thread spawn can worktree it."""
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "HEAD"],
+            capture_output=True,
+        )
+    except OSError:
         return False
-    return True
+    return probe.returncode == 0
 
 
 # --- CLI wiring ------------------------------------------------------------
@@ -165,6 +191,8 @@ def _cmd_init(args) -> int:
     if getattr(args, "project", False):
         created = scaffold_project(root, name=args.name, force=args.force)
         what = "tide project scaffold"
+        if getattr(args, "git", False) and _git_init(root):
+            created.append("git repo (birth commit)")
     else:
         created = unfold_control_home(
             root, name=args.name, git=args.git, force=args.force
@@ -177,6 +205,11 @@ def _cmd_init(args) -> int:
             print("  + {0}".format(note))
     else:
         print("  (already unfolded — nothing to create)")
+    if not is_worktree_ready(root):
+        print(
+            "  ⚠ not a git repo with a commit — thread spawn (worktree) will FAIL "
+            "here.\n    Fix now: `tide adopt {0}` or re-run with --git".format(root)
+        )
     return 0
 
 
@@ -191,6 +224,7 @@ def register(subparsers) -> None:
         action="store_true",
         help="scaffold only a per-project .tide/ (no roster/README)",
     )
-    p.add_argument("--git", action="store_true", help="also 'git init' the control-home")
+    p.add_argument("--git", action="store_true",
+                   help="also make it a git repo WITH a birth commit (worktree-ready)")
     p.add_argument("--force", action="store_true", help="overwrite existing CANON/roster/README")
     p.set_defaults(func=_cmd_init, _cmd="init")

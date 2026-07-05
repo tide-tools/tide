@@ -100,3 +100,47 @@ def test_unfolded_home_is_resolvable_root(tmp_path: Path):
     nested = tmp_path / "deep" / "nested"
     nested.mkdir(parents=True)
     assert paths.find_tide_root(nested) == tmp_path.resolve()
+
+
+# --- init must not plant the mitehq mine (git init without a commit) --------
+
+def test_unfold_with_git_is_worktree_ready(tmp_path: Path):
+    """--git means worktree-ready: repo WITH a birth commit, not a HEAD-less mine.
+
+    mitehq (2026-07-05): git init happened at birth, a commit never did — the
+    project sat in the picker and every thread spawn died at pickup.
+    """
+    init_home.unfold_control_home(tmp_path, name="home", git=True)
+    if (tmp_path / ".git").exists():  # best-effort: only assert when git ran
+        assert init_home.is_worktree_ready(tmp_path)
+
+
+def test_git_init_commits_when_repo_exists_headless(tmp_path: Path):
+    import subprocess as sp
+
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
+    (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
+    assert not init_home.is_worktree_ready(tmp_path)
+    assert init_home._git_init(tmp_path) is True  # picks up the headless repo
+    assert init_home.is_worktree_ready(tmp_path)
+
+
+def test_cmd_init_warns_when_not_worktree_ready(tmp_path: Path, monkeypatch, capsys):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["init", "--project", "--name", "demo"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "worktree" in out and "FAIL" in out  # the mine is named at birth
+
+
+def test_cmd_init_project_git_flag_makes_ready(tmp_path: Path, monkeypatch, capsys):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["init", "--project", "--name", "demo", "--git"])
+    assert rc == 0
+    if (tmp_path / ".git").exists():
+        assert init_home.is_worktree_ready(tmp_path)
+        assert "⚠" not in capsys.readouterr().out
