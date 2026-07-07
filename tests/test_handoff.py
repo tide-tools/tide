@@ -57,6 +57,14 @@ def test_resolve_open_entry_finds_open_arc(tmp_project):
     assert found == entry
 
 
+def test_resolve_open_entry_matches_prefixed_name(tmp_project):
+    # the entry name `tide status` PRINTS (NN-[@]slug) must resolve the same as
+    # the bare slug — regression for the slugify/entry_slug asymmetry that sent
+    # agents chasing 'tide arc new' and duplicating arcs.
+    entry = stream.new_arc(tmp_project, "ship-it")
+    assert handoff.resolve_open_entry(tmp_project, entry.name) == entry
+
+
 def test_resolve_open_entry_none_for_missing(tmp_project):
     assert handoff.resolve_open_entry(tmp_project, "ghost") is None
 

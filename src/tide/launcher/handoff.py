@@ -130,11 +130,18 @@ def build_summary(
 # --- arc resolution + workspace write --------------------------------------
 
 def resolve_open_entry(root: Path, arc_ref: str) -> Optional[Path]:
-    """First OPEN top-stream entry whose slug matches *arc_ref* (goal preferred)."""
+    """First OPEN top-stream entry whose slug matches *arc_ref* (goal preferred).
+
+    *arc_ref* is normalised with :func:`slug.entry_slug` (not bare ``slugify``) so
+    the entry name that ``tide status`` prints — ``04-@ai-hot-companion``, prefix
+    and ``@`` and all — matches the same as the bare slug ``ai-hot-companion``.
+    (``slugify`` keeps the ``NN-`` prefix, so it silently missed the displayed
+    name — the trap that sent agents to ``tide arc new`` and duplicated arcs.)
+    """
     arcs = paths.arcs_dir(root)
     if not arcs.is_dir():
         return None
-    want = slug.slugify(arc_ref)
+    want = slug.entry_slug(arc_ref)
     matches = [
         p
         for p in arcs.iterdir()
@@ -149,6 +156,20 @@ def resolve_open_entry(root: Path, arc_ref: str) -> Optional[Path]:
     return matches[0]
 
 
+def _open_arc_slugs(root: Path) -> List[str]:
+    """Slugs of OPEN top-stream entries — the valid handoff anchors (for hints)."""
+    arcs = paths.arcs_dir(root)
+    if not arcs.is_dir():
+        return []
+    return sorted(
+        slug.entry_slug(p.name)
+        for p in arcs.iterdir()
+        if p.is_dir()
+        and p.name != paths.CANDIDATES_DIRNAME
+        and not slug.is_closed_entry(p.name)
+    )
+
+
 def write_summary(
     root: Path, arc_ref: str, summary: str, *, date: Optional[str] = None
 ) -> Path:
@@ -160,8 +181,11 @@ def write_summary(
     entry = resolve_open_entry(root, arc_ref)
     if entry is None:
         raise HandoffError(
-            "handoff: no open arc matching {0!r} — open or create one first "
-            "('tide arc new {0}')".format(arc_ref)
+            "handoff: no open top-stream arc matching {0!r}. Anchor the handoff "
+            "on an OPEN thread/goal (a session slug like '09-09-…' is NOT a "
+            "top-stream arc). Open now: {1}".format(
+                arc_ref, ", ".join(_open_arc_slugs(root)) or "(none open)"
+            )
         )
     ws = entry / WORKSPACE_DIRNAME
     ws.mkdir(parents=True, exist_ok=True)
