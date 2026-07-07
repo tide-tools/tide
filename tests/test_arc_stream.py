@@ -357,3 +357,14 @@ def test_rm_prefers_goal_over_arc_same_slug(tmp_project):
     removed = stream.rm(tmp_project, "ship", force=True)
     assert removed.name == "02-@ship"
     assert (tmp_project / ".tide/arcs/01-ship").is_dir()  # the plain arc untouched
+
+
+def test_resolve_matches_displayed_name_and_digit_slug(tmp_project):
+    # both ref forms resolve (cand 43 + agent report): the printed '01-@…' name
+    # AND a bare slug that itself starts with digits.
+    from tide.arc import stream
+
+    t = stream.new_thread(tmp_project, "ai-hot-companion", goal="g")
+    assert stream.open_arc(tmp_project, t.name) == t      # '01-@ai-hot-companion'
+    a = stream.new_arc(tmp_project, "01-mvp")
+    assert stream.open_arc(tmp_project, "01-mvp") == a    # digit-leading slug

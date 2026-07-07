@@ -84,10 +84,17 @@ def _entries(stream_dir: Path) -> List[Path]:
 
 
 def _find(stream_dir: Path, want: str, *, goal: bool, closed: bool) -> Optional[Path]:
-    """First entry in *stream_dir* matching slug *want* and the goal/closed flags."""
-    target = slug.slugify(want)
+    """First entry in *stream_dir* matching slug *want* and the goal/closed flags.
+
+    *want* matches in BOTH forms: the displayed entry name (``04-@slug`` — peeled
+    by ``entry_slug``) and the bare slug (``slugify``, which keeps a leading
+    ``NN-`` that is genuinely part of the slug, e.g. ``01-mvp``). One-form
+    matching bit both ways in the field (arc open '04-@…' missed; offload
+    '01-mvp' missed — cands 43 + agent report 2026-07-07).
+    """
+    wants = {slug.slugify(want), slug.entry_slug(want)}
     for p in _entries(stream_dir):
-        if slug.entry_slug(p.name) != target:
+        if slug.entry_slug(p.name) not in wants:
             continue
         if slug.is_goal_entry(p.name) != goal:
             continue

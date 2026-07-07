@@ -147,3 +147,11 @@ def test_install_wires_stop_nudge_idempotently():
         for g in groups for h in g.get("hooks", [])
     )
     assert install.merge_hooks(data) == []  # re-run: nothing to add
+
+
+def test_find_session_matches_digit_leading_slug(tmp_project):
+    # cand 43: session '01-01-mvp' (slug '01-mvp') must resolve by ref '01-mvp'.
+    stream.new_thread(tmp_project, "build", goal="g")
+    sess = stream.new_session(tmp_project, "build", "01-mvp")
+    assert offload.find_session(tmp_project, "01-mvp") == sess
+    assert offload.find_session(tmp_project, sess.name) == sess

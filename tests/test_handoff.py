@@ -266,3 +266,54 @@ def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, 
     (rec,) = handoff_queue.list_offers(tmp_control_home)
     assert rec["project"] == "owner"
     assert rec["seed"] == str(res.summary_path)
+
+
+# --- Fix B: continue/new into a THREAD anchors on a fresh session ------------
+# (cand 38 + agent report 2026-07-07: thread-anchored offers are invisible in
+# the menu — pickup resolves only through <thread>/<session> + session seed.)
+
+def test_run_handoff_thread_births_session_and_anchors_offer(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    res = handoff.run_handoff(
+        tmp_project, arc_ref="hygiene", mode="continue", from_session="o1"
+    )
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["arc"].startswith(entry.name + "/")        # <thread>/<session>
+    assert "pickup" in rec["arc"]
+    assert res.summary_path.name == "handoff-seed.md"
+    assert res.summary_path.parent.name == "input"        # seed in SESSION input
+    # menu maps seed.parent.parent → the session dir
+    assert res.summary_path.parent.parent.name.endswith("pickup")
+    assert rec["seed"] == str(res.summary_path)
+    assert any("session born" in n for n in res.notes)
+
+
+def test_run_handoff_thread_ref_matches_displayed_name(tmp_project, monkeypatch, tmp_path):
+    _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="real goal")
+    res = handoff.run_handoff(tmp_project, arc_ref=entry.name, mode="new")
+    assert res.offer_path is not None                     # '01-@hygiene' resolves too
+
+
+def test_run_handoff_thread_dry_run_creates_no_session(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="real goal")
+    res = handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue", dry_run=True)
+    assert handoff_queue.list_offers(home) == []
+    assert not any((entry / "arcs").iterdir())            # no side-effect session
+    assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
+
+
+def test_run_handoff_plain_arc_keeps_legacy_anchor(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_arc(tmp_project, "ship-it")
+    handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue")
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["arc"] == "ship-it"                        # unchanged for non-threads

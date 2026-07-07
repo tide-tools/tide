@@ -141,14 +141,14 @@ def resolve_open_entry(root: Path, arc_ref: str) -> Optional[Path]:
     arcs = paths.arcs_dir(root)
     if not arcs.is_dir():
         return None
-    want = slug.entry_slug(arc_ref)
+    wants = {slug.slugify(arc_ref), slug.entry_slug(arc_ref)}
     matches = [
         p
         for p in arcs.iterdir()
         if p.is_dir()
         and p.name != paths.CANDIDATES_DIRNAME
         and not slug.is_closed_entry(p.name)
-        and slug.entry_slug(p.name) == want
+        and slug.entry_slug(p.name) in wants
     ]
     if not matches:
         return None
@@ -261,13 +261,39 @@ def run_handoff(
     text = summary if summary is not None else build_summary(
         mode=mode, arc_ref=arc_ref, date=date
     )
-    summary_path = write_summary(owner_root, arc_ref, text, date=date)
+
+    # Fix B (cands 38 + agent report 2026-07-07): a live continue/new handoff
+    # into a THREAD must anchor on a real SESSION — the menu surfaces pickups
+    # only through ``<thread>/<session>`` (+seed in the session's input/), so a
+    # thread-anchored offer is INVISIBLE (the bite that stranded ai-hot and
+    # design). Create the pickup session here, land the distil as its seed.
+    # ``close`` and ``dry_run`` stay side-effect-light (workspace distil only);
+    # a plain arc (no thread) keeps the legacy anchoring.
+    offer_arc = arc_ref
+    session_born = None
+    if mode in (FORK_CONTINUE, FORK_NEW) and not dry_run:
+        from ..arc import stream as _stream
+        entry = resolve_open_entry(owner_root, arc_ref)
+        if entry is not None and _stream.is_thread(entry):
+            session_born = _stream.new_session(
+                owner_root, slug.entry_slug(entry.name), "pickup"
+            )
+            summary_path = session_born / "input" / "handoff-seed.md"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            _io.atomic_write(summary_path, text)
+            offer_arc = "{0}/{1}".format(entry.name, session_born.name)
+    if session_born is None:
+        summary_path = write_summary(owner_root, arc_ref, text, date=date)
 
     result = HandoffResult(
         mode=mode,
         summary_path=summary_path,
         candidate_reminder=candidate_reminder(root),
     )
+    if session_born is not None:
+        result.notes.append(
+            "session born for pickup: {0} (seed in its input/)".format(offer_arc)
+        )
 
     if mode == FORK_CLOSE:
         result.notes.append("close: thread distilled to {0}; no offer".format(summary_path))
@@ -286,7 +312,7 @@ def run_handoff(
     result.offer_path = handoff_queue.offer(
         home,
         arc_ref,
-        arc=arc_ref,
+        arc=offer_arc,
         project=_roster_project_name(home, owner_root),
         seed=str(summary_path),
         mode=mode,

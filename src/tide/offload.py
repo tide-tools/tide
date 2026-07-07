@@ -66,10 +66,15 @@ def _session_dirs(root: Path) -> List[Path]:
 
 
 def find_session(root: Path, ref: str) -> Optional[Path]:
-    """The open nested session *ref* names (dir name or bare slug), or None."""
-    want = slug.entry_slug(ref)
+    """The open nested session *ref* names (dir name or bare slug), or None.
+
+    Matches BOTH ref forms (cand 43): the displayed name (``01-01-mvp`` →
+    entry_slug peels the NN-) and a bare slug that itself starts with digits
+    (``01-mvp`` — slugify keeps it whole).
+    """
+    wants = {slug.slugify(ref), slug.entry_slug(ref)}
     for entry in _session_dirs(root):
-        if entry.name == ref or slug.entry_slug(entry.name) == want:
+        if entry.name == ref or slug.entry_slug(entry.name) in wants:
             return entry
     return None
 
