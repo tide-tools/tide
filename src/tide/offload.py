@@ -195,7 +195,7 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None) ->
     return (
         "tide: выгрузка отстала — workspace арки {0} двигался, а её паспорт не "
         "трогали дольше {1} мин. Сделай сейчас, это 10 секунд:\n"
-        "  tide offload {2} --cursor \"<где стою — одна строка>\" \"<что решил / что дальше>\"\n"
+        "  tide offload {2} --cursor \"<текущее действие, наст. время>\" --next \"<шаги через · >\" \"<что сделал>\"\n"
         "Правило: одна строка на каждое, без отчётов. Потом заканчивай ход."
     ).format(entry.name, NUDGE_WINDOW_SECONDS // 60, slug.entry_slug(entry.name))
 
