@@ -30,6 +30,7 @@ from .arc.stream import StreamError
 
 CONTEXT_SECTION = "## context"
 CURSOR_SECTION = "## cursor — resume here"
+NEXT_SECTION = "## next"
 OFFLOADED_FIELD = "offloaded-at"
 CLAUDE_SESSION_FIELD = "claude-session"
 
@@ -92,15 +93,19 @@ def find_session_by_claude_id(root: Path, session_id: str) -> Optional[Path]:
 
 # --- the offload write -------------------------------------------------------
 
-def offload(root: Path, ref: str, *, note: str = "", cursor: str = "") -> Path:
-    """Append *note* to the session's ``## context``; optionally reset the cursor.
+def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
+            next_steps: str = "") -> Path:
+    """Append *note* to ``## context``; optionally reset cursor and ``## next``.
 
-    Returns the passport path. Raises :class:`OffloadError` when the session
-    can't be found or there is nothing to write (no note AND no cursor).
+    ФОРМА ЗАПИСИ (закон доски, Гриша 07.07 — «агенты пишут так, чтобы можно
+    было анализировать»): cursor = ТЕКУЩЕЕ ДЕЙСТВИЕ одной строкой, настоящее
+    время («женю доску с формой записи»); next = 1–3 следующих шага через « · »;
+    note = что решил/сделал, по-человечески, без тех-жаргона в первых словах.
+    Доска показывает их буквально: cursor → «сейчас», next → «дальше».
     """
-    if not (note or "").strip() and not (cursor or "").strip():
+    if not any(s.strip() for s in (note or "", cursor or "", next_steps or "")):
         raise OffloadError(
-            "offload: nothing to write — pass a note and/or --cursor "
+            "offload: nothing to write — pass a note and/or --cursor/--next "
             "(правило: одна строка «где стою / что решил / что дальше»)"
         )
     entry = find_session(Path(root), ref)
@@ -131,6 +136,8 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "") -> Path:
     passport.write_text(text, encoding="utf-8")
     if (cursor or "").strip():
         _replace_section(passport, CURSOR_SECTION, " ".join(cursor.split()))
+    if (next_steps or "").strip():
+        _replace_section(passport, NEXT_SECTION, " ".join(next_steps.split()))
     fields.set_field(passport, OFFLOADED_FIELD, _now_iso())
     return passport
 
@@ -198,7 +205,9 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None) ->
 def _cmd_offload(args) -> int:
     root = paths.require_tide_root()
     note = " ".join(getattr(args, "note", []) or [])
-    passport = offload(root, args.session, note=note, cursor=getattr(args, "cursor", "") or "")
+    passport = offload(root, args.session, note=note,
+                       cursor=getattr(args, "cursor", "") or "",
+                       next_steps=getattr(args, "next_steps", "") or "")
     print("tide: offloaded → {0}".format(passport))
     return 0
 
@@ -235,6 +244,8 @@ def register(subparsers) -> None:
         help="по-ходовая выгрузка: строка в ## context паспорта сессии (+ --cursor)",
     )
     p.add_argument("session", help="open session slug (nested resolve across threads)")
-    p.add_argument("--cursor", help="replace the session's ## cursor body (одна строка «где стою»)")
-    p.add_argument("note", nargs="*", help="context note: «что решил / что дальше»")
+    p.add_argument("--cursor", help="ТЕКУЩЕЕ ДЕЙСТВИЕ одной строкой, настоящее время («женю доску с формой»)")
+    p.add_argument("--next", dest="next_steps",
+                   help="1–3 следующих шага через « · » — доска покажет как «дальше»")
+    p.add_argument("note", nargs="*", help="context note: что решил/сделал, по-человечески")
     p.set_defaults(func=_cmd_offload, _cmd="offload")

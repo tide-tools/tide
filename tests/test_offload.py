@@ -155,3 +155,19 @@ def test_find_session_matches_digit_leading_slug(tmp_project):
     sess = stream.new_session(tmp_project, "build", "01-mvp")
     assert offload.find_session(tmp_project, "01-mvp") == sess
     assert offload.find_session(tmp_project, sess.name) == sess
+
+
+def test_offload_next_writes_section(tmp_project, session):
+    # форма записи (закон доски 07.07): cursor=текущее действие, next=1-3 шага
+    offload.offload(tmp_project, "otliv",
+                    cursor="женю доску с формой записи",
+                    next_steps="таймлайн передач · светофор · форма в скилл")
+    text = (session / "arc.md").read_text(encoding="utf-8")
+    nxt = text.partition("## next")[2].partition("## ")[0]
+    assert "таймлайн передач" in nxt and "светофор" in nxt
+
+
+def test_cli_offload_next_flag(tmp_project, session, monkeypatch):
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "otliv", "--next", "шаг раз · шаг два"]) == 0
+    assert "шаг раз" in (session / "arc.md").read_text(encoding="utf-8")
