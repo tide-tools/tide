@@ -254,7 +254,7 @@ def test_render_line_shows_glyph_and_four_numbers():
     hl = health.HealthLine(unread=1, canon_debt=2, offers_waiting=3, roster_not_ready=4)
     line = health.render_line(hl)
     assert line.startswith("🔴")  # canon_debt + roster rot
-    for token in ("закрома 1", "канон 2", "передачи 3", "ростер 4"):
+    for token in ("непрочитано 1", "правила 2", "передачи 3", "проекты 4"):
         assert token in line
     assert "гниёт" in line
 

@@ -57,7 +57,7 @@ def test_doctor_line_prints_one_health_line_with_tristate_exit(tmp_project, monk
     out = capsys.readouterr().out.strip()
     # exactly one line, carrying the four tier-0 counts
     assert "\n" not in out
-    for token in ("закрома", "канон", "передачи", "ростер"):
+    for token in ("непрочитано", "правила", "передачи", "проекты"):
         assert token in out
     # a clean fixture is green → tristate exit 0
     assert rc == 0
@@ -68,5 +68,5 @@ def test_doctor_full_report_carries_the_health_line_at_the_top(tmp_project, monk
     cli.main(["doctor", "--no-network"])
     lines = capsys.readouterr().out.splitlines()
     # the Светофор rides above the "tide doctor" header
-    assert "закрома" in lines[0]
+    assert "непрочитано" in lines[0]
     assert lines[1] == "tide doctor"
