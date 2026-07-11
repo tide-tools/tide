@@ -225,9 +225,25 @@ def _open_board_notes(root: Path) -> List[str]:
         return []
 
 
+def _svetofor_line(root: Path) -> List[str]:
+    """The tier-0 Светофор: ONE line of health numbers at the very top of entry.
+
+    Peripheral add-on (mirrors :func:`_open_board_notes`): the four tier-0 counts
+    (unread / canon-debt / offers / roster-not-ready) as one glyphed line, so the
+    session sees red before it bites. Fully defensive + lazy — a broken corner or a
+    missing control-home yields no line, never a session break — and the whole
+    add-on deletes in one edit (this function + its call site in :func:`render`)."""
+    try:
+        from .. import health
+
+        return [health.render_line(health.compute_health(root))]
+    except Exception:
+        return []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
-    """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings.
+    """Render the SessionStart text: health line + board + role reminder + warnings.
 
     *update_note*, when present, is a non-blocking "tide update available" line
     SURFACED (never auto-applied) below the warnings. It is a parameter — not
@@ -235,7 +251,11 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
     is resolved by :func:`cmd_session_start`.
     """
     root = Path(root)
-    lines: List[str] = [board.render_board(root), "", _role_reminder(role)]
+    # The Светофор (tier-0 health) rides at the very top — the one line seen first.
+    lines: List[str] = _svetofor_line(root)
+    if lines:
+        lines.append("")
+    lines += [board.render_board(root), "", _role_reminder(role)]
 
     warnings = (
         _drift_warnings(root)

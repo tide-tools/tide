@@ -302,10 +302,22 @@ def _cmd_doctor(args) -> int:
     # find_tide_root (not require_) so doctor REPORTS "no .tide" as a failing check
     # instead of raising — a diagnostic must always produce a report.
     root = paths.find_tide_root()
+
+    # --line: the tier-0 Светофор ONLY — one line of numbers + the tristate exit
+    # code (0/1/2), so the board can dergать it by subprocess. No checks, no probe.
+    from . import health as _health
+
+    if getattr(args, "line", False):
+        hl = _health.compute_health(root)
+        print(_health.render_line(hl))
+        return hl.exit_code
+
     network = not getattr(args, "no_network", False)
     # source omitted → run_doctor resolves the real self-update source.
     report = run_doctor(root, network=network)
 
+    # The Светофор rides at the TOP of the full report — the one line seen first.
+    print(_health.render_line(_health.compute_health(root)))
     print("tide doctor")
     for r in report.results:
         print("  [{0}] {1}: {2}".format(_GLYPH.get(r.status, r.status), r.name, r.detail))
@@ -328,5 +340,11 @@ def register(subparsers) -> None:
         action="store_true",
         dest="no_network",
         help="skip the self-update channel network probe (offline / hermetic)",
+    )
+    p.add_argument(
+        "--line",
+        action="store_true",
+        dest="line",
+        help="print ONLY the tier-0 health line (Светофор) + tristate exit code (0/1/2)",
     )
     p.set_defaults(func=_cmd_doctor, _cmd="doctor")
