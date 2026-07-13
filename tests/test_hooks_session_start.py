@@ -248,3 +248,52 @@ def test_multiple_warnings_pinches_a_dissolved_origin(monkeypatch, tmp_path):
     assert warns and "MULTIPLE" in warns[0] and "successor-B" in warns[0]
     # the successor is NOT pinched
     assert session_start._multiple_warnings("successor-B") == []
+
+
+# --- cand 93: link claude-session id at start (not only on first offload) ---
+
+def test_link_claude_session_binds_a_fresh_unclaimed_head(tmp_project):
+    from tide import fields
+
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "plan")   # fresh: blank id, offloaded-at 0
+    pp = session_start._link_claude_session(tmp_project, "sid-live")
+    assert pp == s / "arc.md"
+    assert fields.read_field(pp, "claude-session") == "sid-live"
+
+
+def test_link_claude_session_noop_when_already_linked(tmp_project):
+    from tide import fields
+
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "plan")
+    fields.set_field(s / "arc.md", "claude-session", "sid-live")
+    assert session_start._link_claude_session(tmp_project, "sid-live") is None
+
+
+def test_link_claude_session_never_overwrites_a_real_head(tmp_project):
+    from tide import fields
+
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "plan")
+    fields.set_field(s / "arc.md", "claude-session", "someone-else")
+    # a different incoming id must NOT clobber an existing real link
+    assert session_start._link_claude_session(tmp_project, "sid-live") is None
+    assert fields.read_field(s / "arc.md", "claude-session") == "someone-else"
+
+
+def test_link_claude_session_skips_when_ambiguous(tmp_project):
+    from tide import fields
+
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    a = stream.new_session(tmp_project, "work", "plan")
+    b = stream.new_session(tmp_project, "work", "other")   # two fresh heads → ambiguous
+    assert session_start._link_claude_session(tmp_project, "sid-live") is None
+    assert not (fields.read_field(a / "arc.md", "claude-session") or "").strip()
+    assert not (fields.read_field(b / "arc.md", "claude-session") or "").strip()
+
+
+def test_link_claude_session_no_session_id_is_noop(tmp_project):
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    stream.new_session(tmp_project, "work", "plan")
+    assert session_start._link_claude_session(tmp_project, None) is None

@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from .. import paths, slug, sync
+from .. import fields, paths, slug, sync
 from ..arc import board
 from . import edit_gate
 
@@ -302,6 +302,70 @@ def _current_role() -> str:
     return current_role()
 
 
+def _open_sessions(root: Path) -> List[Path]:
+    """Open session sub-arcs (nested one level inside a thread/routine), any order."""
+    out: List[Path] = []
+    arcs = paths.arcs_dir(Path(root))
+    if not arcs.is_dir():
+        return out
+    for container in arcs.iterdir():
+        if (
+            not container.is_dir()
+            or container.name == paths.CANDIDATES_DIRNAME
+            or slug.is_closed_entry(container.name)
+        ):
+            continue
+        sub = container / paths.ARCS_DIRNAME
+        if not sub.is_dir():
+            continue
+        for s in sub.iterdir():
+            if s.is_dir() and not slug.is_closed_entry(s.name):
+                out.append(s)
+    return out
+
+
+def _is_unclaimed_head(session_dir: Path) -> bool:
+    """True when a session has no real head yet — a freshly-spawned, unlinked session.
+
+    'Unclaimed' = its ``claude-session`` is blank or a ``<placeholder>`` AND it never
+    pulsed (``offloaded-at`` 0/absent). Such a session is invisible to the board until
+    it offloads (cand 93) — the perfect (and safe) target to bind a live id to.
+    """
+    pp = session_dir / "arc.md"
+    cs = (fields.read_field(pp, "claude-session") or "").strip()
+    if cs and not cs.startswith("<"):
+        return False
+    off = (fields.read_field(pp, "offloaded-at") or "0").strip()
+    return off in ("", "0")
+
+
+def _link_claude_session(root: Path, session_id: Optional[str]) -> Optional[Path]:
+    """Bind the running claude *session_id* to its tide session passport AT START (cand 93).
+
+    A session that plans and WAITS for approval never offloads, so — when it wasn't
+    launched through tide's own binder (e.g. the deck's ▶) — its passport stayed blank
+    and the board showed the nit as 'launching' forever, spawning duplicates on retry.
+    Link the id now instead of only on the first offload.
+
+    Safe and idempotent: if any open session already pins THIS id, do nothing; else bind
+    it to the ONE open session that is a fresh unclaimed head. Zero or several candidates
+    ⇒ skip (never overwrite a real link, never guess between heads) — the first-offload
+    linking stays as the fallback. Returns the passport written, or None.
+    """
+    if not session_id:
+        return None
+    sessions = _open_sessions(root)
+    for s in sessions:
+        if (fields.read_field(s / "arc.md", "claude-session") or "").strip() == session_id:
+            return None  # already linked (tide's binder pinned it at launch)
+    fresh = [s for s in sessions if _is_unclaimed_head(s)]
+    if len(fresh) != 1:
+        return None  # ambiguous or none — leave it to the first offload
+    pp = fresh[0] / "arc.md"
+    fields.set_field(pp, "claude-session", session_id)
+    return pp
+
+
 def cmd_session_start(args) -> int:
     """``tide hook session-start`` — print the board + reminder + warnings.
 
@@ -312,7 +376,13 @@ def cmd_session_start(args) -> int:
     root: Optional[Path] = paths.find_tide_root()
     if root is None:
         return 0
-    print(render(root, _current_role(), update_note=_update_note(), session=_hook_session()))
+    session = _hook_session()
+    if session:
+        try:
+            _link_claude_session(root, session)  # cand 93: board sees the head at once
+        except Exception:  # noqa: BLE001 — a hook must never break a session
+            pass
+    print(render(root, _current_role(), update_note=_update_note(), session=session))
     return 0
 
 
