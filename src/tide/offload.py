@@ -246,12 +246,16 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None,
     now_ts = now if now is not None else datetime.now().timestamp()
     if now_ts - passport_m < NUDGE_WINDOW_SECONDS:
         return None  # touched recently — don't nag mid-flow
+    # Thread-qualify the suggested ref: a bare session slug ('session', 'pickup')
+    # collides across threads and now RAISES (cand 85) — the nudge must not hand the
+    # agent a command that fails. '<thread>/<session>' always resolves.
+    ref = "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name), slug.entry_slug(entry.name))
     return (
         "tide: выгрузка отстала — ты работаешь по нити {0}, а её паспорт не "
         "трогали дольше {1} мин (доска слепа). Сделай сейчас, это 10 секунд:\n"
         "  tide offload {2} --cursor \"<текущее действие, наст. время>\" --next \"<шаги через · >\" \"<что сделал>\"\n"
         "Правило: одна строка на каждое, без отчётов. Потом заканчивай ход."
-    ).format(entry.name, NUDGE_WINDOW_SECONDS // 60, slug.entry_slug(entry.name))
+    ).format(entry.name, NUDGE_WINDOW_SECONDS // 60, ref)
 
 
 # --- CLI + hook wiring -------------------------------------------------------

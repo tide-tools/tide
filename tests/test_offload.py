@@ -138,7 +138,8 @@ def test_nudge_fires_when_workspace_moved_and_passport_stale(tmp_project, sessio
     _age(session / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)
     (session / "workspace" / "work.md").write_text("progress\n", encoding="utf-8")
     reason = offload.nudge_reason(tmp_project, "sess-1")
-    assert reason and "tide offload otliv" in reason
+    # thread-qualified so the suggested command doesn't hit the ambiguity guard (cand 85)
+    assert reason and "tide offload hygiene/otliv" in reason
 
 
 def test_nudge_silent_when_passport_fresh(tmp_project, session):
