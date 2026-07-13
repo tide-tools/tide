@@ -282,11 +282,11 @@ def test_run_handoff_thread_births_session_and_anchors_offer(tmp_project, monkey
     )
     (rec,) = handoff_queue.list_offers(home)
     assert rec["arc"].startswith(entry.name + "/")        # <thread>/<session>
-    assert "pickup" in rec["arc"]
+    assert "hygiene" in rec["arc"]                         # pickup named after the thread (cand 83)
     assert res.summary_path.name == "handoff-seed.md"
     assert res.summary_path.parent.name == "input"        # seed in SESSION input
-    # menu maps seed.parent.parent → the session dir
-    assert res.summary_path.parent.parent.name.endswith("pickup")
+    # menu maps seed.parent.parent → the session dir, named NN-<thread>
+    assert res.summary_path.parent.parent.name.endswith("hygiene")
     assert rec["seed"] == str(res.summary_path)
     assert any("session born" in n for n in res.notes)
 
@@ -304,7 +304,8 @@ def test_run_handoff_second_pickup_gets_unique_slug(tmp_project, monkeypatch, tm
     names = sorted(d.name for d in (entry / "arcs").iterdir() if d.is_dir())
     slugs = [_slug.entry_slug(n) for n in names]
     assert len(set(slugs)) == len(slugs), "pickups share a slug: {0}".format(slugs)
-    assert "pickup" in slugs and any(s.startswith("pickup-") for s in slugs)
+    # named after the thread (cand 83), still unique via -N
+    assert "hygiene" in slugs and any(s.startswith("hygiene-") for s in slugs)
     # each session now resolves unambiguously by its exact (unique) dir name
     for name in names:
         assert offload.find_session(tmp_project, name).name == name
@@ -349,6 +350,25 @@ def _latest_seed(project, thread_slug):
     entry = next((Path(project) / ".tide" / "arcs").glob("*{0}*".format(thread_slug)))
     seed = sorted((entry / "arcs").rglob("handoff-seed.md"))[-1]
     return seed.read_text(encoding="utf-8")
+
+
+def test_run_handoff_new_fork_seed_requires_a_plan(tmp_project, monkeypatch, tmp_path):
+    # cand 86: a handoff-'new' seed must make building plan.md the first step so the
+    # fresh thread isn't born planless (a planless nit has no close path).
+    _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "spark", goal="build a new thing")
+    handoff.run_handoff(tmp_project, arc_ref="spark", mode="new",
+                        summary="# distil\n\nделай X\n", from_session="o1")
+    seed = _latest_seed(tmp_project, "spark")
+    assert "plan.md" in seed and "ПЛАН НИТИ" in seed
+
+
+def test_run_handoff_continue_fork_has_no_plan_preamble(tmp_project, monkeypatch, tmp_path):
+    _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "cont", goal="continue a thing")
+    handoff.run_handoff(tmp_project, arc_ref="cont", mode="continue",
+                        summary="# distil\n\nделай X\n", from_session="o1")
+    assert "ПЛАН НИТИ" not in _latest_seed(tmp_project, "cont")
 
 
 def test_run_handoff_pickup_gets_real_goal_from_next_step(tmp_project, monkeypatch, tmp_path):

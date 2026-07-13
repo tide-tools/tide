@@ -95,6 +95,24 @@ def test_closure_word_warning_silent_without_marker(tmp_project, session):
     assert offload._closure_word_warning(session / "arc.md", "подчистил мёртвый код") is None
 
 
+# --- nudge fires on a BLIND session: work in a nested repo, arc workspace idle (cand 87) ---
+
+def test_nudge_fires_on_transcript_activity_without_workspace(tmp_project, session):
+    fields.set_field(session / "arc.md", "claude-session", "sid-live")
+    passport = session / "arc.md"
+    stale = time.time() - offload.NUDGE_WINDOW_SECONDS - 60
+    os.utime(passport, (stale, stale))                       # passport old, workspace empty
+    reason = offload.nudge_reason(tmp_project, "sid-live",
+                                  now=time.time(), activity_m=time.time())
+    assert reason and "доска слепа" in reason                # agent-active signal caught it
+
+
+def test_nudge_silent_without_any_work_signal(tmp_project, session):
+    fields.set_field(session / "arc.md", "claude-session", "sid-live")
+    # no workspace movement, no transcript activity → nothing owed
+    assert offload.nudge_reason(tmp_project, "sid-live", activity_m=0.0) is None
+
+
 def test_cli_offload_roundtrip(tmp_project, session, monkeypatch, capsys):
     monkeypatch.chdir(tmp_project)
     rc = cli.main(["offload", "otliv", "--cursor", "тут", "решение", "принято"])

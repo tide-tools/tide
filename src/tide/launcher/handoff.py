@@ -313,6 +313,22 @@ def _pickup_goal(thread_entry: Path, distil: str) -> Optional[str]:
         return None
 
 
+def _new_fork_plan_preamble(thread_entry: Path) -> str:
+    """First-step banner for a NEW-thread handoff: build the nit's plan (cand 86).
+
+    A spark seed bakes in law 47 (plan the nit by waves); a handoff-``new`` seed did
+    not — so a fresh thread could be born planless, and a planless nit has NO close
+    path (the board's ✓ gate needs a plan with every wave ``[x]``). Make building
+    ``plan.md`` the explicit first step so the thread is closeable from birth.
+    """
+    return (
+        "## первый шаг — ПЛАН НИТИ (закон 47)\n"
+        "Это НОВАЯ нить. ПЕРВЫМ ДЕЛОМ построй `{0}/plan.md` шагами/волнами (что и в "
+        "каком порядке до цели), и только потом выполняй. Без плана нить нельзя "
+        "закрыть — кнопка ✓ на доске гейтится планом со всеми шагами [x].\n\n"
+    ).format(thread_entry.name)
+
+
 def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
     """The ``claude-session`` id of the thread's current holder (newest session), or None.
 
@@ -388,13 +404,19 @@ def run_handoff(
             # --from-session still wins. Read BEFORE the pickup becomes the newest.
             if not from_session:
                 from_session = _thread_origin_session(_stream, owner_root, tslug)
+            # Name the pickup after the THREAD (03-debug-deck), not a generic 'pickup'
+            # (cand 83): readable on the board, still unique via -N. The dir NN keeps
+            # siblings apart; the slug now carries meaning instead of noise.
             session_born = _stream.new_session(
-                owner_root, tslug, _unique_pickup_slug(entry),
+                owner_root, tslug, _unique_pickup_slug(entry, base=tslug),
                 goal=_pickup_goal(entry, text),
             )
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
-            _io.atomic_write(summary_path, _with_throughline(entry, session_born, text))
+            seed_text = text
+            if mode == FORK_NEW:
+                seed_text = _new_fork_plan_preamble(entry) + text
+            _io.atomic_write(summary_path, _with_throughline(entry, session_born, seed_text))
             offer_arc = "{0}/{1}".format(entry.name, session_born.name)
     if session_born is None:
         summary_path = write_summary(owner_root, arc_ref, text, date=date)

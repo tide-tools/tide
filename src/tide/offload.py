@@ -220,12 +220,17 @@ def _newest_mtime(d: Path) -> float:
     return best
 
 
-def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None) -> Optional[str]:
+def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None,
+                 activity_m: float = 0.0) -> Optional[str]:
     """The block-reason when *session_id*'s arc needs an offload, else None.
 
-    Triggers when the session's ``workspace/`` moved AND its passport has not
-    been touched for :data:`NUDGE_WINDOW_SECONDS`. Deterministic file mtimes —
-    no git, no LLM, milliseconds.
+    Triggers when WORK happened AND the passport has not been touched for
+    :data:`NUDGE_WINDOW_SECONDS`. "Work happened" is the newest of two signals:
+    the arc's ``workspace/`` mtime, and *activity_m* — the session TRANSCRIPT mtime
+    (agent is alive). The transcript signal is what catches a **blind session**: an
+    agent doing all its work in a nested/sibling code-repo never moves the arc
+    workspace, so the old workspace-only check never fired and the board stayed empty
+    mid-work (cand 87). Deterministic file mtimes — no git, no LLM, milliseconds.
     """
     entry = find_session_by_claude_id(Path(root), session_id)
     if entry is None:
@@ -235,15 +240,15 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None) ->
         passport_m = passport.stat().st_mtime
     except OSError:
         return None
-    ws_m = _newest_mtime(entry / "workspace")
-    if ws_m <= passport_m:
+    work_m = max(_newest_mtime(entry / "workspace"), activity_m or 0.0)
+    if work_m <= passport_m:
         return None  # passport is as fresh as the work — nothing owed
     now_ts = now if now is not None else datetime.now().timestamp()
     if now_ts - passport_m < NUDGE_WINDOW_SECONDS:
         return None  # touched recently — don't nag mid-flow
     return (
-        "tide: выгрузка отстала — workspace арки {0} двигался, а её паспорт не "
-        "трогали дольше {1} мин. Сделай сейчас, это 10 секунд:\n"
+        "tide: выгрузка отстала — ты работаешь по нити {0}, а её паспорт не "
+        "трогали дольше {1} мин (доска слепа). Сделай сейчас, это 10 секунд:\n"
         "  tide offload {2} --cursor \"<текущее действие, наст. время>\" --next \"<шаги через · >\" \"<что сделал>\"\n"
         "Правило: одна строка на каждое, без отчётов. Потом заканчивай ход."
     ).format(entry.name, NUDGE_WINDOW_SECONDS // 60, slug.entry_slug(entry.name))
@@ -308,7 +313,16 @@ def cmd_offload_nudge(args) -> int:
         if payload.get("stop_hook_active"):
             return 0
         session = payload.get("session_id") or payload.get("session") or ""
-        reason = nudge_reason(paths.require_tide_root(), str(session))
+        # The transcript mtime is the 'agent is alive' signal — it catches a blind
+        # session working in a nested repo, where the arc workspace never moves (cand 87).
+        activity_m = 0.0
+        tp = payload.get("transcript_path")
+        if tp:
+            try:
+                activity_m = Path(tp).stat().st_mtime
+            except OSError:
+                activity_m = 0.0
+        reason = nudge_reason(paths.require_tide_root(), str(session), activity_m=activity_m)
         if reason:
             print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001  a hook must never raise
