@@ -117,6 +117,25 @@ def test_decide_still_allows_tide_edits_while_delta_unmerged(tmp_project):
     assert code == edit_gate.ALLOW
 
 
+def test_decide_allows_out_of_project_edit_even_with_unmerged_delta(tmp_project, tmp_path):
+    # cand 67: cwd is a project whose unmerged delta would block project edits, but the
+    # target is OUTSIDE the project (the agent's ~/.claude memory / a scratchpad). The
+    # gate guards PROJECT files — an out-of-tree write must be allowed, never attributed
+    # to the cwd project and blocked on its delta (the bug, caught on itself).
+    _make_closed_arc_with_unmerged_delta(tmp_project)
+    outside = tmp_path.parent / "claude-memory-xyz" / "memory" / "fact.md"
+    code, _ = edit_gate.decide(str(outside), tmp_project)
+    assert code == edit_gate.ALLOW
+
+
+def test_decide_allows_out_of_project_edit_with_no_open_arc(tmp_project, tmp_path):
+    # same boundary, the other block reason: no open arc in the cwd project must not
+    # reach out and block a write that isn't even in the project.
+    outside = tmp_path.parent / "elsewhere" / "notes.md"
+    code, _ = edit_gate.decide(str(outside), tmp_project)
+    assert code == edit_gate.ALLOW
+
+
 # --- CLI handler (stdin payload) -------------------------------------------
 
 def _run_edit_gate(monkeypatch, payload_json):

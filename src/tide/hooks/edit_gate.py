@@ -125,9 +125,14 @@ def decide(file_path: Optional[str], cwd: Path) -> Tuple[int, str]:
         return ALLOW, ""
 
     resolved = _resolve_path(file_path, Path(cwd))
-    # Find the project from the edit target's own location (its parent may exist
-    # even when the file itself is being created), falling back to cwd.
-    root = paths.find_tide_root(resolved.parent) or paths.find_tide_root(Path(cwd))
+    # Find the project from the edit TARGET's own location — never from cwd. A target
+    # outside any tide project (the agent's ~/.claude memory, a scratchpad, a sibling
+    # repo) has no project root here and is left alone: the gate guards PROJECT files,
+    # so it must not attribute an out-of-tree edit to the cwd's project and block it on
+    # that project's unmerged delta / missing open arc (cand 67, caught on itself when
+    # the gate blocked a memory write). The target's parent resolves even for a file
+    # being created, so the climb still finds the root for genuine in-project edits.
+    root = paths.find_tide_root(resolved.parent)
     if root is None:
         return ALLOW, ""
 

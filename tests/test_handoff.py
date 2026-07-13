@@ -86,15 +86,20 @@ def test_write_summary_refuses_unknown_arc(tmp_project):
 
 # --- reminders / fork (pure-ish) -------------------------------------------
 
-def test_candidate_reminder_lists_backlog(tmp_project):
+def test_candidate_reminder_is_a_one_line_count(tmp_project):
+    # cand 39: collapse to a COUNT + drop command — don't dump the whole backlog
     candidate.new_candidate(tmp_project, "shiny-idea", body="a thought")
+    candidate.new_candidate(tmp_project, "other-idea", body="another")
     text = handoff.candidate_reminder(tmp_project)
     assert "tide candidate add" in text
-    assert "shiny-idea" in text
+    assert "2" in text                    # the count
+    assert "shiny-idea" not in text       # NOT the full backlog (the whole point)
+    assert "\n" not in text.strip()       # one line
 
 
-def test_candidate_reminder_empty(tmp_project):
-    assert "(no candidates)" in handoff.candidate_reminder(tmp_project)
+def test_candidate_reminder_empty_is_zero(tmp_project):
+    text = handoff.candidate_reminder(tmp_project)
+    assert "0" in text and "tide candidate add" in text
 
 
 # --- run_handoff orchestration ---------------------------------------------
@@ -203,7 +208,7 @@ def test_cli_handoff_dry_run_smoke(tmp_project, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "handoff [continue]" in out
-    assert "Candidates backlog" in out
+    assert "Кандидатов в бэклоге:" in out
     assert "queue untouched" in out
     # the distil landed in the arc workspace
     ws = handoff.resolve_open_entry(tmp_project, "ship-it") / "workspace"

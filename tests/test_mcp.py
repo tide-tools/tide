@@ -185,3 +185,54 @@ def test_cli_round_trip(tmp_project, monkeypatch, capsys):
     assert cli.main(["mcp", "rm", "weather"]) == 0
     capsys.readouterr()
     assert mcp.render_list(tmp_project) == "(no MCP servers)"
+
+
+# --- env support (cand 26) -------------------------------------------------
+
+def test_build_serverdef_command_with_env():
+    sd = mcp.build_serverdef("godot-mcp", env={"GODOT_PATH": "/opt/godot"})
+    assert sd == {"command": "godot-mcp", "args": [], "env": {"GODOT_PATH": "/opt/godot"}}
+
+
+def test_build_serverdef_no_env_key_when_absent():
+    sd = mcp.build_serverdef("some-cmd --flag")
+    assert "env" not in sd
+
+
+def test_build_serverdef_env_on_http_is_an_error():
+    with pytest.raises(mcp.McpError, match="command server"):
+        mcp.build_serverdef("https://x.example/mcp", env={"K": "V"})
+
+
+def test_parse_env_pairs():
+    assert mcp._parse_env(["A=1", "B=two=three"]) == {"A": "1", "B": "two=three"}
+    assert mcp._parse_env(None) == {}
+
+
+def test_parse_env_rejects_malformed():
+    with pytest.raises(mcp.McpError, match="KEY=VAL"):
+        mcp._parse_env(["NOEQUALS"])
+    with pytest.raises(mcp.McpError, match="empty key"):
+        mcp._parse_env(["=v"])
+
+
+def test_add_server_persists_env(tmp_project):
+    mcp.add_server(tmp_project, "godot", "godot-mcp", env={"GODOT_PATH": "/opt/godot"})
+    data = _read_mcp_json(tmp_project)
+    assert data["mcpServers"]["godot"]["env"] == {"GODOT_PATH": "/opt/godot"}
+
+
+def test_summarize_shows_env_keys():
+    sd = mcp.build_serverdef("godot-mcp", env={"GODOT_PATH": "/x", "API_KEY": "y"})
+    line = mcp.summarize(sd)
+    assert "env:" in line and "API_KEY" in line and "GODOT_PATH" in line
+
+
+def test_cli_add_with_env_flag(tmp_project, monkeypatch):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["mcp", "add", "godot", "godot-mcp", "-e", "GODOT_PATH=/opt/godot"])
+    assert rc == 0
+    data = _read_mcp_json(tmp_project)
+    assert data["mcpServers"]["godot"]["env"] == {"GODOT_PATH": "/opt/godot"}

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import io as _io, paths
 from .arc.stream import StreamError
@@ -44,29 +44,58 @@ class McpError(StreamError):
 
 # --- serverdef construction ------------------------------------------------
 
-def build_serverdef(target: str, *, http: bool = False) -> Dict[str, object]:
+def build_serverdef(
+    target: str, *, http: bool = False, env: Optional[Dict[str, str]] = None
+) -> Dict[str, object]:
     """Build a server definition from *target*.
 
     ``--http`` (or a ``http(s)://`` target) → ``{"type": "http", "url": <target>}``.
     Otherwise *target* is a shell command: split on spaces into
-    ``{"command": <argv[0]>, "args": [<rest>]}``.
+    ``{"command": <argv[0]>, "args": [<rest>]}``, plus an ``env`` map when *env* is
+    given — a command server that needs e.g. ``GODOT_PATH`` had no way to carry it and
+    had to be hand-patched into the scoped file (cand 26). ``env`` on an http target is
+    a usage error (raise), since it applies to a spawned process, not a URL.
     """
     t = (target or "").strip()
     if not t:
         raise McpError("mcp: empty server target")
+    env = dict(env or {})
     if http or t.startswith("http://") or t.startswith("https://"):
+        if env:
+            raise McpError("mcp: -e/--env applies to a command server, not an http url")
         return {"type": "http", "url": t}
     parts = t.split()
-    return {"command": parts[0], "args": parts[1:]}
+    serverdef: Dict[str, object] = {"command": parts[0], "args": parts[1:]}
+    if env:
+        serverdef["env"] = env
+    return serverdef
+
+
+def _parse_env(pairs: Optional[List[str]]) -> Dict[str, str]:
+    """Parse repeatable ``-e KEY=VAL`` flags into a dict (empty/None ⇒ ``{}``)."""
+    out: Dict[str, str] = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise McpError("mcp: --env must be KEY=VAL, got {0!r}".format(item))
+        key, val = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise McpError("mcp: --env has an empty key: {0!r}".format(item))
+        out[key] = val
+    return out
 
 
 def summarize(serverdef: Dict[str, object]) -> str:
-    """A one-line human summary of a serverdef (its url or its command line)."""
+    """A one-line human summary of a serverdef (its url or its command line + env keys)."""
     if "url" in serverdef:
         return str(serverdef["url"])
     cmd = str(serverdef.get("command", ""))
     args = serverdef.get("args") or []
-    return " ".join([cmd, *[str(a) for a in args]]).strip()
+    line = " ".join([cmd, *[str(a) for a in args]]).strip()
+    env = serverdef.get("env") or {}
+    if env:
+        line += "  (env: {0})".format(", ".join(sorted(env)))
+    return line
 
 
 # --- mcp.json read / write -------------------------------------------------
@@ -129,12 +158,18 @@ def _sync_context(root: Path) -> None:
 
 # --- operations ------------------------------------------------------------
 
-def add_server(root: Path, name: str, target: str, *, http: bool = False) -> Dict[str, object]:
-    """Add (or replace) an active server *name*; point context.json at mcp.json."""
+def add_server(
+    root: Path, name: str, target: str, *, http: bool = False,
+    env: Optional[Dict[str, str]] = None,
+) -> Dict[str, object]:
+    """Add (or replace) an active server *name*; point context.json at mcp.json.
+
+    *env* carries ``-e KEY=VAL`` vars for a command server (cand 26).
+    """
     n = (name or "").strip()
     if not n:
         raise McpError("mcp: empty server name")
-    serverdef = build_serverdef(target, http=http)
+    serverdef = build_serverdef(target, http=http, env=env)
     data = read_mcp(root)
     data[ACTIVE_KEY][n] = serverdef
     data[DISABLED_KEY].pop(n, None)  # re-adding a disabled name reactivates it
@@ -205,7 +240,8 @@ def _cmd_list(args) -> int:
 
 def _cmd_add(args) -> int:
     root = paths.require_tide_root()
-    sd = add_server(root, args.name, args.target, http=getattr(args, "http", False))
+    env = _parse_env(getattr(args, "env", None))
+    sd = add_server(root, args.name, args.target, http=getattr(args, "http", False), env=env)
     print("tide: mcp + {0}  {1}".format(args.name, summarize(sd)))
     return 0
 
@@ -236,10 +272,14 @@ def register(subparsers) -> None:
     lp = msub.add_parser("list", help="list servers (ON/OFF + def)")
     lp.set_defaults(func=_cmd_list, _cmd="mcp list")
 
-    ap = msub.add_parser("add", help="add a server (name target [--http])")
+    ap = msub.add_parser("add", help="add a server (name target [--http] [-e KEY=VAL …])")
     ap.add_argument("name")
     ap.add_argument("target", help="an http(s):// url or a shell command")
     ap.add_argument("--http", action="store_true", help="treat target as an HTTP url")
+    ap.add_argument(
+        "-e", "--env", action="append", metavar="KEY=VAL",
+        help="env var for a command server (repeatable), e.g. -e GODOT_PATH=/path",
+    )
     ap.set_defaults(func=_cmd_add, _cmd="mcp add")
 
     rp = msub.add_parser("rm", help="remove a server entirely (name)")

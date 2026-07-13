@@ -197,11 +197,16 @@ def write_summary(
 # --- candidate reminder + fork offer (pure-ish) ----------------------------
 
 def candidate_reminder(root: Path) -> str:
-    """A reminder block listing the candidates backlog before the chat is dropped."""
-    backlog = candidate.render_list(root)
+    """One-line candidates-backlog reminder shown before the chat is dropped (cand 39).
+
+    The full ``render_list`` dumped the whole backlog (~37 lines) into the handoff
+    output, burying what matters — the distil path and the dry-run note. Collapse to a
+    COUNT + the drop command; the backlog itself is one ``tide candidate list`` away.
+    """
+    n = len(candidate.list_candidates(root))
     return (
-        "Candidates backlog (drop anything worth keeping with "
-        "'tide candidate add <slug>'):\n{0}".format(backlog)
+        "Кандидатов в бэклоге: {0} — заметил новое, урони: "
+        'tide candidate add <slug> "<идея>"'.format(n)
     )
 
 
