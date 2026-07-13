@@ -231,6 +231,77 @@ def promote(
     return entry
 
 
+# --- archive (retire a resolved candidate off the shelf) -------------------
+
+DONE_DIRNAME = "__done__"
+
+# A candidate is RESOLVED when a line OPENS with one of these markers — the house
+# convention for a closed candidate (``РЕШЕНО (13.07): …`` / ``Сделано в 6/6 …``).
+# Anchored at line start so a bug whose DESCRIPTION merely says "уже закрытое" or
+# "закрывается гейтом" is never mis-swept (those words sit mid-sentence).
+_RESOLVED_LINE = re.compile(r"^\s*(РЕШЕНО|СДЕЛАНО|Сделано)\b")
+
+
+def done_dir(root: Path) -> Path:
+    """The grave for retired candidates: ``candidates/__done__/`` (kept, reversible)."""
+    return paths.candidates_dir(root) / DONE_DIRNAME
+
+
+def is_resolved(path: Path) -> bool:
+    """True when a candidate carries a resolution note (a ``РЕШЕНО``/``Сделано`` line)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return any(_RESOLVED_LINE.match(ln) for ln in text.splitlines())
+
+
+def _archive_file(cand: Path, ddir: Path) -> Path:
+    """Move *cand* into *ddir*, suffixing on a name collision (never overwrite)."""
+    ddir.mkdir(parents=True, exist_ok=True)
+    dest = ddir / cand.name
+    n = 1
+    while dest.exists():
+        dest = ddir / "{0}~{1}".format(cand.name, n)
+        n += 1
+    cand.rename(dest)
+    return dest
+
+
+def archive(root: Path, key: str) -> Path:
+    """Retire ONE candidate to ``candidates/__done__/`` — off the list + board, kept.
+
+    The list and the deck both read only the top-level ``*.md`` (non-recursive), so a
+    file under ``__done__/`` drops out of view while staying on disk (and in git) — the
+    reversible retirement the backlog lacked (promote is for FUTURE work, drop is for
+    junk; this is for DONE). Returns the archived path.
+    """
+    cdir = paths.candidates_dir(root)
+    cand = _resolve(cdir, key)
+    if cand is None:
+        raise CandidateError("archive: no candidate matching {0!r} in {1}".format(key, cdir))
+    return _archive_file(cand, done_dir(root))
+
+
+def resolved_candidates(root: Path) -> List[Path]:
+    """The active candidates carrying a resolution note — the ``--resolved`` sweep set."""
+    return [it["path"] for it in list_candidates(root) if is_resolved(it["path"])]
+
+
+def archive_resolved(root: Path, *, apply: bool = False) -> "tuple[List[Path], List[Path]]":
+    """Find (and with *apply*, retire) every RESOLVED candidate. Returns ``(found, moved)``.
+
+    Dry-run by default (``moved`` empty) — the caller lists what WOULD move so a
+    mis-detected candidate is caught before anything is touched (mirrors ``arc gc``).
+    """
+    found = resolved_candidates(root)
+    if not apply or not found:
+        return found, []
+    ddir = done_dir(root)
+    moved = [_archive_file(p, ddir) for p in found]
+    return found, moved
+
+
 # --- CLI wiring ------------------------------------------------------------
 
 def _root() -> Path:
@@ -290,6 +361,33 @@ def _cmd_list(args) -> int:
     return 0
 
 
+def _cmd_archive(args) -> int:
+    root = _root()
+    if getattr(args, "resolved", False):
+        found, moved = archive_resolved(root, apply=getattr(args, "apply", False))
+        if not found:
+            print("tide: candidate archive — no resolved candidates on the shelf ✓")
+            return 0
+        if moved:
+            print("tide: archived {0} resolved candidate(s) → {1}/ (reversible):".format(
+                len(moved), DONE_DIRNAME))
+            for m in moved:
+                print("  {0}".format(m.name))
+        else:
+            print("tide: {0} resolved candidate(s) — dry-run, add --apply to retire:".format(
+                len(found)))
+            for p in found:
+                print("  {0}".format(p.name))
+        return 0
+    if not getattr(args, "key", None):
+        raise CandidateError(
+            "archive: give a candidate key, or --resolved to sweep every done one"
+        )
+    dest = archive(root, args.key)
+    print("tide: archived candidate {0} → {1}/".format(dest.name, DONE_DIRNAME))
+    return 0
+
+
 def _cmd_promote(args) -> int:
     # cli.main wraps RoleError → exit 1; import lazily to avoid an import cycle.
     from ..cli import require_orchestrator
@@ -317,6 +415,23 @@ def register(subparsers) -> None:
 
     lp = csub.add_parser("list", help="list the candidates backlog")
     lp.set_defaults(func=_cmd_list, _cmd="candidate list")
+
+    arp = csub.add_parser(
+        "archive",
+        help="retire a resolved candidate to __done__/ (off the list + board; reversible)",
+    )
+    arp.add_argument("key", nargs="?", help="candidate NN, NN-slug, or slug (omit with --resolved)")
+    arp.add_argument(
+        "--resolved",
+        action="store_true",
+        help="sweep EVERY candidate carrying a РЕШЕНО/СДЕЛАНО note (dry-run unless --apply)",
+    )
+    arp.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --resolved: actually move them (default: list what would move)",
+    )
+    arp.set_defaults(func=_cmd_archive, _cmd="candidate archive")
 
     pp = csub.add_parser("promote", help="ORCHESTRATOR-ONLY: turn a candidate into a real arc")
     pp.add_argument("key", help="candidate NN, NN-slug, or slug")

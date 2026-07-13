@@ -183,3 +183,64 @@ def test_promoted_candidate_leaves_the_open_backlog(tmp_project):
     assert "batch-writes" not in slugs  # gone from the backlog
     assert "ship-it" in slugs  # untouched candidate still listed
     assert "batch-writes" not in candidate.render_list(tmp_project)
+
+
+# --- archive (retire a resolved candidate off the shelf) --------------------
+
+def _drop(root, slug, body):
+    return candidate.new_candidate(root, slug, body=body)
+
+
+def test_is_resolved_detects_leading_marker(tmp_project):
+    done = _drop(tmp_project, "fixed", "the bug\n\n---\nРЕШЕНО (13.07): пофикшено, тесты зелёные.")
+    sdelano = _drop(tmp_project, "shipped", "idea\n\nСделано в 6/6 починок: готово.")
+    assert candidate.is_resolved(done) and candidate.is_resolved(sdelano)
+
+
+def test_is_resolved_ignores_marker_words_mid_sentence(tmp_project):
+    # a bug that merely SAYS 'закрытое'/'решено' in its description is NOT resolved
+    open_bug = _drop(tmp_project, "reprobe", "риск: сессия пере-переберёт уже закрытое, не видя решено.")
+    assert not candidate.is_resolved(open_bug)
+
+
+def test_archive_moves_candidate_off_the_list(tmp_project):
+    _drop(tmp_project, "keep", "still open")
+    done = _drop(tmp_project, "done", "x\n\nРЕШЕНО: сделано")
+    dest = candidate.archive(tmp_project, "done")
+    assert dest.parent == candidate.done_dir(tmp_project)
+    assert dest.is_file() and not done.exists()
+    slugs = [it["slug"] for it in candidate.list_candidates(tmp_project)]
+    assert slugs == ["keep"]
+
+
+def test_archive_unknown_key_raises(tmp_project):
+    with pytest.raises(candidate.CandidateError):
+        candidate.archive(tmp_project, "ghost")
+
+
+def test_archive_resolved_dry_run_touches_nothing(tmp_project):
+    _drop(tmp_project, "a", "open one")
+    _drop(tmp_project, "b", "y\n\nРЕШЕНО: done")
+    found, moved = candidate.archive_resolved(tmp_project, apply=False)
+    assert [p.stem.split("-", 1)[1] for p in found] == ["b"]
+    assert moved == []
+    assert len(candidate.list_candidates(tmp_project)) == 2
+
+
+def test_archive_resolved_apply_sweeps_only_resolved(tmp_project):
+    _drop(tmp_project, "open-one", "still going")
+    _drop(tmp_project, "done-one", "y\n\nСделано сегодня: готово")
+    _drop(tmp_project, "done-two", "z\n\n---\nРЕШЕНО (13.07): закрыто")
+    found, moved = candidate.archive_resolved(tmp_project, apply=True)
+    assert len(moved) == 2
+    slugs = [it["slug"] for it in candidate.list_candidates(tmp_project)]
+    assert slugs == ["open-one"]
+    assert candidate.done_dir(tmp_project).is_dir()
+
+
+def test_archived_candidate_is_not_listed_or_re_resolvable(tmp_project):
+    _drop(tmp_project, "gone", "x\n\nРЕШЕНО: done")
+    candidate.archive(tmp_project, "gone")
+    assert candidate.list_candidates(tmp_project) == []
+    with pytest.raises(candidate.CandidateError):
+        candidate.archive(tmp_project, "gone")
