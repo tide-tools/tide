@@ -32,6 +32,26 @@ def test_new_candidate_writes_body(tmp_project):
     assert "batch the writes" in path.read_text(encoding="utf-8")
 
 
+def test_new_candidate_stamps_dropped(tmp_project):
+    # candidate 89: the board's age must be honest from birth, so the drop time is
+    # stamped in the file (not left to FS times, which a rename-editor resets).
+    from datetime import datetime
+
+    when = datetime(2026, 7, 13, 11, 38)
+    path = candidate.new_candidate(tmp_project, "idea", now=when)
+    assert fields.read_field(path, "dropped") == "2026-07-13 11:38"
+
+
+def test_new_candidate_dropped_matches_deck_parse_format(tmp_project):
+    # the stamp must parse with the deck's primary format (``%Y-%m-%d %H:%M``),
+    # else the board silently falls back to lying FS times.
+    from datetime import datetime
+
+    path = candidate.new_candidate(tmp_project, "idea")
+    stamp = fields.read_field(path, "dropped")
+    datetime.strptime(stamp, "%Y-%m-%d %H:%M")  # raises if the format drifted
+
+
 def test_new_candidate_body_falls_back_to_title(tmp_project):
     # fix F6: with no explicit body, the full title text is persisted in the body
     # (not just encoded into the slug) so the idea survives.

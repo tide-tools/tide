@@ -23,7 +23,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from .. import paths
+from .. import fields, paths
 from . import stream
 
 GC_TRASH_DIRNAME = "gc-trash"
@@ -37,17 +37,52 @@ def _has_any_file(d: Path) -> bool:
 
 
 def contentless(entry_dir: Path) -> bool:
-    """True when nothing real ever landed in *entry_dir* — passport-only scaffold.
+    """True when nothing real ever landed in *entry_dir* — a passport-only scaffold.
 
-    Any extra file (a delta.md, a seed in ``input/``, a workspace note, a nested
-    run) is a sign of life: the entry is somebody's work, not a болванка, and gc
-    must keep its hands off.
+    Any extra file (a delta.md, a seed in ``input/``, a plan, a workspace note) is a
+    sign of life: the entry is somebody's work, not a болванка, and gc keeps its hands
+    off. For a CONTAINER (thread/routine/goal) the nested ``arcs/`` is judged
+    RECURSIVELY: a nested session that is itself an empty template shell does NOT count
+    as content, so a thread whose ONLY sessions are empty shells is still contentless —
+    the ghost-thread hole where gc read the shell's ``arc.md`` as "life" and let a dead
+    thread hang forever (cand 88; the mite ``22-@kickoff`` ghost needed ``rm -f``).
     """
     entry_dir = Path(entry_dir)
     passport = stream.passport_path(entry_dir)
-    for p in entry_dir.rglob("*"):
-        if p.is_file() and p != passport:
-            return False
+    for p in entry_dir.iterdir():
+        if p.is_file():
+            if p != passport:
+                return False  # a real file at the entry's root → alive
+        elif p.name == paths.ARCS_DIRNAME:
+            continue          # nested sessions/runs judged below, recursively
+        elif _has_any_file(p):
+            return False      # a file in input/workspace/output → alive
+    sub = entry_dir / paths.ARCS_DIRNAME
+    if sub.is_dir():
+        for child in sorted(sub.iterdir()):
+            if child.is_dir() and not _is_empty_shell(child):
+                return False  # a nested item carries real work → the container lives
+    return True
+
+
+def _is_empty_shell(entry_dir: Path) -> bool:
+    """True when a nested session/run is a bare template — placeholder passport, no more.
+
+    A ghost is contentless AND never came alive: its goal is still a placeholder (no
+    real intent), it never pulsed (``offloaded-at`` is ``0``/absent), and no
+    ``claude-session`` was ever pinned to it. Any one of those is a sign a human or an
+    agent touched it for real, so the parent thread is NOT a ghost and must survive.
+    """
+    if not contentless(entry_dir):
+        return False
+    if stream.goal_filled(entry_dir):
+        return False
+    pp = stream.passport_path(entry_dir)
+    offloaded = (fields.read_field(pp, "offloaded-at") or "0").strip()
+    if offloaded and offloaded != "0":
+        return False
+    if (fields.read_field(pp, "claude-session") or "").strip():
+        return False
     return True
 
 

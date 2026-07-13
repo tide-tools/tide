@@ -52,6 +52,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "claude-session",  # pinned claude --session-id of a session (for --resume)
         "criteria",
         "deferred",
+        "dropped",      # candidate drop stamp (honest board age; candidate 89)
         "from",
         "goal",
         "kind",         # arc kind marker — "thread" tags a session-memory arc

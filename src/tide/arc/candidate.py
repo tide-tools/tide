@@ -27,8 +27,16 @@ wires the thin CLI handlers and owns the role gate on ``promote``.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# The honest "when it was dropped" stamp (candidate 89). The deck reads this field
+# first and only falls back to FS birthtime/mtime when it's absent — and FS times
+# lie, because sharpening a candidate in a rename-editor resets both. Minute
+# precision, matching the deck's primary parse format (``%Y-%m-%d %H:%M``).
+DROPPED_FIELD = "dropped"
+_DROPPED_FMT = "%Y-%m-%d %H:%M"
 
 from .. import fields, io as _io, numbering, paths, slug
 from . import stream
@@ -47,14 +55,17 @@ class CandidateError(stream.StreamError):
 
 # --- seed template ---------------------------------------------------------
 
-def _candidate_md(name: str, from_arc: Optional[str], body: Optional[str]) -> str:
+def _candidate_md(
+    name: str, from_arc: Optional[str], body: Optional[str], dropped: str
+) -> str:
     """Seed text for a ``candidates/NN-<slug>.md`` backlog entry.
 
     *name* is the file stem (``NN-<slug>``) used as the H1; ``from:`` records the
-    origin arc (``-`` when none); the body is the free-form idea — the slug is
-    only a short handle, so the full surfaced idea is persisted here (fix F6). On
-    promote this whole file moves into the new arc's ``input/`` as the seed, so the
-    origin and body travel with it untouched.
+    origin arc (``-`` when none); ``dropped:`` stamps *when* it was dropped so the
+    board's age stays honest across later sharpening (candidate 89); the body is
+    the free-form idea — the slug is only a short handle, so the full surfaced idea
+    is persisted here (fix F6). On promote this whole file moves into the new arc's
+    ``input/`` as the seed, so origin, stamp and body travel with it untouched.
     """
     origin = (from_arc or "").strip() or "-"
     text = (body or "").strip() or "<one line — the surfaced idea>"
@@ -62,9 +73,10 @@ def _candidate_md(name: str, from_arc: Optional[str], body: Optional[str]) -> st
         "# {name}\n"
         "\n"
         "from: {origin}\n"
+        "dropped: {dropped}\n"
         "\n"
         "{body}\n"
-    ).format(name=name, origin=origin, body=text)
+    ).format(name=name, origin=origin, dropped=dropped, body=text)
 
 
 # --- capture ---------------------------------------------------------------
@@ -74,15 +86,18 @@ def new_candidate(
     raw_slug: str,
     from_arc: Optional[str] = None,
     body: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> Path:
     """Capture ``candidates/NN-<slug>.md`` on the candidates' OWN number sequence.
 
     The number comes from :func:`tide.numbering.next_num_file` (separate from the
     work-stream counter — capturing a candidate never consumes an arc number, and
-    vice-versa). Records *from_arc* as the ``from:`` origin. The slug is a SHORT
-    handle (:func:`slug.short_slug`, capped) so a pasted idea doesn't become a
-    200-char filename; the full idea is persisted in the BODY — *body* when given,
-    else the raw title text (fix F6). Returns the new file path.
+    vice-versa). Records *from_arc* as the ``from:`` origin and stamps ``dropped:``
+    with *now* (default: wall clock) so the board's age is honest from birth and
+    survives later sharpening (candidate 89). The slug is a SHORT handle
+    (:func:`slug.short_slug`, capped) so a pasted idea doesn't become a 200-char
+    filename; the full idea is persisted in the BODY — *body* when given, else the
+    raw title text (fix F6). Returns the new file path.
     """
     s = slug.short_slug(raw_slug)
     if not s:
@@ -90,12 +105,13 @@ def new_candidate(
     # Keep the full idea in the body even when only a title was passed: the slug
     # is a capped handle and would otherwise be the only record of the idea.
     idea = (body or "").strip() or (raw_slug or "").strip()
+    dropped = (now or datetime.now()).strftime(_DROPPED_FMT)
     cdir = paths.candidates_dir(root)
     cdir.mkdir(parents=True, exist_ok=True)
     nn = numbering.next_num_file(cdir)
     name = "{0}-{1}".format(nn, s)
     path = cdir / "{0}.md".format(name)
-    _io.atomic_write(path, _candidate_md(name, from_arc, idea))
+    _io.atomic_write(path, _candidate_md(name, from_arc, idea, dropped))
     return path
 
 

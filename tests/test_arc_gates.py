@@ -207,10 +207,42 @@ def test_gc_apply_moves_to_trash_reversibly(tmp_project):
     assert (t / "arc.md").is_file()  # the whole dir moved, nothing deleted
 
 
-def test_gc_never_touches_containers_with_children(tmp_project):
-    t = stream.new_thread(tmp_project, "shell-thread")
+def test_gc_sweeps_a_ghost_thread_whose_only_session_is_an_empty_shell(tmp_project):
+    # cand 88: a thread with a placeholder goal whose ONLY session is a bare template
+    # (no pulse, no claude-session, no content) is a GHOST — gc used to read the shell's
+    # arc.md as "life" and let it hang forever (mite 22-@kickoff needed rm -f).
+    t = stream.new_thread(tmp_project, "shell-thread")   # placeholder goal
     stream.new_session(tmp_project, "shell-thread", "run")
-    # the thread is a draft, but a session lives inside — hands off
+    assert t in gc.sweepable(tmp_project)
+
+
+def test_gc_keeps_a_thread_whose_session_pulsed(tmp_project):
+    # a session that ever pulsed (offloaded) came alive — the thread is not a ghost.
+    stream.new_thread(tmp_project, "live-thread")
+    s = stream.new_session(tmp_project, "live-thread", "run")
+    fields.set_field(s / "arc.md", "offloaded-at", "2026-07-13T10:00:00")
+    assert [e.name for e in gc.sweepable(tmp_project)] == []
+
+
+def test_gc_keeps_a_thread_whose_session_has_a_claude_id(tmp_project):
+    # a pinned claude-session means an agent was launched into it — hands off.
+    stream.new_thread(tmp_project, "held-thread")
+    s = stream.new_session(tmp_project, "held-thread", "run")
+    fields.set_field(s / "arc.md", "claude-session", "df023ba4")
+    assert [e.name for e in gc.sweepable(tmp_project)] == []
+
+
+def test_gc_keeps_a_thread_whose_session_has_real_content(tmp_project):
+    stream.new_thread(tmp_project, "worked-thread")
+    s = stream.new_session(tmp_project, "worked-thread", "run")
+    (s / "workspace" / "notes.md").write_text("real work\n", encoding="utf-8")
+    assert [e.name for e in gc.sweepable(tmp_project)] == []
+
+
+def test_gc_keeps_a_thread_with_a_real_goal_even_if_sessions_are_empty(tmp_project):
+    # a stated thread goal is intent — never swept, even with only empty sessions.
+    t = stream.new_thread(tmp_project, "purposed", goal="ship the greet CLI end to end")
+    stream.new_session(tmp_project, "purposed", "run")
     assert t not in gc.sweepable(tmp_project)
 
 
