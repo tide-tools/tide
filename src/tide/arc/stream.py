@@ -651,6 +651,14 @@ def close(
         if leftovers:
             raise StreamError(placeholders.refuse_message(doc.name, ref, leftovers))
 
+    return _seal_entry(root, entry, force=force)
+
+
+def _seal_entry(root: Path, entry: Path, *, force: bool) -> Path:
+    """Land any worktree, mark ``status: done``, rename to ``__…__``. The sealing half
+    of :func:`close` — extracted so :func:`close_thread` can seal a session directly
+    (guards live in the callers). Returns the closed dir path.
+    """
     # Worktree gate (11-arc-worktree-isolation): land the arc branch before sealing.
     # Gated so non-git projects and arcs without a branch are a pure no-op.
     from . import worktree as _wt  # lazy: avoid import cycle at module load
@@ -660,7 +668,7 @@ def close(
             if result.conflict:
                 raise StreamError(
                     "cannot close arc {0!r}: {1} "
-                    "(resolve the conflict, then close)".format(ref, result.detail)
+                    "(resolve the conflict, then close)".format(entry.name, result.detail)
                 )
             _wt.remove(root, entry)
         else:
@@ -671,6 +679,49 @@ def close(
     closed = entry.parent / "__{0}__".format(entry.name)
     entry.rename(closed)
     return closed
+
+
+def close_thread(root: Path, ref: str, *, force: bool = False) -> "Dict[str, object]":
+    """Close a whole thread: seal every OPEN nested session, then the thread itself.
+
+    ``close`` seals ONE entry, so closing a thread left its sessions ``[active]`` and
+    the board reading ``0/N ✓`` on a done thread (cand 74, caught live by the greet
+    dogfood). This cascades. Guards run on the THREAD first (empty ``output/`` +
+    leftover placeholders, ``-f`` overrides) — a thread must still carry a
+    self-contained result. Sessions then seal WITHOUT the output guard: a session is
+    not a work delta (its work lives in ``workspace/``), so an empty ``output/`` is
+    normal and must not block the nit's close. Returns a summary of what was sealed.
+    """
+    stream_dir = paths.arcs_dir(root)
+    entry = _resolve(stream_dir, ref, closed=False)
+    if entry is None:
+        raise StreamError(
+            "open thread {0!r} not found in {1} (already closed?)".format(ref, stream_dir)
+        )
+    if not is_thread(entry):
+        raise StreamError(
+            "{0!r} is not a thread — use 'tide arc close' for a plain arc".format(ref)
+        )
+    if not force:
+        if _output_empty(entry):
+            raise StreamError(
+                "thread {0!r} has an empty output/ — write the nit's result there first "
+                "(a closed thread must carry a self-contained output). override: close -f".format(ref)
+            )
+        doc = passport_path(entry)
+        leftovers = placeholders.find_in_file(doc)
+        if leftovers:
+            raise StreamError(placeholders.refuse_message(doc.name, ref, leftovers))
+
+    sub = entry / paths.ARCS_DIRNAME
+    open_sessions = (
+        [e for e in sorted(_entries(sub), key=lambda p: p.name)
+         if not slug.is_closed_entry(e.name)]
+        if sub.is_dir() else []
+    )
+    sealed_sessions = [_seal_entry(root, s, force=force).name for s in open_sessions]
+    closed_thread = _seal_entry(root, entry, force=force)
+    return {"thread": closed_thread.name, "sessions": sealed_sessions}
 
 
 def reopen(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
@@ -971,6 +1022,15 @@ def _cmd_close(args) -> int:
         except StreamError as exc:  # AbandonGateError is a StreamError subclass
             print("tide: {0}".format(exc), file=sys.stderr)
             return 1
+
+    # A thread closes as a WHOLE nit — cascade to its open sessions, else the board
+    # reads '0/N ✓' on a done thread with sessions still active (cand 74).
+    if arc_dir is not None and args.goal is None and is_thread(arc_dir):
+        summary = close_thread(root, args.slug, force=args.force)
+        n = len(summary["sessions"])
+        print("tide: closed thread {0} (status: done) + {1} session{2} sealed".format(
+            summary["thread"], n, "" if n == 1 else "s"))
+        return 0
 
     closed = close(root, args.slug, goal_slug=args.goal, force=args.force)
     print("tide: closed {0} (status: done)".format(closed.name))

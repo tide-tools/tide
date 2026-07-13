@@ -164,3 +164,55 @@ def test_cli_new_routine_goal_flag_still_draft_without_steps(tmp_project, monkey
     entry = stream.routine_entries(tmp_project)[0]
     assert stream.goal_filled(entry)
     assert stream.effective_status(entry) == "draft"
+
+
+# --- close_thread: close a whole nit, cascading to sessions (cand 74) --------
+
+def _thread_with_two_sessions(tmp_project):
+    entry = stream.new_thread(tmp_project, "ship", goal="ship the greet CLI")
+    s1 = stream.new_session(tmp_project, "ship", "start")
+    s2 = stream.new_session(tmp_project, "ship", "finish")
+    (entry / "output" / "result.md").write_text("done — shipped\n", encoding="utf-8")
+    return entry, s1, s2
+
+
+def test_close_thread_cascades_to_sessions(tmp_project):
+    entry, s1, s2 = _thread_with_two_sessions(tmp_project)
+    summary = stream.close_thread(tmp_project, "ship", force=True)
+
+    # the thread is sealed and every session came with it — no ghost open sessions
+    assert summary["thread"] == "__01-@ship__"
+    assert set(summary["sessions"]) == {"__01-start__", "__02-finish__"}
+    closed_thread = tmp_project / ".tide" / "arcs" / "__01-@ship__"
+    assert closed_thread.is_dir()
+    assert fields.read_field(stream.passport_path(closed_thread), "status") == "done"
+    open_sessions = [d for d in (closed_thread / "arcs").iterdir()
+                     if d.is_dir() and not slug.is_closed_entry(d.name)]
+    assert open_sessions == []  # nothing left active under a done thread
+
+
+def test_close_thread_guards_empty_output_before_touching_sessions(tmp_project):
+    entry = stream.new_thread(tmp_project, "ship", goal="ship it")
+    s1 = stream.new_session(tmp_project, "ship", "start")
+    with pytest.raises(stream.StreamError, match="empty output"):
+        stream.close_thread(tmp_project, "ship")            # no output, no force
+    # the guard fired first — the session was NOT half-sealed
+    assert not slug.is_closed_entry(s1.name)
+    assert s1.is_dir()
+
+
+def test_close_thread_refuses_a_plain_arc(tmp_project):
+    stream.new_arc(tmp_project, "loose")
+    with pytest.raises(stream.StreamError, match="not a thread"):
+        stream.close_thread(tmp_project, "loose")
+
+
+def test_cli_arc_close_on_thread_cascades(tmp_project, monkeypatch, capsys):
+    from tide import cli
+
+    _thread_with_two_sessions(tmp_project)
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["arc", "close", "ship", "-f"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "closed thread __01-@ship__" in out and "2 sessions sealed" in out
