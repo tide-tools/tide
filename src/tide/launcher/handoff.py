@@ -246,9 +246,13 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         if not goal:
             return distil
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
-        cont = "продолжаешь сессию: {0}".format(from_slug) if from_slug and from_slug != "-" else ""
-        header = "## нить (throughline — держи за шагом)\nидёт к: {0}\n{1}".format(
-            goal, (cont + "\n") if cont else ""
+        cont = "продолжаешь сессию: {0}\n".format(from_slug) if from_slug and from_slug != "-" else ""
+        # Three iron rules in the header so a pickup doesn't need a second round-trip
+        # into the tide-flow skill — the seed already covers ~90% (cand 84).
+        rules = ("правила: работа → в workspace/ своей арки · "
+                 "пульс по ходу → tide offload · передать дальше → /handoff")
+        header = "## нить (throughline — держи за шагом)\nидёт к: {0}\n{1}{2}".format(
+            goal, cont, rules
         )
         return "{0}\n---\n\n{1}".format(header, distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff
@@ -274,6 +278,31 @@ def _unique_pickup_slug(thread_entry: Path, base: str = "pickup") -> str:
     while "{0}-{1}".format(base, n) in existing:
         n += 1
     return "{0}-{1}".format(base, n)
+
+
+def _pickup_goal(thread_entry: Path, distil: str) -> Optional[str]:
+    """A real goal for the born pickup session — never the template placeholder (cand 84).
+
+    A pickup born with no goal shows ``<one line — what this session is for>`` on the
+    board, so ``tide status`` can't orient — the seed carries all the meaning while the
+    board reads empty. Derive it: prefer the distil's stated NEXT STEP (the session's
+    actual job), else fall back to the thread goal. Best-effort ⇒ None keeps the old
+    placeholder rather than breaking the handoff.
+    """
+    for line in (distil or "").splitlines():
+        low = line.lower()
+        if "следующий шаг" in low or "next step" in low:
+            g = line.split(":", 1)[1] if ":" in line else line
+            g = g.strip().strip("*#-— ").strip()
+            if g:
+                return g[:120]
+    try:
+        from .. import fields
+        from ..arc import stream as _stream
+        goal = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
+        return goal or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
@@ -352,7 +381,8 @@ def run_handoff(
             if not from_session:
                 from_session = _thread_origin_session(_stream, owner_root, tslug)
             session_born = _stream.new_session(
-                owner_root, tslug, _unique_pickup_slug(entry)
+                owner_root, tslug, _unique_pickup_slug(entry),
+                goal=_pickup_goal(entry, text),
             )
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)

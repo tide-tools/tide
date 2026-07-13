@@ -324,6 +324,34 @@ def test_run_handoff_auto_fills_origin_from_active_session(tmp_project, monkeypa
     assert rec["from_session"] == "sid-live"  # auto-derived from the thread's holder
 
 
+def test_run_handoff_pickup_gets_real_goal_from_next_step(tmp_project, monkeypatch, tmp_path):
+    # cand 84: a pickup born with no goal shows '<one line …>' on the board. The
+    # handoff auto-fills it from the distil's stated next step.
+    from tide import fields
+
+    _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    distil = "# distil\n\nСледующий шаг: подчистить мёртвый код в live_projection\n"
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue",
+                        summary=distil, from_session="o1")
+    born = sorted(d for d in (entry / "arcs").iterdir() if d.is_dir())[-1]
+    goal = fields.read_field(born / "arc.md", "goal")
+    assert goal and "<" not in goal                 # no template placeholder
+    assert "подчистить мёртвый код" in goal          # took the next-step line
+
+
+def test_run_handoff_pickup_goal_falls_back_to_thread_goal(tmp_project, monkeypatch, tmp_path):
+    from tide import fields
+
+    _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    distil = "# distil\n\nсделал то-то, без явного следующего шага\n"
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue",
+                        summary=distil, from_session="o1")
+    born = sorted(d for d in (entry / "arcs").iterdir() if d.is_dir())[-1]
+    assert fields.read_field(born / "arc.md", "goal") == "keep the seam clean"
+
+
 def test_run_handoff_explicit_from_session_wins_over_auto(tmp_project, monkeypatch, tmp_path):
     from tide import handoff_queue, fields
 
