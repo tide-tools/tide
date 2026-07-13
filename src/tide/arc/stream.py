@@ -533,7 +533,7 @@ def new_routine(root: Path, raw_slug: str, *, force: bool = False,
 
 def new_session(
     root: Path, thread_slug: str, raw_slug: str, from_ref: Optional[str] = None,
-    goal: Optional[str] = None,
+    goal: Optional[str] = None, claude_session: Optional[str] = None,
 ) -> Path:
     """Create a session ``NN-<slug>/`` inside *thread_slug*'s substream.
 
@@ -543,6 +543,12 @@ def new_session(
     chains to the thread's previous session. Carries a ``## cursor`` resume slot.
     Deliberately skips the unmerged-delta barrier — a session is not a work delta.
     The thread must be open.
+
+    *claude_session* binds the head id at BIRTH — for the board-spark flow where claude
+    is launched in the project root and creates its OWN session via this command, AFTER
+    SessionStart already fired (so the start-hook had nothing to bind). The CLI handler
+    passes ``$CLAUDE_CODE_SESSION_ID`` (the caller's own id); the board then sees the
+    head immediately instead of leaving the nit stuck on 'launching' (cand 93-board-spark).
     """
     s = slug.slugify(raw_slug)
     if not s:
@@ -564,6 +570,8 @@ def new_session(
         fields.set_field(entry / "arc.md", "from", from_slug)
     if goal and goal.strip():
         fields.set_field(entry / "arc.md", "goal", goal.strip())
+    if claude_session and claude_session.strip():
+        fields.set_field(entry / "arc.md", "claude-session", claude_session.strip())
     stamp_rev(entry, root)
     return entry
 
@@ -1073,9 +1081,15 @@ def _cmd_new_routine(args) -> int:
 
 
 def _cmd_new_session(args) -> int:
+    # When claude itself runs this (the board-spark flow: the head starts, THEN creates
+    # its own session), bind the caller's own session id at birth so the board sees the
+    # head at once — no waiting for the first offload (cand 93-board-spark). Absent env
+    # (a non-claude caller / test) → None → no stamp.
+    claude_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
     entry = new_session(_root(), args.thread, args.slug,
                         from_ref=getattr(args, "from_ref", None),
-                        goal=getattr(args, "goal_text", None))
+                        goal=getattr(args, "goal_text", None),
+                        claude_session=claude_session)
     print("tide: created session {0}".format(entry))
     return 0
 

@@ -264,3 +264,42 @@ def test_cli_arc_close_on_thread_cascades(tmp_project, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "closed thread __01-@ship__" in out and "2 sessions sealed" in out
+
+
+# --- cand 93-board-spark: bind head id at birth when claude self-creates the session
+
+def test_new_session_binds_claude_session_when_given(tmp_project):
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "spark", claude_session="sid-abc")
+    assert fields.read_field(s / "arc.md", "claude-session") == "sid-abc"
+
+
+def test_new_session_no_head_by_default(tmp_project):
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "plain")
+    assert not (fields.read_field(s / "arc.md", "claude-session") or "").strip()
+
+
+def test_cli_new_session_stamps_env_session_id(tmp_project, monkeypatch):
+    # the board-spark flow: claude runs `tide arc new-session`; its own id is in env
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "spark-sid-777")
+    rc = cli.main(["arc", "new-session", "spark", "-p", "work"])
+    assert rc == 0
+    sess = stream.last_session(tmp_project, "work")
+    assert fields.read_field(sess / "arc.md", "claude-session") == "spark-sid-777"
+
+
+def test_cli_new_session_no_stamp_without_env(tmp_project, monkeypatch):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    rc = cli.main(["arc", "new-session", "plain", "-p", "work"])
+    assert rc == 0
+    sess = stream.last_session(tmp_project, "work")
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()

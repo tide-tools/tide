@@ -97,6 +97,10 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     ``projects/<encoded>/<id>.jsonl`` file under this dir itself.
     """
     monkeypatch.delenv("TIDE_HOME", raising=False)
+    # A test must never inherit the developer's LIVE claude session id — else
+    # `tide arc new-session` would stamp it into fresh test sessions (cand 93-board-spark),
+    # polluting the "a fresh session has no head" assumption across the suite.
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # Tests legitimately create many arcs per second (a rate only a runaway loop
     # produces in real life) — lift the spawn backpressure for the suite; the
