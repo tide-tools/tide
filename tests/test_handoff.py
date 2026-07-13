@@ -291,6 +291,52 @@ def test_run_handoff_thread_births_session_and_anchors_offer(tmp_project, monkey
     assert any("session born" in n for n in res.notes)
 
 
+def test_run_handoff_second_pickup_gets_unique_slug(tmp_project, monkeypatch, tmp_path):
+    # cand 66/78: two handoffs in one thread must NOT both be slug 'pickup' — a shared
+    # slug breaks offload resolution and lineage. The dir stays NN-, the slug varies.
+    from tide import offload, slug as _slug
+
+    _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue", from_session="o1")
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue", from_session="o2")
+
+    names = sorted(d.name for d in (entry / "arcs").iterdir() if d.is_dir())
+    slugs = [_slug.entry_slug(n) for n in names]
+    assert len(set(slugs)) == len(slugs), "pickups share a slug: {0}".format(slugs)
+    assert "pickup" in slugs and any(s.startswith("pickup-") for s in slugs)
+    # each session now resolves unambiguously by its exact (unique) dir name
+    for name in names:
+        assert offload.find_session(tmp_project, name).name == name
+
+
+def test_run_handoff_auto_fills_origin_from_active_session(tmp_project, monkeypatch, tmp_path):
+    # cand 78: 'one holder per thread' must not go blind when --from-session is omitted.
+    from tide import handoff_queue, fields
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    sess = stream.new_session(tmp_project, "hygiene", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "sid-live")
+
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue")  # no from_session
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["from_session"] == "sid-live"  # auto-derived from the thread's holder
+
+
+def test_run_handoff_explicit_from_session_wins_over_auto(tmp_project, monkeypatch, tmp_path):
+    from tide import handoff_queue, fields
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    sess = stream.new_session(tmp_project, "hygiene", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "sid-live")
+
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue", from_session="explicit")
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["from_session"] == "explicit"  # caller's value is not overridden
+
+
 def test_run_handoff_thread_ref_matches_displayed_name(tmp_project, monkeypatch, tmp_path):
     _queue_home(monkeypatch, tmp_path)
     entry = stream.new_thread(tmp_project, "hygiene", goal="real goal")

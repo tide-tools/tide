@@ -56,6 +56,64 @@ def test_take_unknown_key_raises(tmp_control_home):
         hq.take(tmp_control_home, "ghost")
 
 
+# --- take is ATOMIC: it also closes the reception seam on the passport (cand 77) ---
+
+def _project_with_seeded_offer(tmp_control_home):
+    """A scaffolded project + thread/session + an offer whose seed is a real file."""
+    from tide import roster
+    from tide.arc import stream
+    from tide.init_home import scaffold_project
+
+    proj = tmp_control_home / "proj"
+    proj.mkdir()
+    scaffold_project(proj, name="proj")
+    roster.add(tmp_control_home, "proj", str(proj))
+    entry = stream.new_thread(proj, "redesign")
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# seed\n\nделай следующий шаг\n", encoding="utf-8")
+    hq.offer(tmp_control_home, "kickoff", project="proj", seed=str(seed),
+             arc="{0}/{1}".format(entry.name, sess.name))
+    return sess
+
+
+def test_take_stamps_passport_and_pulses(tmp_control_home):
+    from tide import fields
+
+    sess = _project_with_seeded_offer(tmp_control_home)
+    hq.take(tmp_control_home, "kickoff", session="claude-xyz")
+
+    passport = sess / "arc.md"
+    # (1) offer→taken already covered elsewhere; (2) session pinned → ⟳ resume works;
+    assert fields.read_field(passport, "claude-session") == "claude-xyz"
+    # (3) status live, and (4) first pulse landed so the board reads it as alive.
+    assert fields.read_field(passport, "status") == "active"
+    text = passport.read_text(encoding="utf-8")
+    assert "нить принята" in text
+    assert fields.read_field(passport, "offloaded-at") not in (None, "0", "")
+
+
+def test_confirm_hook_path_is_atomic_too(tmp_control_home):
+    from tide import fields
+
+    sess = _project_with_seeded_offer(tmp_control_home)
+    hq.reserve(tmp_control_home, "kickoff", session="claude-hook")
+    hq.confirm_for_session(tmp_control_home, "claude-hook")
+
+    passport = sess / "arc.md"
+    assert fields.read_field(passport, "claude-session") == "claude-hook"
+    assert fields.read_field(passport, "status") == "active"
+    assert "нить принята" in passport.read_text(encoding="utf-8")
+
+
+def test_take_missing_seed_still_flips_registry(tmp_control_home):
+    # No real seed → stamping is skipped, but the registry flip must still happen
+    # (taking an offer never raises on the passport side).
+    hq.offer(tmp_control_home, "no-seed", arc="-", project="p", seed="-")
+    rec = hq.take(tmp_control_home, "no-seed", session="s")
+    assert rec["status"] == hq.STATUS_TAKEN
+
+
 # --- drop (soft-archive an offer, prune its untouched session) -------------
 
 def test_drop_soft_archives_offer(tmp_control_home):

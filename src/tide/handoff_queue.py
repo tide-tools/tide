@@ -259,9 +259,66 @@ def _mark_taken(rec: Dict[str, object], *, session: Optional[str]) -> Dict[str, 
     return _parse(path)
 
 
+def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
+    """Close the reception seam on the picked-up SESSION passport (best-effort).
+
+    Taking an offer must be ATOMIC: flipping the registry (offer→taken) is not
+    enough — the seam also needs the target session's ``arc.md`` stamped, or the
+    thread stays half-received (cand 77). Without ``claude-session`` there is no ⟳
+    resume button; without a first pulse the session reads as a stub and the board
+    still paints it "⌛ передача ждёт · ▶ запустить" — inviting a duplicate pickup
+    (Mickey-17). So every taker (``take`` CLI, the confirm hook, menu pickup) runs
+    ALL THREE gestures through this one helper, never relying on the fresh session's
+    memory + a hand-edited passport (cand 76 fixed only the seed template; this
+    mechanizes it). Everything derives from the record's seed path — no roster
+    lookup — so it works from any entry point.
+
+    Fully defensive: a missing/``-`` seed, an absent passport, or any write error
+    leaves the (already flipped) registry intact and simply skips — taking an offer
+    must never raise on the stamping.
+    """
+    seed = rec.get("seed")
+    if not seed or seed == "-":
+        return
+    session_dir = Path(str(seed)).parent.parent
+    passport = session_dir / "arc.md"
+    if not passport.is_file():
+        return
+    from . import fields  # lazy: keep the queue importable standalone
+    if session and session != "-":
+        try:
+            fields.set_field(passport, "claude-session", session)
+        except Exception:  # noqa: BLE001  best-effort, never fatal
+            pass
+    try:
+        fields.set_field(passport, "status", "active")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import offload as _offload
+        # write to the EXACT session dir — never resolve by slug: pickups all share the
+        # slug ``pickup`` and a slug lookup would land this pulse on an older sibling
+        # (cand 78, caught live). ``session_dir`` is the seed's own session, unambiguous.
+        _offload.write_pulse(
+            session_dir,
+            note="нить принята — шов приёма закрыт механикой",
+            cursor="принял нить, ориентируюсь по сиду",
+        )
+    except Exception:  # noqa: BLE001  a stray pulse must never break a pickup
+        pass
+
+
 def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:
-    """Explicitly confirm pickup of offer *key* (manual equivalent of the hook)."""
-    return _mark_taken(_resolve(home, key), session=session)
+    """Confirm pickup of offer *key* ATOMICALLY: flip the registry AND close the seam.
+
+    Beyond ``offer→taken`` this stamps the target session passport and fires its
+    first pulse (:func:`_stamp_reception`) so a taken thread is fully live from one
+    command, whatever path invoked it (manual ``tide handoffs take``, board ▶,
+    menu pickup). The manual equivalent of the confirm hook — now equally complete.
+    """
+    rec = _mark_taken(_resolve(home, key), session=session)
+    _stamp_reception(rec, session=session)
+    return rec
 
 
 def _prune_untouched_session(rec: Dict[str, object]) -> bool:
@@ -363,7 +420,9 @@ def confirm_for_session(home: Path, session: str) -> Optional[Dict[str, object]]
         return None
     for r in list_offers(home, status=STATUS_OFFERED):
         if r["pickup_session"] == session:
-            return _mark_taken(r, session=session)
+            claimed = _mark_taken(r, session=session)
+            _stamp_reception(claimed, session=session)  # atomic here too (cand 77)
+            return claimed
     return None
 
 

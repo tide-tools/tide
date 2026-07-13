@@ -73,9 +73,16 @@ def find_session(root: Path, ref: str) -> Optional[Path]:
     entry_slug peels the NN-) and a bare slug that itself starts with digits
     (``01-mvp`` — slugify keeps it whole).
     """
+    dirs = _session_dirs(root)
+    # Exact dir-name (which is unique: NN-slug) wins over a bare-slug match. Without
+    # this pass, a slug shared by several sessions (legacy 'pickup' pileups) makes the
+    # iteration return the FIRST sibling even when ref names the exact dir (cand 78).
+    for entry in dirs:
+        if entry.name == ref:
+            return entry
     wants = {slug.slugify(ref), slug.entry_slug(ref)}
-    for entry in _session_dirs(root):
-        if entry.name == ref or slug.entry_slug(entry.name) in wants:
+    for entry in dirs:
+        if slug.entry_slug(entry.name) in wants:
             return entry
     return None
 
@@ -114,6 +121,21 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
         raise OffloadError(
             "offload: no open session matching {0!r}. Open sessions: {1}".format(ref, names)
         )
+    return write_pulse(entry, note=note, cursor=cursor, next_steps=next_steps)
+
+
+def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
+                next_steps: str = "") -> Path:
+    """Write a pulse to a KNOWN session dir — the resolution-free core of :func:`offload`.
+
+    Callers that already hold the exact session dir MUST use this, not ``offload(root,
+    ref)``: resolving by slug (:func:`find_session`) collides when sessions share a slug
+    (every handoff pickup is ``NN-pickup`` → entry_slug ``pickup``), so a slug lookup
+    lands the pulse on the FIRST same-slug session. That silently mis-stamped a fresh
+    pickup's "нить принята" onto an OLDER sibling — the reception seam looked half-open
+    on the real session (caught by a live 6-hop dogfood, cand 78). Taking the exact dir
+    removes the ambiguity entirely.
+    """
     passport = entry / "arc.md"
     text = passport.read_text(encoding="utf-8")
 

@@ -971,8 +971,13 @@ def launch_handoff(
         command=command, cwd=str(project),
         title="handoff · {0}".format(record["slug"]), dry_run=dry_run,
     )
-    # Opened = continued: a successful pickup takes the offer OUT of the handoffs list
-    # (it is now a live, resumable session). A failed launch leaves it hanging.
+    # Opened = continued: a successful pickup CLOSES THE RECEPTION SEAM mechanically,
+    # so the fresh session just starts working — it never re-runs a "reception protocol"
+    # (which it reads as an approval-gated plan and stalls on, half-open, until the human
+    # answers; dogfood 2026-07-12, cand 76). `take` is ATOMIC (cand 77): it flips the
+    # offer AND stamps the session passport (claude-session + status active) AND fires
+    # the first pulse, so all three gestures land here at pickup, not in the seeded
+    # agent. A failed launch leaves the offer hanging, recoverable.
     if res.ok and not dry_run:
         try:
             from .. import handoff_queue  # lazy: avoid import cycle

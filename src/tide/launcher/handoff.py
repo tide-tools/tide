@@ -224,6 +224,76 @@ class HandoffResult:
     notes: List[str] = field(default_factory=list)
 
 
+def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
+    """Prepend the thread's THROUGHLINE to a seed so the idea survives the chain.
+
+    A seed lands the ONE next step — deliberately, not a survey. But across a chain
+    of handoffs (A→B→C…) each session then sees only its local step, and the ORIGINAL
+    idea erodes: proved by a 2-hop probe where neither seed carried the thread goal,
+    while it sat intact on disk (the same agent-memory dependency we mechanized away
+    for the reception seam). The offering agent is *told* to write a "нить двумя шагами
+    вперёд" line — but told, not enforced. So we stamp it mechanically: every thread
+    seed opens with where the nit is HEADED (thread goal) and which session it
+    CONTINUES (lineage), above the agent's distil (which still leads with the step).
+
+    Best-effort: no goal / any read error ⇒ return the distil unchanged (the header is
+    a safety net, never a new way to break a handoff).
+    """
+    try:
+        from .. import fields
+        from ..arc import stream as _stream
+        goal = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
+        if not goal:
+            return distil
+        from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
+        cont = "продолжаешь сессию: {0}".format(from_slug) if from_slug and from_slug != "-" else ""
+        header = "## нить (throughline — держи за шагом)\nидёт к: {0}\n{1}".format(
+            goal, (cont + "\n") if cont else ""
+        )
+        return "{0}\n---\n\n{1}".format(header, distil)
+    except Exception:  # noqa: BLE001  the header must never break a handoff
+        return distil
+
+
+def _unique_pickup_slug(thread_entry: Path, base: str = "pickup") -> str:
+    """A pickup slug UNIQUE within the thread, so no two sessions share a slug.
+
+    Every handoff naming its session ``pickup`` made the slug ambiguous: slug-based
+    resolution (``offload``) and the lineage ``from:`` pointer could no longer tell
+    the pickups apart — a live 6-hop dogfood landed a fresh session's pulse on an
+    older sibling (cand 66/78). Numbering the DIR (``NN-``) isn't enough; the SLUG
+    must differ. Returns ``pickup``, then ``pickup-2``, ``pickup-3``, … .
+    """
+    arcs = thread_entry / "arcs"
+    existing = set()
+    if arcs.is_dir():
+        existing = {slug.entry_slug(d.name) for d in arcs.iterdir() if d.is_dir()}
+    if base not in existing:
+        return base
+    n = 2
+    while "{0}-{1}".format(base, n) in existing:
+        n += 1
+    return "{0}-{1}".format(base, n)
+
+
+def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
+    """The ``claude-session`` id of the thread's current holder (newest session), or None.
+
+    Auto-fills the offer's origin id for the multiples detector when the caller
+    didn't pass ``--from-session`` — the 'one holder per thread' guard must not go
+    blind just because a flag was forgotten (cand 78). Read BEFORE the pickup is born.
+    """
+    try:
+        from .. import fields
+        prev = stream_mod.last_session(owner_root, thread_slug)
+        if prev is None:
+            return None
+        sid = (fields.read_field(prev / "arc.md", "claude-session") or "").strip()
+        return sid or None
+    except Exception:  # noqa: BLE001  best-effort — never break a handoff over lineage
+        return None
+
+
 def run_handoff(
     root: Path,
     *,
@@ -275,12 +345,18 @@ def run_handoff(
         from ..arc import stream as _stream
         entry = resolve_open_entry(owner_root, arc_ref)
         if entry is not None and _stream.is_thread(entry):
+            tslug = slug.entry_slug(entry.name)
+            # Origin id for the multiples detector: auto-fill from the thread's
+            # current holder when the caller didn't pass it (cand 78). Explicit
+            # --from-session still wins. Read BEFORE the pickup becomes the newest.
+            if not from_session:
+                from_session = _thread_origin_session(_stream, owner_root, tslug)
             session_born = _stream.new_session(
-                owner_root, slug.entry_slug(entry.name), "pickup"
+                owner_root, tslug, _unique_pickup_slug(entry)
             )
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
-            _io.atomic_write(summary_path, text)
+            _io.atomic_write(summary_path, _with_throughline(entry, session_born, text))
             offer_arc = "{0}/{1}".format(entry.name, session_born.name)
     if session_born is None:
         summary_path = write_summary(owner_root, arc_ref, text, date=date)

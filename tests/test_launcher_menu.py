@@ -692,3 +692,79 @@ def test_list_threads_hides_draft_again_after_drop(home_with_project, monkeypatc
              arc="{0}/{1}".format(entry.name, sess.name))
     hq.drop(home, "kickoff")
     assert menu.list_threads(proj) == []  # no live offer → draft gate applies again
+
+
+# --- pickup closes the reception seam mechanically (cand 76) ----------------
+
+class _OkAdapter:
+    """A stub terminal adapter whose spawn always 'succeeds' (no window opened)."""
+
+    def spawn(self, *, command, cwd, title, dry_run=False):
+        from tide.adapters import SpawnResult
+        return SpawnResult(ok=True, ref="stub", commands=[command])
+
+
+def _seed_offer(home, proj):
+    """Hang a real offer with a seed file on disk; return (record, session dir)."""
+    from tide import handoff_queue as hq
+    from tide.arc import stream
+
+    entry = stream.new_thread(proj, "redesign")
+    sess = stream.new_session(proj, "redesign", "kickoff")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# seed\n\nделай следующий шаг\n", encoding="utf-8")
+    hq.offer(home, "kickoff", project="proj", seed=str(seed),
+             arc="{0}/{1}".format(entry.name, sess.name))
+    return hq.list_offers(home)[0], sess
+
+
+def test_pickup_marks_offer_taken(home_with_project):
+    home, proj = home_with_project
+    from tide import handoff_queue as hq
+
+    record, _sess = _seed_offer(home, proj)
+    menu.launch_handoff(record, menu.list_entries(home),
+                        control_home=home, adapter=_OkAdapter())
+    assert hq.list_offers(home)[0]["status"] == "taken"
+
+
+def test_pickup_stamps_passport_active_and_pins_session(home_with_project):
+    home, proj = home_with_project
+    from tide import fields
+
+    record, sess = _seed_offer(home, proj)
+    menu.launch_handoff(record, menu.list_entries(home),
+                        control_home=home, adapter=_OkAdapter())
+    passport = sess / "arc.md"
+    assert fields.read_field(passport, "status") == "active"
+    # the pinned claude session id makes the picked-up session resumable
+    assert (fields.read_field(passport, "claude-session") or "").strip()
+
+
+def test_pickup_fires_first_pulse_so_board_sees_it_live(home_with_project):
+    home, proj = home_with_project
+    from tide import fields
+
+    record, sess = _seed_offer(home, proj)
+    menu.launch_handoff(record, menu.list_entries(home),
+                        control_home=home, adapter=_OkAdapter())
+    passport_text = (sess / "arc.md").read_text(encoding="utf-8")
+    # the mechanical pulse lands in ## context and stamps offloaded-at (board = live)
+    assert "нить принята" in passport_text
+    assert fields.read_field(sess / "arc.md", "offloaded-at") not in (None, "0", "")
+
+
+def test_failed_pickup_leaves_offer_hanging(home_with_project):
+    home, proj = home_with_project
+    from tide import handoff_queue as hq
+    from tide.adapters import SpawnResult
+
+    class _FailAdapter:
+        def spawn(self, *, command, cwd, title, dry_run=False):
+            return SpawnResult(ok=False, detail="no terminal", commands=[command])
+
+    record, _sess = _seed_offer(home, proj)
+    menu.launch_handoff(record, menu.list_entries(home),
+                        control_home=home, adapter=_FailAdapter())
+    # the two-stage guarantee: a failed launch never consumes the offer
+    assert hq.list_offers(home)[0]["status"] == "offered"
