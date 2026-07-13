@@ -52,6 +52,49 @@ def test_offload_unknown_session_lists_open(tmp_project, session):
         offload.offload(tmp_project, "ghost", note="x")
 
 
+# --- ambiguous slug across threads must RAISE, not corrupt a stranger (cand 85) ---
+
+def _two_threads_same_session_slug(tmp_project):
+    stream.new_thread(tmp_project, "alpha", goal="a-goal")
+    a = stream.new_session(tmp_project, "alpha", "work")
+    stream.new_thread(tmp_project, "beta", goal="b-goal")
+    b = stream.new_session(tmp_project, "beta", "work")
+    return a, b  # both dirs are '01-work', in different threads
+
+
+def test_offload_ambiguous_slug_raises_with_thread_options(tmp_project):
+    a, b = _two_threads_same_session_slug(tmp_project)
+    with pytest.raises(offload.OffloadError, match="ambiguous"):
+        offload.offload(tmp_project, "work", note="must not silently land anywhere")
+    # neither passport was touched — no silent corruption
+    assert "must not silently land" not in (a / "arc.md").read_text(encoding="utf-8")
+    assert "must not silently land" not in (b / "arc.md").read_text(encoding="utf-8")
+
+
+def test_offload_thread_qualified_resolves_the_right_session(tmp_project):
+    a, b = _two_threads_same_session_slug(tmp_project)
+    offload.offload(tmp_project, "beta/work", note="lands in beta only")
+    assert "lands in beta only" in (b / "arc.md").read_text(encoding="utf-8")
+    assert "lands in beta only" not in (a / "arc.md").read_text(encoding="utf-8")
+
+
+def test_offload_single_slug_still_resolves_plainly(tmp_project, session):
+    # a slug unique across all threads keeps working without qualification
+    offload.offload(tmp_project, "otliv", note="plain")
+    assert "plain" in (session / "arc.md").read_text(encoding="utf-8")
+
+
+# --- words != disk guard: pulse says closed while the thread is open (cand 80) ---
+
+def test_closure_word_warning_when_thread_open(tmp_project, session):
+    warn = offload._closure_word_warning(session / "arc.md", "нить закрыта — всё влито в main")
+    assert warn and "ОТКРЫТА" in warn and "arc close" in warn
+
+
+def test_closure_word_warning_silent_without_marker(tmp_project, session):
+    assert offload._closure_word_warning(session / "arc.md", "подчистил мёртвый код") is None
+
+
 def test_cli_offload_roundtrip(tmp_project, session, monkeypatch, capsys):
     monkeypatch.chdir(tmp_project)
     rc = cli.main(["offload", "otliv", "--cursor", "тут", "решение", "принято"])

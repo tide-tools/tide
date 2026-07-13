@@ -67,23 +67,50 @@ def _session_dirs(root: Path) -> List[Path]:
 
 
 def find_session(root: Path, ref: str) -> Optional[Path]:
-    """The open nested session *ref* names (dir name or bare slug), or None.
+    """Resolve the open nested session *ref* names, or None if absent.
 
-    Matches BOTH ref forms (cand 43): the displayed name (``01-01-mvp`` →
-    entry_slug peels the NN-) and a bare slug that itself starts with digits
-    (``01-mvp`` — slugify keeps it whole).
+    *ref* forms: an exact dir name (``03-pickup`` — unique), a bare slug
+    (``pickup``/``01-mvp``, cand 43), or a thread-qualified ``<thread>/<session>``.
+
+    A bare slug shared by open sessions in MULTIPLE threads is AMBIGUOUS and RAISES
+    with thread-qualified options — silently resolving to the first match wrote a
+    pulse into a stranger's passport in the wild (cand 85, data corruption). Exact
+    dir-name and thread-qualified refs are never ambiguous, so they never raise.
     """
     dirs = _session_dirs(root)
-    # Exact dir-name (which is unique: NN-slug) wins over a bare-slug match. Without
-    # this pass, a slug shared by several sessions (legacy 'pickup' pileups) makes the
-    # iteration return the FIRST sibling even when ref names the exact dir (cand 78).
-    for entry in dirs:
-        if entry.name == ref:
-            return entry
+
+    # thread-qualified: '<thread>/<session>' (either part in dir-name or bare-slug form)
+    parts = [p for p in str(ref).split("/") if p and p != paths.ARCS_DIRNAME]
+    if len(parts) >= 2:
+        tw = {slug.slugify(parts[0]), slug.entry_slug(parts[0])}
+        sw = {slug.slugify(parts[1]), slug.entry_slug(parts[1])}
+        for entry in dirs:
+            thread = entry.parent.parent
+            if (thread.name == parts[0] or slug.entry_slug(thread.name) in tw) and \
+               (entry.name == parts[1] or slug.entry_slug(entry.name) in sw):
+                return entry
+        return None
+
+    def _ambiguous(cands: List[Path]) -> "OffloadError":
+        opts = ", ".join("{0}/{1}".format(e.parent.parent.name, e.name) for e in cands)
+        return OffloadError(
+            "offload: session {0!r} is ambiguous — {1} open sessions match across "
+            "threads. Qualify it as <thread>/<session>: {2}".format(ref, len(cands), opts))
+
+    # An exact dir-name (NN-slug) is preferred, but even that can collide across
+    # threads (01-work in two threads) — so ambiguity is checked here too (cand 85).
+    exact = [e for e in dirs if e.name == ref]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise _ambiguous(exact)
+
     wants = {slug.slugify(ref), slug.entry_slug(ref)}
-    for entry in dirs:
-        if slug.entry_slug(entry.name) in wants:
-            return entry
+    matches = [e for e in dirs if slug.entry_slug(e.name) in wants]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise _ambiguous(matches)
     return None
 
 
@@ -224,13 +251,43 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None) ->
 
 # --- CLI + hook wiring -------------------------------------------------------
 
+# Words that CLAIM a nit is finished. If the pulse says so but the thread is still
+# open on disk, the board keeps showing it live — words don't convince the board,
+# only disk does (cand 80). Deliberately closure-specific to avoid false warns.
+_CLOSURE_MARKERS = ("закрыт", "влит", "смерж", "выпущен", "merged", "shipped")
+
+
+def _closure_word_warning(passport: Path, blob: str) -> Optional[str]:
+    """Warn when the pulse SAYS closed but its thread is OPEN on disk (cand 80).
+
+    The pulse lands in ``<thread>/arcs/<session>/arc.md``; the thread is the dir two
+    levels up. If it isn't wrapped ``__…__`` (closed) yet the text claims closure, the
+    board will still paint the nit live — nudge the human to close it for real.
+    """
+    low = (blob or "").lower()
+    if not any(m in low for m in _CLOSURE_MARKERS):
+        return None
+    try:
+        thread = passport.parent.parent.parent  # arc.md → session → arcs → thread
+        if thread.is_dir() and not slug.is_closed_entry(thread.name):
+            return ("tide: ⚠ пульс говорит «закрыто/влито», а нить {0} на диске ОТКРЫТА — "
+                    "слова доску не убеждают. Закрой руками: tide arc close {1}".format(
+                        thread.name, slug.entry_slug(thread.name)))
+    except Exception:  # noqa: BLE001  a warning must never break offload
+        return None
+    return None
+
+
 def _cmd_offload(args) -> int:
     root = paths.require_tide_root()
     note = " ".join(getattr(args, "note", []) or [])
-    passport = offload(root, args.session, note=note,
-                       cursor=getattr(args, "cursor", "") or "",
-                       next_steps=getattr(args, "next_steps", "") or "")
+    cursor = getattr(args, "cursor", "") or ""
+    next_steps = getattr(args, "next_steps", "") or ""
+    passport = offload(root, args.session, note=note, cursor=cursor, next_steps=next_steps)
     print("tide: offloaded → {0}".format(passport))
+    warn = _closure_word_warning(passport, " ".join((note, cursor, next_steps)))
+    if warn:
+        print(warn, file=sys.stderr)
     return 0
 
 

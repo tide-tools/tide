@@ -240,21 +240,29 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
     a safety net, never a new way to break a handoff).
     """
     try:
-        from .. import fields
+        from .. import fields, placeholders as _ph
         from ..arc import stream as _stream
-        goal = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
-        if not goal:
-            return distil
+        # A REAL goal only. An auto goal (goal == the thread's own slug/tag, e.g.
+        # goal:=debug_deck on thread 01-@debug-deck) is not a goal — printing
+        # "идёт к: debug_deck" is noise that reads as a lie (cand 83). Same filter the
+        # board uses: empty / placeholder / equals-slug ⇒ no goal line.
+        raw = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
+        tslug = slug.entry_slug(thread_entry.name)
+        auto = slug.slugify(raw) == tslug or slug.entry_slug(raw) == tslug
+        goal = raw if (raw and not _ph.find_in_text("goal: " + raw) and not auto) else ""
+
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
-        cont = "продолжаешь сессию: {0}\n".format(from_slug) if from_slug and from_slug != "-" else ""
-        # Three iron rules in the header so a pickup doesn't need a second round-trip
-        # into the tide-flow skill — the seed already covers ~90% (cand 84).
+        # Three iron rules so a pickup needn't round-trip into the tide-flow skill —
+        # the seed already covers ~90% (cand 84).
         rules = ("правила: работа → в workspace/ своей арки · "
                  "пульс по ходу → tide offload · передать дальше → /handoff")
-        header = "## нить (throughline — держи за шагом)\nидёт к: {0}\n{1}{2}".format(
-            goal, cont, rules
-        )
-        return "{0}\n---\n\n{1}".format(header, distil)
+        lines = ["## нить (throughline — держи за шагом)"]
+        if goal:
+            lines.append("идёт к: {0}".format(goal))
+        if from_slug and from_slug != "-":
+            lines.append("продолжаешь сессию: {0}".format(from_slug))
+        lines.append(rules)
+        return "{0}\n---\n\n{1}".format("\n".join(lines), distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff
         return distil
 

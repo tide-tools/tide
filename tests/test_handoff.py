@@ -324,6 +324,33 @@ def test_run_handoff_auto_fills_origin_from_active_session(tmp_project, monkeypa
     assert rec["from_session"] == "sid-live"  # auto-derived from the thread's holder
 
 
+def test_throughline_omits_auto_goal_but_keeps_rules(tmp_project, monkeypatch, tmp_path):
+    # cand 83: goal == the thread's own slug is an AUTO name, not a goal — printing
+    # 'идёт к: debug-deck' is a lie. The header drops it but keeps the iron rules.
+    _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "debug-deck", goal="debug-deck")   # goal == slug
+    handoff.run_handoff(tmp_project, arc_ref="debug-deck", mode="continue",
+                        summary="# distil\n\nСледующий шаг: X\n", from_session="o1")
+    seed = _latest_seed(tmp_project, "debug-deck")
+    assert "идёт к:" not in seed                    # no lying auto-goal line
+    assert "правила: работа" in seed                # iron rules still delivered
+
+
+def test_throughline_keeps_a_real_goal(tmp_project, monkeypatch, tmp_path):
+    _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "shipit", goal="довести CLI до релиза v1")
+    handoff.run_handoff(tmp_project, arc_ref="shipit", mode="continue",
+                        summary="# distil\n\nСледующий шаг: X\n", from_session="o1")
+    assert "идёт к: довести CLI до релиза v1" in _latest_seed(tmp_project, "shipit")
+
+
+def _latest_seed(project, thread_slug):
+    from pathlib import Path
+    entry = next((Path(project) / ".tide" / "arcs").glob("*{0}*".format(thread_slug)))
+    seed = sorted((entry / "arcs").rglob("handoff-seed.md"))[-1]
+    return seed.read_text(encoding="utf-8")
+
+
 def test_run_handoff_pickup_gets_real_goal_from_next_step(tmp_project, monkeypatch, tmp_path):
     # cand 84: a pickup born with no goal shows '<one line …>' on the board. The
     # handoff auto-fills it from the distil's stated next step.
