@@ -351,10 +351,42 @@ def cmd_offload_nudge(args) -> int:
                 activity_m = 0.0
         reason = nudge_reason(paths.require_tide_root(), str(session), activity_m=activity_m)
         if reason:
-            print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+            # A DISSOLVED head (handed this thread off, offer taken) must STAND DOWN,
+            # not be pushed to pulse: an offload would re-surface it on the board as
+            # active — the 'Mickey 17' multiple the handoff seam exists to prevent
+            # (cand 91). Never BLOCK it (a Stop-block forces it to keep going, the
+            # opposite of standing down) — one stderr note instead, then let it stop.
+            stand_down = _dissolved_stand_down(str(session))
+            if stand_down:
+                print(stand_down, file=sys.stderr)
+            else:
+                print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001  a hook must never raise
         print("tide: [offload-nudge] skipped: {0}".format(exc), file=sys.stderr)
     return 0
+
+
+def _dissolved_stand_down(session: str) -> Optional[str]:
+    """Stand-down note when *session* has DISSOLVED (offered this thread, offer taken).
+
+    The successor holds the thread now (one orchestrator per thread), so nudging this
+    head to offload is wrong — it would re-surface as active on the board (cand 91).
+    Returns None when the session still holds, or when the control-home can't be
+    resolved (cand 90's no-control-home case) — then the normal nudge stands.
+    """
+    if not session:
+        return None
+    try:
+        from . import handoff_queue as hq
+        rec = hq.is_dissolved(paths.control_home(), session)
+    except Exception:  # noqa: BLE001 — a hook check must never raise
+        return None
+    if not rec:
+        return None
+    return (
+        "tide: ты отдал нить (оффер {0} → держит {1}) — стой down, не пульсируй. "
+        "Нить ведёт преемник; offload вернул бы тебя на доску как активного (Микки-17)."
+    ).format(rec.get("name"), rec.get("taken_by"))
 
 
 def register(subparsers) -> None:

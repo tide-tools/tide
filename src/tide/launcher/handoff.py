@@ -384,6 +384,22 @@ def run_handoff(
         mode=mode, arc_ref=arc_ref, date=date
     )
 
+    # Resolve the offer queue's control-home UP FRONT — before any pickup session is
+    # born. A handoff that creates the pickup (thread case) and only THEN fails to find
+    # the control-home leaves an orphan session with no offer: a half-handoff that had
+    # to be repaired by hand (cand 90). Fail fast so the seam is transactional — no
+    # control-home ⇒ nothing created. close / dry_run hang no offer, so they skip it.
+    home = None
+    if mode in (FORK_CONTINUE, FORK_NEW) and not dry_run:
+        try:
+            home = paths.control_home(root)
+        except FileNotFoundError as exc:
+            raise HandoffError(
+                "handoff: no control-home for the offer queue — {0} "
+                "(set $TIDE_HOME or run from inside the control-home). Nothing was "
+                "created.".format(exc)
+            ) from exc
+
     # Fix B (cands 38 + agent report 2026-07-07): a live continue/new handoff
     # into a THREAD must anchor on a real SESSION — the menu surfaces pickups
     # only through ``<thread>/<session>`` (+seed in the session's input/), so a
@@ -438,12 +454,7 @@ def run_handoff(
         return result
 
     from .. import handoff_queue  # lazy: keep module import-light
-    try:
-        home = paths.control_home(root)
-    except FileNotFoundError as exc:
-        raise HandoffError(
-            "handoff: no control-home for the offer queue — {0}".format(exc)
-        ) from exc
+    assert home is not None  # resolved up front for every offer-bound mode (cand 90)
     result.offer_path = handoff_queue.offer(
         home,
         arc_ref,

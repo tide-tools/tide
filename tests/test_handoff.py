@@ -272,6 +272,20 @@ def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, 
 # (cand 38 + agent report 2026-07-07: thread-anchored offers are invisible in
 # the menu — pickup resolves only through <thread>/<session> + session seed.)
 
+def test_run_handoff_no_control_home_raises_before_birthing_a_session(tmp_project):
+    # cand 90: a handoff that can't resolve the control-home must fail FAST — BEFORE
+    # the pickup session is born — so it never strands a half-handoff orphan (the bug
+    # that had to be repaired by hand: session created, no offer). The autouse fixture
+    # unsets TIDE_HOME and this project is not under a control-home → resolution fails.
+    entry = stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    with pytest.raises(handoff.HandoffError, match="no control-home"):
+        handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue", from_session="o1")
+    # transactional: nothing created — the thread has NO pickup session
+    sub = entry / "arcs"
+    sessions = [d for d in sub.iterdir() if d.is_dir()] if sub.is_dir() else []
+    assert sessions == []
+
+
 def test_run_handoff_thread_births_session_and_anchors_offer(tmp_project, monkeypatch, tmp_path):
     from tide import handoff_queue
 

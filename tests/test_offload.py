@@ -190,6 +190,68 @@ def test_nudge_no_goal_suffix_when_thread_goal_is_real(tmp_project, session):
     assert reason and "set-goal" not in reason
 
 
+# --- dissolved head stands down instead of pulsing (cand 91) -----------------
+
+def _control_home_with_taken_offer(base, *, from_session, taker="successor"):
+    """A fresh control-home where *from_session* offered a thread that was then taken."""
+    from tests.conftest import build_tide_skeleton
+    from tide import handoff_queue as hq
+
+    home = base.parent / "ch-91"
+    home.mkdir(exist_ok=True)
+    build_tide_skeleton(home, name="ch", control_home=True)
+    hq.offer(home, "handoff", arc="-", project="demo", seed="-", from_session=from_session)
+    hq.take(home, "handoff", session=taker)
+    return home
+
+
+def test_dissolved_stand_down_note_for_a_handed_off_session(tmp_project, monkeypatch):
+    from tide import paths
+
+    home = _control_home_with_taken_offer(tmp_project, from_session="sid-x")
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+    note = offload._dissolved_stand_down("sid-x")
+    assert note and "стой down" in note and "successor" in note
+
+
+def test_dissolved_stand_down_none_when_still_holding(tmp_project, monkeypatch):
+    from tide import paths
+
+    home = _control_home_with_taken_offer(tmp_project, from_session="sid-x")
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+    assert offload._dissolved_stand_down("someone-else") is None
+
+
+def test_dissolved_stand_down_none_when_no_control_home(tmp_project, monkeypatch):
+    # cand 90's case: control-home can't be resolved → fall through, normal nudge stands
+    from tide import paths
+
+    monkeypatch.delenv(paths.TIDE_HOME_ENV, raising=False)
+    monkeypatch.chdir(tmp_project)  # a plain project, not a control-home
+    assert offload._dissolved_stand_down("sid-x") is None
+
+
+def test_nudge_hook_stands_down_a_dissolved_head_instead_of_blocking(
+    tmp_project, session, monkeypatch, capsys
+):
+    import io as _io
+    from tide import paths
+
+    _pin(session, "sid-x")
+    _age(session / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)
+    (session / "workspace" / "w.md").write_text("progress\n", encoding="utf-8")
+    home = _control_home_with_taken_offer(tmp_project, from_session="sid-x")
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+    monkeypatch.chdir(tmp_project)
+    monkeypatch.setattr("sys.stdin", _io.StringIO(json.dumps({"session_id": "sid-x"})))
+
+    rc = offload.cmd_offload_nudge(object())
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "decision" not in out          # the Stop hook did NOT block a dissolved head
+    assert "стой down" in err             # it was told to stand down instead
+
+
 def test_hook_blocks_with_json_and_respects_antiloop(tmp_project, session, monkeypatch, capsys):
     _pin(session, "sess-1")
     _age(session / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)
