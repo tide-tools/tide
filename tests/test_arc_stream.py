@@ -368,3 +368,32 @@ def test_resolve_matches_displayed_name_and_digit_slug(tmp_project):
     assert stream.open_arc(tmp_project, t.name) == t      # '01-@ai-hot-companion'
     a = stream.new_arc(tmp_project, "01-mvp")
     assert stream.open_arc(tmp_project, "01-mvp") == a    # digit-leading slug
+
+
+# --- set_goal (start gate — cand 81/87) -------------------------------------
+
+def test_set_goal_writes_real_goal_on_thread(tmp_project):
+    t = stream.new_thread(tmp_project, "handoff", goal="handoff")  # born with a slug-goal
+    pp = stream.set_goal(tmp_project, "handoff", "harden the handoff seam end to end")
+    assert fields.read_field(pp, "goal") == "harden the handoff seam end to end"
+    assert pp == stream.passport_path(t)
+
+
+def test_set_goal_refuses_blind_goal(tmp_project):
+    stream.new_thread(tmp_project, "handoff", goal="handoff")
+    for blind in ("", "handoff", "<one line>"):
+        with pytest.raises(stream.StreamError):
+            stream.set_goal(tmp_project, "handoff", blind)
+
+
+def test_set_goal_unknown_ref_raises(tmp_project):
+    with pytest.raises(stream.StreamError):
+        stream.set_goal(tmp_project, "ghost", "a real goal in words")
+
+
+def test_set_goal_targets_session_in_thread(tmp_project):
+    stream.new_thread(tmp_project, "handoff", goal="harden the seam")
+    sess = stream.new_session(tmp_project, "handoff", "pickup")
+    pp = stream.set_goal(tmp_project, "pickup", "resume the plan step 3", thread_slug="handoff")
+    assert fields.read_field(pp, "goal") == "resume the plan step 3"
+    assert pp == sess / "arc.md"

@@ -248,8 +248,7 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         # board uses: empty / placeholder / equals-slug ⇒ no goal line.
         raw = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
         tslug = slug.entry_slug(thread_entry.name)
-        auto = slug.slugify(raw) == tslug or slug.entry_slug(raw) == tslug
-        goal = raw if (raw and not _ph.find_in_text("goal: " + raw) and not auto) else ""
+        goal = "" if _ph.is_blind_goal(raw, tslug) else raw
 
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
         # Three iron rules so a pickup needn't round-trip into the tide-flow skill —

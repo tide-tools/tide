@@ -41,8 +41,9 @@ import re
 import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .. import fields, io as _io, numbering, paths, placeholders, slug
 from ..canon import rev
@@ -588,6 +589,36 @@ def new_goal(root: Path, raw_slug: str) -> Path:
     return entry
 
 
+def set_goal(root: Path, ref: str, goal_text: str,
+             *, thread_slug: Optional[str] = None) -> Path:
+    """Set an OPEN entry's ``goal:`` to REAL words — the start gate's setter (cand 81/87).
+
+    Resolves *ref* as a top-stream thread/goal/arc, or (with *thread_slug*) a session
+    inside that thread's substream, and rewrites its passport ``goal:`` line. REFUSES a
+    blind goal — empty, a ``<…>`` placeholder, or just the entry's own slug — because
+    the whole point of the gate is that the board shows a real purpose: re-stamping the
+    slug as the goal is exactly the "there's no goal there" lie this closes. Returns the
+    passport path written.
+    """
+    g = (goal_text or "").strip()
+    if thread_slug:
+        stream_dir = _open_goal_substream(root, thread_slug)  # raises if closed/absent
+    else:
+        stream_dir = paths.arcs_dir(root)
+    entry = _resolve(stream_dir, ref, closed=False)
+    if entry is None:
+        where = "thread {0!r}".format(thread_slug) if thread_slug else "the stream"
+        raise StreamError("set-goal: no open entry matching {0!r} in {1}".format(ref, where))
+    if placeholders.is_blind_goal(g, slug.entry_slug(entry.name)):
+        raise StreamError(
+            "set-goal: {0!r} is not a real goal (empty, a <…> placeholder, or just the "
+            "slug) — give the nit a purpose in plain words.".format(g)
+        )
+    pp = passport_path(entry)
+    fields.set_field(pp, "goal", g)
+    return pp
+
+
 # --- open / resume ---------------------------------------------------------
 
 def open_arc(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
@@ -681,8 +712,42 @@ def _seal_entry(root: Path, entry: Path, *, force: bool) -> Path:
     return closed
 
 
-def close_thread(root: Path, ref: str, *, force: bool = False) -> "Dict[str, object]":
-    """Close a whole thread: seal every OPEN nested session, then the thread itself.
+# A session whose last pulse is newer than this is LIVE — closing its thread must
+# NOT seal it, or a working agent is buried under a done passport: the Mickey-17
+# inverse (cand 79, caught live when closing 06-@operator killed the alive 01-frame).
+# The pulse is the honest ``offloaded-at`` stamp, never mtime (unrelated edits bump
+# mtime and would fake liveness — cand 88). Generous by design: sealing a live head
+# is a real harm; leaving a quiet session for a hand-close is how sessions are meant
+# to die anyway (silence / ✕), so we err toward NOT sealing.
+LIVE_PULSE_SECONDS = 6 * 60 * 60  # 6h
+
+
+def _pulse_age_seconds(session_dir: Path, *, now: Optional[float] = None) -> Optional[float]:
+    """Seconds since a session's last offload pulse, or None if it never pulsed.
+
+    Reads the ``offloaded-at`` ISO stamp — the honest liveness signal (cand 88:
+    activity by pulses, not mtime). ``0`` / absent / unparseable ⇒ no pulse ⇒ None.
+    """
+    raw = (fields.read_field(session_dir / "arc.md", "offloaded-at") or "").strip()
+    if not raw or raw == "0":
+        return None
+    try:
+        ts = datetime.fromisoformat(raw).timestamp()
+    except (ValueError, TypeError):
+        return None
+    now_ts = now if now is not None else datetime.now().timestamp()
+    return max(0.0, now_ts - ts)
+
+
+def _session_is_live(session_dir: Path, *, now: Optional[float] = None) -> bool:
+    """True when a session pulsed within :data:`LIVE_PULSE_SECONDS` (cand 79)."""
+    age = _pulse_age_seconds(session_dir, now=now)
+    return age is not None and age < LIVE_PULSE_SECONDS
+
+
+def close_thread(root: Path, ref: str, *, force: bool = False,
+                 now: Optional[float] = None) -> "Dict[str, object]":
+    """Close a whole thread: seal every DEAD nested session, then the thread itself.
 
     ``close`` seals ONE entry, so closing a thread left its sessions ``[active]`` and
     the board reading ``0/N ✓`` on a done thread (cand 74, caught live by the greet
@@ -690,7 +755,12 @@ def close_thread(root: Path, ref: str, *, force: bool = False) -> "Dict[str, obj
     leftover placeholders, ``-f`` overrides) — a thread must still carry a
     self-contained result. Sessions then seal WITHOUT the output guard: a session is
     not a work delta (its work lives in ``workspace/``), so an empty ``output/`` is
-    normal and must not block the nit's close. Returns a summary of what was sealed.
+    normal and must not block the nit's close.
+
+    A session with a LIVE pulse is SKIPPED, never sealed — even under ``-f`` (cand 79):
+    structure and attention are perpendicular axes, so the death of a nit must not bury
+    a working head; a live session outlives its thread and closes by its own death
+    (silence / ✕ by hand). Returns ``{thread, sessions (sealed), skipped_live}``.
     """
     stream_dir = paths.arcs_dir(root)
     entry = _resolve(stream_dir, ref, closed=False)
@@ -719,9 +789,17 @@ def close_thread(root: Path, ref: str, *, force: bool = False) -> "Dict[str, obj
          if not slug.is_closed_entry(e.name)]
         if sub.is_dir() else []
     )
-    sealed_sessions = [_seal_entry(root, s, force=force).name for s in open_sessions]
+    # Live-pulse sessions survive the thread (cand 79) — seal the rest.
+    live = [s for s in open_sessions if _session_is_live(s, now=now)]
+    sealed_sessions = [
+        _seal_entry(root, s, force=force).name for s in open_sessions if s not in live
+    ]
     closed_thread = _seal_entry(root, entry, force=force)
-    return {"thread": closed_thread.name, "sessions": sealed_sessions}
+    return {
+        "thread": closed_thread.name,
+        "sessions": sealed_sessions,
+        "skipped_live": [s.name for s in live],
+    }
 
 
 def reopen(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
@@ -1030,10 +1108,24 @@ def _cmd_close(args) -> int:
         n = len(summary["sessions"])
         print("tide: closed thread {0} (status: done) + {1} session{2} sealed".format(
             summary["thread"], n, "" if n == 1 else "s"))
+        live = summary.get("skipped_live") or []
+        if live:
+            print(
+                "tide: ⚠ оставил {0} живую сессию открытой ({1}) — у неё свежий пульс, "
+                "нить её не хоронит; закроется своей смертью (тишина/✕ рукой).".format(
+                    len(live), ", ".join(live)),
+                file=sys.stderr,
+            )
         return 0
 
     closed = close(root, args.slug, goal_slug=args.goal, force=args.force)
     print("tide: closed {0} (status: done)".format(closed.name))
+    return 0
+
+
+def _cmd_set_goal(args) -> int:
+    pp = set_goal(_root(), args.ref, args.goal_text, thread_slug=getattr(args, "thread", None))
+    print("tide: goal set → {0}".format(pp))
     return 0
 
 
@@ -1092,6 +1184,15 @@ def register(arc_subparsers) -> None:
     snp.add_argument("--from", dest="from_ref", metavar="REF", help="fork lineage from this session (branch/handoff); default = previous session")
     snp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the session's goal: at birth")
     snp.set_defaults(func=_cmd_new_session, _cmd="arc new-session")
+
+    sgp = arc_subparsers.add_parser(
+        "set-goal",
+        help="set an open nit's goal: to real words (start gate — refuses slug/placeholder; cand 81/87)",
+    )
+    sgp.add_argument("ref", help="thread/goal/arc slug (or a session slug with -p)")
+    sgp.add_argument("goal_text", metavar="GOAL", help="the goal in plain words (≤12 words reads best)")
+    sgp.add_argument("-p", "--thread", help="target a session INSIDE this thread's substream")
+    sgp.set_defaults(func=_cmd_set_goal, _cmd="arc set-goal")
 
     op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")
     op.add_argument("slug")

@@ -34,6 +34,18 @@ ROLE_WORKER = "worker"
 
 SEED_TITLE = "# tide session seed"
 
+# The START GATE (cand 81/87): before the first work move, the passport must not be
+# blind — a real title + goal (not the thread slug, not a `<…>` placeholder) and a
+# first offload, or the board reads empty for the whole session. The offload nudge
+# (Stop hook) enforces the offload half; this line delivers the instruction up front
+# so a fresh `tide menu`/`go` session fills the passport before it starts working.
+_START_GATE = (
+    "**Старт-гейт — до первого хода работы.** Доска слепа, пока паспорт этой "
+    "сессии/нити слепой. Сначала: (1) `title:` + `goal:` — живыми словами, НЕ слаг "
+    "нити и не `<…>`-плейсхолдер; (2) первый `tide offload <нить>/<сессия> --cursor "
+    "\"<что делаешь сейчас>\" --next \"<шаги через · >\"`. Только потом — работа."
+)
+
 
 # --- prompt resolution -----------------------------------------------------
 
@@ -194,6 +206,8 @@ def build_seed(
                 "the arc through which this work-line is managed. Resume from the "
                 "session's `## cursor`; keep the cursor + `## context` updated as you "
                 "work so the next session can pick up.".format(thread_name),
+                "",
+                _START_GATE,
                 "",
                 arc_text.strip() if (arc_text and arc_text.strip()) else "(no session passport found)",
             ]

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # A single-line ``<…>`` scaffold span. The templates never emit a multi-line
 # placeholder, so a newline ends the match — keeping real prose that merely uses a
@@ -162,6 +162,26 @@ def find_in_file(path: Path) -> List[str]:
     if not p.is_file():
         return []
     return find_in_text(p.read_text(encoding="utf-8"))
+
+
+def is_blind_goal(raw: Optional[str], entry_slug: str) -> bool:
+    """True when a ``goal:`` line is NOT real words — a blind nit on the board.
+
+    Three ways a goal reads blind (the START GATE, cand 81/87): it is *empty*, a
+    leftover ``<…>`` scaffold placeholder, or just the entry's own slug/tag (an
+    auto-goal like ``goal: handoff`` on thread ``01-@handoff`` — the exact "there's
+    no goal there" case Grisha flagged). The board, the handoff throughline and the
+    offload nudge all treat these identically as "no goal", so the test lives here
+    once instead of being re-derived at each call site.
+    """
+    from . import slug as _slug  # lazy: keep placeholders import-light
+
+    g = (raw or "").strip()
+    if not g:
+        return True
+    if find_in_text("goal: " + g):  # a leftover <…> placeholder
+        return True
+    return _slug.slugify(g) == entry_slug or _slug.entry_slug(g) == entry_slug
 
 
 def refuse_message(doc_name: str, ref: str, offenders: List[str]) -> str:

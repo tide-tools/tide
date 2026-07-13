@@ -191,6 +191,54 @@ def test_close_thread_cascades_to_sessions(tmp_project):
     assert open_sessions == []  # nothing left active under a done thread
 
 
+def _pulse(session_dir, when):
+    """Stamp a session's offloaded-at pulse to *when* (a datetime)."""
+    fields.set_field(session_dir / "arc.md", "offloaded-at", when.isoformat(timespec="seconds"))
+
+
+def test_close_thread_skips_a_live_session(tmp_project):
+    # cand 79: a session with a FRESH pulse survives the thread — not buried under a
+    # done passport (the Mickey-17 inverse). The dead sibling still seals.
+    from datetime import datetime, timedelta
+
+    entry, s1, s2 = _thread_with_two_sessions(tmp_project)
+    _pulse(s2, datetime.now())                              # s2 is alive right now
+    _pulse(s1, datetime.now() - timedelta(days=3))          # s1 went quiet days ago
+    summary = stream.close_thread(tmp_project, "ship", force=True)
+
+    assert summary["sessions"] == ["__01-start__"]          # dead one sealed
+    assert summary["skipped_live"] == ["02-finish"]         # live one left OPEN
+    closed_thread = tmp_project / ".tide" / "arcs" / "__01-@ship__"
+    live = closed_thread / "arcs" / "02-finish"
+    assert live.is_dir() and not slug.is_closed_entry(live.name)
+    assert fields.read_field(live / "arc.md", "status") == "active"
+
+
+def test_close_thread_live_skip_holds_even_under_force(tmp_project):
+    # a live head is never sealed — -f overrides the OUTPUT guard, not the live guard.
+    from datetime import datetime
+
+    entry, s1, s2 = _thread_with_two_sessions(tmp_project)
+    _pulse(s1, datetime.now())
+    _pulse(s2, datetime.now())
+    summary = stream.close_thread(tmp_project, "ship", force=True)
+    assert summary["sessions"] == []
+    assert set(summary["skipped_live"]) == {"01-start", "02-finish"}
+
+
+def test_cli_arc_close_warns_about_a_skipped_live_session(tmp_project, monkeypatch, capsys):
+    from datetime import datetime
+    from tide import cli
+
+    _, s1, s2 = _thread_with_two_sessions(tmp_project)
+    _pulse(s2, datetime.now())
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["arc", "close", "ship", "-f"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "живую сессию" in err and "02-finish" in err
+
+
 def test_close_thread_guards_empty_output_before_touching_sessions(tmp_project):
     entry = stream.new_thread(tmp_project, "ship", goal="ship it")
     s1 = stream.new_session(tmp_project, "ship", "start")

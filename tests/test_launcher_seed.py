@@ -55,6 +55,29 @@ def test_launch_command_shapes():
     assert seed.launch_command("focus", "ship-it") == "tide focus ship-it"
 
 
+def test_session_framed_seed_carries_the_start_gate():
+    # a fresh session must be told to fill goal+title + first offload BEFORE work,
+    # or the board reads blind for the whole session (cand 81/87).
+    out = seed.build_seed(
+        project_name="demo",
+        canon_text="c",
+        arc_ref="01-pickup",
+        arc_text="goal: <one line>\nstatus: active",
+        thread_name="handoff",
+    )
+    assert "Старт-гейт" in out
+    assert "tide offload" in out
+    assert "goal:" in out
+
+
+def test_plain_arc_seed_has_no_start_gate():
+    # the gate is for sessions inside a thread; a bare arc seed stays lean.
+    out = seed.build_seed(
+        project_name="demo", canon_text="c", arc_ref="ship-it", arc_text="status: active",
+    )
+    assert "Старт-гейт" not in out
+
+
 # --- disk wrapper seed_for_project -----------------------------------------
 
 def test_seed_for_project_reads_canon(tmp_project):

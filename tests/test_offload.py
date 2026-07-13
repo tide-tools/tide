@@ -168,6 +168,28 @@ def test_offload_clears_the_nudge(tmp_project, session):
     assert offload.nudge_reason(tmp_project, "sess-1") is None  # долг погашен
 
 
+# --- start-gate add-on: nudge also flags a blind thread goal (cand 81/87) ----
+
+def test_nudge_appends_set_goal_when_thread_goal_is_blind(tmp_project):
+    # thread born with a slug-goal ('blind' == its own slug) → board shows no purpose
+    stream.new_thread(tmp_project, "blind", goal="blind")
+    sess = stream.new_session(tmp_project, "blind", "work")
+    _pin(sess, "sid-b")
+    _age(sess / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)
+    (sess / "workspace" / "w.md").write_text("progress\n", encoding="utf-8")
+    reason = offload.nudge_reason(tmp_project, "sid-b")
+    assert reason and "set-goal blind" in reason and "слепая цель" in reason
+
+
+def test_nudge_no_goal_suffix_when_thread_goal_is_real(tmp_project, session):
+    # fixture thread 'hygiene' has a real goal → only the offload line, no goal add-on
+    _pin(session, "sess-1")
+    _age(session / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)
+    (session / "workspace" / "work.md").write_text("progress\n", encoding="utf-8")
+    reason = offload.nudge_reason(tmp_project, "sess-1")
+    assert reason and "set-goal" not in reason
+
+
 def test_hook_blocks_with_json_and_respects_antiloop(tmp_project, session, monkeypatch, capsys):
     _pin(session, "sess-1")
     _age(session / "arc.md", offload.NUDGE_WINDOW_SECONDS + 60)

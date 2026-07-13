@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import fields, paths, slug
+from . import fields, paths, placeholders, slug
 from .arc.stream import StreamError
 
 CONTEXT_SECTION = "## context"
@@ -250,12 +250,35 @@ def nudge_reason(root: Path, session_id: str, *, now: Optional[float] = None,
     # collides across threads and now RAISES (cand 85) — the nudge must not hand the
     # agent a command that fails. '<thread>/<session>' always resolves.
     ref = "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name), slug.entry_slug(entry.name))
-    return (
+    msg = (
         "tide: выгрузка отстала — ты работаешь по нити {0}, а её паспорт не "
         "трогали дольше {1} мин (доска слепа). Сделай сейчас, это 10 секунд:\n"
         "  tide offload {2} --cursor \"<текущее действие, наст. время>\" --next \"<шаги через · >\" \"<что сделал>\"\n"
         "Правило: одна строка на каждое, без отчётов. Потом заканчивай ход."
     ).format(entry.name, NUDGE_WINDOW_SECONDS // 60, ref)
+    return msg + _blind_goal_suffix(entry)
+
+
+def _blind_goal_suffix(session_entry: Path) -> str:
+    """A one-line START-GATE add-on when the thread's board goal is still blind (cand 81/87).
+
+    The offload nudge already fired because the board is blind; if the *reason* it
+    reads empty is also a slug/placeholder goal (``goal: handoff`` on ``01-@handoff``),
+    tell the agent to set real words in the same breath — otherwise it fixes the
+    offload and the nit still shows no purpose. Best-effort: any error ⇒ no suffix.
+    """
+    try:
+        thread = session_entry.parent.parent  # session → arcs/ → thread
+        goal_doc = thread / "{0}-goal.md".format(slug.entry_slug(thread.name))
+        raw = (fields.read_field(goal_doc, "goal") or "").strip() if goal_doc.is_file() else ""
+        if placeholders.is_blind_goal(raw, slug.entry_slug(thread.name)):
+            return (
+                "\ntide: и у нити слепая цель («{0}») — задай живую: "
+                "tide arc set-goal {1} \"<цель одной строкой>\"."
+            ).format(raw or "—", slug.entry_slug(thread.name))
+    except Exception:  # noqa: BLE001  a nudge add-on must never break the hook
+        return ""
+    return ""
 
 
 # --- CLI + hook wiring -------------------------------------------------------

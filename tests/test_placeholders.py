@@ -152,6 +152,27 @@ def test_find_in_file_reads_disk(tmp_path):
     assert placeholders.find_in_file(p)
 
 
+# --- is_blind_goal (start gate — cand 81/87) -------------------------------
+
+def test_is_blind_goal_true_for_empty():
+    assert placeholders.is_blind_goal("", "handoff") is True
+    assert placeholders.is_blind_goal(None, "handoff") is True
+
+
+def test_is_blind_goal_true_for_placeholder():
+    assert placeholders.is_blind_goal("<one line — what this thread is about>", "x") is True
+
+
+def test_is_blind_goal_true_when_equals_slug():
+    # the exact "goal: handoff on thread 01-@handoff" case Grisha flagged
+    assert placeholders.is_blind_goal("handoff", "handoff") is True
+    assert placeholders.is_blind_goal("Ship Handoff", "ship-handoff") is True
+
+
+def test_is_blind_goal_false_for_real_words():
+    assert placeholders.is_blind_goal("harden the handoff seam end to end", "handoff") is False
+
+
 # --- refuse_message --------------------------------------------------------
 
 def test_refuse_message_names_doc_ref_and_lists_offenders():
