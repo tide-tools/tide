@@ -151,3 +151,21 @@ def test_return_respawns_an_ended_head(tmp_path, monkeypatch):
     _patched(monkeypatch, adapter)
     out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sess))
     assert out["ok"] is True and out["action"] == "resumed"
+
+
+def test_gate_survives_a_mismatching_arc_hint(tmp_path, monkeypatch):
+    # live 14.07: an arc param pointing at a SIBLING session made the gate give up
+    # and resurrect a dissolved head — the arc is a hint, the sid scan is the truth
+    from tide.arc import stream
+
+    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
+    stream.new_thread(tmp_path, "demo", goal="ship")
+    origin = stream.new_session(tmp_path, "demo", "origin")
+    sibling = stream.new_session(tmp_path, "demo", "priem")
+    fields.set_field(origin / "arc.md", "claude-session", SID)
+    fields.set_field(origin / "arc.md", "dissolved", "2026-07-14T16:25:40")
+    fields.set_field(sibling / "arc.md", "claude-session", "other-sid")
+    adapter = _FakeAdapter(focus_ok=False)
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sibling))
+    assert out["action"] == "gone" and adapter.spawned is None

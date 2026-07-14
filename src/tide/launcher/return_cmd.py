@@ -44,15 +44,19 @@ def _no_resurrect_stamp(project: Path, sid: str, *, arc: str = "") -> Optional[s
     pp = None
     a = (arc or "").strip()
     if a and "/.tide/arcs/" in a and (Path(a) / "arc.md").is_file():
-        pp = Path(a) / "arc.md"
-    else:
+        cand = Path(a) / "arc.md"
+        if (fields.read_field(cand, "claude-session") or "").strip() == sid:
+            pp = cand
+        # a mismatching arc is NOT a verdict — fall through to the sid scan
+        # (live 14.07: an arc pointing at a sibling session made the gate give up
+        # and RESURRECT a dissolved head; the arc param is a hint, never the truth)
+    if pp is None:
         entry = find_session_by_claude_id(Path(project), sid)
-        if entry is not None:
+        if entry is not None and (
+                fields.read_field(entry / "arc.md", "claude-session") or "").strip() == sid:
             pp = entry / "arc.md"
     if pp is None or not pp.is_file():
         return None
-    if (fields.read_field(pp, "claude-session") or "").strip() != sid:
-        return None  # the passport moved on to another head — not this sid's verdict
     stamp = (fields.read_field(pp, "dissolved") or "").strip()
     return "dissolved {0}".format(stamp) if stamp else None
 
