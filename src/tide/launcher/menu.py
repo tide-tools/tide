@@ -1350,6 +1350,75 @@ def cmd_menu(args) -> int:
     return 0 if all(r.ok for r in results) else 1
 
 
+def spark(
+    control_home: Path,
+    project_entry: Dict[str, str],
+    *,
+    thread: Optional[str] = None,
+    new_thread: Optional[str] = None,
+    goal: Optional[str] = None,
+    adapter,
+    role: str = DEFAULT_ROLE,
+    skip_permissions: bool = True,
+    dry_run: bool = False,
+) -> SpawnResult:
+    """▶ spark a fresh session — tide creates the arc, pins the id, spawns, registers.
+
+    The board's ▶ used to launch claude in the project root and have IT run ``tide arc
+    new-session`` after start — a divergent flow that left the board blind and couldn't
+    resolve the tab. ``spark`` unifies ▶ onto the SAME path as menu/pickup: create the
+    session in tide FIRST, bind + pin its claude id (``_session_binding`` →
+    ``_bind_claude_session``), launch via the adapter, and record ``sid → terminal`` in
+    the registry (via :func:`launch_entry`) — so the head is visible at once and ▶
+    resolves this exact tab (cand 94). Continue an existing *thread* or start a
+    *new_thread* (with *goal*); the first session's slug is unique in the container.
+    """
+    project = Path(project_entry["path"]).expanduser()
+    from .handoff import resolve_open_entry, _unique_pickup_slug  # lazy: sibling module
+
+    if new_thread:
+        thread_entry = stream.new_thread(project, new_thread, goal=goal)
+    elif thread:
+        thread_entry = resolve_open_entry(project, thread)
+        if thread_entry is None or not stream.is_thread(thread_entry):
+            raise MenuError("spark: no open thread {0!r} in {1}".format(thread, project.name))
+    else:
+        raise MenuError("spark: give --thread <slug> or --new-thread <name>")
+
+    container_slug = slug.entry_slug(thread_entry.name)
+    sess_slug = _unique_pickup_slug(thread_entry, base=container_slug)
+    sess = stream.new_session(project, container_slug, sess_slug)
+    binding = _session_binding(
+        slug.entry_slug(sess.name), sess, True, container_slug, kind=stream.KIND_THREAD
+    )
+    spark_entry = {**project_entry, "session": binding}
+    return launch_entry(
+        spark_entry, adapter=adapter, control_home=control_home,
+        role=role, skip_permissions=skip_permissions, dry_run=dry_run,
+    )
+
+
+def cmd_spark(args) -> int:
+    """``tide spark <project> (--thread|--new-thread)`` — the board's ▶, tide-owned."""
+    root = paths.control_home()
+    entry = next((e for e in list_entries(root) if e["name"] == args.project), None)
+    if entry is None:
+        raise MenuError("spark: no project {0!r} in the roster".format(args.project))
+    adapter = get_adapter(resolve_adapter_name(root, getattr(args, "adapter", None)))
+    res = spark(
+        root, entry,
+        thread=getattr(args, "thread", None),
+        new_thread=getattr(args, "new_thread", None),
+        goal=getattr(args, "goal", None),
+        adapter=adapter,
+        role=getattr(args, "role", None) or DEFAULT_ROLE,
+        skip_permissions=not getattr(args, "no_skip_permissions", False),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print("tide: spark [{0}] {1}".format("ok" if res.ok else "FAILED", res.detail))
+    return 0 if res.ok else 1
+
+
 def register(subparsers) -> None:
     """Add the top-level ``menu`` command to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
@@ -1417,3 +1486,20 @@ def register(subparsers) -> None:
         help="keep permission prompts on (default: --dangerously-skip-permissions, like tide terminal)",
     )
     p.set_defaults(func=cmd_menu, _cmd="menu")
+
+    sp = subparsers.add_parser(
+        "spark",
+        help="▶ start a fresh session in a thread — tide creates + pins + registers it (board's ▶)",
+    )
+    sp.add_argument("project", help="roster project name")
+    sp.add_argument("--thread", metavar="SLUG", help="continue an existing thread (тред) by slug")
+    sp.add_argument("--new-thread", dest="new_thread", metavar="NAME",
+                    help="start a fresh thread with this name")
+    sp.add_argument("--goal", help="goal line for a new thread")
+    sp.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
+    sp.add_argument("--role", help="session role (default: orchestrator)")
+    sp.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="build the arc + launch command without opening a terminal")
+    sp.add_argument("--no-skip-permissions", action="store_true", dest="no_skip_permissions",
+                    help="keep permission prompts on")
+    sp.set_defaults(func=cmd_spark, _cmd="spark")

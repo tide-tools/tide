@@ -783,3 +783,48 @@ def test_failed_pickup_leaves_offer_hanging(home_with_project):
                         control_home=home, adapter=_FailAdapter())
     # the two-stage guarantee: a failed launch never consumes the offer
     assert hq.list_offers(home)[0]["status"] == "offered"
+
+
+# --- tide spark: the board's ▶, tide-owned (cand 94) ------------------------
+
+def _spark_entry(home, proj):
+    return next(e for e in menu.list_entries(home) if e["path"] == str(proj))
+
+
+def test_spark_new_thread_creates_pins_and_registers(home_with_project):
+    home, proj = home_with_project
+    from tide import fields, registry, slug
+    from tide.arc import stream
+
+    res = menu.spark(home, _spark_entry(home, proj), new_thread="board ux",
+                     goal="unify the board launch", adapter=_OkAdapter())
+    assert res.ok
+    threads = stream.thread_entries(proj)
+    assert threads and slug.entry_slug(threads[0].name) == "board-ux"
+    sess = stream.last_session(proj, "board-ux")
+    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    assert sid                                   # id pinned at birth
+    reg = registry.read(home)
+    assert sid in reg and reg[sid]["handle"] == "stub"
+
+
+def test_spark_existing_thread_adds_a_session(home_with_project):
+    home, proj = home_with_project
+    from tide.arc import stream
+
+    stream.new_thread(proj, "existing", goal="do the thing")
+    res = menu.spark(home, _spark_entry(home, proj), thread="existing", adapter=_OkAdapter())
+    assert res.ok
+    assert stream.last_session(proj, "existing") is not None
+
+
+def test_spark_requires_a_target(home_with_project):
+    home, proj = home_with_project
+    with pytest.raises(menu.MenuError):
+        menu.spark(home, _spark_entry(home, proj), adapter=_OkAdapter())
+
+
+def test_spark_unknown_thread_raises(home_with_project):
+    home, proj = home_with_project
+    with pytest.raises(menu.MenuError):
+        menu.spark(home, _spark_entry(home, proj), thread="ghost", adapter=_OkAdapter())
