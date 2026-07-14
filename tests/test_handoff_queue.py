@@ -360,7 +360,14 @@ def test_launch_handoff_takes_offer_on_success(tmp_control_home, tmp_path):
     assert res.ok
     assert str(seed) in " ".join(captured["command"])   # session seeded from the distil
     assert captured["cwd"] == str(proj)
-    # opened = continued: a successful pickup TAKES the offer out of the handoffs list.
+    # signed A (14.07): the launch only RESERVES the offer for the minted sid — the
+    # reception is real when the terminal says hello, so the flip to taken happens on
+    # the session's first message (confirm_for_session), never at spawn.
+    pending = hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
+    assert pending and pending[0]["pickup_session"]
+    sid = pending[0]["pickup_session"]
+    assert "--session-id {0}".format(sid) in " ".join(captured["command"])
+    assert hq.confirm_for_session(tmp_control_home, sid)
     assert not hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
     assert hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)
 

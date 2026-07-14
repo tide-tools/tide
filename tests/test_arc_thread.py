@@ -339,3 +339,19 @@ def test_default_title_normalizes_entry_name_ref(tmp_project):
     stream.new_thread(tmp_project, "prz")
     sess = stream.new_session(tmp_project, "01-@prz", "kickoff")
     assert fields.read_field(sess / "arc.md", "title") == "prz · kickoff"
+
+
+def test_cli_new_session_guard_is_cross_thread(tmp_project, monkeypatch):
+    # e2e 14.07: an orchestrator (its session in thread A) creates a session in
+    # thread B — its own sid must NOT be stamped onto B (the one-thread guard
+    # missed this; the spawned claude then died on "Session ID already in use").
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    stream.new_thread(tmp_project, "mine", goal="my own thread")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "orch-sid-1")
+    assert cli.main(["arc", "new-session", "me", "-p", "mine"]) == 0  # self-register ok
+    stream.new_thread(tmp_project, "other", goal="someone else's work")
+    assert cli.main(["arc", "new-session", "probe", "-p", "other"]) == 0
+    sess = stream.last_session(tmp_project, "other")
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()

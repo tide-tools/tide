@@ -177,6 +177,14 @@ def _register_return(sub) -> None:
     register_return(sub)
 
 
+def _register_pickup(sub) -> None:
+    # tide pickup — ▶ launch a pending handoff through the ONE path (launch_session):
+    # reserve for the minted sid, spawn scoped, record; flip-to-taken on first prompt.
+    from .launcher.pickup import register as register_pickup
+
+    register_pickup(sub)
+
+
 def _register_go(sub) -> None:
     # tide go — the light ENTRY dispatcher (symmetric mirror of `tide handoff`, the
     # exit). Asks "resume prior work or start new?", resolves a seed, and delegates
@@ -387,6 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_terminal(subparsers)
     _register_go(subparsers)
     _register_return(subparsers)
+    _register_pickup(subparsers)
     _register_handoff(subparsers)
     _register_migrate_arcs(subparsers)
     _register_readme(subparsers)

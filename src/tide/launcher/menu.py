@@ -947,7 +947,6 @@ def launch_handoff(
         return SpawnResult(
             ok=False, detail="handoff: seed file missing ({0})".format(seed_path), commands=[]
         )
-    session_id = str(uuid.uuid4())
     # Handoff pickup is non-interactive too (▶ from the board) — give it a first user
     # turn so it STARTS the reception instead of sitting blank (cand 100, twin of the
     # spark trigger cand 96). The distil rides the system prompt; this turn executes it.
@@ -959,47 +958,25 @@ def launch_handoff(
         "хендоффа), закрой старт-гейт первым tide offload. Приём подтверждает сама "
         "сессия — разрешения на приём не спрашивай."
     ).format(slug)
-    command = build_launch(
-        project, control_home=control_home, role=role,
-        seed_file=seed_path, session_id=session_id, user_prompt=pickup_trigger,
-        skip_permissions=skip_permissions, dry_run=dry_run,
+    # ONE launch path (wave 3): sid pinned before spawn, the offer RESERVED for that
+    # sid — the flip to taken happens on the session's first message (signed A:
+    # reception is real only when the terminal actually said hello; a failed spawn
+    # never eats the offer). Registry recorded by the launcher.
+    from .launch import launch_session  # lazy: sibling module
+
+    return launch_session(
+        control_home,
+        project=project,
+        session_dir=Path(seed_path).parent.parent,
+        adapter=adapter,
+        seed_file=seed_path,
+        trigger=pickup_trigger,
+        title="handoff · {0}".format(record["slug"]),
+        role=role,
+        handoff_key=str(record["name"]),
+        skip_permissions=skip_permissions,
+        dry_run=dry_run,
     )
-    # Register the picked-up session so it's RESUMABLE from the menu later: pin the
-    # new claude session id onto the handoff's target session passport. The seed
-    # lives at <session>/input/<seed>, so the passport is <session>/arc.md. After the
-    # first turn persists the conversation, `tide menu → … → that session` resumes it.
-    if not dry_run:
-        # Register the picked-up session as RESUMABLE from the menu: pin the new
-        # claude session id onto the handoff's target session passport. The seed
-        # lives at <session>/input/<seed>, so the passport is <session>/arc.md.
-        try:
-            from .. import fields
-            passport = Path(seed_path).parent.parent / "arc.md"
-            if passport.is_file():
-                fields.set_field(passport, "claude-session", session_id)
-        except Exception:  # noqa: BLE001  registration is best-effort, never fatal
-            pass
-    res = adapter.spawn(
-        command=command, cwd=str(project),
-        title="handoff · {0}".format(record["slug"]), dry_run=dry_run,
-    )
-    # Opened = continued: a successful pickup CLOSES THE RECEPTION SEAM mechanically,
-    # so the fresh session just starts working — it never re-runs a "reception protocol"
-    # (which it reads as an approval-gated plan and stalls on, half-open, until the human
-    # answers; dogfood 2026-07-12, cand 76). `take` is ATOMIC (cand 77): it flips the
-    # offer AND stamps the session passport (claude-session + status active) AND fires
-    # the first pulse, so all three gestures land here at pickup, not in the seeded
-    # agent. A failed launch leaves the offer hanging, recoverable.
-    if res.ok and not dry_run:
-        try:
-            from .. import handoff_queue  # lazy: avoid import cycle
-            handoff_queue.take(control_home, record["name"], session=session_id)
-        except Exception:  # noqa: BLE001  best-effort, never fatal
-            pass
-        # Record sid → terminal so ▶ resolves THIS session's tab later (cand 94). The
-        # session dir is <seed>/../.. — the arc whose passport we just pinned.
-        _record_launch(control_home, session_id, res.ref, Path(seed_path).parent.parent)
-    return res
 
 
 def _record_launch(control_home: Path, session_id: Optional[str], handle, arc) -> None:
@@ -1430,9 +1407,23 @@ def spark(
     # (cand 96). Interactive doors (tide go/menu) leave this empty — the human types.
     binding["user_prompt"] = _spark_trigger(container_slug, project_entry.get("name") or project.name)
     spark_entry = {**project_entry, "session": binding}
-    return launch_entry(
-        spark_entry, adapter=adapter, control_home=control_home,
-        role=role, skip_permissions=skip_permissions, dry_run=dry_run,
+    # ONE launch path (wave 3) — same gesture order as pickup/menu.
+    from .launch import launch_session  # lazy: sibling module
+
+    return launch_session(
+        control_home,
+        project=project,
+        session_dir=sess,
+        adapter=adapter,
+        arc_ref=binding.get("arc_ref"),
+        arc_text=binding.get("arc_text"),
+        thread_name=binding.get("thread"),
+        container_kind=binding.get("kind") or stream.KIND_THREAD,
+        trigger=binding["user_prompt"],
+        title=_tab_title(spark_entry),
+        role=role,
+        skip_permissions=skip_permissions,
+        dry_run=dry_run,
     )
 
 

@@ -102,12 +102,22 @@ def test_seam_closed_via_confirm_hook(tmp_control_home, monkeypatch):
 
 
 def test_seam_closed_via_menu_pickup(tmp_control_home):
-    """Path: ``tide menu → Pick up`` (launch_handoff — the cand 76 path)."""
+    """Path: ``tide menu → Pick up`` (launch_handoff — the cand 76 path).
+
+    Signed A (14.07): the seam closes in two beats — the launch reserves the offer
+    for the minted sid (status stays offered: a dead-on-arrival terminal must not
+    eat it), and the session's FIRST message flips it (confirm_for_session, the
+    UserPromptSubmit hook's core). Both beats are mechanics, neither is the agent's.
+    """
     sess, _key = _build_offer(tmp_control_home)
     record = hq.list_offers(tmp_control_home)[0]
     res = menu.launch_handoff(record, menu.list_entries(tmp_control_home),
                               control_home=tmp_control_home, adapter=_OkAdapter())
     assert res.ok
+    reserved = hq.list_offers(tmp_control_home)[0]
+    assert reserved["status"] == hq.STATUS_OFFERED
+    sid = reserved["pickup_session"]
+    assert sid and hq.confirm_for_session(tmp_control_home, sid)
     _assert_seam_closed(tmp_control_home, sess)
 
 

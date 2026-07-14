@@ -718,13 +718,20 @@ def _seed_offer(home, proj):
     return hq.list_offers(home)[0], sess
 
 
-def test_pickup_marks_offer_taken(home_with_project):
+def test_pickup_reserves_then_first_prompt_takes(home_with_project):
+    # signed A (14.07): spawn reserves; the first message flips — reception is real
+    # only when the terminal actually said hello.
     home, proj = home_with_project
-    from tide import handoff_queue as hq
+    from tide import fields, handoff_queue as hq
 
-    record, _sess = _seed_offer(home, proj)
+    record, sess = _seed_offer(home, proj)
     menu.launch_handoff(record, menu.list_entries(home),
                         control_home=home, adapter=_OkAdapter())
+    reserved = hq.list_offers(home)[0]
+    assert reserved["status"] == "offered"
+    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    assert reserved["pickup_session"] == sid
+    assert hq.confirm_for_session(home, sid)
     assert hq.list_offers(home)[0]["status"] == "taken"
 
 
@@ -756,13 +763,18 @@ def test_pickup_stamps_passport_active_and_pins_session(home_with_project):
     assert (fields.read_field(passport, "claude-session") or "").strip()
 
 
-def test_pickup_fires_first_pulse_so_board_sees_it_live(home_with_project):
+def test_first_prompt_fires_reception_pulse_so_board_sees_it_live(home_with_project):
+    # signed A (14.07): the reception stamps (first pulse, offloaded-at) land on the
+    # session's FIRST message — a spawned-but-silent terminal must not paint as live.
     home, proj = home_with_project
-    from tide import fields
+    from tide import fields, handoff_queue as hq
 
     record, sess = _seed_offer(home, proj)
     menu.launch_handoff(record, menu.list_entries(home),
                         control_home=home, adapter=_OkAdapter())
+    assert "нить принята" not in (sess / "arc.md").read_text(encoding="utf-8")
+    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    hq.confirm_for_session(home, sid)
     passport_text = (sess / "arc.md").read_text(encoding="utf-8")
     # the mechanical pulse lands in ## context and stamps offloaded-at (board = live)
     assert "нить принята" in passport_text

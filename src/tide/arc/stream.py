@@ -1109,6 +1109,26 @@ def _cmd_new_routine(args) -> int:
     return 0
 
 
+def _sid_holds_some_session(root: Path, sid: str) -> bool:
+    """True when *sid* is already pinned to ANY session arc across the stream.
+
+    The dup-id guard's lookup (cand 103) — cross-thread on purpose: the collision
+    that bites is an orchestrator creating a session for someone ELSE from its own
+    terminal, and its own session lives in a DIFFERENT thread. Closed (``__``)
+    containers count too — a sid's history is still its identity.
+    """
+    want = (sid or "").strip()
+    if not want:
+        return False
+    try:
+        for ap in paths.arcs_dir(root).glob("*/arcs/*/arc.md"):
+            if (fields.read_field(ap, "claude-session") or "").strip() == want:
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _cmd_new_session(args) -> int:
     # When claude itself runs this (the board-spark flow: the head starts, THEN creates
     # its own session), bind the caller's own session id at birth so the board sees the
@@ -1117,22 +1137,13 @@ def _cmd_new_session(args) -> int:
     root = _root()
     claude_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
     # ДУБЛЬ-ID ГАРД (cand 103): штамп корректен только для self-register — когда claude
-    # заводит СВОЮ первую сессию. Если этот id УЖЕ держит другую сессию нити (агент
-    # заводит сессию ПОВЕРХ своей — handoff-pickup, планировочная), НЕ штампуем: иначе
-    # два арка на один claude-id, и «вернуться в сессию» ведёт в ОДИН терминал (первую),
+    # заводит СВОЮ первую сессию. Если этот id УЖЕ держит другую сессию — В ЛЮБОЙ нити,
+    # не только этой (оркестратор заводит сессию для чужого подъёма из СВОЕЙ: e2e 14.07 —
+    # гард по одной нити пропустил, спавн умер на «Session ID already in use») — НЕ
+    # штампуем: иначе два арка на один claude-id, «вернуться» ведёт в один терминал,
     # доска не различает сессии, родословная ломается.
-    if claude_session:
-        try:
-            sub = _open_goal_substream(root, args.thread)
-            for d in sorted(sub.iterdir()):
-                ap = d / "arc.md"
-                if (ap.is_file()
-                        and (fields.read_field(ap, "claude-session") or "").strip()
-                        == claude_session):
-                    claude_session = None
-                    break
-        except Exception:
-            pass
+    if claude_session and _sid_holds_some_session(root, claude_session):
+        claude_session = None
     entry = new_session(root, args.thread, args.slug,
                         from_ref=getattr(args, "from_ref", None),
                         goal=getattr(args, "goal_text", None),
