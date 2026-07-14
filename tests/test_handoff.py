@@ -344,6 +344,22 @@ def test_run_handoff_auto_fills_origin_from_active_session(tmp_project, monkeypa
     assert rec["from_session"] == "sid-live"  # auto-derived from the thread's holder
 
 
+def test_run_handoff_normalises_arc_named_from_session_to_sid(tmp_project, monkeypatch, tmp_path):
+    # live 14.07: --from-session arrived as the ARC name ('14-graph'), not a sid —
+    # dissolution and the Mickey-17 detector both matched nothing, silently.
+    from tide import handoff_queue, fields
+
+    home = _queue_home(monkeypatch, tmp_path)
+    stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    origin = stream.new_session(tmp_project, "hygiene", "graph")
+    fields.set_field(origin / "arc.md", "claude-session", "real-origin-sid")
+
+    handoff.run_handoff(tmp_project, arc_ref="hygiene", mode="continue",
+                        from_session=origin.name)   # '01-graph' — the arc, not a sid
+    (rec,) = handoff_queue.list_offers(home)
+    assert rec["from_session"] == "real-origin-sid"
+
+
 def test_throughline_omits_auto_goal_but_keeps_rules(tmp_project, monkeypatch, tmp_path):
     # cand 83: goal == the thread's own slug is an AUTO name, not a goal — printing
     # 'идёт к: debug-deck' is a lie. The header drops it but keeps the iron rules.

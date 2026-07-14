@@ -319,6 +319,27 @@ def _closure_word_warning(passport: Path, blob: str) -> Optional[str]:
     return None
 
 
+def _confirm_pending_pickup(passport: Path) -> Optional[str]:
+    """Flip a handoff still RESERVED for this session's sid (belt to the hook).
+
+    The flip normally rides the first UserPromptSubmit; when that hook could not
+    fire (live 14.07: the project had no hooks wired at spawn) the offer stays
+    reserved and the board paints «поднимается» forever. A pulse is the session
+    proving it is alive — a stronger hello than a prompt — so it closes the same
+    seam through the same single flip point (I4). Silent no-op for ordinary
+    sessions; never breaks an offload.
+    """
+    try:
+        from . import handoff_queue
+        sid = (fields.read_field(passport, CLAUDE_SESSION_FIELD) or "").strip()
+        if not sid:
+            return None
+        claimed = handoff_queue.confirm_for_session(paths.control_home(), sid)
+        return str(claimed["name"]) if claimed else None
+    except Exception:  # noqa: BLE001 — the fallback must never break a pulse
+        return None
+
+
 def _cmd_offload(args) -> int:
     root = paths.require_tide_root()
     note = " ".join(getattr(args, "note", []) or [])
@@ -326,6 +347,10 @@ def _cmd_offload(args) -> int:
     next_steps = getattr(args, "next_steps", "") or ""
     passport = offload(root, args.session, note=note, cursor=cursor, next_steps=next_steps)
     print("tide: offloaded → {0}".format(passport))
+    confirmed = _confirm_pending_pickup(passport)
+    if confirmed:
+        print("tide: handoff {0} confirmed by this pulse (the first-prompt flip "
+              "was still pending)".format(confirmed))
     warn = _closure_word_warning(passport, " ".join((note, cursor, next_steps)))
     if warn:
         print(warn, file=sys.stderr)

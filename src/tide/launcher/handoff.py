@@ -333,6 +333,26 @@ def _new_fork_plan_preamble(thread_entry: Path) -> str:
     ).format(thread_entry.name)
 
 
+def _origin_sid(stream_mod, owner_root: Path, thread_slug: str, given: str) -> str:
+    """Normalise an explicit ``--from-session`` to a claude sid (best-effort).
+
+    Agents pass the ARC name here (``14-graph``) as readily as a sid — and a
+    non-sid origin poisons the seam silently: dissolution can't find the origin's
+    passport and the Mickey-17 detector never matches it (live 14.07). When
+    *given* names a session arc of this thread, its pinned ``claude-session`` is
+    the honest origin id; anything else passes through untouched.
+    """
+    try:
+        from .. import fields
+        for entry in stream_mod.session_entries(owner_root, thread_slug):
+            if entry.name == given or slug.entry_slug(entry.name) == slug.slugify(given):
+                sid = (fields.read_field(entry / "arc.md", "claude-session") or "").strip()
+                return sid or given
+        return given
+    except Exception:  # noqa: BLE001  best-effort — never break a handoff over lineage
+        return given
+
+
 def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
     """The ``claude-session`` id of the thread's current holder (newest session), or None.
 
@@ -421,8 +441,11 @@ def run_handoff(
             tslug = slug.entry_slug(entry.name)
             # Origin id for the multiples detector: auto-fill from the thread's
             # current holder when the caller didn't pass it (cand 78). Explicit
-            # --from-session still wins. Read BEFORE the pickup becomes the newest.
-            if not from_session:
+            # --from-session still wins — normalised to a sid when it names an arc
+            # (live 14.07). Read BEFORE the pickup becomes the newest.
+            if from_session:
+                from_session = _origin_sid(_stream, owner_root, tslug, from_session)
+            else:
                 from_session = _thread_origin_session(_stream, owner_root, tslug)
             # Name the pickup after the THREAD (03-debug-deck), not a generic 'pickup'
             # (cand 83): readable on the board, still unique via -N. The dir NN keeps

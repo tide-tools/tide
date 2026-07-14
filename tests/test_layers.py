@@ -17,7 +17,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "tide"
 STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders"}
 DOMAIN = {
     "arc", "handoff_queue", "offload", "registry", "sessions", "sync", "health",
-    "lookback", "ledger", "roster",
+    "harness", "lookback", "ledger", "roster",
     # domain data that lives in .tide/ even though the module sits top-level:
     "canon", "contract", "gate", "readme", "strictness",
 }

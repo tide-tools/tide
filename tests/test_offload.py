@@ -317,3 +317,29 @@ def test_cli_offload_next_flag(tmp_project, session, monkeypatch):
     monkeypatch.chdir(tmp_project)
     assert cli.main(["offload", "otliv", "--next", "шаг раз · шаг два"]) == 0
     assert "шаг раз" in (session / "arc.md").read_text(encoding="utf-8")
+
+
+def test_cli_offload_confirms_a_stranded_reservation(tmp_project, session, monkeypatch, tmp_path, capsys):
+    # live 14.07 (forge): the project had no hooks at spawn — the first-prompt flip
+    # never fired and the offer stayed reserved («поднимается» forever). The pulse
+    # is the session proving it is alive, so it closes the same seam itself.
+    from tests.conftest import build_tide_skeleton
+    from tide import handoff_queue, paths
+
+    home = tmp_path / "control-home"
+    home.mkdir()
+    build_tide_skeleton(home, name="home", control_home=True)
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+
+    fields.set_field(session / "arc.md", "claude-session", "sid-stranded")
+    handoff_queue.offer(home, "otliv", arc="hygiene/otliv", project="proj",
+                        seed=str(session / "input" / "handoff-seed.md"),
+                        from_session="origin-sid")
+    key = handoff_queue.list_offers(home)[0]["name"]
+    handoff_queue.reserve(home, key, session="sid-stranded")
+
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["offload", "hygiene/otliv", "--cursor", "жив и работаю"])
+    assert rc == 0
+    assert "confirmed by this pulse" in capsys.readouterr().out
+    assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_TAKEN

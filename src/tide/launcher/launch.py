@@ -84,6 +84,18 @@ def launch_session(
         except Exception:  # noqa: BLE001 — reservation must not kill the launch
             pass
 
+    # 2b. the harness floor: the flip above (and the pulse nudge, and ended:) live
+    # in the PROJECT's hooks — a project nobody ran `install-hooks` in strands the
+    # offer reserved forever (forge, live 14.07: session up + working 20 min, board
+    # honestly stuck on «поднимается»). The installer is merge-safe and idempotent,
+    # so ensuring it here makes the harness a property of the launch, not of memory.
+    if not dry_run:
+        try:
+            from ..harness import install_hooks
+            install_hooks(Path(project))
+        except Exception:  # noqa: BLE001 — hook wiring must not kill the launch
+            pass
+
     # 3. one scoped command builder for every path.
     command = _menu.build_launch(
         Path(project),

@@ -127,6 +127,33 @@ def test_pickup_never_inherits_a_stale_pin(tmp_path):
     assert handoff_queue.list_offers(home)[0]["pickup_session"] == sid
 
 
+def test_launch_wires_the_project_hooks(tmp_path):
+    # live 14.07 (forge): a project nobody ran install-hooks in cannot flip the
+    # seam — its first-prompt hook does not exist. The launcher now guarantees
+    # the harness floor on every spawn (merge-safe, idempotent).
+    import json
+
+    from tide import harness
+
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    launch_session(home, project=proj, session_dir=sess, adapter=_FakeAdapter(),
+                   seed_file=str(seed), trigger="go", title="t", handoff_key=key)
+    data = json.loads(harness.settings_path(proj).read_text(encoding="utf-8"))
+    joined = json.dumps(data)
+    assert harness.HANDOFF_CONFIRM_CMD in joined
+    assert harness.OFFLOAD_NUDGE_CMD in joined
+
+
+def test_dry_run_wires_no_hooks(tmp_path):
+    from tide import harness
+
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    launch_session(home, project=proj, session_dir=sess, adapter=_FakeAdapter(),
+                   seed_file=str(seed), trigger="go", title="t", handoff_key=key,
+                   dry_run=True)
+    assert not harness.settings_path(proj).exists()
+
+
 def test_pickup_second_click_focuses_not_duplicates(tmp_path, monkeypatch):
     # Mickey-17 window (live 14.07): between spawn and the first prompt the offer is
     # still "offered" — a second ▶ must focus the reserved tab, not mint a duplicate
