@@ -174,6 +174,44 @@ def test_orca_self_heals_unregistered_repo(monkeypatch):
     assert calls[2][:3] == ["orca", "terminal", "create"]
 
 
+def test_orca_spawn_returns_terminal_handle_from_json(monkeypatch):
+    """spawn parses the created terminal's handle (--json) into ref — the registry key (cand 94)."""
+    import json as _json
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+
+    def fake_run(argv, **kwargs):
+        if argv[:1] == ["git"]:
+            return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        out = _json.dumps({"result": {"terminal": {"handle": "term_xyz789"}}})
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x")
+    assert res.ok is True
+    assert res.ref == "term_xyz789"       # the orca handle, not the title
+    # and --json is on the create argv
+    assert "--json" in a.build_command(cwd="/p/x", command=_LAUNCH)
+
+
+def test_orca_spawn_falls_back_to_title_when_handle_unparseable(monkeypatch):
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+
+    def fake_run(argv, **kwargs):
+        if argv[:1] == ["git"]:
+            return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="not-json", stderr="")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x")
+    assert res.ok is True and res.ref == "tide-x"  # legible fallback, spawn still succeeds
+
+
 def test_orca_non_selector_failure_does_not_register_or_retry(monkeypatch):
     """A non-selector failure degrades to ok=False without registering/retrying."""
     import subprocess as _sp

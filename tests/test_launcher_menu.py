@@ -728,6 +728,21 @@ def test_pickup_marks_offer_taken(home_with_project):
     assert hq.list_offers(home)[0]["status"] == "taken"
 
 
+def test_pickup_records_sid_in_launch_registry(home_with_project):
+    # cand 94: a successful launch records sid → terminal handle so ▶ resolves THIS tab
+    home, proj = home_with_project
+    from tide import fields, registry
+
+    record, sess = _seed_offer(home, proj)
+    menu.launch_handoff(record, menu.list_entries(home),
+                        control_home=home, adapter=_OkAdapter())
+    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    reg = registry.read(home)
+    assert sid in reg
+    assert reg[sid]["handle"] == "stub"
+    assert reg[sid]["arc"] == str(sess)
+
+
 def test_pickup_stamps_passport_active_and_pins_session(home_with_project):
     home, proj = home_with_project
     from tide import fields

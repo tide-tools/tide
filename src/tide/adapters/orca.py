@@ -20,12 +20,28 @@ caller can then suggest ``--adapter tmux``.
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 import subprocess
-from typing import List
+from typing import List, Optional
 
 from .base import SpawnResult, TerminalAdapter, safe_title
+
+
+def _parse_handle(stdout: str) -> Optional[str]:
+    """The created terminal's handle from ``orca terminal create --json`` output, or None.
+
+    Shape: ``{"result": {"terminal": {"handle": "term_…"}}}``. The handle is what the
+    sid-keyed launch registry (:mod:`tide.registry`, cand 94) records so ▶ can later
+    focus THIS exact terminal — any parse failure just yields None (registry write skipped).
+    """
+    try:
+        term = (json.loads(stdout or "{}").get("result", {}) or {}).get("terminal", {}) or {}
+        handle = (term.get("handle") or "").strip()
+        return handle or None
+    except (ValueError, AttributeError):
+        return None
 
 # A spawn against a path Orca does not know about fails nonzero with this code in
 # its JSON error payload (carried on stdout/stderr). It is the ONE failure we
@@ -78,7 +94,11 @@ class OrcaAdapter(TerminalAdapter):
     name = "orca"
 
     def build_command(self, *, cwd: str, command: List[str], title: str = "tide") -> List[str]:
-        """The ``orca terminal create`` argv that opens *cwd* and runs *command*."""
+        """The ``orca terminal create`` argv that opens *cwd* and runs *command*.
+
+        ``--json`` so the created terminal's handle comes back on stdout — the launcher
+        records it in the sid-keyed registry (cand 94) to make ▶ resolve this exact tab.
+        """
         return [
             "orca",
             "terminal",
@@ -90,6 +110,7 @@ class OrcaAdapter(TerminalAdapter):
             "--title",
             safe_title(title),
             "--focus",
+            "--json",
         ]
 
     def spawn(
@@ -120,26 +141,28 @@ class OrcaAdapter(TerminalAdapter):
             return SpawnResult(ok=False, detail=blocker, commands=[argv])
 
         try:
-            subprocess.run(argv, check=True, capture_output=True, text=True)
+            proc = subprocess.run(argv, check=True, capture_output=True, text=True)
         except (OSError, subprocess.CalledProcessError) as exc:
             # Self-heal: the ONLY failure we recover from is an unregistered repo
             # path. Register it once, then retry the create exactly once. Any
             # other failure (or a still-failing retry) degrades gracefully below.
             if _is_unregistered_repo(exc) and self._register_repo(cwd):
                 try:
-                    subprocess.run(argv, check=True, capture_output=True, text=True)
+                    proc = subprocess.run(argv, check=True, capture_output=True, text=True)
                 except (OSError, subprocess.CalledProcessError) as retry_exc:
                     return self._spawn_failure(retry_exc, argv)
                 return SpawnResult(
                     ok=True,
-                    ref=safe_title(title),
+                    ref=_parse_handle(proc.stdout) or safe_title(title),
                     detail="opened a new Orca tab (after registering repo with Orca)",
                     commands=[argv],
                 )
             return self._spawn_failure(exc, argv)
+        # ref is the orca terminal handle when --json parses (registry key), else the
+        # title as a legible fallback — a failed parse must never fail the spawn.
         return SpawnResult(
             ok=True,
-            ref=safe_title(title),
+            ref=_parse_handle(proc.stdout) or safe_title(title),
             detail="opened a new Orca tab",
             commands=[argv],
         )

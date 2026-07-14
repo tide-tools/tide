@@ -558,6 +558,7 @@ def _session_binding(sess_slug, sess_path, is_new, thread, *, kind=stream.KIND_T
         "resume": resume,
         "session_index": session_index,
         "session_title": session_title,
+        "arc_path": str(sess_path) if sess_path else "",  # for the sid-registry (cand 94)
     }
 
 
@@ -984,7 +985,20 @@ def launch_handoff(
             handoff_queue.take(control_home, record["name"], session=session_id)
         except Exception:  # noqa: BLE001  best-effort, never fatal
             pass
+        # Record sid → terminal so ▶ resolves THIS session's tab later (cand 94). The
+        # session dir is <seed>/../.. — the arc whose passport we just pinned.
+        _record_launch(control_home, session_id, res.ref, Path(seed_path).parent.parent)
     return res
+
+
+def _record_launch(control_home: Path, session_id: Optional[str], handle, arc) -> None:
+    """Best-effort sid-keyed registry write after a spawn (cand 94). Never fatal."""
+    try:
+        from .. import registry
+        if session_id and handle:
+            registry.record(control_home, session_id, str(handle), str(arc))
+    except Exception:  # noqa: BLE001  a launcher must not fail over the registry
+        pass
 
 
 # --- launch ----------------------------------------------------------------
@@ -1117,6 +1131,7 @@ def launch_entry(
     is spawned with ``cwd`` = the project dir (so its ``CLAUDE.md`` loads).
     """
     project = Path(entry["path"]).expanduser()
+    session = entry.get("session") or {}
     command = build_launch(
         project,
         control_home=control_home,
@@ -1125,9 +1140,14 @@ def launch_entry(
         dry_run=dry_run,
         **_session_launch_kwargs(entry),
     )
-    return adapter.spawn(
+    res = adapter.spawn(
         command=command, cwd=str(project), title=_tab_title(entry), dry_run=dry_run
     )
+    # Record sid → terminal so ▶ resolves THIS session's tab later (cand 94).
+    if res.ok and not dry_run:
+        _record_launch(control_home, session.get("session_id"), res.ref,
+                       session.get("arc_path") or session.get("arc_ref") or "")
+    return res
 
 
 def _tab_title(entry: Dict) -> str:
