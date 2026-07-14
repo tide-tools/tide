@@ -69,12 +69,17 @@ def run_return(
     arc: str = "",
     title: str = "",
     adapter_name: Optional[str] = None,
+    force: bool = False,
     dry_run: bool = False,
 ) -> dict:
     """Focus the session's terminal, or respawn ``--resume`` under the same sid.
 
+    *force* is the HUMAN's override of the dissolved-gate (Гриша 14.07: «мало ли
+    что — достать из старой»): a confirmed modal click may re-enter a dissolved
+    head to read it. The gesture stays the human's — agents never pass force.
+
     Returns a plain dict (the ``--json`` contract):
-    ``{ok, action: focused|resumed|failed, handle, detail}``.
+    ``{ok, action: focused|resumed|gone|failed, handle, detail}``.
     """
     s = (sid or "").strip()
     if not _SID_RE.fullmatch(s):
@@ -91,7 +96,7 @@ def run_return(
     # thread away and must never be resurrected (one holder per thread — respawning
     # it would mint a second); an ENDED one finished. Focusing a live tab above is
     # fine (a look-back reads, it doesn't hold) — the gate is on resurrection only.
-    stamp = _no_resurrect_stamp(Path(project), s, arc=arc)
+    stamp = None if force else _no_resurrect_stamp(Path(project), s, arc=arc)
     if stamp:
         return {"ok": False, "action": "gone", "handle": "",
                 "detail": "session {0}: {1} — нить у преемника, respawn запрещён".format(
@@ -128,6 +133,7 @@ def cmd_return(args) -> int:
         arc=getattr(args, "arc", "") or "",
         title=getattr(args, "title", "") or "",
         adapter_name=getattr(args, "adapter", None),
+        force=bool(getattr(args, "force", False)),
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     if getattr(args, "json", False):
@@ -148,6 +154,9 @@ def register(subparsers) -> None:
     rp.add_argument("--arc", default="", help="the session's arc path (legacy registry key tolerance)")
     rp.add_argument("--title", default="", help="human tab title for a respawn")
     rp.add_argument("--adapter", default=None, help="terminal adapter (default: auto)")
+    rp.add_argument("--force", action="store_true",
+                    help="the HUMAN's override: re-enter a dissolved head to read it "
+                         "(confirmed modal on the board; agents never pass this)")
     rp.add_argument("--dry-run", action="store_true", dest="dry_run", help="build, don't execute")
     rp.add_argument("--json", action="store_true", help="machine-readable result (additive fields only)")
     rp.set_defaults(func=cmd_return, _cmd="return")

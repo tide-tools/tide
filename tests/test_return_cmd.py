@@ -169,3 +169,21 @@ def test_gate_survives_a_mismatching_arc_hint(tmp_path, monkeypatch):
     _patched(monkeypatch, adapter)
     out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sibling))
     assert out["action"] == "gone" and adapter.spawned is None
+
+
+def test_force_reenters_a_dissolved_head(tmp_path, monkeypatch):
+    # the HUMAN's confirmed override (Гриша 14.07: «достать из старой — мало ли
+    # что»): force skips the dissolved-gate; agents never pass force
+    from tide.arc import stream
+
+    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
+    stream.new_thread(tmp_path, "demo", goal="ship")
+    sess = stream.new_session(tmp_path, "demo", "origin")
+    fields.set_field(sess / "arc.md", "claude-session", SID)
+    fields.set_field(sess / "arc.md", "dissolved", "2026-07-14T16:25:40")
+    adapter = _FakeAdapter(focus_ok=False)
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path,
+                                arc=str(sess), force=True)
+    assert out["ok"] is True and out["action"] == "resumed"
+    assert "--resume {0}".format(SID) in " ".join(adapter.spawned["command"])
