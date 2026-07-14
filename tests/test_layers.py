@@ -16,8 +16,8 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "tide"
 # Layer of a module, by its path relative to src/tide (first segment or stem).
 STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders"}
 DOMAIN = {
-    "arc", "handoff_queue", "offload", "registry", "sync", "health", "lookback",
-    "ledger", "roster",
+    "arc", "handoff_queue", "offload", "registry", "sessions", "sync", "health",
+    "lookback", "ledger", "roster",
     # domain data that lives in .tide/ even though the module sits top-level:
     "canon", "contract", "gate", "readme", "strictness",
 }

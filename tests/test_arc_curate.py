@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tide import fields
@@ -173,3 +175,31 @@ def test_remove_field_is_clean_and_idempotent(tmp_path):
     assert "held:" not in text and "goal: g" in text and "status: active" in text
     fields.remove_field(f, "held")  # absent — no-op
     fields.remove_field(tmp_path / "ghost.md", "held")  # missing file — no-op
+
+
+# --- sessions.reconcile_registry (the SessionStart sweeper) ---------------------------
+
+def test_reconcile_backfills_single_cwd_match(tmp_path):
+    from tide import registry, sessions
+    note = sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-1",
+        terminals=[{"handle": "term_a", "worktreePath": "/p/roj"},
+                   {"handle": "term_b", "worktreePath": "/other"}])
+    assert note and "term_a" in note
+    assert registry.recorded_handle(tmp_path, "sid-1") == "term_a"
+
+
+def test_reconcile_never_overwrites_and_never_guesses(tmp_path):
+    from tide import registry, sessions
+    registry.record(tmp_path, "sid-1", "term_old", "/p/roj")
+    # recorded (even if hidden from list — cand 101) → untouched
+    assert sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-1",
+        terminals=[{"handle": "term_new", "worktreePath": "/p/roj"}]) is None
+    assert registry.recorded_handle(tmp_path, "sid-1") == "term_old"
+    # two candidates in one cwd → never guess between heads
+    assert sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-2",
+        terminals=[{"handle": "t1", "worktreePath": "/p/roj"},
+                   {"handle": "t2", "worktreePath": "/p/roj"}]) is None
+    assert registry.recorded_handle(tmp_path, "sid-2") is None

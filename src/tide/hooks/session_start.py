@@ -382,6 +382,17 @@ def cmd_session_start(args) -> int:
             _link_claude_session(root, session)  # cand 93: board sees the head at once
         except Exception:  # noqa: BLE001 — a hook must never break a session
             pass
+        try:
+            # The reconcile sweeper (principle №1): backfill a MISSING sid→terminal
+            # record so «вернуться в сессию» works on EVERY path of ascent — bare
+            # `claude` by hand, a spawn whose registry write failed. Never overwrites.
+            from .. import registry as _registry, sessions as _sessions
+            _sessions.reconcile_registry(
+                paths.control_home(), root, session,
+                terminals=_registry.orca_terminal_list(),
+            )
+        except Exception:  # noqa: BLE001 — the sweeper is best-effort by design
+            pass
     print(render(root, _current_role(), update_note=_update_note(), session=session))
     return 0
 

@@ -80,6 +80,25 @@ def forget(home: Path, sid: str) -> None:
         )
 
 
+def orca_terminal_list() -> list:
+    """Live terminals from ``orca terminal list --json`` as dicts (``[]`` on failure).
+
+    Richer sibling of :func:`orca_live_handles` — the reconcile sweeper needs
+    ``worktreePath`` for its cwd match, not just the handle set. Same caveat: list
+    HIDES background-adopted terminals (cand 101), so this is usable for finding a
+    terminal, never for declaring one dead.
+    """
+    try:
+        r = subprocess.run(
+            ["orca", "terminal", "list", "--json"],
+            capture_output=True, text=True, timeout=10, env=_ORCA_ENV,
+        )
+        terminals = (json.loads(r.stdout or "{}").get("result", {}) or {}).get("terminals", [])
+        return [t for t in terminals if isinstance(t, dict)]
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+
+
 def orca_live_handles() -> Set[str]:
     """The set of live terminal handles from ``orca terminal list --json`` (``{}`` on any
     failure — a registry read must never break because orca is absent)."""
