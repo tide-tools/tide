@@ -1017,6 +1017,7 @@ def build_launch(
     skip_permissions: bool = True,
     dry_run: bool = False,
     seed_file: Optional[str] = None,
+    user_prompt: str = "",
 ) -> List[str]:
     """Resolve the scoped ``claude …`` argv for *project*.
 
@@ -1044,6 +1045,7 @@ def build_launch(
         skip_permissions=skip_permissions,
         dry_run=dry_run,
         seed_file=seed_file,
+        user_prompt=user_prompt,
     )
     if resume and session_id:
         resume_cmd = [context.SESSION_PROGRAM]
@@ -1072,12 +1074,16 @@ def _fresh_command(
     skip_permissions: bool,
     dry_run: bool,
     seed_file: Optional[str] = None,
+    user_prompt: str = "",
 ) -> List[str]:
     """The seeded fresh-launch argv (with ``--session-id`` pinned when given).
 
     *seed_file*, when given, is used VERBATIM as the seed (the handoff-pickup path:
     the session opens oriented by the handoff distil); otherwise a fresh per-project
     seed is generated and persisted.
+
+    *user_prompt* becomes the session's first user turn (see
+    :func:`context.build_launch_command`) — the ▶/``spark`` auto-start trigger.
     """
     if seed_file:
         sf = seed_file
@@ -1094,7 +1100,7 @@ def _fresh_command(
         title = "tide-{0}".format(project.name)
         sf = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
     profile = context.load_profile(project)
-    command = context.build_launch_command(sf, profile)
+    command = context.build_launch_command(sf, profile, user_prompt=user_prompt)
     if session_id:
         command[1:1] = ["--session-id", session_id]  # pin for a future --resume
     if skip_permissions and SKIP_PERMISSIONS not in command:
@@ -1112,6 +1118,7 @@ def _session_launch_kwargs(entry: Dict) -> Dict:
         "container_kind": s.get("kind") or stream.KIND_THREAD,
         "session_id": s.get("session_id"),
         "resume": bool(s.get("resume")),
+        "user_prompt": s.get("user_prompt") or "",
     }
 
 
@@ -1350,6 +1357,22 @@ def cmd_menu(args) -> int:
     return 0 if all(r.ok for r in results) else 1
 
 
+def _spark_trigger(thread_slug: str, project_name: str) -> str:
+    """The FIRST user turn for a ▶-sparked session (cand 96). The board's ▶ launches
+    non-interactively — nobody is at that terminal to type — so without a first turn
+    the session opens blank and never starts the pickup. The system-prompt seed
+    already carries canon + the passport + the start-gate; this short turn tells the
+    fresh session to EXECUTE it now. Restores the trigger cand 94 dropped with the
+    band-aid, on tide's own launch path."""
+    return (
+        "Тебя подняли кнопкой ▶ с полки проекта {0} вести нить «{1}». "
+        "НЕ отчитывайся о состоянии — первым же ходом выполни инструкцию системного "
+        "промпта: закрой старт-гейт (живая цель + первый tide offload), построй план "
+        "по закону 47 и покажи Грише. Приём подтверждает сама сессия — разрешения на "
+        "приём не спрашивай."
+    ).format(project_name, thread_slug)
+
+
 def spark(
     control_home: Path,
     project_entry: Dict[str, str],
@@ -1391,6 +1414,10 @@ def spark(
     binding = _session_binding(
         slug.entry_slug(sess.name), sess, True, container_slug, kind=stream.KIND_THREAD
     )
+    # ▶ is non-interactive (launched from the board, nobody at the terminal): give the
+    # fresh session a first user turn so it STARTS the pickup instead of sitting blank
+    # (cand 96). Interactive doors (tide go/menu) leave this empty — the human types.
+    binding["user_prompt"] = _spark_trigger(container_slug, project_entry.get("name") or project.name)
     spark_entry = {**project_entry, "session": binding}
     return launch_entry(
         spark_entry, adapter=adapter, control_home=control_home,

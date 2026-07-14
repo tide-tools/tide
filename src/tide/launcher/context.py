@@ -95,7 +95,9 @@ def scoped_flags(profile: Dict[str, object]) -> List[str]:
     return flags
 
 
-def build_launch_command(seed_file: str, profile: Dict[str, object]) -> List[str]:
+def build_launch_command(
+    seed_file: str, profile: Dict[str, object], user_prompt: str = ""
+) -> List[str]:
     """Build the scoped ``claude`` argv from *profile* + the persisted *seed_file*.
 
     Pure (no I/O). The default lean profile yields::
@@ -105,10 +107,18 @@ def build_launch_command(seed_file: str, profile: Dict[str, object]) -> List[str
     which loads NO global MCP servers. The scoped MCP/tool flags come from
     :func:`scoped_flags`; the seed is delivered by reference (``@<seed_file>``) so a
     multi-KB payload never has to be keystroked into the new terminal.
+
+    *user_prompt*, when given, is appended as the trailing positional — the fresh
+    session's FIRST user turn — so a non-interactive launch (the board's ▶ via
+    ``spark``) ACTS on open instead of sitting blank at an empty prompt. The seed in
+    the system prompt carries the context; this short turn tells it to execute now
+    (cand 96 — the pickup trigger cand 94 dropped with the band-aid).
     """
     cmd: List[str] = [SESSION_PROGRAM]
     cmd += scoped_flags(profile)
     cmd += ["--append-system-prompt", "@{0}".format(seed_file)]
+    if user_prompt:
+        cmd.append(user_prompt)
     return cmd
 
 
