@@ -167,6 +167,24 @@ class OrcaAdapter(TerminalAdapter):
             commands=[argv],
         )
 
+    def focus(self, handle: str) -> bool:
+        """``orca terminal focus --terminal <handle> --json`` → ok:true means alive.
+
+        This IS the liveness probe (cand 101) — never gate it on ``terminal list``,
+        which hides background-adopted terminals that focus perfectly well.
+        """
+        h = (handle or "").strip()
+        if not h or shutil.which("orca") is None:
+            return False
+        try:
+            proc = subprocess.run(
+                ["orca", "terminal", "focus", "--terminal", h, "--json"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return json.loads(proc.stdout or "{}").get("ok") is True
+        except Exception:  # noqa: BLE001 — a failed probe just means "not focusable"
+            return False
+
     def _register_repo(self, cwd: str) -> bool:
         """Register *cwd* with Orca via ``orca repo add --path <cwd>``; True on attempt.
 

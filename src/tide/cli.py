@@ -168,6 +168,15 @@ def _register_terminal(sub) -> None:
     register_terminal(sub)
 
 
+def _register_return(sub) -> None:
+    # tide return — ONE return path for every surface (board ⟳, CLI): focus the
+    # recorded terminal of a sid, else respawn `claude --resume` under the same sid.
+    # The board's own _reg_*/_orca_create copy dies against this door.
+    from .launcher.return_cmd import register as register_return
+
+    register_return(sub)
+
+
 def _register_go(sub) -> None:
     # tide go — the light ENTRY dispatcher (symmetric mirror of `tide handoff`, the
     # exit). Asks "resume prior work or start new?", resolves a seed, and delegates
@@ -377,6 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_context(subparsers)
     _register_terminal(subparsers)
     _register_go(subparsers)
+    _register_return(subparsers)
     _register_handoff(subparsers)
     _register_migrate_arcs(subparsers)
     _register_readme(subparsers)

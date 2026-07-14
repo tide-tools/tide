@@ -108,3 +108,14 @@ class TerminalAdapter(ABC):
         returning them on :attr:`SpawnResult.commands`.
         """
         raise NotImplementedError  # pragma: no cover
+
+    def focus(self, handle: str) -> bool:
+        """Bring the terminal behind *handle* to the front; True when it worked.
+
+        The focus attempt doubles as the LIVENESS probe for the return path — a
+        terminal that can be focused is alive, whatever ``list`` claims (cand 101:
+        background-adopted terminals are hidden from ``orca terminal list`` yet
+        focus fine). Default: this adapter cannot focus — the caller falls through
+        to resume/spawn.
+        """
+        return False

@@ -94,6 +94,24 @@ def orca_live_handles() -> Set[str]:
         return set()
 
 
+def recorded_handle(home: Path, sid: str, *, arc: str = "") -> Optional[str]:
+    """The RECORDED handle for *sid* — deliberately NO liveness cross-check.
+
+    ``orca terminal list`` hides background-adopted terminals, so absence-from-list
+    is NOT death (cand 101): the only honest liveness probe is trying to focus the
+    handle, which is exactly what the return path does next. Schema-tolerant: falls
+    back to a legacy arc-keyed entry (the pre-cand-94 format still present in shared
+    registry files) so old records keep resolving.
+    """
+    reg = read(home)
+    for key in ((sid or "").strip(), (arc or "").strip()):
+        if key and key in reg:
+            handle = ((reg[key] or {}).get("handle") or "").strip()
+            if handle:
+                return handle
+    return None
+
+
 def resolve(home: Path, sid: str, *, live_handles: Optional[Set[str]] = None) -> Optional[str]:
     """The LIVE terminal handle for *sid*, or None (recorded-but-dead, or unknown).
 
