@@ -1085,8 +1085,26 @@ def _cmd_new_session(args) -> int:
     # its own session), bind the caller's own session id at birth so the board sees the
     # head at once — no waiting for the first offload (cand 93-board-spark). Absent env
     # (a non-claude caller / test) → None → no stamp.
+    root = _root()
     claude_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
-    entry = new_session(_root(), args.thread, args.slug,
+    # ДУБЛЬ-ID ГАРД (cand 103): штамп корректен только для self-register — когда claude
+    # заводит СВОЮ первую сессию. Если этот id УЖЕ держит другую сессию нити (агент
+    # заводит сессию ПОВЕРХ своей — handoff-pickup, планировочная), НЕ штампуем: иначе
+    # два арка на один claude-id, и «вернуться в сессию» ведёт в ОДИН терминал (первую),
+    # доска не различает сессии, родословная ломается.
+    if claude_session:
+        try:
+            sub = _open_goal_substream(root, args.thread)
+            for d in sorted(sub.iterdir()):
+                ap = d / "arc.md"
+                if (ap.is_file()
+                        and (fields.read_field(ap, "claude-session") or "").strip()
+                        == claude_session):
+                    claude_session = None
+                    break
+        except Exception:
+            pass
+    entry = new_session(root, args.thread, args.slug,
                         from_ref=getattr(args, "from_ref", None),
                         goal=getattr(args, "goal_text", None),
                         claude_session=claude_session)
