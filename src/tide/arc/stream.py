@@ -784,12 +784,15 @@ def _session_is_live(session_dir: Path, *, now: Optional[float] = None) -> bool:
 
 def close_thread(root: Path, ref: str, *, force: bool = False,
                  now: Optional[float] = None) -> "Dict[str, object]":
-    """Close a whole thread: seal every DEAD nested session, then the thread itself.
+    """Close a whole container (thread OR routine): seal every DEAD nested
+    session/run, then the container itself.
 
     ``close`` seals ONE entry, so closing a thread left its sessions ``[active]`` and
     the board reading ``0/N ✓`` on a done thread (cand 74, caught live by the greet
-    dogfood). This cascades. Guards run on the THREAD first (empty ``output/`` +
-    leftover placeholders, ``-f`` overrides) — a thread must still carry a
+    dogfood). This cascades. A routine is the symmetric container (runs instead of
+    sessions) and closes the same way — gating it out left дежурки unclosable from
+    the desk (Гриша, live 14.07). Guards run on the CONTAINER first (empty
+    ``output/`` + leftover placeholders, ``-f`` overrides) — it must still carry a
     self-contained result. Sessions then seal WITHOUT the output guard: a session is
     not a work delta (its work lives in ``workspace/``), so an empty ``output/`` is
     normal and must not block the nit's close.
@@ -805,9 +808,9 @@ def close_thread(root: Path, ref: str, *, force: bool = False,
         raise StreamError(
             "open thread {0!r} not found in {1} (already closed?)".format(ref, stream_dir)
         )
-    if not is_thread(entry):
+    if not (is_thread(entry) or is_routine(entry)):
         raise StreamError(
-            "{0!r} is not a thread — use 'tide arc close' for a plain arc".format(ref)
+            "{0!r} is not a thread/routine — use 'tide arc close' for a plain arc".format(ref)
         )
     if not force:
         if _output_empty(entry):
@@ -1187,9 +1190,10 @@ def _cmd_close(args) -> int:
 
         _curate.retire_sessions(arc_dir)
 
-    # A thread closes as a WHOLE nit — cascade to its open sessions, else the board
-    # reads '0/N ✓' on a done thread with sessions still active (cand 74).
-    if arc_dir is not None and args.goal is None and is_thread(arc_dir):
+    # A container (thread/routine) closes as a WHOLE nit — cascade to its open
+    # sessions/runs, else the board reads '0/N ✓' on a done container with sessions
+    # still active (cand 74; routines joined 14.07 — дежурки were unclosable).
+    if arc_dir is not None and args.goal is None and (is_thread(arc_dir) or is_routine(arc_dir)):
         summary = close_thread(root, args.slug, force=args.force)
         n = len(summary["sessions"])
         print("tide: closed thread {0} (status: done) + {1} session{2} sealed".format(

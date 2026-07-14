@@ -255,6 +255,40 @@ def test_close_thread_refuses_a_plain_arc(tmp_project):
         stream.close_thread(tmp_project, "loose")
 
 
+def test_close_routine_cascades_to_runs(tmp_project):
+    # Гриша, live 14.07: дежурки на столе были неубиваемы — карточка без ✕, а
+    # доменный каскад отказывал рутине. Рутина — симметричный контейнер (раны
+    # вместо сессий) и закрывается тем же жестом.
+    entry = stream.new_routine(tmp_project, "deploy", goal="ship to prod")
+    r1 = stream.new_session(tmp_project, "deploy", "run-one")
+    (entry / "output" / "result.md").write_text("released\n", encoding="utf-8")
+
+    summary = stream.close_thread(tmp_project, "deploy", force=True)
+    assert "deploy" in summary["thread"] and summary["thread"].startswith("__")
+    closed = tmp_project / ".tide" / "arcs" / summary["thread"]
+    assert closed.is_dir()
+    assert fields.read_field(stream.passport_path(closed), "status") == "done"
+    open_runs = [d for d in (closed / "arcs").iterdir()
+                 if d.is_dir() and not slug.is_closed_entry(d.name)]
+    assert open_runs == []  # раны запечатаны вместе с контейнером
+
+
+def test_cli_arc_close_on_routine_cascades(tmp_project, monkeypatch):
+    from tide import cli
+
+    stream.new_routine(tmp_project, "deploy", goal="ship to prod")
+    stream.new_session(tmp_project, "deploy", "run-one")
+    monkeypatch.chdir(tmp_project)
+    rc = cli.main(["arc", "close", "deploy", "-f"])
+    assert rc == 0
+    closed = next(d for d in (tmp_project / ".tide" / "arcs").iterdir()
+                  if "deploy" in d.name)
+    assert slug.is_closed_entry(closed.name)
+    open_runs = [d for d in (closed / "arcs").iterdir()
+                 if d.is_dir() and not slug.is_closed_entry(d.name)]
+    assert open_runs == []
+
+
 def test_cli_arc_close_on_thread_cascades(tmp_project, monkeypatch, capsys):
     from tide import cli
 
