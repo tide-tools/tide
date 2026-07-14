@@ -122,6 +122,12 @@ def prune(home: Path, *, live_handles: Optional[Set[str]] = None) -> int:
     if not data:
         return 0
     live = orca_live_handles() if live_handles is None else live_handles
+    if not live:
+        # An empty live-set is indistinguishable from an orca outage (orca_live_handles
+        # returns {} on ANY failure) — wiping the whole registry on an outage would turn
+        # every "return to session" into a dead end. Keep stale entries; resolve() still
+        # answers None for them, so correctness is unaffected.
+        return 0
     kept = {s: e for s, e in data.items() if (e.get("handle") or "") in live}
     removed = len(data) - len(kept)
     if removed:

@@ -303,3 +303,39 @@ def test_cli_new_session_no_stamp_without_env(tmp_project, monkeypatch):
     assert rc == 0
     sess = stream.last_session(tmp_project, "work")
     assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+
+
+# --- passport floor at birth (cands 102/105) ---------------------------------
+
+def test_session_born_with_default_title(tmp_project):
+    stream.new_thread(tmp_project, "prz")
+    sess = stream.new_session(tmp_project, "prz", "kickoff")
+    assert fields.read_field(sess / "arc.md", "title") == "prz · kickoff"
+
+
+def test_session_inherits_live_thread_goal(tmp_project):
+    stream.new_thread(tmp_project, "prz", goal="ship the launcher end to end")
+    sess = stream.new_session(tmp_project, "prz", "kickoff")
+    assert fields.read_field(sess / "arc.md", "goal") == "ship the launcher end to end"
+
+
+def test_session_keeps_placeholder_on_blind_thread_goal(tmp_project):
+    # a draft thread (goal = its own slug) is fine — the session just isn't lied to
+    stream.new_thread(tmp_project, "prz", goal="prz")
+    sess = stream.new_session(tmp_project, "prz", "kickoff")
+    goal = fields.read_field(sess / "arc.md", "goal") or ""
+    assert goal != "prz"
+
+
+def test_explicit_goal_beats_inheritance(tmp_project):
+    stream.new_thread(tmp_project, "prz", goal="ship the launcher end to end")
+    sess = stream.new_session(tmp_project, "prz", "kickoff", goal="verify step one only")
+    assert fields.read_field(sess / "arc.md", "goal") == "verify step one only"
+
+
+def test_default_title_normalizes_entry_name_ref(tmp_project):
+    # the board shows entry names (01-@prz) and people paste them — the title must
+    # still read as clean words, same normalization as the from: field
+    stream.new_thread(tmp_project, "prz")
+    sess = stream.new_session(tmp_project, "01-@prz", "kickoff")
+    assert fields.read_field(sess / "arc.md", "title") == "prz · kickoff"

@@ -397,3 +397,20 @@ def test_set_goal_targets_session_in_thread(tmp_project):
     pp = stream.set_goal(tmp_project, "pickup", "resume the plan step 3", thread_slug="handoff")
     assert fields.read_field(pp, "goal") == "resume the plan step 3"
     assert pp == sess / "arc.md"
+
+
+def test_set_goal_stamps_title_in_same_gesture(tmp_project):
+    stream.new_thread(tmp_project, "handoff", goal="harden the seam")
+    sess = stream.new_session(tmp_project, "handoff", "pickup")
+    pp = stream.set_goal(tmp_project, "pickup", "resume the plan step 3",
+                         thread_slug="handoff", title="picking the plan back up")
+    assert fields.read_field(pp, "title") == "picking the plan back up"
+    assert pp == sess / "arc.md"
+
+
+def test_set_goal_refuses_placeholder_title(tmp_project):
+    stream.new_thread(tmp_project, "handoff", goal="harden the seam")
+    stream.new_session(tmp_project, "handoff", "pickup")
+    with pytest.raises(stream.StreamError):
+        stream.set_goal(tmp_project, "pickup", "resume the plan step 3",
+                        thread_slug="handoff", title="<human title>")

@@ -101,3 +101,11 @@ def test_prune_noop_when_all_live(tmp_path):
 
 def test_prune_empty_registry(tmp_path):
     assert registry.prune(tmp_path, live_handles=set()) == 0
+
+
+def test_prune_keeps_everything_when_live_set_empty(tmp_path):
+    # An empty live-set may just mean orca failed to answer — never wipe the registry.
+    registry.record(tmp_path, "sid-1", "term_a", "/a")
+    registry.record(tmp_path, "sid-2", "term_b", "/b")
+    assert registry.prune(tmp_path, live_handles=set()) == 0
+    assert set(registry.read(tmp_path)) == {"sid-1", "sid-2"}

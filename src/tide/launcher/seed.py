@@ -34,16 +34,17 @@ ROLE_WORKER = "worker"
 
 SEED_TITLE = "# tide session seed"
 
-# The START GATE (cand 81/87): before the first work move, the passport must not be
-# blind — a real title + goal (not the thread slug, not a `<…>` placeholder) and a
-# first offload, or the board reads empty for the whole session. The offload nudge
-# (Stop hook) enforces the offload half; this line delivers the instruction up front
-# so a fresh `tide menu`/`go` session fills the passport before it starts working.
+# The START GATE (cand 81/87), slimmed since the passport FLOOR became birth mechanics
+# (cands 102/105): every session is now BORN with a default title and — when the thread
+# has one — an inherited goal, so the seed no longer asks the agent to build the floor,
+# only to make it speak: sharpen the words and do the first pulse. The offload nudge
+# (Stop hook) enforces the pulse half.
 _START_GATE = (
-    "**Старт-гейт — до первого хода работы.** Доска слепа, пока паспорт этой "
-    "сессии/нити слепой. Сначала: (1) `title:` + `goal:` — живыми словами, НЕ слаг "
-    "нити и не `<…>`-плейсхолдер; (2) первый `tide offload <нить>/<сессия> --cursor "
-    "\"<что делаешь сейчас>\" --next \"<шаги через · >\"`. Только потом — работа."
+    "**Старт-гейт — до первого хода работы.** Паспорт уже рождён с дефолтным "
+    "`title:` и целью нити — сделай их живыми под ЭТУ сессию одним жестом: "
+    "`tide arc set-goal <сессия> -p <нить> \"<цель>\" --title \"<заголовок>\"`; "
+    "затем первый `tide offload <нить>/<сессия> --cursor \"<что делаешь сейчас>\" "
+    "--next \"<шаги через · >\"`. Только потом — работа."
 )
 
 

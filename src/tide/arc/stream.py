@@ -549,6 +549,13 @@ def new_session(
     SessionStart already fired (so the start-hook had nothing to bind). The CLI handler
     passes ``$CLAUDE_CODE_SESSION_ID`` (the caller's own id); the board then sees the
     head immediately instead of leaving the nit stuck on 'launching' (cand 93-board-spark).
+
+    The passport FLOOR is mechanics, not seed-text (cands 102/105): every session is
+    born with a real ``title:`` (default ``<thread> · <slug>``) and — when the thread's
+    own goal is live words — an inherited ``goal:``. A blind thread goal is fine (the
+    thread may be a draft); the session then keeps its placeholder for the agent to
+    fill. Living here means EVERY birth path (menu, spark, pickup, bare CLI) gets the
+    floor without remembering to build it.
     """
     s = slug.slugify(raw_slug)
     if not s:
@@ -568,8 +575,17 @@ def new_session(
     _io.atomic_write(entry / "arc.md", templates.session_md(entry.name))
     if from_slug:
         fields.set_field(entry / "arc.md", "from", from_slug)
-    if goal and goal.strip():
-        fields.set_field(entry / "arc.md", "goal", goal.strip())
+    session_goal = (goal or "").strip()
+    if not session_goal:
+        thread_entry = _find(paths.arcs_dir(root), thread_slug, goal=True, closed=False)
+        if thread_entry is not None:
+            thread_goal = fields.read_field(passport_path(thread_entry), "goal") or ""
+            if not placeholders.is_blind_goal(thread_goal, slug.entry_slug(thread_entry.name)):
+                session_goal = thread_goal.strip()
+    if session_goal:
+        fields.set_field(entry / "arc.md", "goal", session_goal)
+    thread_s = slug.entry_slug(thread_slug) if "-" in thread_slug else slug.slugify(thread_slug)
+    fields.set_field(entry / "arc.md", "title", "{0} · {1}".format(thread_s, s))
     if claude_session and claude_session.strip():
         fields.set_field(entry / "arc.md", "claude-session", claude_session.strip())
     stamp_rev(entry, root)
@@ -598,7 +614,7 @@ def new_goal(root: Path, raw_slug: str) -> Path:
 
 
 def set_goal(root: Path, ref: str, goal_text: str,
-             *, thread_slug: Optional[str] = None) -> Path:
+             *, thread_slug: Optional[str] = None, title: Optional[str] = None) -> Path:
     """Set an OPEN entry's ``goal:`` to REAL words — the start gate's setter (cand 81/87).
 
     Resolves *ref* as a top-stream thread/goal/arc, or (with *thread_slug*) a session
@@ -607,6 +623,11 @@ def set_goal(root: Path, ref: str, goal_text: str,
     the whole point of the gate is that the board shows a real purpose: re-stamping the
     slug as the goal is exactly the "there's no goal there" lie this closes. Returns the
     passport path written.
+
+    *title* stamps ``title:`` in the same gesture (cand 105) — before it, the gate was
+    half machine (goal via CLI) and half hand-edit (title), so on another session the
+    title half simply never happened. A ``<…>`` placeholder title is refused the same
+    way a blind goal is.
     """
     g = (goal_text or "").strip()
     if thread_slug:
@@ -624,6 +645,14 @@ def set_goal(root: Path, ref: str, goal_text: str,
         )
     pp = passport_path(entry)
     fields.set_field(pp, "goal", g)
+    t = (title or "").strip()
+    if t:
+        if placeholders.find_in_text("title: " + t):
+            raise StreamError(
+                "set-goal: {0!r} is not a real title (a <…> placeholder) — "
+                "give the picker human words.".format(t)
+            )
+        fields.set_field(pp, "title", t)
     return pp
 
 
@@ -1156,7 +1185,9 @@ def _cmd_close(args) -> int:
 
 
 def _cmd_set_goal(args) -> int:
-    pp = set_goal(_root(), args.ref, args.goal_text, thread_slug=getattr(args, "thread", None))
+    pp = set_goal(_root(), args.ref, args.goal_text,
+                  thread_slug=getattr(args, "thread", None),
+                  title=getattr(args, "title", None))
     print("tide: goal set → {0}".format(pp))
     return 0
 
@@ -1224,6 +1255,7 @@ def register(arc_subparsers) -> None:
     sgp.add_argument("ref", help="thread/goal/arc slug (or a session slug with -p)")
     sgp.add_argument("goal_text", metavar="GOAL", help="the goal in plain words (≤12 words reads best)")
     sgp.add_argument("-p", "--thread", help="target a session INSIDE this thread's substream")
+    sgp.add_argument("--title", metavar="TEXT", help="stamp title: in the same gesture — the whole start gate through one machine (cand 105)")
     sgp.set_defaults(func=_cmd_set_goal, _cmd="arc set-goal")
 
     op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")
