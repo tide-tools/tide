@@ -52,8 +52,10 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "claude-session",  # pinned claude --session-id of a session (for --resume)
         "criteria",
         "deferred",
+        "dismissed",    # hand-retired head: the session left focus, its trace stays
         "dropped",      # candidate drop stamp (honest board age; candidate 89)
         "from",
+        "held",         # thread set aside by hand (☾) — reversible, board-only gesture
         "goal",
         "kind",         # arc kind marker — "thread" tags a session-memory arc
         "merged",
@@ -214,3 +216,28 @@ def set_field(path: Path, key: str, value: str) -> None:
     p = Path(path)
     original = p.read_text(encoding="utf-8") if p.is_file() else ""
     atomic_write(p, set_field_text(original, key, value))
+
+
+def remove_field_text(text: str, key: str) -> str:
+    """Return *text* with every ``key: …`` line removed (aliases included).
+
+    The inverse gesture of :func:`set_field_text` — needed by reversible stamps
+    like ``held:`` (☾ on / ↑ off). Removing an absent key is a no-op.
+    """
+    wanted = _match_keys(key)
+    had_trailing_nl = text.endswith("\n")
+    lines = [ln for ln in text.split("\n") if _line_key(ln) not in wanted]
+    out = "\n".join(lines)
+    if had_trailing_nl and not out.endswith("\n"):
+        out += "\n"
+    return out
+
+
+def remove_field(path: Path, key: str) -> None:
+    """File wrapper for :func:`remove_field_text` (atomic, utf-8; missing file = no-op)."""
+    from .io import atomic_write  # deferred to avoid import-cycle risks
+
+    p = Path(path)
+    if not p.is_file():
+        return
+    atomic_write(p, remove_field_text(p.read_text(encoding="utf-8"), key))

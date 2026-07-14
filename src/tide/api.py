@@ -49,6 +49,16 @@ from .arc.candidate import (
     promote,
 )
 
+# --- the human's hand-gestures (board clicks → domain ops) ----------------------------
+from .arc.curate import (
+    dismiss,
+    drop_candidate,
+    drop_thread,
+    hold,
+    retire_sessions,
+    validate_step,
+)
+
 # --- handoffs (two-stage offer → take) -----------------------------------------------
 from .handoff_queue import (
     confirm_for_session,
@@ -83,6 +93,9 @@ __all__ = [
     # candidates
     "archive", "archive_resolved", "is_resolved", "list_candidates", "new_candidate",
     "promote",
+    # curate (hand gestures)
+    "dismiss", "drop_candidate", "drop_thread", "hold", "retire_sessions",
+    "validate_step",
     # handoffs
     "confirm_for_session", "drop", "is_dissolved", "list_offers", "multiples", "offer",
     "reserve", "take", "validate_target",

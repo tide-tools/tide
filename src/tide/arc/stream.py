@@ -1162,6 +1162,20 @@ def _cmd_close(args) -> int:
             print("tide: {0}".format(exc), file=sys.stderr)
             return 1
 
+    # Closing by hand from the board arrives with the hand's extras: a one-line
+    # result (a closed thread carries a self-sufficient output) and the retire of
+    # the live head (dismissed: on sessions, so the trophy doesn't shine a stub).
+    result = (getattr(args, "result", "") or "").strip()
+    if arc_dir is not None and result:
+        out_dir = arc_dir / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _io.atomic_write(out_dir / "result.md",
+                         "# итог нити (закрыта рукой с доски)\n\n{0}\n".format(result))
+    if arc_dir is not None and getattr(args, "retire_head", False):
+        from . import curate as _curate  # local: sibling domain module
+
+        _curate.retire_sessions(arc_dir)
+
     # A thread closes as a WHOLE nit — cascade to its open sessions, else the board
     # reads '0/N ✓' on a done thread with sessions still active (cand 74).
     if arc_dir is not None and args.goal is None and is_thread(arc_dir):
@@ -1271,6 +1285,9 @@ def register(arc_subparsers) -> None:
     cp = arc_subparsers.add_parser("close", help="dual-mark done (__…__ + status:done), empty-output guard")
     cp.add_argument("slug")
     cp.add_argument("-f", "--force", action="store_true", help="skip the empty-output guard")
+    cp.add_argument("--result", metavar="TEXT", help="one-line result by hand → output/result.md (board's ✓)")
+    cp.add_argument("--retire-head", action="store_true", dest="retire_head",
+                    help="dismissed: on the thread's live sessions before sealing (no head stub on a trophy)")
     _add_goal_opt(cp)
     cp.set_defaults(func=_cmd_close, _cmd="arc close")
 
@@ -1294,3 +1311,9 @@ def register(arc_subparsers) -> None:
     mp.add_argument("-f", "--force", action="store_true", help="remove even with non-empty output/ or nested sub-arcs")
     _add_goal_opt(mp)
     mp.set_defaults(func=_cmd_rm, _cmd="arc rm")
+
+    # The human's hand-gestures (hold/dismiss/drop/validate) — domain ops the board
+    # calls through the subprocess door instead of patching passports with regexes.
+    from . import curate as _curate  # local: keep stream import-light at module load
+
+    _curate.register_arc_verbs(arc_subparsers)

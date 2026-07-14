@@ -388,6 +388,14 @@ def _cmd_archive(args) -> int:
     return 0
 
 
+def _cmd_drop(args) -> int:
+    from .curate import drop_candidate  # local: sibling domain module
+
+    dest = drop_candidate(_root(), args.key)
+    print("tide: candidate dropped → {0} (restorable)".format(dest))
+    return 0
+
+
 def _cmd_promote(args) -> int:
     # cli.main wraps RoleError → exit 1; import lazily to avoid an import cycle.
     from ..cli import require_orchestrator
@@ -415,6 +423,13 @@ def register(subparsers) -> None:
 
     lp = csub.add_parser("list", help="list the candidates backlog")
     lp.set_defaults(func=_cmd_list, _cmd="candidate list")
+
+    drp = csub.add_parser(
+        "drop",
+        help="✕ soft-drop an idea into candidates/__dropped__/ (off the shelf, restorable)",
+    )
+    drp.add_argument("key", help="candidate file name without .md (e.g. 42-some-idea)")
+    drp.set_defaults(func=_cmd_drop, _cmd="candidate drop")
 
     arp = csub.add_parser(
         "archive",
