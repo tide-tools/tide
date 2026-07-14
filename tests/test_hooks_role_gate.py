@@ -484,4 +484,4 @@ def test_install_hooks_writes_role_gate(tmp_project):
     ]
     assert install.ROLE_GATE_CMD in all_cmds
     # Four notes on first install: SessionStart + edit-gate + role-gate + handoff-confirm.
-    assert len(notes) == 5
+    assert len(notes) == 6

@@ -34,6 +34,7 @@ SETTINGS_FILE = "settings.json"
 HOOKS_KEY = "hooks"
 
 SESSION_START_EVENT = "SessionStart"
+SESSION_END_EVENT = "SessionEnd"
 PRE_TOOL_USE_EVENT = "PreToolUse"
 USER_PROMPT_EVENT = "UserPromptSubmit"
 STOP_EVENT = "Stop"
@@ -45,6 +46,7 @@ ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
 HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
+SESSION_END_CMD = "tide hook session-end"
 
 
 class InstallError(StreamError):
@@ -156,6 +158,19 @@ def merge_user_prompt(hooks: dict) -> bool:
     return True
 
 
+def merge_session_end(hooks: dict) -> bool:
+    """Append the SessionEnd entry to *hooks*; return whether it changed.
+
+    The closing bookend: ``ended:`` lands on the session's passport by mechanics,
+    so the board tells "conversation finished" from "went quiet". No-op when wired.
+    """
+    groups = hooks.setdefault(SESSION_END_EVENT, [])
+    if _command_present(groups, SESSION_END_CMD):
+        return False
+    groups.append({HOOKS_KEY: [_hook_block(SESSION_END_CMD)]})
+    return True
+
+
 def merge_stop_nudge(hooks: dict) -> bool:
     """Append the Stop offload-nudge entry to *hooks*; return whether it changed.
 
@@ -197,6 +212,8 @@ def merge_hooks(data: dict) -> List[str]:
         notes.append("{0} → {1}".format(USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD))
     if merge_stop_nudge(hooks):
         notes.append("{0} → {1}".format(STOP_EVENT, OFFLOAD_NUDGE_CMD))
+    if merge_session_end(hooks):
+        notes.append("{0} → {1}".format(SESSION_END_EVENT, SESSION_END_CMD))
     return notes
 
 
@@ -273,3 +290,10 @@ def register_hook_group(subparsers) -> None:
     )
     from ..offload import cmd_offload_nudge  # lazy: keep hook wiring import-light
     on.set_defaults(func=cmd_offload_nudge, _cmd="hook offload-nudge")
+
+    se = hsub.add_parser(
+        "session-end",
+        help="SessionEnd: stamp ended: on this sid's session passport (closing bookend)",
+    )
+    from . import session_end  # lazy: keep hook wiring import-light
+    se.set_defaults(func=session_end.cmd_session_end, _cmd="hook session-end")

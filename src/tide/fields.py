@@ -53,7 +53,9 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "criteria",
         "deferred",
         "dismissed",    # hand-retired head: the session left focus, its trace stays
+        "dissolved",    # the origin gave its thread away (offer taken) — I6 mechanics
         "dropped",      # candidate drop stamp (honest board age; candidate 89)
+        "ended",        # SessionEnd stamp — the claude conversation finished
         "from",
         "held",         # thread set aside by hand (☾) — reversible, board-only gesture
         "goal",

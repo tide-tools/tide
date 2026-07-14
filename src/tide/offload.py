@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -283,10 +284,18 @@ def _blind_goal_suffix(session_entry: Path) -> str:
 
 # --- CLI + hook wiring -------------------------------------------------------
 
-# Words that CLAIM a nit is finished. If the pulse says so but the thread is still
-# open on disk, the board keeps showing it live — words don't convince the board,
-# only disk does (cand 80). Deliberately closure-specific to avoid false warns.
-_CLOSURE_MARKERS = ("закрыт", "влит", "смерж", "выпущен", "merged", "shipped")
+# A pulse CLAIMS the nit is finished only when a closure verb attaches to a CLOSABLE
+# OBJECT (нить/арка/тред/PR/дельта/ветка) — a bare «закрыт» also describes gates and
+# steps («старт-гейт закрыт») and a substring match trained agents to avoid honest
+# words in pulses (cand 106). Both word orders, up to two words in between; verbs are
+# perfective only (intent like «закрою нить позже» must not warn).
+_CLOSABLE = r"(?:нит\w+|арк\w+|тред\w+|thread|ветк\w+|branch|pr|пиар\w*|делт\w+|delta)"
+_CLOSED_VERB = r"(?:закрыт\w*|закрыл\w*|влит\w*|влил\w*|смерж\w*|выпущен\w*|merged|shipped|closed)"
+_CLOSURE_CLAIM = re.compile(
+    r"{o}\W+(?:\w+\W+){{0,2}}{v}|{v}\W+(?:\w+\W+){{0,2}}{o}".format(
+        o=_CLOSABLE, v=_CLOSED_VERB),
+    re.IGNORECASE,
+)
 
 
 def _closure_word_warning(passport: Path, blob: str) -> Optional[str]:
@@ -297,7 +306,7 @@ def _closure_word_warning(passport: Path, blob: str) -> Optional[str]:
     board will still paint the nit live — nudge the human to close it for real.
     """
     low = (blob or "").lower()
-    if not any(m in low for m in _CLOSURE_MARKERS):
+    if not _CLOSURE_CLAIM.search(low):
         return None
     try:
         thread = passport.parent.parent.parent  # arc.md → session → arcs → thread
@@ -376,6 +385,18 @@ def _dissolved_stand_down(session: str) -> Optional[str]:
     """
     if not session:
         return None
+    # First signal: the EXPLICIT stamp (I6) — take() dissolves the origin's passport
+    # mechanically, so the check is local, cheap, and survives archived offer records.
+    try:
+        root = paths.find_tide_root()
+        arc = find_session_by_claude_id(root, session) if root else None
+        if arc is not None and (fields.read_field(arc / "arc.md", "dissolved") or "").strip():
+            return (
+                "tide: ты растворён (dissolved: в паспорте — нить у преемника). "
+                "Стой down, не пульсируй: offload вернул бы тебя на доску как активного (Микки-17)."
+            )
+    except Exception:  # noqa: BLE001 — a hook check must never raise
+        pass
     try:
         from . import handoff_queue as hq
         rec = hq.is_dissolved(paths.control_home(), session)

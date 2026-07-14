@@ -251,12 +251,55 @@ def _resolve(home: Path, key: str) -> Dict[str, object]:
 
 
 def _mark_taken(rec: Dict[str, object], *, session: Optional[str]) -> Dict[str, object]:
-    """Flip a record to taken, stamping who/when (mutates the file)."""
+    """Flip a record to taken, stamping who/when (mutates the file).
+
+    THE single flip point (I4) — every taker路 comes through here, so the origin's
+    DISSOLUTION rides the same gesture (I6): the moment a successor holds the
+    thread, the origin's passport is stamped ``dissolved:`` and its terminal link
+    is forgotten. Mechanics, not the agent's memory — the Stop hook then stands the
+    origin down by the explicit stamp, no pulse-word heuristics (cand 106's lesson).
+    """
     path = rec["path"]
     _set_field(path, "status", STATUS_TAKEN)
     _set_field(path, "taken-by", session or "-")
     _set_field(path, "taken-at", _now())
-    return _parse(path)
+    out = _parse(path)
+    try:
+        _dissolve_origin(Path(path).parent.parent.parent, out)
+    except Exception:  # noqa: BLE001 — dissolution must never break a take
+        pass
+    return out
+
+
+def _dissolve_origin(home: Path, rec: Dict[str, object]) -> Optional[Path]:
+    """Stamp ``dissolved:`` on the ORIGIN session of a just-taken offer (I6).
+
+    The origin gave the thread away — one holder per thread, so mechanically: find
+    its session arc by the pinned sid (across the offer's roster project), stamp
+    ``dissolved:``, and ``registry.forget`` its terminal link so «вернуться» never
+    lands in a head that no longer holds. No origin recorded / not found → no-op.
+    """
+    frm = str(rec.get("from_session") or "").strip()
+    taker = str(rec.get("taken_by") or "").strip()
+    if not frm or frm == "-" or frm == taker:
+        return None
+    from . import fields, registry, roster
+    from .offload import find_session_by_claude_id
+
+    project = str(rec.get("project") or "").strip()
+    entry = next((e for e in roster.read_roster(home) if e["name"] == project), None)
+    if entry is None:
+        return None
+    proj_root = Path(entry["path"]).expanduser()
+    arc = find_session_by_claude_id(proj_root, frm)
+    if arc is None:
+        return None
+    pp = arc if arc.name.endswith(".md") else arc / "arc.md"
+    if not pp.is_file() or fields.read_field(pp, "dissolved"):
+        return None
+    fields.set_field(pp, "dissolved", _now())
+    registry.forget(home, frm)
+    return pp
 
 
 def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
