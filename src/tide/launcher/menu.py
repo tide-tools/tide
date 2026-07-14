@@ -948,9 +948,20 @@ def launch_handoff(
             ok=False, detail="handoff: seed file missing ({0})".format(seed_path), commands=[]
         )
     session_id = str(uuid.uuid4())
+    # Handoff pickup is non-interactive too (▶ from the board) — give it a first user
+    # turn so it STARTS the reception instead of sitting blank (cand 100, twin of the
+    # spark trigger cand 96). The distil rides the system prompt; this turn executes it.
+    slug = record.get("slug") or "нить"
+    pickup_trigger = (
+        "Ты — свежая сессия, принявшая нить «{0}» по тёплому хендоффу (▶ с доски). "
+        "НЕ отчитывайся о состоянии — первым же ходом выполни инструкцию системного "
+        "промпта: прими нить (прочитай дистилл прошлой сессии, продолжи с точки "
+        "хендоффа), закрой старт-гейт первым tide offload. Приём подтверждает сама "
+        "сессия — разрешения на приём не спрашивай."
+    ).format(slug)
     command = build_launch(
         project, control_home=control_home, role=role,
-        seed_file=seed_path, session_id=session_id,
+        seed_file=seed_path, session_id=session_id, user_prompt=pickup_trigger,
         skip_permissions=skip_permissions, dry_run=dry_run,
     )
     # Register the picked-up session so it's RESUMABLE from the menu later: pin the
