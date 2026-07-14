@@ -28,6 +28,35 @@ from . import menu as _menu
 _SID_RE = re.compile(r"[0-9a-fA-F-]{8,64}$")
 
 
+def _no_resurrect_stamp(project: Path, sid: str, *, arc: str = "") -> Optional[str]:
+    """The ``dissolved:`` verdict for *sid*'s session passport, or None.
+
+    ONLY dissolution blocks a respawn — an ``ended:`` session is exactly the case
+    where ``claude --resume`` legitimately reopens the conversation (closed the tab,
+    came back). Resolution: the board's ``--arc`` (the session dir — works for
+    sessions inside CLOSED threads too), else the open-session scan by pinned sid.
+    No passport found → None (an unknown sid stays respawnable — the forgiving
+    default).
+    """
+    from .. import fields
+    from ..offload import find_session_by_claude_id
+
+    pp = None
+    a = (arc or "").strip()
+    if a and "/.tide/arcs/" in a and (Path(a) / "arc.md").is_file():
+        pp = Path(a) / "arc.md"
+    else:
+        entry = find_session_by_claude_id(Path(project), sid)
+        if entry is not None:
+            pp = entry / "arc.md"
+    if pp is None or not pp.is_file():
+        return None
+    if (fields.read_field(pp, "claude-session") or "").strip() != sid:
+        return None  # the passport moved on to another head — not this sid's verdict
+    stamp = (fields.read_field(pp, "dissolved") or "").strip()
+    return "dissolved {0}".format(stamp) if stamp else None
+
+
 def run_return(
     control_home: Path,
     *,
@@ -53,6 +82,16 @@ def run_return(
     if handle and not dry_run and adapter.focus(handle):
         return {"ok": True, "action": "focused", "handle": handle,
                 "detail": "focused the session's terminal"}
+
+    # No live tab → before respawning, check the passport: a DISSOLVED head gave its
+    # thread away and must never be resurrected (one holder per thread — respawning
+    # it would mint a second); an ENDED one finished. Focusing a live tab above is
+    # fine (a look-back reads, it doesn't hold) — the gate is on resurrection only.
+    stamp = _no_resurrect_stamp(Path(project), s, arc=arc)
+    if stamp:
+        return {"ok": False, "action": "gone", "handle": "",
+                "detail": "session {0}: {1} — нить у преемника, respawn запрещён".format(
+                    s[:8], stamp)}
 
     tab = re.sub(r"\s+", " ", title or "").strip()[:48] or "resume-{0}".format(s[:8])
     command = _menu.build_launch(

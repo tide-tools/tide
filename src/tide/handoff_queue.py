@@ -275,15 +275,18 @@ def _dissolve_origin(home: Path, rec: Dict[str, object]) -> Optional[Path]:
     """Stamp ``dissolved:`` on the ORIGIN session of a just-taken offer (I6).
 
     The origin gave the thread away — one holder per thread, so mechanically: find
-    its session arc by the pinned sid (across the offer's roster project), stamp
-    ``dissolved:``, and ``registry.forget`` its terminal link so «вернуться» never
-    lands in a head that no longer holds. No origin recorded / not found → no-op.
+    its session arc by the pinned sid (across the offer's roster project) and stamp
+    ``dissolved:``. The registry entry is deliberately KEPT: the origin's tab is
+    usually still open, and ⟳ must FOCUS it (a look-back is fine) — forgetting the
+    handle made return respawn a duplicate tab (Гриша, live 14.07). What a dissolved
+    head must never get is a RESPAWN — ``tide return`` gates that on the stamp.
+    No origin recorded / not found → no-op.
     """
     frm = str(rec.get("from_session") or "").strip()
     taker = str(rec.get("taken_by") or "").strip()
     if not frm or frm == "-" or frm == taker:
         return None
-    from . import fields, registry, roster
+    from . import fields, roster
     from .offload import find_session_by_claude_id
 
     project = str(rec.get("project") or "").strip()
@@ -298,7 +301,6 @@ def _dissolve_origin(home: Path, rec: Dict[str, object]) -> Optional[Path]:
     if not pp.is_file() or fields.read_field(pp, "dissolved"):
         return None
     fields.set_field(pp, "dissolved", _now())
-    registry.forget(home, frm)
     return pp
 
 

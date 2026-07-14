@@ -297,3 +297,18 @@ def test_link_claude_session_no_session_id_is_noop(tmp_project):
     stream.new_thread(tmp_project, "work", goal="do the work")
     stream.new_session(tmp_project, "work", "plan")
     assert session_start._link_claude_session(tmp_project, None) is None
+
+
+def test_link_never_binds_a_pickup_target(tmp_project):
+    # live 14.07: a passing SessionStart bound a random sid to a session that was
+    # WAITING for its handoff launch — the pickup mints its own sid, hands off it
+    from tide import fields
+    from tide.hooks.session_start import _link_claude_session
+
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    sess = stream.new_session(tmp_project, "work", "pickup")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    seed.write_text("# distil\n", encoding="utf-8")
+    assert _link_claude_session(tmp_project, "random-passerby-sid") is None
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()

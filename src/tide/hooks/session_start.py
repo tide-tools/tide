@@ -330,10 +330,18 @@ def _is_unclaimed_head(session_dir: Path) -> bool:
     'Unclaimed' = its ``claude-session`` is blank or a ``<placeholder>`` AND it never
     pulsed (``offloaded-at`` 0/absent). Such a session is invisible to the board until
     it offloads (cand 93) — the perfect (and safe) target to bind a live id to.
+
+    A PICKUP TARGET is not unclaimed: a session carrying a prepared handoff seed
+    (``input/handoff-seed.md``) is waiting for its offer's launch — its sid is minted
+    by the pickup launcher, never grabbed here (live 14.07: a passing SessionStart
+    bound a random sid to a pending pickup session, which then read as ended before
+    it was ever born).
     """
     pp = session_dir / "arc.md"
     cs = (fields.read_field(pp, "claude-session") or "").strip()
     if cs and not cs.startswith("<"):
+        return False
+    if (session_dir / "input" / "handoff-seed.md").is_file():
         return False
     off = (fields.read_field(pp, "offloaded-at") or "0").strip()
     return off in ("", "0")

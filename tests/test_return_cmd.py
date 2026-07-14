@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tide import registry
+from tide import fields, registry
 from tide.adapters.base import SpawnResult, TerminalAdapter
 from tide.launcher import return_cmd
 
@@ -102,3 +102,52 @@ def test_return_dry_run_builds_without_executing(tmp_path, monkeypatch):
     assert adapter.spawned["dry_run"] is True
     assert out["action"] == "resumed"
     assert registry.recorded_handle(tmp_path, SID) == "term_live"  # untouched
+
+
+def test_return_never_resurrects_a_dissolved_head(tmp_path, monkeypatch):
+    # live 14.07: the origin's tab died after dissolution — return must NOT respawn
+    # it (one holder per thread); it reports "gone" instead
+    from tide.arc import stream
+
+    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
+    stream.new_thread(tmp_path, "demo", goal="ship")
+    sess = stream.new_session(tmp_path, "demo", "origin")
+    fields.set_field(sess / "arc.md", "claude-session", SID)
+    fields.set_field(sess / "arc.md", "dissolved", "2026-07-14T14:11:19")
+    adapter = _FakeAdapter(focus_ok=False)  # tab is dead
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sess))
+    assert out["ok"] is False and out["action"] == "gone"
+    assert "dissolved" in out["detail"]
+    assert adapter.spawned is None  # no resurrection
+
+
+def test_return_still_focuses_a_live_dissolved_tab(tmp_path, monkeypatch):
+    # a look-back reads, it doesn't hold — focusing the still-open tab is fine
+    from tide.arc import stream
+
+    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
+    stream.new_thread(tmp_path, "demo", goal="ship")
+    sess = stream.new_session(tmp_path, "demo", "origin")
+    fields.set_field(sess / "arc.md", "claude-session", SID)
+    fields.set_field(sess / "arc.md", "dissolved", "2026-07-14T14:11:19")
+    registry.record(tmp_path, SID, "term_live", str(sess))
+    adapter = _FakeAdapter(focus_ok=True)
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sess))
+    assert out["ok"] is True and out["action"] == "focused"
+
+
+def test_return_respawns_an_ended_head(tmp_path, monkeypatch):
+    # ended is NOT dissolution: closed the tab, came back → resume reopens it
+    from tide.arc import stream
+
+    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
+    stream.new_thread(tmp_path, "demo", goal="ship")
+    sess = stream.new_session(tmp_path, "demo", "origin")
+    fields.set_field(sess / "arc.md", "claude-session", SID)
+    fields.set_field(sess / "arc.md", "ended", "2026-07-14T14:11:48")
+    adapter = _FakeAdapter(focus_ok=False)
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sess))
+    assert out["ok"] is True and out["action"] == "resumed"

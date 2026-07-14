@@ -125,3 +125,47 @@ def test_pickup_never_inherits_a_stale_pin(tmp_path):
     assert sid != "creator-own-sid"
     assert "--session-id {0}".format(sid) in " ".join(adapter.spawned["command"])
     assert handoff_queue.list_offers(home)[0]["pickup_session"] == sid
+
+
+def test_pickup_second_click_focuses_not_duplicates(tmp_path, monkeypatch):
+    # Mickey-17 window (live 14.07): between spawn and the first prompt the offer is
+    # still "offered" — a second ▶ must focus the reserved tab, not mint a duplicate
+    from tide.launcher import pickup as pickup_mod
+
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    adapter = _FakeAdapter()
+    # first click: real launch path (reserve + spawn + record)
+    launch_session(home, project=proj, session_dir=sess, adapter=adapter,
+                   seed_file=str(seed), trigger="go", title="t", handoff_key=key)
+    sid = fields.read_field(sess / "arc.md", "claude-session")
+    first_handle = registry.recorded_handle(home, sid)
+    # second click: run_pickup sees the reservation + live handle → focus, no spawn
+    focuser = _FakeAdapter()
+    focuser.focus = lambda h: True
+    monkeypatch.setattr(pickup_mod, "get_adapter", lambda name=None: focuser)
+    monkeypatch.setattr(pickup_mod._menu, "resolve_adapter_name", lambda root, o: None)
+    out = pickup_mod.run_pickup(home, key)
+    assert out["action"] == "focused" and out["handle"] == first_handle
+    assert focuser.spawned is None
+
+
+def test_pickup_second_click_never_relaunches_even_if_focus_flakes(tmp_path, monkeypatch):
+    # live 14.07 round 2: focus on a BOOTING tab returns false — reading that as
+    # death minted a duplicate sid+tab. Reservation+record = launch in flight.
+    from tide.launcher import pickup as pickup_mod
+
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    adapter = _FakeAdapter()
+    launch_session(home, project=proj, session_dir=sess, adapter=adapter,
+                   seed_file=str(seed), trigger="go", title="t", handoff_key=key)
+    sid_before = fields.read_field(sess / "arc.md", "claude-session")
+    flaky = _FakeAdapter()
+    flaky.focus = lambda h: False  # tab is booting — focus flakes
+    monkeypatch.setattr(pickup_mod, "get_adapter", lambda name=None: flaky)
+    monkeypatch.setattr(pickup_mod._menu, "resolve_adapter_name", lambda root, o: None)
+    out = pickup_mod.run_pickup(home, key)
+    assert out["ok"] is True and out["action"] == "already-launching"
+    assert flaky.spawned is None  # no duplicate spawn
+    # the pin and the reservation are untouched — no re-mint
+    assert fields.read_field(sess / "arc.md", "claude-session") == sid_before
+    assert handoff_queue.list_offers(home)[0]["pickup_session"] == sid_before

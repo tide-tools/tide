@@ -33,10 +33,11 @@ def _two_generations(tmp_path):
 def test_take_dissolves_origin_mechanically(tmp_path):
     home, proj, origin, target, key = _two_generations(tmp_path)
     hq.take(home, key, session="successor-sid")
-    # I6: the origin's passport is stamped and its terminal link forgotten — the
-    # harness dissolves the origin, not the agent's discipline
+    # I6: the origin's passport is stamped — the harness dissolves the origin, not
+    # the agent's discipline. Its registry entry is KEPT (live 14.07: the tab is
+    # usually still open, ⟳ must focus it; only the RESPAWN is gated, in return_cmd).
     assert (fields.read_field(origin / "arc.md", "dissolved") or "").strip()
-    assert registry.recorded_handle(home, "origin-sid") is None
+    assert registry.recorded_handle(home, "origin-sid") == "term_origin"
     # the successor's link is untouched territory (recorded by its launcher)
     assert (fields.read_field(target / "arc.md", "claude-session") or "") == "successor-sid"
 
@@ -80,3 +81,11 @@ def test_closure_warning_fires_verb_first(tmp_project):
 def test_closure_warning_ignores_intent(tmp_project):
     # future intent is not a claim — no false nag that trains dishonest pulses
     assert _warn(tmp_project, "закрою нить завтра после гейта") is None
+
+
+def test_dissolve_keeps_registry_entry(tmp_path):
+    # live 14.07: forgetting the origin's handle made ⟳ respawn a DUPLICATE tab —
+    # the tab is usually still open, focus must keep working; only respawn is gated
+    home, proj, origin, target, key = _two_generations(tmp_path)
+    hq.take(home, key, session="successor-sid")
+    assert registry.recorded_handle(home, "origin-sid") == "term_origin"
