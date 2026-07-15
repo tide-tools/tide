@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .. import fields, io as _io, numbering, paths, placeholders, slug
+from .. import resolve as _shared_resolve
 from ..canon import rev
 from . import templates
 
@@ -74,35 +75,18 @@ class StreamError(Exception):
 # --- entry resolution ------------------------------------------------------
 
 def _entries(stream_dir: Path) -> List[Path]:
-    """Child entry dirs of *stream_dir* (excludes the candidates/ backlog)."""
-    if not Path(stream_dir).is_dir():
-        return []
-    return [
-        p
-        for p in Path(stream_dir).iterdir()
-        if p.is_dir() and p.name != paths.CANDIDATES_DIRNAME
-    ]
+    """Child entry dirs of *stream_dir* — delegated to :mod:`tide.resolve`."""
+    return _shared_resolve.child_entries(stream_dir)
 
 
 def _find(stream_dir: Path, want: str, *, goal: bool, closed: bool) -> Optional[Path]:
-    """First entry in *stream_dir* matching slug *want* and the goal/closed flags.
+    """First entry matching *want* + flags — THE matcher lives in :mod:`tide.resolve`.
 
-    *want* matches in BOTH forms: the displayed entry name (``04-@slug`` — peeled
-    by ``entry_slug``) and the bare slug (``slugify``, which keeps a leading
-    ``NN-`` that is genuinely part of the slug, e.g. ``01-mvp``). One-form
-    matching bit both ways in the field (arc open '04-@…' missed; offload
-    '01-mvp' missed — cands 43 + agent report 2026-07-07).
+    Both-form matching (displayed name ``04-@slug`` AND bare slug, cands 43 +
+    agent report 2026-07-07) is the shared resolver's load-bearing rule; this
+    thin alias keeps stream's internal call-sites unchanged.
     """
-    wants = {slug.slugify(want), slug.entry_slug(want)}
-    for p in _entries(stream_dir):
-        if slug.entry_slug(p.name) not in wants:
-            continue
-        if slug.is_goal_entry(p.name) != goal:
-            continue
-        if slug.is_closed_entry(p.name) != closed:
-            continue
-        return p
-    return None
+    return _shared_resolve.find_entry(stream_dir, want, goal=goal, closed=closed)
 
 
 def _resolve(stream_dir: Path, want: str, *, closed: bool) -> Optional[Path]:

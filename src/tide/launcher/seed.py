@@ -79,24 +79,14 @@ def _role_block(role: str, prompt_text: Optional[str]) -> str:
 # --- arc passport resolution -----------------------------------------------
 
 def _find_open_entry(root: Path, ref: str) -> Optional[Path]:
-    """First OPEN top-stream entry whose slug matches *ref* (goal preferred)."""
-    arcs = paths.arcs_dir(root)
-    if not arcs.is_dir():
-        return None
-    want = slug.slugify(ref)
-    matches = [
-        p
-        for p in arcs.iterdir()
-        if p.is_dir()
-        and p.name != paths.CANDIDATES_DIRNAME
-        and not slug.is_closed_entry(p.name)
-        and slug.entry_slug(p.name) == want
-    ]
-    if not matches:
-        return None
-    # Prefer the goal when a slug names both a goal and a plain arc.
-    matches.sort(key=lambda p: (not slug.is_goal_entry(p.name), p.name))
-    return matches[0]
+    """First OPEN top-stream entry whose slug matches *ref* (goal preferred).
+
+    Thin alias over :func:`tide.resolve.open_top_entry`. This copy used to
+    match only the bare slug (one-form) — the displayed name ``04-@slug``
+    silently missed, the exact cand-43 trap the shared resolver kills.
+    """
+    from .. import resolve as _resolve
+    return _resolve.open_top_entry(root, ref)
 
 
 def read_arc_passport(root: Path, ref: str) -> Optional[str]:

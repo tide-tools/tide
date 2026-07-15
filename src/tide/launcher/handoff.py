@@ -132,28 +132,12 @@ def build_summary(
 def resolve_open_entry(root: Path, arc_ref: str) -> Optional[Path]:
     """First OPEN top-stream entry whose slug matches *arc_ref* (goal preferred).
 
-    *arc_ref* is normalised with :func:`slug.entry_slug` (not bare ``slugify``) so
-    the entry name that ``tide status`` prints — ``04-@ai-hot-companion``, prefix
-    and ``@`` and all — matches the same as the bare slug ``ai-hot-companion``.
-    (``slugify`` keeps the ``NN-`` prefix, so it silently missed the displayed
-    name — the trap that sent agents to ``tide arc new`` and duplicated arcs.)
+    Thin alias over :func:`tide.resolve.open_top_entry` — THE one slug matcher
+    (both-form: displayed ``04-@slug`` name AND bare slug; the one-form trap
+    sent agents to ``tide arc new`` and duplicated arcs).
     """
-    arcs = paths.arcs_dir(root)
-    if not arcs.is_dir():
-        return None
-    wants = {slug.slugify(arc_ref), slug.entry_slug(arc_ref)}
-    matches = [
-        p
-        for p in arcs.iterdir()
-        if p.is_dir()
-        and p.name != paths.CANDIDATES_DIRNAME
-        and not slug.is_closed_entry(p.name)
-        and slug.entry_slug(p.name) in wants
-    ]
-    if not matches:
-        return None
-    matches.sort(key=lambda p: (not slug.is_goal_entry(p.name), p.name))
-    return matches[0]
+    from .. import resolve as _resolve
+    return _resolve.open_top_entry(root, arc_ref)
 
 
 def _open_arc_slugs(root: Path) -> List[str]:

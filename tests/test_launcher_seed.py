@@ -101,6 +101,15 @@ def test_seed_for_project_arc_missing_is_a_note(tmp_project):
     assert "no open arc passport found" in out
 
 
+def test_read_arc_passport_matches_displayed_entry_name(tmp_project):
+    # Одна из четырёх копий резолвера (seed) матчила только bare-слаг: имя,
+    # которое печатает tide status ('01-ship-it'), молча промахивалось — та же
+    # cand-43 ловушка. Единый tide.resolve матчит обе формы на всех поверхностях.
+    entry = stream.new_arc(tmp_project, "ship-it")
+    assert seed.read_arc_passport(tmp_project, entry.name) is not None
+    assert seed.read_arc_passport(tmp_project, "ship-it") is not None
+
+
 def test_seed_for_project_includes_roster_from_control_home(tmp_control_home):
     roster.add(tmp_control_home, "focus", "/p/focus")
     out = seed.seed_for_project(

@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import fields, paths, placeholders, slug
+from . import fields, paths, placeholders, resolve, slug
 from .arc.stream import StreamError
 
 CONTEXT_SECTION = "## context"
@@ -52,67 +52,22 @@ def _now_iso() -> str:
 # --- session resolution ------------------------------------------------------
 
 def _session_dirs(root: Path) -> List[Path]:
-    """Every OPEN nested session/run dir across all containers (thread/routine)."""
-    arcs = paths.arcs_dir(Path(root))
-    out: List[Path] = []
-    if not arcs.is_dir():
-        return out
-    for container in sorted(arcs.iterdir()):
-        sub = container / paths.ARCS_DIRNAME
-        if not container.is_dir() or slug.is_closed_entry(container.name) or not sub.is_dir():
-            continue
-        for entry in sorted(sub.iterdir()):
-            if entry.is_dir() and slug.is_entry(entry.name) and not slug.is_closed_entry(entry.name):
-                out.append(entry)
-    return out
+    """Every OPEN nested session/run dir — delegated to :mod:`tide.resolve`."""
+    return resolve.open_session_dirs(root)
 
 
 def find_session(root: Path, ref: str) -> Optional[Path]:
     """Resolve the open nested session *ref* names, or None if absent.
 
-    *ref* forms: an exact dir name (``03-pickup`` — unique), a bare slug
-    (``pickup``/``01-mvp``, cand 43), or a thread-qualified ``<thread>/<session>``.
-
-    A bare slug shared by open sessions in MULTIPLE threads is AMBIGUOUS and RAISES
-    with thread-qualified options — silently resolving to the first match wrote a
-    pulse into a stranger's passport in the wild (cand 85, data corruption). Exact
-    dir-name and thread-qualified refs are never ambiguous, so they never raise.
+    THE resolver lives in :mod:`tide.resolve` (one matcher for every surface);
+    this thin alias only translates :class:`resolve.AmbiguousRefError` into the
+    user-facing :class:`OffloadError` (cand 85: ambiguity RAISES — silently
+    picking a match wrote a pulse into a stranger's passport in the wild).
     """
-    dirs = _session_dirs(root)
-
-    # thread-qualified: '<thread>/<session>' (either part in dir-name or bare-slug form)
-    parts = [p for p in str(ref).split("/") if p and p != paths.ARCS_DIRNAME]
-    if len(parts) >= 2:
-        tw = {slug.slugify(parts[0]), slug.entry_slug(parts[0])}
-        sw = {slug.slugify(parts[1]), slug.entry_slug(parts[1])}
-        for entry in dirs:
-            thread = entry.parent.parent
-            if (thread.name == parts[0] or slug.entry_slug(thread.name) in tw) and \
-               (entry.name == parts[1] or slug.entry_slug(entry.name) in sw):
-                return entry
-        return None
-
-    def _ambiguous(cands: List[Path]) -> "OffloadError":
-        opts = ", ".join("{0}/{1}".format(e.parent.parent.name, e.name) for e in cands)
-        return OffloadError(
-            "offload: session {0!r} is ambiguous — {1} open sessions match across "
-            "threads. Qualify it as <thread>/<session>: {2}".format(ref, len(cands), opts))
-
-    # An exact dir-name (NN-slug) is preferred, but even that can collide across
-    # threads (01-work in two threads) — so ambiguity is checked here too (cand 85).
-    exact = [e for e in dirs if e.name == ref]
-    if len(exact) == 1:
-        return exact[0]
-    if len(exact) > 1:
-        raise _ambiguous(exact)
-
-    wants = {slug.slugify(ref), slug.entry_slug(ref)}
-    matches = [e for e in dirs if slug.entry_slug(e.name) in wants]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise _ambiguous(matches)
-    return None
+    try:
+        return resolve.find_session(root, ref)
+    except resolve.AmbiguousRefError as exc:
+        raise OffloadError("offload: {0}".format(exc)) from exc
 
 
 def find_session_by_claude_id(root: Path, session_id: str) -> Optional[Path]:
