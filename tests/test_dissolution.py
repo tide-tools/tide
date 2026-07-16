@@ -9,7 +9,7 @@ from tide.arc import stream
 from tide.offload import _closure_word_warning
 
 
-def _two_generations(tmp_path):
+def _two_generations(tmp_path, mode=hq.DEFAULT_MODE):
     """A rostered project with an ORIGIN session (sid pinned) and its handoff offer."""
     home = tmp_path / "home"
     (home / ".tide" / "handoffs").mkdir(parents=True)
@@ -25,7 +25,7 @@ def _two_generations(tmp_path):
     seed.parent.mkdir(parents=True, exist_ok=True)
     seed.write_text("# distil\n", encoding="utf-8")
     hq.offer(home, "launcher", arc="demo/pickup", project="proj",
-             seed=str(seed), from_session="origin-sid")
+             seed=str(seed), from_session="origin-sid", mode=mode)
     key = hq.list_offers(home)[0]["name"]
     return home, proj, origin, target, key
 
@@ -47,6 +47,17 @@ def test_confirm_flip_dissolves_origin_too(tmp_path):
     hq.reserve(home, key, session="successor-sid")
     assert hq.confirm_for_session(home, "successor-sid")
     assert (fields.read_field(origin / "arc.md", "dissolved") or "").strip()
+
+
+def test_new_mode_take_keeps_origin_holding(tmp_path):
+    # live 16.07 (offer 124-work-start): a mode:new offer seeds a DIFFERENT thread —
+    # the origin never gave ITS thread away, so taking must not dissolve it, the
+    # Mickey-17 pinch must stay silent, and the multiples detector must skip it.
+    home, proj, origin, target, key = _two_generations(tmp_path, mode="new")
+    hq.take(home, key, session="successor-sid")
+    assert fields.read_field(origin / "arc.md", "dissolved") is None
+    assert hq.is_dissolved(home, "origin-sid") is None
+    assert hq.multiples(home) == []
 
 
 def test_self_handoff_never_self_dissolves(tmp_path):

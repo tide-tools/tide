@@ -39,6 +39,19 @@ STATUS_TAKEN = "taken"
 STATUS_DROPPED = "dropped"  # soft-archived: dismissed without pickup (record kept)
 DEFAULT_MODE = "continue"
 
+
+def _transfers_thread(rec: Dict[str, object]) -> bool:
+    """Whether taking *rec* hands the ORIGIN's own thread to the successor.
+
+    Only ``mode: continue`` does — the successor picks up the very thread the
+    origin held, so the origin must dissolve (one holder per thread). A ``new``
+    offer seeds a DIFFERENT thread and the origin keeps holding its own; same
+    for an execution branch (the planning head stays). Live 16.07: taking a
+    ``mode: new`` offer (124-work-start) dissolved the news thread's head —
+    Grisha lost the way back into a thread that was never given away.
+    """
+    return str(rec.get("mode") or DEFAULT_MODE).strip() == DEFAULT_MODE
+
 # A handoff record file: NN-<slug>.md (2+ digit number, base-10 padding).
 _HANDOFF_RE = re.compile(r"^(\d{2,})-(.+)\.md$")
 
@@ -286,6 +299,8 @@ def _dissolve_origin(home: Path, rec: Dict[str, object]) -> Optional[Path]:
     taker = str(rec.get("taken_by") or "").strip()
     if not frm or frm == "-" or frm == taker:
         return None
+    if not _transfers_thread(rec):
+        return None
     from . import fields, roster
     from .offload import find_session_by_claude_id
 
@@ -400,7 +415,7 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
     if not session:
         return None
     for r in list_offers(home, status=STATUS_TAKEN):
-        if r.get("from_session") == session:
+        if r.get("from_session") == session and _transfers_thread(r):
             return r
     return None
 
@@ -412,7 +427,7 @@ def multiples(home: Path) -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     for r in list_offers(home, status=STATUS_TAKEN):
         frm = r.get("from_session")
-        if frm and frm != "-" and frm != r.get("taken_by"):
+        if frm and frm != "-" and frm != r.get("taken_by") and _transfers_thread(r):
             out.append(r)
     return out
 
