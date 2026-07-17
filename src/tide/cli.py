@@ -297,6 +297,15 @@ def _register_candidate(sub) -> None:
     register_candidate(sub)
 
 
+def _register_work(sub) -> None:
+    # cand 125 (tide-stack): «работы» с доски — детерминированные жесты агента
+    # поверх .tide/arcs/works/*/work.md (open→taken→review→done + журнал);
+    # done ставится только со словом человека (--word), доска лишь проекция.
+    from .arc.work import register as register_work
+
+    register_work(sub)
+
+
 def _register_plan(sub) -> None:
     # 19-tide-plan-board: the focus board (доска wake) bound to a goal-arc —
     # board.json in the arc workspace with ≤7 focus + ≤3 path + a distill axis.
@@ -411,6 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_arc(subparsers)
     _register_reconcile(subparsers)
     _register_candidate(subparsers)
+    _register_work(subparsers)
     _register_plan(subparsers)
     _register_handoffs(subparsers)
     _register_offload(subparsers)
