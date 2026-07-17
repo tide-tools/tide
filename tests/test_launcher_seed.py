@@ -78,6 +78,32 @@ def test_plain_arc_seed_has_no_start_gate():
     assert "Старт-гейт" not in out
 
 
+def test_session_framed_seed_carries_law_47_definition():
+    # cand 127: the spark/handoff greet tells a fresh session to "build the plan by
+    # law 47" — the DEFINITION must ride in the seed so a cold agent doesn't grep the
+    # board source for it (the live report timed out doing exactly that). Carried in
+    # the thread block, next to the start-gate.
+    out = seed.build_seed(
+        project_name="demo",
+        canon_text="c",
+        arc_ref="01-pickup",
+        arc_text="goal: <one line>\nstatus: active",
+        thread_name="handoff",
+    )
+    assert "Закон 47" in out
+    assert "final:" in out          # the plan's shape is spelled out…
+    assert "иммутабелен" in out     # …incl. immutability + the патчи section
+    assert "## патчи" in out
+
+
+def test_plain_arc_seed_has_no_law_47_definition():
+    # like the start-gate, the law-47 block is for sessions inside a thread only.
+    out = seed.build_seed(
+        project_name="demo", canon_text="c", arc_ref="ship-it", arc_text="status: active",
+    )
+    assert "Закон 47" not in out
+
+
 # --- disk wrapper seed_for_project -----------------------------------------
 
 def test_seed_for_project_reads_canon(tmp_project):

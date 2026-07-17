@@ -396,6 +396,9 @@ def test_run_handoff_new_fork_seed_requires_a_plan(tmp_project, monkeypatch, tmp
                         summary="# distil\n\nделай X\n", from_session="o1")
     seed = _latest_seed(tmp_project, "spark")
     assert "plan.md" in seed and "ПЛАН НИТИ" in seed
+    # cand 127: the law-47 DEFINITION now travels with the preamble, so a cold agent
+    # building the plan needn't grep the board source (single-sourced in seed.LAW_47_PLAN).
+    assert "final:" in seed and "иммутабелен" in seed
 
 
 def test_run_handoff_continue_fork_has_no_plan_preamble(tmp_project, monkeypatch, tmp_path):

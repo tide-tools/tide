@@ -307,14 +307,19 @@ def _new_fork_plan_preamble(thread_entry: Path) -> str:
     A spark seed bakes in law 47 (plan the nit by waves); a handoff-``new`` seed did
     not — so a fresh thread could be born planless, and a planless nit has NO close
     path (the board's ✓ gate needs a plan with every wave ``[x]``). Make building
-    ``plan.md`` the explicit first step so the thread is closeable from birth.
+    ``plan.md`` the explicit first step so the thread is closeable from birth. The
+    law-47 DEFINITION is single-sourced in :data:`seed.LAW_47_PLAN` (cand 127) so
+    this path resolves it without a source grep, exactly like the spark seed.
     """
+    from .seed import LAW_47_PLAN  # lazy: sibling; keep the law-47 text single-sourced
+
     return (
         "## первый шаг — ПЛАН НИТИ (закон 47)\n"
         "Это НОВАЯ нить. ПЕРВЫМ ДЕЛОМ построй `{0}/plan.md` шагами/волнами (что и в "
         "каком порядке до цели), и только потом выполняй. Без плана нить нельзя "
         "закрыть — кнопка ✓ на доске гейтится планом со всеми шагами [x].\n\n"
-    ).format(thread_entry.name)
+        "{1}\n\n"
+    ).format(thread_entry.name, LAW_47_PLAN)
 
 
 def _origin_sid(stream_mod, owner_root: Path, thread_slug: str, given: str) -> str:
