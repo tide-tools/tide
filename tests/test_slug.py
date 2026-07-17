@@ -24,6 +24,24 @@ def test_slugify_empty_and_none_safe():
     assert slug.slugify(None) == ""
 
 
+def test_slugify_transliterates_cyrillic():
+    # cand 127: a Russian-named thread must yield a real handle, not '' (which
+    # threw "empty slug after slugify" at birth so the thread never started).
+    assert slug.slugify("чай") == "chay"
+    assert slug.slugify("Персонал") == "personal"
+    assert slug.slugify("Здоровье и Финансы") == "zdorove-i-finansy"
+    # convention match: ц→c, х→h, я→ya (миграция/переходы already on disk)
+    assert slug.slugify("миграция") == "migraciya"
+    assert slug.slugify("переходы") == "perehody"
+
+
+def test_slugify_mixed_cyrillic_latin_survives():
+    # a mixed name no longer loses its Cyrillic half to the [^a-z0-9-] strip.
+    assert slug.slugify("чай-tea") == "chay-tea"
+    # create/lookup stay in lock-step: a ref round-trips to its entry
+    assert slug.ref_matches("чай", "07-chay") is True
+
+
 def test_short_slug_passes_through_when_within_cap():
     assert slug.short_slug("fix the leak") == "fix-the-leak"
     assert slug.short_slug("") == ""

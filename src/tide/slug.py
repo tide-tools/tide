@@ -3,8 +3,13 @@
 Ported from the arcs bash ``slugify`` (load-bearing — get it subtly wrong and
 dir names diverge between create and lookup):
 
-    lowercase → spaces / ``/`` / ``_`` to ``-`` → drop non ``[a-z0-9-]`` →
-    collapse repeated ``-`` → trim leading/trailing ``-``.
+    lowercase → transliterate Cyrillic → spaces / ``/`` / ``_`` to ``-`` →
+    drop non ``[a-z0-9-]`` → collapse repeated ``-`` → trim leading/trailing ``-``.
+
+The Cyrillic step (cand 127) keeps a Russian-named thread from slugifying to the
+empty string: «чай» → ``chay`` instead of ``''`` (which threw *empty slug after
+slugify* at birth, so the thread could not start). Both create AND lookup route
+through :func:`slugify`, so adding the step here keeps them in lock-step.
 
 References (the ``<old>`` in ``arc supersede``, a slug typed by the agent) may
 arrive wrapped in the closed-marker ``__…__``; the matcher strips that before
@@ -22,10 +27,34 @@ _DASHES = re.compile(r"-+")
 # NN- prefix (2+ digits past 99), optional goal '@' marker.
 _ENTRY = re.compile(r"^(?P<num>\d{2,})-(?P<goal>@)?(?P<slug>.*)$")
 
+# Cyrillic → Latin, matched to the transliteration already visible in on-disk
+# slugs (миграция → migraciya, переходы → perehody: ц→c, х→h, я→ya, ы→y, ё→e).
+# Keys are LOWERCASE — :func:`slugify` lowercases before transliterating, so
+# uppercase Cyrillic is folded first. Ukrainian extras (і/ї/є/ґ) are cheap.
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    "і": "i", "ї": "yi", "є": "ye", "ґ": "g",
+}
+
+
+def _translit(text: str) -> str:
+    """Best-effort Cyrillic → Latin so a Russian name yields a real handle.
+
+    Non-Cyrillic chars pass through untouched (accented Latin like ``é`` is left
+    for the later ``[^a-z0-9-]`` strip, unchanged). Multi-char outputs (``ch``,
+    ``shch``, ``ya``) are why this is a join, not ``str.translate``.
+    """
+    return "".join(_TRANSLIT.get(ch, ch) for ch in text)
+
 
 def slugify(text: str) -> str:
     """Turn arbitrary text into a glob-safe kebab slug (arcs-compatible)."""
     s = (text or "").lower()
+    s = _translit(s)
     s = s.replace(" ", "-").replace("/", "-").replace("_", "-")
     s = _NON_SLUG.sub("", s)
     s = _DASHES.sub("-", s)
