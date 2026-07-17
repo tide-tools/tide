@@ -2,7 +2,7 @@
 tagline: "One-line pulse to the board"
 summary: "Writes a ten-second tide offload line (current cursor plus next steps) into the session passport so the board always sees where work stands."
 name: offload
-description: Выгрузка по ходу — одна команда tide offload, 10 секунд, не отчёт. Дописывает строку в ## context паспорта ТЕКУЩЕЙ сессии-арки, двигает курсор, штампует offloaded-at. Используй на «сделай offload», «выгрузись», «/offload», на пинок Stop-хука offload-nudge, и сам — в момент принятого решения или поворота. Финальный хендофф после по-ходовых выгрузок = курация готового, не тяжёлая выгрузка.
+description: Выгрузка по ходу — одна команда tide offload, 10 секунд, не отчёт. Дописывает строку в секцию context паспорта ТЕКУЩЕЙ сессии-арки, двигает курсор, штампует offloaded-at. Используй на «сделай offload», «выгрузись», «/offload», на пинок Stop-хука offload-nudge, и сам — в момент принятого решения или поворота. Финальный хендофф после по-ходовых выгрузок = курация готового, не тяжёлая выгрузка.
 ---
 
 # offload — выгрузка по ходу
