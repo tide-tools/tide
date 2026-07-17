@@ -357,3 +357,45 @@ def test_run_doctor_warn_does_not_trip_exit_code(tmp_project, tmp_path):
     )
     assert report.exit_code == 0
     assert any(r.status == doctor.STATUS_WARN for r in report.results)
+
+
+# --- roster worktree-ready (cand 34) ----------------------------------------
+
+
+def _git(cwd, *args):
+    import subprocess
+    subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, check=True)
+
+
+def test_roster_worktrees_warns_on_headless_repo(tmp_path):
+    from tide import roster
+
+    home = tmp_path / "home"
+    home.mkdir()
+    good = tmp_path / "good"; good.mkdir()
+    _git(good, "init", "-q")
+    _git(good, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
+    bad = tmp_path / "bad"; bad.mkdir()
+    _git(bad, "init", "-q")  # git init без коммита — мина из cand 34
+    roster.add(home, "good", str(good))
+    roster.add(home, "bad", str(bad))
+    res = doctor.check_roster_worktrees(home)
+    assert res.status == doctor.STATUS_WARN
+    assert "bad" in res.detail and "adopt" in res.detail
+    assert "good (" not in res.detail
+
+
+def test_roster_worktrees_ok_and_empty(tmp_path):
+    from tide import roster
+
+    home = tmp_path / "home"
+    home.mkdir()
+    assert doctor.check_roster_worktrees(home).status == doctor.STATUS_OK
+    good = tmp_path / "p"; good.mkdir()
+    _git(good, "init", "-q")
+    _git(good, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
+    roster.add(home, "p", str(good))
+    res = doctor.check_roster_worktrees(home)
+    assert res.status == doctor.STATUS_OK

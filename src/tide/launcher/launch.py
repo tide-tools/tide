@@ -60,19 +60,24 @@ def launch_session(
     from . import menu as _menu  # lazy: menu imports us nowhere, but keep it one-way
 
     # 1. sid before birth of the terminal (pin survives a failed spawn — harmless).
+    #    DRY-RUN пишет НИЧЕГО (cand 98): sid минтится только в память, паспорт
+    #    не трогается — сборка команды честная, диск чистый.
+    import uuid as _uuid
+
     if seed_file:
         # A pickup ALWAYS mints a fresh sid and re-pins the passport (cand 103: the
         # origin's sid is never inherited). The stored pin on a pickup session is
         # whoever touched the arc before — the offerer, or the creator's own id
         # stamped at birth (e2e 14.07: a trusted stale pin spawned claude onto a sid
         # already in use and it died on boot). Fresh launch on the distil, no resume.
-        import uuid as _uuid
-
-        from .. import fields as _fields
-
         session_id = str(_uuid.uuid4())
-        _fields.set_field(Path(session_dir) / "arc.md", "claude-session", session_id)
         resume = False
+        if not dry_run:
+            from .. import fields as _fields
+
+            _fields.set_field(Path(session_dir) / "arc.md", "claude-session", session_id)
+    elif dry_run:
+        session_id, resume = str(_uuid.uuid4()), False
     else:
         session_id, resume = _menu._bind_claude_session(session_dir, is_new=True)
 

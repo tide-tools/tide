@@ -1387,8 +1387,10 @@ def spark(
     project = Path(project_entry["path"]).expanduser()
     from .handoff import resolve_open_entry, _unique_pickup_slug  # lazy: sibling module
 
-    if new_thread:
+    if new_thread and not dry_run:
         thread_entry = stream.new_thread(project, new_thread, goal=goal)
+    elif new_thread:
+        thread_entry = None  # dry-run чист (cand 98): нить НЕ рождается
     elif thread:
         thread_entry = resolve_open_entry(project, thread)
         if thread_entry is None or not stream.is_thread(thread_entry):
@@ -1396,12 +1398,26 @@ def spark(
     else:
         raise MenuError("spark: give --thread <slug> or --new-thread <name>")
 
-    container_slug = slug.entry_slug(thread_entry.name)
-    sess_slug = _unique_pickup_slug(thread_entry, base=container_slug)
-    sess = stream.new_session(project, container_slug, sess_slug)
-    binding = _session_binding(
-        slug.entry_slug(sess.name), sess, True, container_slug, kind=stream.KIND_THREAD
-    )
+    if dry_run:
+        # dry-run ЧИСТ (cand 98): раньше spark создавал реальный session-shell и
+        # пинил sid ДО гейта — «сухой» прогон гадил на диск. Теперь всё
+        # виртуально: слаги для сборки команды, ни одной записи.
+        container_slug = (slug.entry_slug(thread_entry.name) if thread_entry
+                          else slug.short_slug(slug.slugify(new_thread)))
+        sess = ((thread_entry / "arcs" / "01-{0}".format(container_slug))
+                if thread_entry else
+                project / ".tide" / "arcs" / "01-@{0}".format(container_slug)
+                / "arcs" / "01-{0}".format(container_slug))
+        binding = {"arc_ref": container_slug, "arc_text": None,
+                   "thread": container_slug, "kind": stream.KIND_THREAD,
+                   "session_id": None, "resume": False}
+    else:
+        container_slug = slug.entry_slug(thread_entry.name)
+        sess_slug = _unique_pickup_slug(thread_entry, base=container_slug)
+        sess = stream.new_session(project, container_slug, sess_slug)
+        binding = _session_binding(
+            slug.entry_slug(sess.name), sess, True, container_slug, kind=stream.KIND_THREAD
+        )
     # ▶ is non-interactive (launched from the board, nobody at the terminal): give the
     # fresh session a first user turn so it STARTS the pickup instead of sitting blank
     # (cand 96). Interactive doors (tide go/menu) leave this empty — the human types.

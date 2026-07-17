@@ -840,3 +840,24 @@ def test_spark_unknown_thread_raises(home_with_project):
     home, proj = home_with_project
     with pytest.raises(menu.MenuError):
         menu.spark(home, _spark_entry(home, proj), thread="ghost", adapter=_OkAdapter())
+
+
+def test_spark_dry_run_writes_nothing(home_with_project):
+    # cand 98: dry-run создавал реальный session-shell и пинил sid ДО гейта —
+    # «сухой» прогон обязан оставить диск и реестр нетронутыми
+    home, proj = home_with_project
+    from tide import registry
+    from tide.arc import stream
+
+    stream.new_thread(proj, "existing", goal="do the thing")
+    before = sorted(p.relative_to(proj) for p in proj.rglob("*"))
+    res = menu.spark(home, _spark_entry(home, proj), thread="existing",
+                     adapter=_OkAdapter(), dry_run=True)
+    assert res.ok
+    assert sorted(p.relative_to(proj) for p in proj.rglob("*")) == before
+    assert registry.read(home) == {}
+    # и новая нить на dry-run тоже не рождается
+    res = menu.spark(home, _spark_entry(home, proj), new_thread="ghost ux",
+                     adapter=_OkAdapter(), dry_run=True)
+    assert res.ok
+    assert all("ghost" not in t.name for t in stream.thread_entries(proj))

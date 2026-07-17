@@ -10,6 +10,8 @@ a handful of independent checks and printing one ok/warn/fail line each:
 * **install-marker**  the self-update install marker is absent-or-valid.
 * **channel**         the self-update source is configured (and, by default,
                       reachable — an offline-tolerant network probe).
+* **roster**          every ACTIVE roster project is worktree-ready (git HEAD
+                      exists) — the mine that detonates at pickup time (cand 34).
 
 DESIGN RAZOR — this is on-demand ONLY. It is NEVER wired into a hook, a daemon, or
 any periodic checker (that would violate tide's no-autonomy razor; SessionStart
@@ -268,17 +270,66 @@ def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:
 # --- aggregate -------------------------------------------------------------
 
 
+def check_roster_worktrees(control_home: Optional[Path] = None) -> CheckResult:
+    """Warn when an ACTIVE roster project is not worktree-ready (no git HEAD).
+
+    Cand 34: mitehq lay ``git init``-without-commit since birth — the mine went off
+    at pickup time (the launch preflight says why, but only at the door). Cheap
+    probe: ``git rev-parse --verify -q HEAD`` per roster path; a missing dir counts
+    too. Archived rows are skipped (dead projects don't nag). Advisory — warn,
+    never fail: tide itself is healthy, the roster needs a hand (``tide adopt``).
+    """
+    import subprocess
+
+    from . import roster as _roster
+
+    try:
+        home = control_home if control_home is not None else paths.control_home()
+        entries = _roster.read_roster(home)
+    except Exception:  # noqa: BLE001 — нет контрол-хоума/ростера = нечего щупать
+        entries = []
+    if not entries:
+        return CheckResult("roster", STATUS_OK, "roster empty — nothing to probe")
+    bad = []
+    active = [e for e in entries if (e.get("status") or "").strip() != "archived"]
+    for e in active:
+        p = Path(e.get("path") or "").expanduser()
+        if not p.is_dir():
+            bad.append("{0} (нет каталога)".format(e.get("name")))
+            continue
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(p), "rev-parse", "--verify", "-q", "HEAD"],
+                capture_output=True, timeout=5,
+            )
+            ok = r.returncode == 0
+        except Exception:  # noqa: BLE001 — a probe error reads as not-ready
+            ok = False
+        if not ok:
+            bad.append("{0} (git без HEAD — tide adopt {1})".format(e.get("name"), p))
+    if bad:
+        return CheckResult(
+            "roster", STATUS_WARN,
+            "не worktree-ready: {0}".format("; ".join(bad)),
+        )
+    return CheckResult(
+        "roster", STATUS_OK,
+        "все {0} активных проектов ростера worktree-ready".format(len(active)),
+    )
+
+
 def run_doctor(
     root: Optional[Path],
     *,
     marker_path: Optional[Path] = None,
     source=_UNSET,
     network: bool = True,
+    control_home: Optional[Path] = None,
 ) -> DoctorReport:
     """Run every check over *root* and return the aggregate :class:`DoctorReport`.
 
-    *source* / *marker_path* are injectable so the aggregate is testable without
-    the real install state or the network. *source* follows
+    *source* / *marker_path* / *control_home* are injectable so the aggregate is
+    testable without the real install state or the network. *source* follows
     :func:`check_channel`'s sentinel: omit it to resolve the real source, pass
     ``None`` for "no source". *network* gates only the channel probe.
     """
@@ -289,6 +340,7 @@ def run_doctor(
         check_hooks(root),
         check_install_marker(marker_path=marker_path),
         check_channel(source=source, network=network),
+        check_roster_worktrees(control_home),
     ]
     return DoctorReport(results)
 

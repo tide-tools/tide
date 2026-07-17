@@ -112,6 +112,14 @@ def _register_install_hooks(sub) -> None:
     register_install(sub)
 
 
+def _register_install_skills(sub) -> None:
+    # cand 03: mirror of install-hooks — deliver skills/* as symlinks so the
+    # skill version always equals the installed tool's source.
+    from .skills_install import register as register_skills
+
+    register_skills(sub)
+
+
 def _register_hook(sub) -> None:
     # U10: internal dispatch group the installed settings.json calls
     # (`tide hook session-start` / `tide hook edit-gate`).
@@ -396,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_status(subparsers)
     _register_strictness(subparsers)
     _register_install_hooks(subparsers)
+    _register_install_skills(subparsers)
     _register_roster(subparsers)
     _register_adopt(subparsers)
     _register_mcp(subparsers)
