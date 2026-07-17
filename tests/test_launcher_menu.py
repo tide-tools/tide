@@ -302,143 +302,44 @@ def test_resume_reapplies_scoped_mcp_config(home_with_project):
     assert "mcp.json" in resume_part
 
 
-def test_navigate_back_from_thread_returns_to_type(home_with_project, monkeypatch):
+def test_navigate_back_from_thread_returns_to_project(home_with_project, monkeypatch):
     home, proj = home_with_project
     from tide.arc import stream
     from tide.launcher import select as sel
     fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "one")
-    # project=0, type=0(Task), thread=BACK (→ back to type), type=0(Task), thread=0, session=0
-    seq = iter([0, 0, sel.BACK, 0, 0, 0])
+    # no offers → no type step: project=0, thread=BACK (→ back to project),
+    # project=0, thread=0, session=0
+    seq = iter([0, sel.BACK, 0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
     assert entry["name"] == "proj"
     assert bound["thread"] == "prz"
-    assert bound["kind"] == "thread"
     assert bound["arc_ref"] == "one"
 
 
-# --- routine (рутина) flow + the Type step ---------------------------------
+# --- navigation (project → thread → session) -------------------------------
 
-def test_list_routines_only_routines(home_with_project):
-    _, proj = home_with_project
-    from tide.arc import stream
-    stream.new_arc(proj, "just-work")
-    fill_entry(stream.new_thread(proj, "morning"))
-    fill_entry(stream.new_routine(proj, "invite-codes"))
-    routines = menu.list_routines(proj)
-    assert [r["slug"] for r in routines] == ["invite-codes"]
-
-
-def test_routine_label_shows_gear_marker(home_with_project):
-    _, proj = home_with_project
-    from tide.arc import stream
-    fill_entry(stream.new_routine(proj, "invite-codes"))
-    label = menu._routine_label(menu.list_routines(proj)[0])
-    assert label.startswith(menu.ROUTINE_MARKER)  # ⚙ distinguishes routines from tasks
-    assert "invite-codes" in label
-
-
-def test_navigate_type_routes_task(home_with_project, monkeypatch):
+def test_navigate_routes_into_thread(home_with_project, monkeypatch):
     _, proj = home_with_project
     from tide.arc import stream
     fill_entry(stream.new_thread(proj, "prz"))
     stream.new_session(proj, "prz", "one")
-    # project=0, type=0(Task), thread=0, session=0
-    seq = iter([0, 0, 0, 0])
+    # no offers → no type step: project=0, thread=0, session=0
+    seq = iter([0, 0, 0])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
-    assert bound["kind"] == "thread"
     assert bound["thread"] == "prz"
     assert bound["arc_ref"] == "one"
 
 
-def test_navigate_type_routes_routine_run(home_with_project, monkeypatch):
-    _, proj = home_with_project
-    from tide.arc import stream
-    fill_entry(stream.new_routine(proj, "invite-codes"))
-    stream.new_session(proj, "invite-codes", "run-one")
-    # project=0, type=1(Routine), routine=0, run=0
-    seq = iter([0, 1, 0, 0])
-    monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
-    entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
-    assert bound["kind"] == "routine"
-    assert bound["thread"] == "invite-codes"  # container slug rides the thread slot
-    assert bound["arc_ref"] == "run-one"
-
-
-def test_navigate_back_from_routine_returns_to_type(home_with_project, monkeypatch):
-    _, proj = home_with_project
-    from tide.arc import stream
-    from tide.launcher import select as sel
-    fill_entry(stream.new_routine(proj, "invite-codes"))
-    stream.new_session(proj, "invite-codes", "run-one")
-    fill_entry(stream.new_thread(proj, "prz"))
-    stream.new_session(proj, "prz", "one")
-    # project=0, type=1(Routine), routine=BACK (→ back to type), type=0(Task), thread=0, session=0
-    seq = iter([0, 1, sel.BACK, 0, 0, 0])
-    monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
-    entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
-    assert bound["kind"] == "thread"
-    assert bound["arc_ref"] == "one"
-
-
-def test_navigate_back_from_type_returns_to_project(home_with_project, monkeypatch):
+def test_navigate_back_out_of_thread_then_cancel(home_with_project, monkeypatch):
     _, proj = home_with_project
     from tide.launcher import select as sel
-    # project=0, type=BACK (→ back to project), project=BACK (→ cancel)
+    # project=0, thread=BACK (→ back to project), project=BACK (→ cancel)
     seq = iter([0, sel.BACK, sel.BACK])
     monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
     assert menu.navigate_interactive([{"name": "proj", "path": str(proj)}]) is None
-
-
-def test_resolve_session_new_routine_binds_run(home_with_project):
-    _, proj = home_with_project
-    bound = menu.resolve_session(
-        proj, "proj", new_routine="invite codes", new_session="run"
-    )
-    assert bound["kind"] == "routine"
-    assert bound["thread"] == "invite-codes"
-    assert bound["arc_ref"] == "run"
-    from tide.arc import stream
-    assert [r["slug"] for r in menu.list_routines(proj)] == ["invite-codes"]
-
-
-def test_routine_run_seed_frames_procedure(home_with_project):
-    home, proj = home_with_project
-    from tide.arc import stream
-    fill_entry(stream.new_routine(proj, "invite-codes"))
-    run = stream.new_session(proj, "invite-codes", "run one")
-    arc_text = (run / "arc.md").read_text(encoding="utf-8")
-    command = menu.build_launch(
-        proj, control_home=home, arc_ref="run-one", arc_text=arc_text,
-        thread_name="invite-codes", container_kind="routine",
-    )
-    seed_text = Path(command[-1][1:]).read_text(encoding="utf-8")
-    assert "Active routine run" in seed_text
-    assert "routine: invite-codes" in seed_text
-
-
-def test_tab_title_marks_routine_run():
-    entry = {"name": "proj", "session": {
-        "thread": "invite-codes", "kind": "routine",
-        "arc_ref": "run-one", "session_index": "01", "session_title": "",
-    }}
-    title = menu._tab_title(entry)
-    assert title.startswith(menu.ROUTINE_MARKER)
-    assert "invite-codes" in title
-
-
-def test_cli_menu_new_routine_run_creates_and_binds(home_with_project, monkeypatch, capsys):
-    home, proj = home_with_project
-    monkeypatch.chdir(home)
-    rc = cli.main(
-        ["menu", "--pick", "1", "--new-routine", "invite-codes", "--new-session", "run",
-         "--adapter", "tmux", "--debug", "--dry-run"]
-    )
-    assert rc == 0
-    assert [r["slug"] for r in menu.list_routines(proj)] == ["invite-codes"]
-    assert [s["slug"] for s in menu.list_sessions(proj, "invite-codes")] == ["run"]
 
 
 def test_navigate_back_from_project_cancels(home_with_project, monkeypatch):
@@ -526,26 +427,6 @@ def test_pick_session_nonempty_thread_is_resume_only(home_with_project, monkeypa
     slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
     assert is_new is False  # resumed, not created
     assert captured.get("allow_new") is False  # '+ new session' NOT offered
-
-
-def test_pick_run_routine_keeps_new_run(home_with_project, monkeypatch):
-    """Routines do NOT inherit the thread law: '+ new run' stays (a run is fresh work)."""
-    _, proj = home_with_project
-    from tide.arc import stream
-    fill_entry(stream.new_routine(proj, "deploy"))
-    stream.new_session(proj, "deploy", "run-one")  # routine already has a run
-    captured = {}
-
-    def fake_select(title, options, **kwargs):
-        captured.update(kwargs)
-        return menu.select.NEW  # pick "+ new run"
-
-    monkeypatch.setattr(menu.select, "select", fake_select)
-    slug_, path_, is_new = menu._pick_session_interactive(
-        proj, "deploy", allow_new=True, new_label="+ new run", item="Run", container="routine"
-    )
-    assert captured.get("allow_new") is True  # '+ new run' IS offered (unlike threads)
-    assert is_new is True  # a fresh run was created
 
 
 def test_new_thread_requires_confirmation(home_with_project, monkeypatch):

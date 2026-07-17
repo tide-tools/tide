@@ -152,20 +152,6 @@ def test_cli_new_thread_goal_flag(tmp_project, monkeypatch, capsys):
     assert stream.goal_filled(entry)
 
 
-def test_cli_new_routine_goal_flag_still_draft_without_steps(tmp_project, monkeypatch):
-    # --goal fills the goal line, but a routine without real ## steps stays a
-    # draft (it cannot be run) — the goal flag must not weaken that gate.
-    from tide import cli
-    from tide.arc import stream
-
-    monkeypatch.chdir(tmp_project)
-    rc = cli.main(["arc", "new-routine", "deploy", "--goal", "ship to prod"])
-    assert rc == 0
-    entry = stream.routine_entries(tmp_project)[0]
-    assert stream.goal_filled(entry)
-    assert stream.effective_status(entry) == "draft"
-
-
 # --- close_thread: close a whole nit, cascading to sessions (cand 74) --------
 
 def _thread_with_two_sessions(tmp_project):
@@ -253,40 +239,6 @@ def test_close_thread_refuses_a_plain_arc(tmp_project):
     stream.new_arc(tmp_project, "loose")
     with pytest.raises(stream.StreamError, match="not a thread"):
         stream.close_thread(tmp_project, "loose")
-
-
-def test_close_routine_cascades_to_runs(tmp_project):
-    # Гриша, live 14.07: дежурки на столе были неубиваемы — карточка без ✕, а
-    # доменный каскад отказывал рутине. Рутина — симметричный контейнер (раны
-    # вместо сессий) и закрывается тем же жестом.
-    entry = stream.new_routine(tmp_project, "deploy", goal="ship to prod")
-    r1 = stream.new_session(tmp_project, "deploy", "run-one")
-    (entry / "output" / "result.md").write_text("released\n", encoding="utf-8")
-
-    summary = stream.close_thread(tmp_project, "deploy", force=True)
-    assert "deploy" in summary["thread"] and summary["thread"].startswith("__")
-    closed = tmp_project / ".tide" / "arcs" / summary["thread"]
-    assert closed.is_dir()
-    assert fields.read_field(stream.passport_path(closed), "status") == "done"
-    open_runs = [d for d in (closed / "arcs").iterdir()
-                 if d.is_dir() and not slug.is_closed_entry(d.name)]
-    assert open_runs == []  # раны запечатаны вместе с контейнером
-
-
-def test_cli_arc_close_on_routine_cascades(tmp_project, monkeypatch):
-    from tide import cli
-
-    stream.new_routine(tmp_project, "deploy", goal="ship to prod")
-    stream.new_session(tmp_project, "deploy", "run-one")
-    monkeypatch.chdir(tmp_project)
-    rc = cli.main(["arc", "close", "deploy", "-f"])
-    assert rc == 0
-    closed = next(d for d in (tmp_project / ".tide" / "arcs").iterdir()
-                  if "deploy" in d.name)
-    assert slug.is_closed_entry(closed.name)
-    open_runs = [d for d in (closed / "arcs").iterdir()
-                 if d.is_dir() and not slug.is_closed_entry(d.name)]
-    assert open_runs == []
 
 
 def test_cli_arc_close_on_thread_cascades(tmp_project, monkeypatch, capsys):

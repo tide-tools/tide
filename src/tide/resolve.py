@@ -84,7 +84,7 @@ def open_top_entry(root: Path, ref: str) -> Optional[Path]:
 
 
 def open_session_dirs(root: Path) -> List[Path]:
-    """Every OPEN nested session/run dir across all containers (thread/routine)."""
+    """Every OPEN nested session dir across all thread containers."""
     arcs = paths.arcs_dir(Path(root))
     out: List[Path] = []
     if not arcs.is_dir():

@@ -41,7 +41,7 @@ def contentless(entry_dir: Path) -> bool:
 
     Any extra file (a delta.md, a seed in ``input/``, a plan, a workspace note) is a
     sign of life: the entry is somebody's work, not a болванка, and gc keeps its hands
-    off. For a CONTAINER (thread/routine/goal) the nested ``arcs/`` is judged
+    off. For a CONTAINER (thread/goal) the nested ``arcs/`` is judged
     RECURSIVELY: a nested session that is itself an empty template shell does NOT count
     as content, so a thread whose ONLY sessions are empty shells is still contentless —
     the ghost-thread hole where gc read the shell's ``arc.md`` as "life" and let a dead
@@ -89,8 +89,8 @@ def _is_empty_shell(entry_dir: Path) -> bool:
 def sweepable(root: Path) -> List[Path]:
     """The gc candidates for *root*: draft AND contentless AND goal-less.
 
-    A stated ``goal:`` is somebody's intent — even a steps-less routine (draft on
-    the board) is never swept once a human wrote what it is for.
+    A stated ``goal:`` is somebody's intent — a draft on the board is never swept
+    once a human wrote what it is for.
     """
     return [
         e

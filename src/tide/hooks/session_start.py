@@ -343,7 +343,7 @@ def _current_role() -> str:
 
 
 def _open_sessions(root: Path) -> List[Path]:
-    """Open session sub-arcs (nested one level inside a thread/routine), any order."""
+    """Open session sub-arcs (nested one level inside a thread), any order."""
     out: List[Path] = []
     arcs = paths.arcs_dir(Path(root))
     if not arcs.is_dir():

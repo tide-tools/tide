@@ -24,7 +24,6 @@ from .arc.stream import (
     last_session,
     new_arc,
     new_goal,
-    new_routine,
     new_session,
     new_thread,
     open_arc,
@@ -87,7 +86,7 @@ from . import registry
 __all__ = [
     # arcs
     "close", "close_thread", "effective_status", "entry_kind", "last_session",
-    "new_arc", "new_goal", "new_routine", "new_session", "new_thread", "open_arc",
+    "new_arc", "new_goal", "new_session", "new_thread", "open_arc",
     "passport_path", "record_birth_and_guard", "reopen", "rm", "session_entries",
     "set_goal", "stamp_rev", "supersede", "thread_entries",
     # candidates

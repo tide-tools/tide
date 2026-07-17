@@ -112,8 +112,7 @@ def fill_entry(entry: Path, goal: str = "a real goal for the picker") -> Path:
     """Give a test entry a REAL formulation so it passes the draft gate (cand 04).
 
     Fresh templates classify as drafts and are hidden from the picker; tests that
-    need an entry to be pickable fill its goal (and a routine's ``## steps``) the
-    way real flows do.
+    need an entry to be pickable fill its goal the way real flows do.
     """
     from tide import fields
     from tide.arc import stream as _stream

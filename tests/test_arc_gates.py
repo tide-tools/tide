@@ -42,21 +42,6 @@ def test_placeholder_goal_stays_draft(tmp_project):
     assert stream.effective_status(e) == stream.STATUS_DRAFT
 
 
-def test_routine_needs_steps_too(tmp_project):
-    r = stream.new_routine(tmp_project, "deploy")
-    _fill_goal(r, "deploy the stand each release")
-    # goal filled but ## steps is still the placeholder — a runbook-less routine
-    # cannot be run, so it stays draft
-    assert stream.effective_status(r) == stream.STATUS_DRAFT
-    pp = stream.passport_path(r)
-    text = pp.read_text(encoding="utf-8").replace(
-        "<the runbook — the reproducible procedure to follow each run>",
-        "1. build 2. push 3. verify",
-    )
-    pp.write_text(text, encoding="utf-8")
-    assert stream.effective_status(r) == "active"
-
-
 def test_sessions_are_exempt_from_draft(tmp_project):
     stream.new_thread(tmp_project, "work")
     s = stream.new_session(tmp_project, "work", "pickup")
@@ -91,27 +76,15 @@ def test_board_shows_draft_badge(tmp_project):
         assert "[draft]" in text
 
 
-def test_picker_skips_draft_threads_and_routines(tmp_project):
+def test_picker_skips_draft_threads(tmp_project):
     from tide.launcher import menu
 
     t = stream.new_thread(tmp_project, "real-thread")
     _fill_goal(t, "a real work-line")
     stream.new_thread(tmp_project, "shell-thread")
-    r = stream.new_routine(tmp_project, "real-routine")
-    _fill_goal(r, "run the run")
-    pp = stream.passport_path(r)
-    pp.write_text(
-        pp.read_text(encoding="utf-8").replace(
-            "<the runbook — the reproducible procedure to follow each run>", "1. go"
-        ),
-        encoding="utf-8",
-    )
-    stream.new_routine(tmp_project, "shell-routine")
 
     threads = [p["slug"] for p in menu.list_threads(tmp_project)]
-    routines = [p["slug"] for p in menu.list_routines(tmp_project)]
     assert "real-thread" in threads and "shell-thread" not in threads
-    assert "real-routine" in routines and "shell-routine" not in routines
 
 
 # --- 2. anti-runaway backpressure ---------------------------------------------

@@ -299,43 +299,6 @@ def _thread_label(p: Dict[str, str]) -> str:
     return "{0}{1}{2}".format(head, p["slug"], suffix)
 
 
-ROUTINE_MARKER = "⚙ "  # routine rows are gear-marked so they read differently from tasks
-
-
-def list_routines(project: Path) -> List[Dict[str, str]]:
-    """A project's open routines for the picker: ``[{slug, name, goal, path}, …]``.
-
-    Drafts (no real goal/steps yet, cand 04) are NOT offered — a runbook-less
-    routine cannot be run; fill it or sweep with ``tide arc gc``.
-    """
-    out = []
-    for entry in stream.routine_entries(project):
-        if not stream.goal_filled(entry):
-            continue
-        goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
-        out.append({
-            "slug": slug.entry_slug(entry.name),
-            "name": entry.name,
-            "goal": goal,
-            "path": str(entry),
-        })
-    out.reverse()  # newest-first for the picker
-    return out
-
-
-def _routine_label(r: Dict[str, str]) -> str:
-    """One routine row's label for the arrow picker — gear-marked: ``⚙ NN  slug — goal``.
-
-    The ⚙ marker sets routines apart from tasks visually (routines have nothing to
-    do with threads); numeric index first, like the thread/session rows.
-    """
-    index = r["name"].split("-", 1)[0] if r.get("name") else ""
-    goal = r.get("goal") or ""
-    suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
-    head = "{0}  ".format(index) if index else ""
-    return "{0}{1}{2}{3}".format(ROUTINE_MARKER, head, r["slug"], suffix)
-
-
 def _session_label(s: Dict[str, str]) -> str:
     """One session row's label for the arrow picker — numeric index first.
 
@@ -373,14 +336,6 @@ def _create_thread(project: Path, name: str) -> Optional[str]:
     # Otherwise the fresh container is born an unfilled draft and the picker
     # hides what they just created (gates, cand 04).
     entry = stream.new_thread(project, name, goal=name)
-    return slug.entry_slug(entry.name)
-
-
-def _create_routine(project: Path, name: str) -> Optional[str]:
-    name = (name or "").strip()
-    if not name:
-        return None
-    entry = stream.new_routine(project, name, goal=name)
     return slug.entry_slug(entry.name)
 
 
@@ -494,30 +449,20 @@ def resolve_session(
     *,
     thread_ref: Optional[str] = None,
     new_thread: Optional[str] = None,
-    routine_ref: Optional[str] = None,
-    new_routine: Optional[str] = None,
     session_ref: Optional[str] = None,
     new_session: Optional[str] = None,
     interactive: bool = False,
 ) -> Optional[Dict[str, Optional[str]]]:
-    """Bind a session/run for one project: resolve a container, then a session in it.
+    """Bind a session for one project: resolve its thread, then a session in it.
 
-    The container is a **thread** (a task work-line) or — when *routine_ref* /
-    *new_routine* is given — a **routine** (a reusable procedure, whose runs ARE
-    sessions). A routine flag wins over a thread flag. Returns ``{"arc_ref",
-    "arc_text", "thread", "kind", "session_id", "resume", …}`` — the session slug,
-    its passport text for the seed, the container (in the ``thread`` slot), its
-    ``kind`` (``"thread"``/``"routine"``), the pinned claude session-id, and whether
-    to ``--resume``. None when nothing is bound.
+    The container is a **thread** (a task work-line). Returns ``{"arc_ref",
+    "arc_text", "thread", "session_id", "resume", …}`` — the session slug, its
+    passport text for the seed, the container (in the ``thread`` slot), the pinned
+    claude session-id, and whether to ``--resume``. None when nothing is bound.
     """
-    if new_routine or routine_ref:
-        container = _create_routine(project, new_routine) if new_routine else routine_ref
-        kind = stream.KIND_ROUTINE
-    else:
-        container = _resolve_thread(
-            project, project_name, thread_ref=thread_ref, new_thread=new_thread, interactive=interactive
-        )
-        kind = stream.KIND_THREAD
+    container = _resolve_thread(
+        project, project_name, thread_ref=thread_ref, new_thread=new_thread, interactive=interactive
+    )
     if container is None:
         return None
     sess_slug, sess_path, is_new = _resolve_session(
@@ -525,16 +470,11 @@ def resolve_session(
     )
     if sess_slug is None:
         return None
-    return _session_binding(sess_slug, sess_path, is_new, container, kind=kind)
+    return _session_binding(sess_slug, sess_path, is_new, container)
 
 
-def _session_binding(sess_slug, sess_path, is_new, thread, *, kind=stream.KIND_THREAD) -> Dict[str, Optional[str]]:
-    """Build the bound-session dict (passport, claude session-id/resume, label bits).
-
-    *kind* is ``"thread"`` (a task session) or ``"routine"`` (a routine run). The
-    container slug lives in the ``thread`` slot either way so ``build_launch``/seed
-    reuse is unchanged; ``kind`` lets the tab title / seed frame a run as a routine.
-    """
+def _session_binding(sess_slug, sess_path, is_new, thread) -> Dict[str, Optional[str]]:
+    """Build the bound-session dict (passport, claude session-id/resume, label bits)."""
     arc_text = None
     session_id = None
     resume = False
@@ -553,7 +493,6 @@ def _session_binding(sess_slug, sess_path, is_new, thread, *, kind=stream.KIND_T
         "arc_ref": sess_slug,
         "arc_text": arc_text,
         "thread": thread,
-        "kind": kind,
         "session_id": session_id,
         "resume": resume,
         "session_index": session_index,
@@ -643,7 +582,7 @@ def _confirm(prompt: str) -> bool:
 def _new_container(project, ask_prompt, confirm_noun, create):
     """Shared '+ new' flow with a guard: ask name → confirm → create. None if aborted.
 
-    *create* is :func:`_create_thread` / :func:`_create_routine`. Returns the new
+    *create* is :func:`_create_thread`. Returns the new
     slug, or None when the name is blank or the human declines the confirm (so the
     caller re-shows the picker — nothing gets materialised on a mis-tap).
     """
@@ -695,29 +634,22 @@ def _offered_action(rec: Dict) -> str:
     return "pickup" if choice == 0 else "dismiss"
 
 
-def _pick_session_interactive(
-    project, thread_slug, offers=None, *,
-    allow_new=False, new_label="+ new session", item="Session", container="thread",
-):
-    """Pick a session/run to resume / pick up a handoff, or auto-create the first.
+def _pick_session_interactive(project, thread_slug, offers=None):
+    """Pick a session to resume / pick up a handoff, or auto-create the first.
 
-    Two callers, two laws:
-
-    * **threads** (default, *allow_new* False) — the thread law: sessions are a
-      narrative connected by handoffs, so there is no blank "+ new session"
-      mid-thread. An EMPTY thread auto-gets its first session; one with sessions is
-      **resume-only**. *offers* float their session to the top marked ⇄; picking
-      one opens a pick-up/dismiss choice (pick-up → ``(HANDOFF_PICK, record)``, a
-      seed-based launch that honours the distil; dismiss drops the offer + re-lists).
-    * **routines** (*allow_new* True) — a run is a fresh execution, NOT a
-      handoff-continuation, so "+ new run" stays and there is no auto-first.
+    The thread law: sessions are a narrative connected by handoffs, so there is no
+    blank "+ new session" mid-thread. An EMPTY thread auto-gets its first session;
+    one with sessions is **resume-only**. *offers* float their session to the top
+    marked ⇄; picking one opens a pick-up/dismiss choice (pick-up →
+    ``(HANDOFF_PICK, record)``, a seed-based launch that honours the distil; dismiss
+    drops the offer + re-lists).
 
     Returns ``(slug, path, is_new)`` | ``(HANDOFF_PICK, record)`` | :data:`select.BACK`.
     """
     by_session = {o["session"]: o["record"] for o in (offers or [])}
     while True:
         sessions = list_sessions(project, thread_slug)
-        if not allow_new and not sessions:
+        if not sessions:
             # Thread law: the first session is born with the (empty) thread.
             slug_, path_ = _create_session(project, thread_slug, "")
             return slug_, path_, True
@@ -728,17 +660,13 @@ def _pick_session_interactive(
             (OFFER_SESSION_MARK if s["slug"] in by_session else "") + _session_label(s)
             for s in ordered
         ]
-        hint = "continue one, or start new" if allow_new else "resume one (⇄ = pick up a handoff)"
         choice = select.select(
-            "{0} in {1} {2} — {3}:".format(item, container, thread_slug, hint),
+            "Session in thread {0} — resume one (⇄ = pick up a handoff):".format(thread_slug),
             labels,
-            allow_new=allow_new, new_label=new_label, allow_back=True,
+            allow_new=False, allow_back=True,
         )
         if choice == select.BACK:
             return select.BACK
-        if choice == select.NEW:
-            slug_, path_ = _create_session(project, thread_slug, "")
-            return slug_, path_, True
         chosen = ordered[choice]
         rec = by_session.get(chosen["slug"])
         if rec is None:
@@ -785,53 +713,6 @@ def _navigate_session(project, project_name, offers=None):
         return _session_binding(sess_slug, sess_path, is_new, thread)
 
 
-def _pick_routine_interactive(project, project_name):
-    """Arrow-pick a routine: return its slug, create on NEW, or :data:`select.BACK`.
-
-    Routine rows are gear-marked (⚙) so they read differently from task threads.
-    """
-    routines = list_routines(project)
-    choice = select.select(
-        "Routine (рутина) for {0} — continue one, or start new:".format(project_name),
-        [_routine_label(r) for r in routines],
-        allow_new=True, new_label="+ new routine", allow_back=True,
-    )
-    if choice == select.BACK:
-        return select.BACK
-    if choice == select.NEW:
-        return _new_container(project, "new routine name> ", "routine", _create_routine)
-    return routines[choice]["slug"]
-
-
-def _navigate_routine(project, project_name):
-    """Interactive routine→run with Back between the steps.
-
-    Mirrors :func:`_navigate_session` but lists routines (not threads) and binds a
-    **run** (a session inside the routine), tagged ``kind="routine"``. Returns the
-    bound dict, or :data:`select.BACK` to go back to the type step.
-    """
-    while True:
-        routine = _pick_routine_interactive(project, project_name)
-        if routine == select.BACK:
-            return select.BACK
-        if not routine:  # blank new-routine name → re-show the routine step
-            continue
-        # A routine's runs ARE sessions inside it — reuse the session picker, but a
-        # run is a fresh execution (not a handoff-continuation), so "+ new run" stays.
-        sess = _pick_session_interactive(
-            project, routine, allow_new=True, new_label="+ new run",
-            item="Run", container="routine",
-        )
-        if sess == select.BACK:
-            continue  # back to the routine step
-        sess_slug, sess_path, is_new = sess
-        if sess_slug is None:
-            continue
-        return _session_binding(
-            sess_slug, sess_path, is_new, routine, kind=stream.KIND_ROUTINE
-        )
-
-
 def _pick_offer_interactive(offers):
     """List this project's pending handoffs → pick one to continue (or Back).
 
@@ -852,16 +733,20 @@ def _pick_offer_interactive(offers):
 
 
 def _navigate_type(project, project_name, offers=None):
-    """The TYPE step after a project: Handoffs (if any) · Threads · Routines, with Back.
+    """The step after a project: Handoffs (if any) · Threads, with Back.
 
-    Pending *offers* for the project are their OWN option here — ``⇄ Handoffs (N)`` —
-    so they are seen and picked up right where you choose Threads/Routines (they ALSO
-    still surface inside their own thread). Returns the bound dict, ``(HANDOFF_PICK,
-    record)`` on a pickup, or :data:`select.BACK` back to the project picker.
+    With no pending *offers* there is nothing to disambiguate, so this goes straight
+    to the thread→session flow. When offers exist they get their OWN option here —
+    ``⇄ Handoffs (N)`` — so they are seen and picked up right where you choose Threads
+    (they ALSO still surface inside their own thread). Returns the bound dict,
+    ``(HANDOFF_PICK, record)`` on a pickup, or :data:`select.BACK` back to the project
+    picker.
     """
     offers = offers or []
+    if not offers:
+        return _navigate_session(project, project_name, offers)
     while True:
-        opts = (["⇄ Handoffs ({0})".format(len(offers))] if offers else []) + ["Threads", "Routines"]
+        opts = ["⇄ Handoffs ({0})".format(len(offers)), "Threads"]
         choice = select.select(
             "What in {0}?".format(project_name), opts, allow_new=False, allow_back=True,
         )
@@ -870,10 +755,8 @@ def _navigate_type(project, project_name, offers=None):
         picked = opts[choice]
         if picked.startswith("⇄ Handoffs"):
             nav = _pick_offer_interactive(offers)
-        elif picked == "Threads":  # the thread→session flow (also carries handoffs)
+        else:  # the thread→session flow (also carries handoffs)
             nav = _navigate_session(project, project_name, offers)
-        else:  # Routines → the routine→run flow
-            nav = _navigate_routine(project, project_name)
         if nav == select.BACK:
             continue  # back to the type step
         return nav
@@ -884,7 +767,7 @@ HANDOFF_PICK = "handoff"
 
 
 def navigate_interactive(entries, handoffs=None):
-    """Full project→type→(thread→session | routine→run) arrow flow with Back.
+    """Full project→(handoffs | thread→session) arrow flow with Back.
 
     Pending *handoffs* do NOT lead the root — each surfaces INSIDE its own project
     (project → Threads → thread ⊕ → session ⇄ → pick up). A project carrying pending
@@ -999,7 +882,6 @@ def build_launch(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     thread_name: Optional[str] = None,
-    container_kind: str = stream.KIND_THREAD,
     session_id: Optional[str] = None,
     resume: bool = False,
     skip_permissions: bool = True,
@@ -1028,7 +910,6 @@ def build_launch(
         arc_ref=arc_ref,
         arc_text=arc_text,
         thread_name=thread_name,
-        container_kind=container_kind,
         session_id=session_id,
         skip_permissions=skip_permissions,
         dry_run=dry_run,
@@ -1057,7 +938,6 @@ def _fresh_command(
     arc_ref: Optional[str],
     arc_text: Optional[str],
     thread_name: Optional[str],
-    container_kind: str,
     session_id: Optional[str],
     skip_permissions: bool,
     dry_run: bool,
@@ -1083,7 +963,6 @@ def _fresh_command(
             arc_ref=arc_ref,
             arc_text=arc_text,
             thread_name=thread_name,
-            container_kind=container_kind,
         )
         title = "tide-{0}".format(project.name)
         sf = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
@@ -1103,7 +982,6 @@ def _session_launch_kwargs(entry: Dict) -> Dict:
         "arc_ref": s.get("arc_ref"),
         "arc_text": s.get("arc_text"),
         "thread_name": s.get("thread"),
-        "container_kind": s.get("kind") or stream.KIND_THREAD,
         "session_id": s.get("session_id"),
         "resume": bool(s.get("resume")),
         "user_prompt": s.get("user_prompt") or "",
@@ -1146,21 +1024,16 @@ def launch_entry(
 
 
 def _tab_title(entry: Dict) -> str:
-    """The terminal tab title — session/run first, then container: ``<session> · <container>``.
+    """The terminal tab title — session first, then thread: ``<session> · <thread>``.
 
-    For a routine run the container is the routine and the title is gear-marked
-    (``⚙ <run> · <routine>``) so it reads as a routine. Falls back to
-    ``tide-<project>`` when no session is bound.
+    Falls back to ``tide-<project>`` when no session is bound.
     """
     s = entry.get("session") or {}
     thread = s.get("thread")
     if not thread:
         return "tide-{0}".format(entry["name"])
     session = s.get("session_title") or s.get("session_index") or s.get("arc_ref") or "session"
-    title = "{0} · {1}".format(session, thread)
-    if s.get("kind") == stream.KIND_ROUTINE:
-        return "{0}{1}".format(ROUTINE_MARKER, title)
-    return title
+    return "{0} · {1}".format(session, thread)
 
 
 def launch_entries(
@@ -1312,8 +1185,6 @@ def cmd_menu(args) -> int:
                 entry["name"],
                 thread_ref=getattr(args, "thread", None),
                 new_thread=getattr(args, "new_thread", None),
-                routine_ref=getattr(args, "routine", None),
-                new_routine=getattr(args, "new_routine", None),
                 session_ref=getattr(args, "session", None),
                 new_session=getattr(args, "new_session", None),
                 interactive=interactive,
@@ -1426,14 +1297,14 @@ def spark(
                 project / ".tide" / "arcs" / "01-@{0}".format(container_slug)
                 / "arcs" / "01-{0}".format(container_slug))
         binding = {"arc_ref": container_slug, "arc_text": None,
-                   "thread": container_slug, "kind": stream.KIND_THREAD,
+                   "thread": container_slug,
                    "session_id": None, "resume": False}
     else:
         container_slug = slug.entry_slug(thread_entry.name)
         sess_slug = _unique_pickup_slug(thread_entry, base=container_slug)
         sess = stream.new_session(project, container_slug, sess_slug)
         binding = _session_binding(
-            slug.entry_slug(sess.name), sess, True, container_slug, kind=stream.KIND_THREAD
+            slug.entry_slug(sess.name), sess, True, container_slug
         )
     # ▶ is non-interactive (launched from the board, nobody at the terminal): give the
     # fresh session a first user turn so it STARTS the pickup instead of sitting blank
@@ -1451,7 +1322,6 @@ def spark(
         arc_ref=binding.get("arc_ref"),
         arc_text=binding.get("arc_text"),
         thread_name=binding.get("thread"),
-        container_kind=binding.get("kind") or stream.KIND_THREAD,
         trigger=binding["user_prompt"],
         title=_tab_title(spark_entry),
         role=role,
@@ -1509,20 +1379,9 @@ def register(subparsers) -> None:
         help="start a fresh thread (тред) with this name",
     )
     p.add_argument(
-        "--routine",
-        metavar="SLUG",
-        help="continue an existing routine (рутина) by slug (a run inside it); else 0=new in the picker",
-    )
-    p.add_argument(
-        "--new-routine",
-        dest="new_routine",
-        metavar="NAME",
-        help="start a fresh routine (рутина) with this name (a reusable procedure)",
-    )
-    p.add_argument(
         "--session",
         metavar="SLUG",
-        help="continue an existing session/run by slug inside the chosen thread/routine",
+        help="continue an existing session by slug inside the chosen thread",
     )
     p.add_argument(
         "--new-session",

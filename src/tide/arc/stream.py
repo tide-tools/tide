@@ -37,7 +37,6 @@ wires the thin CLI handlers.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sys
 import time
@@ -62,10 +61,6 @@ KIND_THREAD = "thread"
 # containers still carry ``kind: prism`` in their passport; read-compat maps it to
 # KIND_THREAD so pre-rename projects keep working (migrate.py rewrites on demand).
 KIND_THREAD_LEGACY = "prism"
-# A ``routine`` (рутина) is a reusable-procedure container: goal-shaped, tagged
-# ``kind: routine`` in its passport, holding its **runs** as sub-arcs in nested
-# ``arcs/`` (exactly like a thread holds sessions). See :data:`KIND_ROUTINE`.
-KIND_ROUTINE = "routine"
 
 
 class StreamError(Exception):
@@ -114,20 +109,16 @@ def passport_path(entry_dir: Path) -> Path:
 
 def entry_kind(entry_dir: Path) -> str:
     """Classify an entry: ``thread`` (``kind: thread`` — a container of sessions),
-    ``routine`` (``kind: routine`` — a container of runs), ``goal`` (a goal doc
-    without either mark), else ``arc``.
+    ``goal`` (a goal doc without the mark), else ``arc``.
 
-    Kind is read from the on-disk passport, so the ``kind: thread``/``kind:
-    routine`` mark wins even on a goal-shaped container — a thread (and a routine)
-    IS a goal-with-nested-children, just tagged. See :data:`KIND_THREAD` /
-    :data:`KIND_ROUTINE`.
+    Kind is read from the on-disk passport, so the ``kind: thread`` mark wins even
+    on a goal-shaped container — a thread IS a goal-with-nested-children, just
+    tagged. See :data:`KIND_THREAD`.
     """
     pp = passport_path(entry_dir)
     k = (fields.read_field(pp, "kind") or "").strip().lower()
     if k in (KIND_THREAD, KIND_THREAD_LEGACY):  # read-compat: old ``kind: prism``
         return KIND_THREAD
-    if k == KIND_ROUTINE:
-        return KIND_ROUTINE
     if pp.name.endswith("-goal.md"):
         return KIND_GOAL
     return KIND_ARC
@@ -147,20 +138,12 @@ def is_thread(entry_dir: Path) -> bool:
 
 STATUS_DRAFT = "draft"
 
-_SECTION_RE_TMPL = r"^##\s+{0}\s*\n(.*?)(?=^##\s|\Z)"
-
-
-def _section_body(text: str, title: str) -> str:
-    """The body of the ``## <title>`` section in *text* ('' when absent)."""
-    m = re.search(_SECTION_RE_TMPL.format(re.escape(title)), text, re.M | re.S)
-    return m.group(1).strip() if m else ""
-
 
 def goal_filled(entry_dir: Path) -> bool:
     """True when the entry's ``goal:`` line is REAL (non-empty, placeholder-free).
 
     The picker's bar: a container with a stated goal is somebody's intent and must
-    stay reachable, even while (say) a routine's steps are still being written.
+    stay reachable.
     """
     goal = (fields.read_field(passport_path(entry_dir), "goal") or "").strip()
     return bool(goal) and not placeholders.find_in_text("goal: {0}".format(goal))
@@ -169,22 +152,9 @@ def goal_filled(entry_dir: Path) -> bool:
 def passport_filled(entry_dir: Path) -> bool:
     """True when the entry's formulation is REAL — not template scaffolding.
 
-    ``goal:`` must be non-empty and placeholder-free; a routine must also carry a
-    real ``## steps`` runbook (a routine without steps cannot be run, so it is
-    still a draft even with a goal line).
+    ``goal:`` must be non-empty and placeholder-free.
     """
-    pp = passport_path(entry_dir)
-    try:
-        text = pp.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    if not goal_filled(entry_dir):
-        return False
-    if entry_kind(entry_dir) == KIND_ROUTINE:
-        steps = _section_body(text, "steps")
-        if not steps or placeholders.find_in_text(steps):
-            return False
-    return True
+    return goal_filled(entry_dir)
 
 
 def _is_nested_item(entry_dir: Path) -> bool:
@@ -193,7 +163,7 @@ def _is_nested_item(entry_dir: Path) -> bool:
     Nested items are exempt from draft classification: a fresh session is born by
     the handoff machinery and works before its goal line is polished — hiding it
     from the picker would break pickup. The болванка problem lives in the TOP
-    stream (abandoned thread/routine/goal shells).
+    stream (abandoned thread/goal shells).
     """
     grandparent = Path(entry_dir).parent.parent
     return passport_path(grandparent).is_file()
@@ -226,11 +196,6 @@ def draft_entries(root: Path) -> List[Path]:
     return sorted(out, key=lambda p: p.name)
 
 
-def is_routine(entry_dir: Path) -> bool:
-    """True when *entry_dir* is a routine (a kind: routine container of runs)."""
-    return entry_kind(entry_dir) == KIND_ROUTINE
-
-
 def thread_entries(root: Path, *, closed: bool = False) -> List[Path]:
     """Project threads (треды) in the top stream, open by default, in numeric order.
 
@@ -243,24 +208,6 @@ def thread_entries(root: Path, *, closed: bool = False) -> List[Path]:
         p
         for p in _entries(arcs)
         if slug.is_closed_entry(p.name) == closed and is_thread(p)
-    ]
-    # NN prefixes are zero-padded, so a lexical name sort is numeric order.
-    return sorted(out, key=lambda p: p.name)
-
-
-def routine_entries(root: Path, *, closed: bool = False) -> List[Path]:
-    """Project routines (рутины) in the top stream, open by default, numeric order.
-
-    A routine is a goal-shaped container tagged ``kind: routine``; its **runs** are
-    the sub-arcs in its nested ``arcs/`` (a run IS a session inside the routine).
-    Mirrors :func:`thread_entries` but filters ``kind == routine`` — used by the
-    picker to offer routines (not threads/goals/arcs) for run/continue.
-    """
-    arcs = paths.arcs_dir(root)
-    out = [
-        p
-        for p in _entries(arcs)
-        if slug.is_closed_entry(p.name) == closed and is_routine(p)
     ]
     # NN prefixes are zero-padded, so a lexical name sort is numeric order.
     return sorted(out, key=lambda p: p.name)
@@ -428,27 +375,24 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     return entry
 
 
-def _refuse_duplicate_container(root: Path, slug_s: str, *, kind: str, force: bool) -> None:
-    """Refuse a new thread/routine when an OPEN one of the same slug already exists.
+def _refuse_duplicate_container(root: Path, slug_s: str, *, force: bool) -> None:
+    """Refuse a new thread when an OPEN one of the same slug already exists.
 
     The anti-mess gate for candidate 05 (``arc-spawn-runaway-empty-dups``): a
-    spawner re-created the same ``@invite-codes`` routine / ``@kickoff`` thread over
-    and over instead of reusing the live one, flooding the tree with empty dups.
-    Refuse when an OPEN container of the same *kind* + *slug* already exists, and
-    point the caller at REUSE (add a run/session) rather than a duplicate. *force*
-    overrides for the rare legitimate second container.
+    spawner re-created the same ``@kickoff`` thread over and over instead of reusing
+    the live one, flooding the tree with empty dups. Refuse when an OPEN thread of
+    the same *slug* already exists, and point the caller at REUSE (add a session)
+    rather than a duplicate. *force* overrides for the rare legitimate second thread.
     """
     if force:
         return
-    existing = routine_entries(root) if kind == KIND_ROUTINE else thread_entries(root)
-    for e in existing:
+    for e in thread_entries(root):
         if slug.entry_slug(e.name) == slug_s:
-            run = "run" if kind == KIND_ROUTINE else "session"
             raise StreamError(
-                "{0} '@{1}' already exists ({2}) — reuse it: add a {3} with "
-                "`tide arc new-session <slug> -p {1}`, don't spawn a duplicate "
+                "thread '@{0}' already exists ({1}) — reuse it: add a session with "
+                "`tide arc new-session <slug> -p {0}`, don't spawn a duplicate "
                 "(pass --force only if you truly mean a second one).".format(
-                    kind, slug_s, e.name, run
+                    slug_s, e.name
                 )
             )
 
@@ -470,7 +414,7 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False,
     s = slug.slugify(raw_slug)
     if not s:
         raise StreamError("new thread: empty slug after slugify")
-    _refuse_duplicate_container(root, s, kind=KIND_THREAD, force=force)
+    _refuse_duplicate_container(root, s, force=force)
     record_birth_and_guard(root)
     arcs = paths.arcs_dir(root)
     arcs.mkdir(parents=True, exist_ok=True)
@@ -479,36 +423,6 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False,
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "{0}-goal.md".format(s), templates.thread_goal_md(s))
-    if goal and goal.strip():
-        fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
-    stamp_rev(entry, root)
-    return entry
-
-
-def new_routine(root: Path, raw_slug: str, *, force: bool = False,
-                goal: Optional[str] = None) -> Path:
-    """Create a routine ``NN-@<slug>/`` — a goal-shaped container of runs.
-
-    A routine (рутина) is a reusable procedure: it holds its **runs** as sub-arcs
-    in a nested ``arcs/`` (exactly like a thread holds sessions), and is tagged
-    ``kind: routine`` in its passport so the picker can tell routines from threads
-    and work-goals. The passport carries the runbook (``## steps``) + accruing
-    ``## experience``. Lives in the top stream. Stamps canon-rev. Runs are added
-    with :func:`new_session` (a run IS a session inside the routine). Refuses a
-    duplicate of an OPEN same-slug routine (anti-mess gate); *force* overrides.
-    """
-    s = slug.slugify(raw_slug)
-    if not s:
-        raise StreamError("new routine: empty slug after slugify")
-    _refuse_duplicate_container(root, s, kind=KIND_ROUTINE, force=force)
-    record_birth_and_guard(root)
-    arcs = paths.arcs_dir(root)
-    arcs.mkdir(parents=True, exist_ok=True)
-    nn = numbering.next_num(arcs)
-    entry = arcs / "{0}-@{1}".format(nn, s)
-    for sub in (*TRIAD, paths.ARCS_DIRNAME):
-        (entry / sub).mkdir(parents=True, exist_ok=True)
-    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.routine_md(s))
     if goal and goal.strip():
         fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
     stamp_rev(entry, root)
@@ -768,14 +682,11 @@ def _session_is_live(session_dir: Path, *, now: Optional[float] = None) -> bool:
 
 def close_thread(root: Path, ref: str, *, force: bool = False,
                  now: Optional[float] = None) -> "Dict[str, object]":
-    """Close a whole container (thread OR routine): seal every DEAD nested
-    session/run, then the container itself.
+    """Close a whole thread: seal every DEAD nested session, then the thread itself.
 
     ``close`` seals ONE entry, so closing a thread left its sessions ``[active]`` and
     the board reading ``0/N ✓`` on a done thread (cand 74, caught live by the greet
-    dogfood). This cascades. A routine is the symmetric container (runs instead of
-    sessions) and closes the same way — gating it out left дежурки unclosable from
-    the desk (Гриша, live 14.07). Guards run on the CONTAINER first (empty
+    dogfood). This cascades. Guards run on the CONTAINER first (empty
     ``output/`` + leftover placeholders, ``-f`` overrides) — it must still carry a
     self-contained result. Sessions then seal WITHOUT the output guard: a session is
     not a work delta (its work lives in ``workspace/``), so an empty ``output/`` is
@@ -792,9 +703,9 @@ def close_thread(root: Path, ref: str, *, force: bool = False,
         raise StreamError(
             "open thread {0!r} not found in {1} (already closed?)".format(ref, stream_dir)
         )
-    if not (is_thread(entry) or is_routine(entry)):
+    if not is_thread(entry):
         raise StreamError(
-            "{0!r} is not a thread/routine — use 'tide arc close' for a plain arc".format(ref)
+            "{0!r} is not a thread — use 'tide arc close' for a plain arc".format(ref)
         )
     if not force:
         if _output_empty(entry):
@@ -1089,13 +1000,6 @@ def _cmd_new_thread(args) -> int:
     return 0
 
 
-def _cmd_new_routine(args) -> int:
-    entry = new_routine(_root(), args.slug, force=getattr(args, "force", False),
-                        goal=getattr(args, "goal_text", None))
-    print("tide: created routine {0}".format(entry))
-    return 0
-
-
 def _sid_holds_some_session(root: Path, sid: str) -> bool:
     """True when *sid* is already pinned to ANY session arc across the stream.
 
@@ -1174,10 +1078,9 @@ def _cmd_close(args) -> int:
 
         _curate.retire_sessions(arc_dir)
 
-    # A container (thread/routine) closes as a WHOLE nit — cascade to its open
-    # sessions/runs, else the board reads '0/N ✓' on a done container with sessions
-    # still active (cand 74; routines joined 14.07 — дежурки were unclosable).
-    if arc_dir is not None and args.goal is None and (is_thread(arc_dir) or is_routine(arc_dir)):
+    # A thread closes as a WHOLE nit — cascade to its open sessions, else the board
+    # reads '0/N ✓' on a done container with sessions still active (cand 74).
+    if arc_dir is not None and args.goal is None and is_thread(arc_dir):
         summary = close_thread(root, args.slug, force=args.force)
         n = len(summary["sessions"])
         print("tide: closed thread {0} (status: done) + {1} session{2} sealed".format(
@@ -1247,12 +1150,6 @@ def register(arc_subparsers) -> None:
     tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug thread")
     tp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the passport's goal: at birth (no draft placeholder — cand 28)")
     tp.set_defaults(func=_cmd_new_thread, _cmd="arc new-thread")
-
-    rtp = arc_subparsers.add_parser("new-routine", help="create a routine NN-@<slug>/ (kind: routine — a reusable procedure whose runs are sessions)")
-    rtp.add_argument("slug")
-    rtp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug routine")
-    rtp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the passport's goal: at birth (steps still make it runnable or not)")
-    rtp.set_defaults(func=_cmd_new_routine, _cmd="arc new-routine")
 
     snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a thread (-p thread), chained from the last (or --from)")
     snp.add_argument("slug")

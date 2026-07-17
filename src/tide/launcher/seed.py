@@ -102,24 +102,6 @@ def read_arc_passport(root: Path, ref: str) -> Optional[str]:
     return passport.read_text(encoding="utf-8").strip() or None
 
 
-def read_routine_procedure(root: Path, routine_slug: str) -> Optional[str]:
-    """Return a routine container's goal doc (its ``## steps`` + ``## experience``).
-
-    The procedure lives on the routine CONTAINER (a ``kind: routine`` goal doc),
-    not on the run sub-arc — so a routine run's seed must read it separately to
-    carry the actual runbook. Returns None when no open routine matches *slug*.
-    """
-    from ..arc import stream  # lazy: heavier sibling
-    from .. import slug as _slug
-
-    for entry in stream.routine_entries(root):
-        if _slug.entry_slug(entry.name) == _slug.slugify(routine_slug):
-            pp = stream.passport_path(entry)
-            if pp.is_file():
-                return pp.read_text(encoding="utf-8").strip() or None
-    return None
-
-
 # --- launch hint -----------------------------------------------------------
 
 def launch_command(project_name: str, arc_ref: Optional[str] = None) -> str:
@@ -140,8 +122,6 @@ def build_seed(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     thread_name: Optional[str] = None,
-    container_kind: str = "thread",
-    procedure_text: Optional[str] = None,
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
 ) -> str:
@@ -151,11 +131,9 @@ def build_seed(
     prompt or the fallback reminder), the project ``CANON.md``, the active entry
     passport (only when *arc_ref* is given), the control-home roster (only when
     *roster_text* is given), and a closing launch hint. When *thread_name* is given
-    the active entry is framed as a **session inside a thread (тред)** — or, when
-    *container_kind* is ``"routine"``, as a **routine run** (a reusable procedure:
-    its ``## steps`` are the runbook, ``## experience`` accrues across runs). The
-    ``## cursor`` is the resume point either way. Empty pieces render as an explicit
-    ``(…)`` note so the shape is stable for snapshot tests.
+    the active entry is framed as a **session inside a thread (тред)**; the
+    ``## cursor`` is the resume point. Empty pieces render as an explicit ``(…)``
+    note so the shape is stable for snapshot tests.
     """
     lines: List[str] = [
         SEED_TITLE,
@@ -172,24 +150,7 @@ def build_seed(
     ]
 
     if arc_ref:
-        if thread_name and container_kind == "routine":
-            lines += [
-                "",
-                "## Active routine run — {0}  (routine: {1})".format(arc_ref, thread_name),
-                "This session IS a run of the reusable routine (рутина) **{0}** — that "
-                "is your job here: execute the procedure below WITH the human (this is "
-                "the one place you act, not stay passive). Follow the `## steps`; mind "
-                "`## experience` (lessons from prior runs); when done, append what this "
-                "run taught back to `## experience` and update this run's `## cursor`.".format(thread_name),
-                "",
-                "### Routine procedure — {0}".format(thread_name),
-                procedure_text.strip() if (procedure_text and procedure_text.strip())
-                else "(routine procedure not found — read its goal doc in .tide/arcs/)",
-                "",
-                "### This run — {0}".format(arc_ref),
-                arc_text.strip() if (arc_text and arc_text.strip()) else "(no run passport found)",
-            ]
-        elif thread_name:
+        if thread_name:
             lines += [
                 "",
                 "## Active session — {0}  (thread: {1})".format(arc_ref, thread_name),
@@ -248,7 +209,6 @@ def seed_for_project(
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
     thread_name: Optional[str] = None,
-    container_kind: str = "thread",
     role: str = ROLE_ORCHESTRATOR,
     control_home: Optional[Path] = None,
 ) -> str:
@@ -271,11 +231,6 @@ def seed_for_project(
 
     if arc_text is None and arc_ref:
         arc_text = read_arc_passport(root, arc_ref)
-    # A routine run must carry the routine's procedure (## steps / ## experience),
-    # which lives on the routine container — NOT on the run sub-arc's passport.
-    procedure_text = None
-    if container_kind == "routine" and thread_name:
-        procedure_text = read_routine_procedure(root, thread_name)
     prompt_text = read_role_prompt(role)
 
     roster_text: Optional[str] = None
@@ -294,8 +249,6 @@ def seed_for_project(
         arc_ref=arc_ref,
         arc_text=arc_text,
         thread_name=thread_name,
-        container_kind=container_kind,
-        procedure_text=procedure_text,
         prompt_text=prompt_text,
         launch_cmd=launch_command(project_name, arc_ref),
     )

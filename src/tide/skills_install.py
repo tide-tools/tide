@@ -1,6 +1,6 @@
 """tide.skills_install — ``tide install-skills``: deliver the tool's skills.
 
-Mirror of ``install-hooks`` (cand 03): the tide skills (tide-flow, tide-routines,
+Mirror of ``install-hooks`` (cand 03): the tide skills (tide-flow, tide-work,
 offload, …) live in the tool's source checkout under ``skills/`` and are delivered
 into ``~/.claude/skills/`` as SYMLINKS by default — so the skill version always
 equals the installed tool's source (self-update moves both at once, no manual
