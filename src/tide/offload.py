@@ -71,10 +71,19 @@ def find_session(root: Path, ref: str) -> Optional[Path]:
 
 
 def find_session_by_claude_id(root: Path, session_id: str) -> Optional[Path]:
-    """The open session whose passport pins ``claude-session: <session_id>``."""
+    """The session whose passport pins ``claude-session: <session_id>``.
+
+    Open sessions first; CLOSED ones are the fallback (cand 109): арку закрыли,
+    а её чат продолжает работать — пульсу и SessionEnd-штампу есть куда лечь,
+    доска не слепнет. Пульс в закрытую легален — это её собственный чат.
+    """
     if not session_id:
         return None
     for entry in _session_dirs(root):
+        pin = (fields.read_field(entry / "arc.md", CLAUDE_SESSION_FIELD) or "").strip()
+        if pin == session_id:
+            return entry
+    for entry in resolve.closed_session_dirs(root):
         pin = (fields.read_field(entry / "arc.md", CLAUDE_SESSION_FIELD) or "").strip()
         if pin == session_id:
             return entry
@@ -243,12 +252,14 @@ def _blind_goal_suffix(session_entry: Path) -> str:
 # OBJECT (нить/арка/тред/PR/дельта/ветка) — a bare «закрыт» also describes gates and
 # steps («старт-гейт закрыт») and a substring match trained agents to avoid honest
 # words in pulses (cand 106). Both word orders, up to two words in between; verbs are
-# perfective only (intent like «закрою нить позже» must not warn).
+# perfective only (intent like «закрою нить позже» must not warn). The link may NOT
+# cross a clause boundary (,.;:—…): «старт-гейт закрыт, строю план НИТИ» — «нити»
+# из другой клаузы, это не заявление о закрытии (второй ложняк cand 106, 16.07).
 _CLOSABLE = r"(?:нит\w+|арк\w+|тред\w+|thread|ветк\w+|branch|pr|пиар\w*|делт\w+|delta)"
 _CLOSED_VERB = r"(?:закрыт\w*|закрыл\w*|влит\w*|влил\w*|смерж\w*|выпущен\w*|merged|shipped|closed)"
+_LINK = r"(?:{s}(?:\w+{s}){{0,2}})".format(s=r"[ \t]+")  # чистые пробелы: любой знак рвёт связку
 _CLOSURE_CLAIM = re.compile(
-    r"{o}\W+(?:\w+\W+){{0,2}}{v}|{v}\W+(?:\w+\W+){{0,2}}{o}".format(
-        o=_CLOSABLE, v=_CLOSED_VERB),
+    r"{o}{l}{v}|{v}{l}{o}".format(o=_CLOSABLE, v=_CLOSED_VERB, l=_LINK),
     re.IGNORECASE,
 )
 

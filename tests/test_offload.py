@@ -343,3 +343,42 @@ def test_cli_offload_confirms_a_stranded_reservation(tmp_project, session, monke
     assert rc == 0
     assert "confirmed by this pulse" in capsys.readouterr().out
     assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_TAKEN
+
+
+# --- cand 106 (второй ложняк) + 108 + 109 -----------------------------------
+
+
+def test_closure_warning_not_across_clause(tmp_project):
+    # «старт-гейт закрыт, строю план НИТИ» — «нити» из другой клаузы (16.07)
+    from tide.arc import stream
+    from tide.offload import _closure_word_warning
+
+    stream.new_thread(tmp_project, "demo2", goal="ship")
+    s = stream.new_session(tmp_project, "demo2", "s1")
+    assert _closure_word_warning(
+        s / "arc.md", "старт-гейт закрыт, строю план нити по закону 47") is None
+    assert _closure_word_warning(s / "arc.md", "нить закрыта, итог в output")
+
+
+def test_blind_goal_allows_slug_inside_real_words():
+    # cand 108: живая цель со слагом внутри — НЕ болванка (кириллицу slugify рубит)
+    from tide.placeholders import is_blind_goal
+
+    assert is_blind_goal("стартовать нить test-thread: проверка", "test-thread") is False
+    assert is_blind_goal("test-thread", "test-thread") is True
+    assert is_blind_goal("debug_deck", "debug-deck") is True
+
+
+def test_find_by_sid_falls_back_to_closed_sessions(tmp_project):
+    # cand 109: арку закрыли, чат жив — sid-роутинг находит закрытый паспорт
+    from tide import fields
+    from tide.arc import stream
+    from tide.offload import find_session_by_claude_id
+
+    stream.new_thread(tmp_project, "office", goal="мир")
+    s = stream.new_session(tmp_project, "office", "world")
+    fields.set_field(s / "arc.md", "claude-session", "sid-closed-live")
+    closed = s.parent / "__{0}__".format(s.name)
+    s.rename(closed)  # арка закрыта, чат (sid) продолжает жить
+    hit = find_session_by_claude_id(tmp_project, "sid-closed-live")
+    assert hit == closed

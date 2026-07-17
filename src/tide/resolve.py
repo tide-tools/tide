@@ -99,6 +99,27 @@ def open_session_dirs(root: Path) -> List[Path]:
     return out
 
 
+def closed_session_dirs(root: Path) -> List[Path]:
+    """Every CLOSED session dir — закрытые сессии открытых нитей И все сессии
+    закрытых нитей. Нужен sid-роутингу пульса (cand 109): чат живёт дольше своей
+    арки, и его записи должны находить паспорт, а не падать в никуда."""
+    arcs = paths.arcs_dir(Path(root))
+    out: List[Path] = []
+    if not arcs.is_dir():
+        return out
+    for container in sorted(arcs.iterdir()):
+        sub = container / paths.ARCS_DIRNAME
+        if not container.is_dir() or not sub.is_dir():
+            continue
+        container_closed = slug.is_closed_entry(container.name)
+        for entry in sorted(sub.iterdir()):
+            if not (entry.is_dir() and slug.is_entry(entry.name)):
+                continue
+            if container_closed or slug.is_closed_entry(entry.name):
+                out.append(entry)
+    return out
+
+
 def find_session(root: Path, ref: str) -> Optional[Path]:
     """Resolve the open nested session *ref* names, or None if absent.
 

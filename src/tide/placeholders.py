@@ -174,14 +174,20 @@ def is_blind_goal(raw: Optional[str], entry_slug: str) -> bool:
     offload nudge all treat these identically as "no goal", so the test lives here
     once instead of being re-derived at each call site.
     """
-    from . import slug as _slug  # lazy: keep placeholders import-light
-
     g = (raw or "").strip()
     if not g:
         return True
     if find_in_text("goal: " + g):  # a leftover <…> placeholder
         return True
-    return _slug.slugify(g) == entry_slug or _slug.entry_slug(g) == entry_slug
+    # «только слаг» — по СЛОВАМ, не по slugify всей фразы: слагификация рубит
+    # кириллицу, и живая цель «стартовать нить test-thread: проверка» схлопы-
+    # валась ровно в слаг → ложный отказ гейта (cand 108). Слепая цель = после
+    # выброса слов самого слага не осталось НИ ОДНОГО своего слова.
+    import re as _re
+
+    slug_tokens = set(entry_slug.lower().split("-"))
+    words = _re.findall(r"[^\W_]+", g.lower(), _re.UNICODE)
+    return not [w for w in words if w not in slug_tokens]
 
 
 def refuse_message(doc_name: str, ref: str, offenders: List[str]) -> str:
