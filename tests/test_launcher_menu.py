@@ -149,7 +149,8 @@ def test_launch_preview_returns_name_and_scoped_command(home_with_project):
     assert len(preview) == 1
     name, command = preview[0]
     assert name == "proj"
-    assert command.startswith("claude ")
+    # the preview shows the role env prefix the spawn carries (cand 127 #1)
+    assert command.startswith("env TIDE_ROLE=orchestrator claude ")
     assert "--strict-mcp-config" in command
     assert command.endswith("--append-system-prompt @<seed-file>")
 
@@ -275,9 +276,11 @@ def test_never_engaged_session_launches_fresh(home_with_project):
     assert bound["resume"] is False       # never engaged → fresh, no scary resume error
     assert bound["session_id"] == "ghost-999"  # id kept, pinned for next time
     cmd = menu.build_launch(proj, control_home=home, dry_run=True, session_id="abc-123", resume=True)
+    # every launch carries the session's role as TIDE_ROLE (cand 127 #1)
+    assert cmd[:2] == ["env", "TIDE_ROLE=orchestrator"]
     # resume is wrapped so it falls back to a fresh launch if the convo is gone
-    assert cmd[0] == "sh" and cmd[1] == "-c"
-    shell = cmd[2]
+    assert cmd[2] == "sh" and cmd[3] == "-c"
+    shell = cmd[4]
     assert "claude --dangerously-skip-permissions --resume abc-123" in shell
     assert " || " in shell  # fallback to a fresh seeded launch
     assert "--session-id abc-123" in shell  # the fallback re-pins the same id
@@ -294,7 +297,7 @@ def test_resume_reapplies_scoped_mcp_config(home_with_project):
     cmd = menu.build_launch(
         proj, control_home=home, dry_run=True, session_id="abc-123", resume=True
     )
-    shell = cmd[2]
+    shell = cmd[4]  # after the ["env", "TIDE_ROLE=…", "sh", "-c"] prefix
     resume_part = shell.split(" || ", 1)[0]  # the `claude --resume …` half
     assert "--resume abc-123" in resume_part
     assert "--strict-mcp-config" in resume_part
@@ -455,7 +458,8 @@ def test_build_launch_skips_permissions_by_default(home_with_project):
     home, proj = home_with_project
     command = menu.build_launch(proj, control_home=home, dry_run=True)
     assert menu.SKIP_PERMISSIONS in command
-    assert command[1] == menu.SKIP_PERMISSIONS  # right after the program
+    assert command[:2] == ["env", "TIDE_ROLE=orchestrator"]  # role env prefix (cand 127 #1)
+    assert command[3] == menu.SKIP_PERMISSIONS  # right after the program (env-prefix, then claude)
 
 
 def test_build_launch_no_skip_permissions_opt_out(home_with_project):
@@ -483,10 +487,26 @@ def test_build_launch_is_scoped_lean_by_default(home_with_project):
     command = menu.build_launch(
         proj, control_home=home, skip_permissions=False, dry_run=True
     )
-    assert command[0] == "claude"
+    assert command[:2] == ["env", "TIDE_ROLE=orchestrator"]  # role carried to the spawn
+    assert command[2] == "claude"
     assert "--strict-mcp-config" in command
     assert "--mcp-config" not in command
     assert command[-2:] == ["--append-system-prompt", "@<seed-file>"]
+
+
+def test_build_launch_carries_session_role_as_env(home_with_project):
+    # cand 127 #1: the role that builds the seed MUST also reach the spawned process
+    # as TIDE_ROLE — else the SessionStart hook defaults to worker and contradicts an
+    # orchestrator seed. One role value drives both. `tide go` keeps its own path.
+    home, proj = home_with_project
+    orch = menu.build_launch(proj, control_home=home, role="orchestrator", dry_run=True)
+    assert orch[:2] == ["env", "TIDE_ROLE=orchestrator"]
+    wrk = menu.build_launch(proj, control_home=home, role="worker", dry_run=True)
+    assert wrk[:2] == ["env", "TIDE_ROLE=worker"]
+    # the resume shape carries it too (prefix wraps the outer `sh -c`)
+    res = menu.build_launch(proj, control_home=home, role="orchestrator",
+                            session_id="x", resume=True, dry_run=True)
+    assert res[:2] == ["env", "TIDE_ROLE=orchestrator"] and res[2] == "sh"
 
 
 def test_launch_entries_default_adapter_is_orca(home_with_project):

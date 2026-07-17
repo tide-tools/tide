@@ -874,6 +874,24 @@ def _record_launch(control_home: Path, session_id: Optional[str], handle, arc) -
 
 # --- launch ----------------------------------------------------------------
 
+def _with_role_env(command: List[str], role: str) -> List[str]:
+    """Prefix *command* with ``env TIDE_ROLE=<role>`` — one role value for seed AND
+    hook (cand 127, problem #1).
+
+    The seed is built with *role* (orchestrator for ▶/spark, worker for a scoped
+    launch), but until now nothing exported ``TIDE_ROLE`` onto the spawned process,
+    so the SessionStart hook — and every orchestrator-only ``tide`` gate — fell back
+    to the worker default and CONTRADICTED an orchestrator seed. Now the same *role*
+    drives both. Adapter-agnostic: every adapter shells *command* via ``shlex.join``,
+    so a leading ``env NAME=VALUE`` simply runs (covers the ``sh -c`` resume shape
+    too). ``tide go`` keeps its own role-by-place path (``terminal.py``) and never
+    reaches here — no double-set.
+    """
+    if not role:
+        return command
+    return ["env", "TIDE_ROLE={0}".format(role), *command]
+
+
 def build_launch(
     project: Path,
     *,
@@ -926,8 +944,8 @@ def build_launch(
         # --mcp-config (e.g. mitehq's linear-mite), so resumed sessions lost MCP.
         resume_cmd += context.scoped_flags(context.load_profile(project))
         shell = "{0} || {1}".format(shlex.join(resume_cmd), shlex.join(fresh))
-        return ["sh", "-c", shell]
-    return fresh
+        return _with_role_env(["sh", "-c", shell], role)
+    return _with_role_env(fresh, role)
 
 
 def _fresh_command(
