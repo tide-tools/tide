@@ -1,4 +1,6 @@
 ---
+tagline: "How work lives inside an arc"
+summary: "The tide working model for seeded sessions: orient via status and board, work inside the arc's workspace, drop candidates, close cleanly."
 name: tide-flow
 description: Рабочая модель tide для агента, поднятого через `tide menu`/`tide go` — «всё есть арка», и вся работа ВЕДЁТСЯ ВНУТРИ арки (в её `workspace/`), а не вразброс. Покрывает: как сориентироваться на входе (status/board), как вести работу в арке (input→workspace→output), как уронить кандидата (в т.ч. в соседний проект из ростера), и как закрыть. Используй, когда ведёшь любую работу в tide-сессии, не уверен «куда писать файлы/прогресс», работаешь с арками/кандидатами, или на «как тут у вас всё устроено», «куда это класть», "tide flow", "/tide-flow". Для рутин (переиспользуемых процедур) — см. [[tide-routines]].
 ---

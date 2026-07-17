@@ -1,4 +1,6 @@
 ---
+tagline: "Reusable routines with memory"
+summary: "A routine is a steps template plus accumulated experience; every run is a nested arc that feeds its lessons back into the template."
 name: tide-routines
 description: Модель РУТИН в tide для агента — рутина = переиспользуемый шаблон процедуры (## steps) + накапливаемый опыт (## experience), а каждое её применение = РАН = вложенная арка внутри рутины (которая сама может разрастись в ветку). Покрывает: как из готовой работы в арке оформить рутину, как завести ран и вести его ВНУТРИ арки, как копить опыт между ранами, паттерн «рутина на деплой стенд/прод» и «рутина на выпуск кодов». Используй на «оформи это в рутину», «заведи рутину», «прогони рутину X», «routine», "/tide-routines", или когда работа повторяется и просится в переиспользуемый шаблон. Базовая модель арок и правило workspace — в [[tide-flow]].
 ---
