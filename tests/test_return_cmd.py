@@ -104,9 +104,9 @@ def test_return_dry_run_builds_without_executing(tmp_path, monkeypatch):
     assert registry.recorded_handle(tmp_path, SID) == "term_live"  # untouched
 
 
-def test_return_never_resurrects_a_dissolved_head(tmp_path, monkeypatch):
-    # live 14.07: the origin's tab died after dissolution — return must NOT respawn
-    # it (one holder per thread); it reports "gone" instead
+def test_legacy_dissolved_stamp_no_longer_gates(tmp_path, monkeypatch):
+    # canon №1 simplified (Гриша 16.07): past sessions are open history — a legacy
+    # dissolved: stamp in an old passport does not block re-entry anymore
     from tide.arc import stream
 
     (tmp_path / ".tide" / "arcs").mkdir(parents=True)
@@ -117,9 +117,8 @@ def test_return_never_resurrects_a_dissolved_head(tmp_path, monkeypatch):
     adapter = _FakeAdapter(focus_ok=False)  # tab is dead
     _patched(monkeypatch, adapter)
     out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sess))
-    assert out["ok"] is False and out["action"] == "gone"
-    assert "dissolved" in out["detail"]
-    assert adapter.spawned is None  # no resurrection
+    assert out["ok"] is True and out["action"] == "resumed"
+    assert "--resume {0}".format(SID) in " ".join(adapter.spawned["command"])
 
 
 def test_return_still_focuses_a_live_dissolved_tab(tmp_path, monkeypatch):
@@ -153,27 +152,8 @@ def test_return_respawns_an_ended_head(tmp_path, monkeypatch):
     assert out["ok"] is True and out["action"] == "resumed"
 
 
-def test_gate_survives_a_mismatching_arc_hint(tmp_path, monkeypatch):
-    # live 14.07: an arc param pointing at a SIBLING session made the gate give up
-    # and resurrect a dissolved head — the arc is a hint, the sid scan is the truth
-    from tide.arc import stream
-
-    (tmp_path / ".tide" / "arcs").mkdir(parents=True)
-    stream.new_thread(tmp_path, "demo", goal="ship")
-    origin = stream.new_session(tmp_path, "demo", "origin")
-    sibling = stream.new_session(tmp_path, "demo", "priem")
-    fields.set_field(origin / "arc.md", "claude-session", SID)
-    fields.set_field(origin / "arc.md", "dissolved", "2026-07-14T16:25:40")
-    fields.set_field(sibling / "arc.md", "claude-session", "other-sid")
-    adapter = _FakeAdapter(focus_ok=False)
-    _patched(monkeypatch, adapter)
-    out = return_cmd.run_return(tmp_path, sid=SID, project=tmp_path, arc=str(sibling))
-    assert out["action"] == "gone" and adapter.spawned is None
-
-
-def test_force_reenters_a_dissolved_head(tmp_path, monkeypatch):
-    # the HUMAN's confirmed override (Гриша 14.07: «достать из старой — мало ли
-    # что»): force skips the dissolved-gate; agents never pass force
+def test_force_stays_accepted_as_noop(tmp_path, monkeypatch):
+    # back-compat: старые доски шлют --force; гейт снят, флаг тихо принимается
     from tide.arc import stream
 
     (tmp_path / ".tide" / "arcs").mkdir(parents=True)

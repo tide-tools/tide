@@ -497,15 +497,17 @@ def test_is_dissolved_none_while_offer_only_offered(tmp_control_home):
     assert hq.is_dissolved(tmp_control_home, "origin-A") is None
 
 
-def test_multiples_lists_taken_origin_successor_pairs(tmp_control_home):
+def test_multiples_quiet_for_history_pairs(tmp_control_home):
+    # canon №1 simplified (16.07): a handed-off origin merely EXISTING is open
+    # history — multiples flags only an origin that PULSED after the take (see
+    # test_dissolution.test_multiples_flags_origin_pulsing_after_take for the
+    # positive case on a real rostered session)
     hq.offer(tmp_control_home, "one", arc="t/02", project="p", seed="-",
              from_session="A")
     hq.take(tmp_control_home, "one", session="B")
     hq.offer(tmp_control_home, "two", arc="t/03", project="p", seed="-")  # no origin
     hq.take(tmp_control_home, "two", session="C")
-    ms = hq.multiples(tmp_control_home)
-    assert [r["slug"] for r in ms] == ["one"]  # only the one with a known origin
-    assert ms[0]["from_session"] == "A" and ms[0]["taken_by"] == "B"
+    assert hq.multiples(tmp_control_home) == []
 
 
 def test_list_shows_origin_lineage_for_taken(tmp_control_home):

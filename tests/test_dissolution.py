@@ -1,4 +1,5 @@
-"""I6 — dissolution as mechanics: take() stamps the origin, no pulse-word heuristics."""
+"""Canon №1 (упрощение 16.07) — the current session is derived from the chain:
+take() stamps nothing; the real multiple is an origin that PULSED after the take."""
 
 from __future__ import annotations
 
@@ -30,23 +31,34 @@ def _two_generations(tmp_path, mode=hq.DEFAULT_MODE):
     return home, proj, origin, target, key
 
 
-def test_take_dissolves_origin_mechanically(tmp_path):
+def test_take_leaves_origin_unstamped(tmp_path):
+    # canon №1 simplified (Гриша 16.07): the current session is DERIVED from the
+    # chain — taking an offer stamps NOTHING on the origin. The hook's hint stays
+    # queue-derived (is_dissolved), the registry entry is KEPT for ⟳ focus.
     home, proj, origin, target, key = _two_generations(tmp_path)
     hq.take(home, key, session="successor-sid")
-    # I6: the origin's passport is stamped — the harness dissolves the origin, not
-    # the agent's discipline. Its registry entry is KEPT (live 14.07: the tab is
-    # usually still open, ⟳ must focus it; only the RESPAWN is gated, in return_cmd).
-    assert (fields.read_field(origin / "arc.md", "dissolved") or "").strip()
+    assert fields.read_field(origin / "arc.md", "dissolved") is None
+    assert hq.is_dissolved(home, "origin-sid") is not None  # queue-derived hint
     assert registry.recorded_handle(home, "origin-sid") == "term_origin"
     # the successor's link is untouched territory (recorded by its launcher)
     assert (fields.read_field(target / "arc.md", "claude-session") or "") == "successor-sid"
 
 
-def test_confirm_flip_dissolves_origin_too(tmp_path):
+def test_confirm_flip_leaves_origin_unstamped_too(tmp_path):
     home, proj, origin, target, key = _two_generations(tmp_path)
     hq.reserve(home, key, session="successor-sid")
     assert hq.confirm_for_session(home, "successor-sid")
-    assert (fields.read_field(origin / "arc.md", "dissolved") or "").strip()
+    assert fields.read_field(origin / "arc.md", "dissolved") is None
+    assert hq.is_dissolved(home, "origin-sid") is not None
+
+
+def test_multiples_flags_origin_pulsing_after_take(tmp_path):
+    # the real Mickey 17: the origin kept WORKING (offloaded-at) after the take
+    home, proj, origin, target, key = _two_generations(tmp_path)
+    hq.take(home, key, session="successor-sid")
+    assert hq.multiples(home) == []  # quiet origin = open history, not a multiple
+    fields.set_field(origin / "arc.md", "offloaded-at", "2099-01-01T00:00:00")
+    assert len(hq.multiples(home)) == 1
 
 
 def test_new_mode_take_keeps_origin_holding(tmp_path):

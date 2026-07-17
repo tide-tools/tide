@@ -193,7 +193,10 @@ def test_idea_survives_a_handoff_chain(tmp_control_home, monkeypatch):
     assert hq.is_dissolved(tmp_control_home, "sid-A")
     assert hq.is_dissolved(tmp_control_home, "sid-B")
     assert not hq.is_dissolved(tmp_control_home, "sid-C")
-    assert {m["from_session"] for m in hq.multiples(tmp_control_home)} == {"sid-A", "sid-B"}
+    # canon №1 simplified (16.07): quiet past origins are open history — the
+    # detector flags only an origin that PULSED after its take, so a clean chain
+    # reports NO multiples
+    assert hq.multiples(tmp_control_home) == []
     # (4) the goal itself never left the thread
     assert fields.read_field(stream.passport_path(
         next((proj / ".tide" / "arcs").glob("*big-idea*"))), "goal") == GOAL

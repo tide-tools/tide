@@ -266,57 +266,20 @@ def _resolve(home: Path, key: str) -> Dict[str, object]:
 def _mark_taken(rec: Dict[str, object], *, session: Optional[str]) -> Dict[str, object]:
     """Flip a record to taken, stamping who/when (mutates the file).
 
-    THE single flip point (I4) — every taker路 comes through here, so the origin's
-    DISSOLUTION rides the same gesture (I6): the moment a successor holds the
-    thread, the origin's passport is stamped ``dissolved:`` and its terminal link
-    is forgotten. Mechanics, not the agent's memory — the Stop hook then stands the
-    origin down by the explicit stamp, no pulse-word heuristics (cand 106's lesson).
+    THE single flip point (I4) — every taker comes through here. The origin is
+    deliberately NOT stamped (canon №1 simplified, Гриша 16.07): the thread's
+    current session is DERIVED from the chain (the newest taken one), so a past
+    session merely existing is history, not a state to bookkeep. The old
+    ``dissolved:`` stamps lied both ways — a stray stamp killed a thread that was
+    never handed over (cand 118), missing stamps fed detector noise (cand 27).
+    The real 'Mickey 17' (origin still WORKING after the take) is caught by pulse
+    — see :func:`multiples`.
     """
     path = rec["path"]
     _set_field(path, "status", STATUS_TAKEN)
     _set_field(path, "taken-by", session or "-")
     _set_field(path, "taken-at", _now())
-    out = _parse(path)
-    try:
-        _dissolve_origin(Path(path).parent.parent.parent, out)
-    except Exception:  # noqa: BLE001 — dissolution must never break a take
-        pass
-    return out
-
-
-def _dissolve_origin(home: Path, rec: Dict[str, object]) -> Optional[Path]:
-    """Stamp ``dissolved:`` on the ORIGIN session of a just-taken offer (I6).
-
-    The origin gave the thread away — one holder per thread, so mechanically: find
-    its session arc by the pinned sid (across the offer's roster project) and stamp
-    ``dissolved:``. The registry entry is deliberately KEPT: the origin's tab is
-    usually still open, and ⟳ must FOCUS it (a look-back is fine) — forgetting the
-    handle made return respawn a duplicate tab (Гриша, live 14.07). What a dissolved
-    head must never get is a RESPAWN — ``tide return`` gates that on the stamp.
-    No origin recorded / not found → no-op.
-    """
-    frm = str(rec.get("from_session") or "").strip()
-    taker = str(rec.get("taken_by") or "").strip()
-    if not frm or frm == "-" or frm == taker:
-        return None
-    if not _transfers_thread(rec):
-        return None
-    from . import fields, roster
-    from .offload import find_session_by_claude_id
-
-    project = str(rec.get("project") or "").strip()
-    entry = next((e for e in roster.read_roster(home) if e["name"] == project), None)
-    if entry is None:
-        return None
-    proj_root = Path(entry["path"]).expanduser()
-    arc = find_session_by_claude_id(proj_root, frm)
-    if arc is None:
-        return None
-    pp = arc if arc.name.endswith(".md") else arc / "arc.md"
-    if not pp.is_file() or fields.read_field(pp, "dissolved"):
-        return None
-    fields.set_field(pp, "dissolved", _now())
-    return pp
+    return _parse(path)
 
 
 def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
@@ -421,13 +384,33 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
 
 
 def multiples(home: Path) -> List[Dict[str, object]]:
-    """Every taken offer whose ORIGIN session is recorded and differs from the taker —
-    each is a handed-off origin that, if still acting, is a forbidden multiple. The
-    detector that makes 'one orchestrator per thread' enforceable by the harness."""
+    """Taken offers whose ORIGIN session kept WORKING after the thread moved on —
+    the real 'Mickey 17'. Canon №1 simplified (Гриша 16.07): the current session
+    is derived from the chain, nothing is stamped, and a past session merely
+    EXISTING is open history — not a violation. A pair is flagged only when the
+    origin's passport pulsed (``offloaded-at``) AFTER the take: it kept acting
+    on a thread a successor now holds. Тревога, не бухгалтерия."""
+    from . import fields, roster
+    from .offload import find_session_by_claude_id
+
     out: List[Dict[str, object]] = []
     for r in list_offers(home, status=STATUS_TAKEN):
-        frm = r.get("from_session")
-        if frm and frm != "-" and frm != r.get("taken_by") and _transfers_thread(r):
+        frm = str(r.get("from_session") or "").strip()
+        if not frm or frm == "-" or frm == r.get("taken_by") or not _transfers_thread(r):
+            continue
+        project = str(r.get("project") or "").strip()
+        entry = next((e for e in roster.read_roster(home) if e["name"] == project), None)
+        if entry is None:
+            continue
+        arc = find_session_by_claude_id(Path(entry["path"]).expanduser(), frm)
+        if arc is None:
+            continue  # origin closed/gone — history, not a multiple
+        pp = arc if arc.name.endswith(".md") else arc / "arc.md"
+        offl = (fields.read_field(pp, "offloaded-at") or "").strip()
+        taken = str(r.get("taken_at") or "").strip()
+        # ISO-штампы сравниваются лексикографически; '0'/'-' у непульсовавшей
+        # сессии никогда не новее реального taken-at
+        if offl and taken and taken != "-" and offl > taken:
             out.append(r)
     return out
 
