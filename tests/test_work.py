@@ -44,6 +44,29 @@ def test_add_rejects_bad_deadline(in_project, capsys):
     assert "кривой дедлайн" in capsys.readouterr().err
 
 
+# --- checklist ----------------------------------------------------------------
+
+def test_checklist_replaces_raw_item_and_journals(in_project):
+    cli.main(["work", "add", "вылить выплаты"])
+    rc = cli.main(["work", "checklist", "01", "поднять прод", "прогнать смоук"])
+    assert rc == 0
+    text = _text(in_project)
+    assert "- [ ] поднять прод" in text
+    assert "- [ ] прогнать смоук" in text
+    assert "- [ ] вылить выплаты" not in text
+    assert "чеклист согласован: 2 пункт(ов)" in text
+
+
+def test_checklist_refuses_over_checked_progress_without_force(in_project, capsys):
+    cli.main(["work", "add", "x"])
+    cli.main(["work", "take", "01"])
+    cli.main(["work", "check", "01", "1", "--proof", "p"])
+    assert cli.main(["work", "checklist", "01", "новый"]) == 1
+    assert "сотрёт прогресс" in capsys.readouterr().err
+    assert cli.main(["work", "checklist", "01", "новый", "--force"]) == 0
+    assert "- [ ] новый" in _text(in_project)
+
+
 # --- take --------------------------------------------------------------------
 
 def test_take_moves_open_to_taken_and_journals(in_project):

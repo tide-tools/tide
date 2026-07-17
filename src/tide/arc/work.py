@@ -178,6 +178,49 @@ def new_work(
     return d
 
 
+def set_checklist(
+    root: Path,
+    key: str,
+    texts: List[str],
+    force: bool = False,
+    now: Optional[datetime] = None,
+) -> str:
+    """Replace the checklist with the AGREED items (gesture 1: разложить).
+
+    Refuses when checked items exist (progress would be erased) unless *force*
+    — the human's explicit word. Journals the agreement.
+    """
+    texts = [" ".join(t.split()) for t in texts if t and t.strip()]
+    if not texts:
+        raise WorkError("work: пустой чеклист — дай пункты")
+    wdir = _find(root, key)
+    f, text = _read(wdir)
+    st = _status_of(text)
+    if st == "done":
+        raise WorkError("work: {0} закрыта — сначала tide work reopen".format(wdir.name))
+    if any(done for done, _ in items(text)) and not force:
+        raise WorkError(
+            "work: в чеклисте есть чекнутые пункты — замена сотрёт прогресс "
+            "(--force только по слову человека)")
+    lines = text.splitlines()
+    try:
+        head = next(i for i, ln in enumerate(lines)
+                    if ln.startswith("## чеклист"))
+    except StopIteration:
+        raise WorkError("work: паспорт без секции ## чеклист")
+    end = head + 1
+    while end < len(lines) and not lines[end].startswith("## "):
+        end += 1
+    block = ["## чеклист"] + ["- [ ] {0}".format(t) for t in texts] + [""]
+    text = "\n".join(lines[:head] + block + lines[end:])
+    if not text.endswith("\n"):
+        text += "\n"
+    text = _journal(text, "- {0} — чеклист согласован: {1} пункт(ов)".format(
+        _stamp(now), len(texts)))
+    _io.atomic_write(f, text)
+    return wdir.name
+
+
 def take(
     root: Path,
     key: str,
@@ -352,6 +395,13 @@ def _cmd_add(args) -> int:
     return 0
 
 
+def _cmd_checklist(args) -> int:
+    name = set_checklist(_root(args), args.key, args.items, force=args.force)
+    print("tide: {0} — чеклист согласован ({1} пункт(ов))".format(
+        name, len(args.items)))
+    return 0
+
+
 def _cmd_take(args) -> int:
     name = take(_root(args), args.key, by=args.by, word=args.word)
     print("tide: {0} — взята (open → taken)".format(name))
@@ -413,6 +463,16 @@ def register(subparsers) -> None:
                     help="поле project: в паспорте — где меняется мир")
     _common(ap)
     ap.set_defaults(func=_cmd_add, _cmd="work add")
+
+    kp = wsub.add_parser(
+        "checklist",
+        help="жест 1: заменить чеклист СОГЛАСОВАННЫМИ пунктами (+журнал)")
+    kp.add_argument("key")
+    kp.add_argument("items", nargs="+", help="пункты, по одному аргументу")
+    kp.add_argument("--force", action="store_true",
+                    help="заменить несмотря на чекнутые (слово человека)")
+    _common(kp)
+    kp.set_defaults(func=_cmd_checklist, _cmd="work checklist")
 
     tp = wsub.add_parser("take", help="взять работу: open → taken (+журнал)")
     tp.add_argument("key", help="NN, NN-slug или slug работы")
