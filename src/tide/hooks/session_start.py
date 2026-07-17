@@ -250,7 +250,8 @@ def _project_notes_index(root: Path) -> List[str]:
             out.append("  {0} — {1}{2}".format(f.stem, title, tags))
         if out:
             out.append("  (шпаргалки человека с полки доски; нужна конкретная — "
-                       "читай .tide/notes/<имя>.md, целиком не грузи)")
+                       "читай .tide/notes/<имя>.md, целиком не грузи; правишь — "
+                       "допиши строку в её ## журнал: время — что — кто)")
         return out
     except Exception:
         return []
