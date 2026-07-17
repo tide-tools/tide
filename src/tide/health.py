@@ -81,6 +81,9 @@ class HealthLine:
     roster_not_ready: int
     stale_offers: int = 0
     roster_total: int = 0
+    # имена гниющих офферов — «⚠ гниёт: оффер >3д» без имени указывал в пустоту,
+    # когда гнил невидимый доске мусорный оффер (cand 116 п.6, live 16.07)
+    stale_offer_names: Tuple[str, ...] = ()
 
     @property
     def counts(self) -> Dict[str, int]:
@@ -101,7 +104,9 @@ class HealthLine:
         if self.roster_not_ready > 0:
             reasons.append("проект не готов")
         if self.stale_offers > 0:
-            reasons.append("оффер >{0}д".format(STALE_DAYS))
+            named = " ({0})".format(", ".join(self.stale_offer_names[:3])) \
+                if self.stale_offer_names else ""
+            reasons.append("оффер >{0}д{1}".format(STALE_DAYS, named))
         return reasons
 
     @property
@@ -195,23 +200,24 @@ def _parse_ts(raw: object) -> Optional[datetime]:
         return None
 
 
-def _count_offers(home: Optional[Path], now: datetime) -> Tuple[int, int]:
-    """``(waiting, stale)`` — offered handoffs, and how many are older than STALE_DAYS."""
+def _count_offers(home: Optional[Path], now: datetime) -> Tuple[int, int, Tuple[str, ...]]:
+    """``(waiting, stale, stale_names)`` — offered handoffs and the rotten ones BY NAME
+    (a nameless «оффер >3д» pointed at a board-invisible orphan, cand 116 п.6)."""
     if home is None:
-        return 0, 0
+        return 0, 0, ()
     try:
         from . import handoff_queue as hq
 
         offers = hq.list_offers(home, status=hq.STATUS_OFFERED)
     except Exception:
-        return 0, 0
+        return 0, 0, ()
     cutoff = now - timedelta(days=STALE_DAYS)
-    stale = 0
+    names = []
     for o in offers:
         created = _parse_ts(o.get("created"))
         if created is not None and created < cutoff:
-            stale += 1
-    return len(offers), stale
+            names.append(str(o.get("name") or "?"))
+    return len(offers), len(names), tuple(names)
 
 
 def _worktree_ready(path: Path) -> bool:
@@ -306,7 +312,7 @@ def compute_health(
     """
     now = now or datetime.now()
     home_path = _resolve_home(home)
-    offers_waiting, stale_offers = _count_offers(home_path, now)
+    offers_waiting, stale_offers, stale_names = _count_offers(home_path, now)
     roster_not_ready, roster_total = _count_roster_not_ready(home_path)
     return HealthLine(
         unread=_count_unread(root),
@@ -315,6 +321,7 @@ def compute_health(
         roster_not_ready=roster_not_ready,
         stale_offers=stale_offers,
         roster_total=roster_total,
+        stale_offer_names=stale_names,
     )
 
 

@@ -402,6 +402,17 @@ def _prune_untouched_session(rec: Dict[str, object]) -> bool:
         d = session_dir / sub
         if d.is_dir() and any(d.iterdir()):
             return False  # real work present — keep the session
+    # Принцип №3 (cand 116 п.5): сид — карта входа нити, drop его АРХИВИРУЕТ
+    # рядом с очередью, а не уносит молча вместе с сессией (live 16.07: drop
+    # съел handoff-seed money-path нити payouts; повезло, что был прочитан).
+    try:
+        sp = Path(str(seed))
+        if sp.is_file():
+            grave = Path(rec["path"]).parent / "__seeds__"
+            grave.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sp, grave / "{0}-seed.md".format(rec.get("name") or sp.stem))
+    except Exception:  # noqa: BLE001 — архивация не должна сорвать drop
+        pass
     shutil.rmtree(session_dir, ignore_errors=True)
     return True
 

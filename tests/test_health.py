@@ -104,7 +104,7 @@ def test_canon_debt_counts_unmerged_closed_deltas(tmp_project):
 
 
 def test_offers_zero_when_no_home(tmp_path):
-    assert health._count_offers(None, datetime.now()) == (0, 0)
+    assert health._count_offers(None, datetime.now()) == (0, 0, ())
 
 
 def test_offers_counts_offered_and_flags_stale(tmp_control_home):
@@ -119,7 +119,7 @@ def test_offers_counts_offered_and_flags_stale(tmp_control_home):
     )
     hq._set_field(old["path"], "created", stale_ts)
 
-    waiting, stale = health._count_offers(tmp_control_home, datetime.now())
+    waiting, stale, _names = health._count_offers(tmp_control_home, datetime.now())
     assert waiting == 2
     assert stale == 1
 
@@ -129,7 +129,7 @@ def test_taken_offers_do_not_count_as_waiting(tmp_control_home):
 
     hq.offer(tmp_control_home, "pass-it", arc="-", project="-", seed="-")
     hq.take(tmp_control_home, "pass-it", session="successor")
-    waiting, stale = health._count_offers(tmp_control_home, datetime.now())
+    waiting, stale, _names = health._count_offers(tmp_control_home, datetime.now())
     assert waiting == 0
     assert stale == 0
 
@@ -304,3 +304,18 @@ def test_health_line_is_well_under_the_entry_budget(tmp_project, tmp_control_hom
         health.render_line(health.compute_health(tmp_project, home=tmp_control_home))
     elapsed_ms = (time.perf_counter() - start) * 1000 / 5
     assert elapsed_ms < 50, "health line took {0:.1f}ms (budget 50ms)".format(elapsed_ms)
+
+
+def test_rot_names_the_stale_offer(tmp_control_home):
+    # cand 116 п.6: безымянный «оффер >3д» указывал на невидимый доске мусор —
+    # красная строка обязана НАЗВАТЬ, что именно гниёт
+    from tide import handoff_queue as hq
+
+    hq.offer(tmp_control_home, "big-idea", arc="t/02", project="p", seed="-")
+    rec = hq.list_offers(tmp_control_home)[0]
+    from tide import fields
+    fields.set_field(rec["path"], "created", "2026-07-01T00:00:00")
+    hl = health.compute_health(None, home=tmp_control_home,
+                               now=datetime(2026, 7, 16, 12, 0, 0))
+    assert hl.stale_offers == 1
+    assert any("big-idea" in r for r in hl.rot)

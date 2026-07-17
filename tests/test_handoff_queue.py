@@ -617,3 +617,22 @@ def test_list_offers_newest_first(tmp_control_home):
     assert [r["slug"] for r in hq.list_offers(tmp_control_home)] == ["new", "mid", "old"]
     out = hq.render_list(tmp_control_home)
     assert out.index("new") < out.index("mid") < out.index("old")
+
+
+def test_drop_archives_seed_before_pruning(tmp_control_home, tmp_path):
+    from pathlib import Path
+
+    # cand 116 п.5: drop нетронутой сессии архивирует её сид (__seeds__/),
+    # а не уносит карту входа молча вместе с каталогом
+    sess = tmp_path / "proj" / ".tide" / "arcs" / "t" / "arcs" / "02-pickup"
+    (sess / "input").mkdir(parents=True)
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# карта входа\n", encoding="utf-8")
+    hq.offer(tmp_control_home, "drop-me", arc="t/02-pickup", project="p",
+             seed=str(seed))
+    key = hq.list_offers(tmp_control_home)[0]["name"]
+    rec, pruned = hq.drop(tmp_control_home, key)
+    assert pruned and not sess.exists()
+    grave = Path(rec["path"]).parent / "__seeds__"
+    saved = list(grave.glob("*-seed.md"))
+    assert saved and "карта входа" in saved[0].read_text(encoding="utf-8")
