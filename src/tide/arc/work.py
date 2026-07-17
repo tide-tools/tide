@@ -221,14 +221,87 @@ def set_checklist(
     return wdir.name
 
 
+def _set_meta(text: str, key: str, value: str) -> str:
+    """Set ``key: value`` in the passport meta; empty *value* removes the line.
+
+    An existing key is rewritten in place; a new key lands right after
+    ``created:`` (the meta block). Order inside the block is irrelevant — the
+    board parses meta line-by-line by regex.
+    """
+    pat = re.compile(r"^{0}:\s*.*$".format(re.escape(key)), re.M)
+    if not value:
+        return re.sub(r"^{0}:\s*.*\n?".format(re.escape(key)), "", text,
+                      count=1, flags=re.M)
+    if pat.search(text):
+        return pat.sub("{0}: {1}".format(key, value), text, count=1)
+    return re.sub(r"^(created: .*)$", "\\g<0>\n{0}: {1}".format(key, value),
+                  text, count=1, flags=re.M)
+
+
+def _resolve_caller_thread(work_root: Path) -> Optional[str]:
+    """The нить of the session that invoked us, as an address — or None.
+
+    Reads ``$CLAUDE_CODE_SESSION_ID`` → the session arc pinned to it IN THE
+    CALLER's own project (which may differ from where the work lives). Returns
+    the bare thread slug when the caller sits in the same project as the work,
+    else the cross-project address ``<project>/<thread>``. None when there is no
+    sid, the caller isn't a tide session, or nothing matches — then ``take``
+    records no owner and the human attaches one on the board (fork «и рукой»).
+    """
+    import os
+    sid = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if not sid:
+        return None
+    from .. import offload  # lazy: avoid an import cycle at module load
+    origin = paths.find_tide_root()
+    if origin is None:
+        return None
+    entry = offload.find_session_by_claude_id(origin, sid)
+    if entry is None:
+        return None
+    try:
+        thread = entry.parents[1].name  # …/NN-@thread/arcs/NN-session
+    except IndexError:
+        return None
+    if origin.resolve() == Path(work_root).resolve():
+        return thread
+    return "{0}/{1}".format(origin.name, thread)
+
+
+def set_thread(
+    root: Path,
+    key: str,
+    thread: Optional[str],
+    source: str = "рука человека",
+    now: Optional[datetime] = None,
+) -> str:
+    """Set/clear the responsible нить (``thread:``). Empty *thread* clears it."""
+    wdir = _find(root, key)
+    f, text = _read(wdir)
+    val = (thread or "").strip()
+    text = _set_meta(text, "thread", val)
+    line = ("- {0} — ответственная нить → {1} ({2})".format(_stamp(now), val, source)
+            if val else
+            "- {0} — нить снята ({1})".format(_stamp(now), source))
+    text = _journal(text, line)
+    _io.atomic_write(f, text)
+    return wdir.name
+
+
 def take(
     root: Path,
     key: str,
     by: Optional[str] = None,
     word: Optional[str] = None,
+    thread: Optional[str] = None,
     now: Optional[datetime] = None,
-) -> str:
-    """open → taken: stamp ``taken-by``/``taken-at`` + journal. Returns the slug."""
+) -> Tuple[str, Optional[str]]:
+    """open → taken: stamp ``taken-by``/``taken-at`` + owner нить + journal.
+
+    The responsible нить is *thread* when given, else auto-resolved from the
+    caller's session (fork «и авто»); None when unresolvable. Returns
+    ``(slug, owner)`` so the caller can say which нить now owns the work.
+    """
     wdir = _find(root, key)
     f, text = _read(wdir)
     st = _status_of(text)
@@ -243,11 +316,15 @@ def take(
     text = re.sub(r"^(status: .*)$",
                   "\\1\ntaken-by: {0}\ntaken-at: {1}".format(who, at),
                   text, count=1, flags=re.M)
+    owner = (thread or "").strip() or _resolve_caller_thread(root)
+    if owner:
+        text = _set_meta(text, "thread", owner)
     note = " по слову: «{0}»".format(word.strip()) if word and word.strip() else ""
-    text = _journal(text, "- {0} — взята в работу ({1}){2}".format(
-        _stamp(now), who, note))
+    tail = " · нить {0}".format(owner) if owner else ""
+    text = _journal(text, "- {0} — взята в работу ({1}){2}{3}".format(
+        _stamp(now), who, note, tail))
     _io.atomic_write(f, text)
-    return wdir.name
+    return wdir.name, owner
 
 
 def check(
@@ -403,8 +480,19 @@ def _cmd_checklist(args) -> int:
 
 
 def _cmd_take(args) -> int:
-    name = take(_root(args), args.key, by=args.by, word=args.word)
+    name, owner = take(_root(args), args.key, by=args.by, word=args.word,
+                       thread=getattr(args, "thread", None))
     print("tide: {0} — взята (open → taken)".format(name))
+    if owner:
+        print("tide: ответственная нить — {0}".format(owner))
+    return 0
+
+
+def _cmd_thread(args) -> int:
+    val = "" if args.clear else (args.set or "")
+    name = set_thread(_root(args), args.key, val, source="рука человека (CLI)")
+    print("tide: {0} — {1}".format(
+        name, "нить снята" if not val else "ответственная нить → {0}".format(val)))
     return 0
 
 
@@ -474,12 +562,22 @@ def register(subparsers) -> None:
     _common(kp)
     kp.set_defaults(func=_cmd_checklist, _cmd="work checklist")
 
-    tp = wsub.add_parser("take", help="взять работу: open → taken (+журнал)")
+    tp = wsub.add_parser("take", help="взять работу: open → taken (+нить, +журнал)")
     tp.add_argument("key", help="NN, NN-slug или slug работы")
     tp.add_argument("--by", help="кто берёт (в taken-by и журнал)")
     tp.add_argument("--word", help="слово человека, по которому берёшь")
+    tp.add_argument("--thread", help="ответственная нить явно (иначе — авто "
+                    "из сессии, что зовёт)")
     _common(tp)
     tp.set_defaults(func=_cmd_take, _cmd="work take")
+
+    hp = wsub.add_parser(
+        "thread", help="ответственная нить работы: прикрепить/сменить/снять")
+    hp.add_argument("key")
+    hp.add_argument("--set", help="слаг нити (NN-@slug) или адрес proj/NN-@slug")
+    hp.add_argument("--clear", action="store_true", help="снять нить")
+    _common(hp)
+    hp.set_defaults(func=_cmd_thread, _cmd="work thread")
 
     cp = wsub.add_parser(
         "check", help="чекнуть пункт N с пруфом (все чекнуты → review сам)")

@@ -92,6 +92,42 @@ def test_take_refuses_second_take_and_done(in_project, capsys):
     assert "сначала tide work reopen" in capsys.readouterr().err
 
 
+# --- responsible thread (нить) ------------------------------------------------
+
+def test_take_records_explicit_thread(in_project):
+    cli.main(["work", "add", "x"])
+    rc = cli.main(["work", "take", "01", "--thread", "19-@work"])
+    assert rc == 0
+    text = _text(in_project)
+    assert "thread: 19-@work" in text
+    assert "нить 19-@work" in text  # journal tail names the owner
+
+
+def test_thread_verb_sets_and_clears(in_project):
+    cli.main(["work", "add", "x"])
+    assert cli.main(["work", "thread", "01", "--set", "12-@news"]) == 0
+    assert "thread: 12-@news" in _text(in_project)
+    assert "ответственная нить → 12-@news" in _text(in_project)
+    assert cli.main(["work", "thread", "01", "--clear"]) == 0
+    text = _text(in_project)
+    assert "thread:" not in text
+    assert "нить снята" in text
+
+
+def test_take_auto_resolves_caller_thread(in_project, monkeypatch):
+    # a session arc pinned to our sid → take stamps its нить with no flag
+    sid = "auto-sid-abc"
+    sess = work.paths.arcs_dir(in_project) / "09-@build" / "arcs" / "01-do"
+    sess.mkdir(parents=True)
+    (sess / "arc.md").write_text(
+        "# do\n\ntitle: do\nclaude-session: {0}\n".format(sid),
+        encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    cli.main(["work", "add", "y"])
+    assert cli.main(["work", "take", "01"]) == 0
+    assert "thread: 09-@build" in _text(in_project)
+
+
 # --- check / uncheck ---------------------------------------------------------
 
 def test_check_requires_proof_and_take(in_project, capsys):
