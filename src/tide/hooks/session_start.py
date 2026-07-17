@@ -225,6 +225,37 @@ def _open_board_notes(root: Path) -> List[str]:
         return []
 
 
+def _project_notes_index(root: Path) -> List[str]:
+    """ИНДЕКС заметок проекта (Гриша 17.07): агент ЗНАЕТ, что можно взять, —
+    не грузя тел. Заметка = ``.tide/notes/NN-slug.md`` (карточка-справка полки:
+    команды, шпаргалки); сюда доезжают только заголовок + теги, одна строка на
+    заметку + одна строка «как читать». Peripheral add-on (mirrors
+    :func:`_open_board_notes`): defensive + deletable in one edit."""
+    try:
+        import re as _re
+
+        d = paths.tide_dir(root) / "notes"
+        if not d.is_dir():
+            return []
+        out: List[str] = []
+        for f in sorted(d.glob("*.md")):
+            try:
+                head = f.read_text(encoding="utf-8", errors="ignore")[:600]
+            except OSError:
+                continue
+            first = head.splitlines()[0] if head.splitlines() else ""
+            title = first.lstrip("# ").strip() or f.stem
+            m = _re.search(r"^tags:\s*(.+)$", head, _re.M)
+            tags = " [{0}]".format(m.group(1).strip()) if m else ""
+            out.append("  {0} — {1}{2}".format(f.stem, title, tags))
+        if out:
+            out.append("  (шпаргалки человека с полки доски; нужна конкретная — "
+                       "читай .tide/notes/<имя>.md, целиком не грузи)")
+        return out
+    except Exception:
+        return []
+
+
 def _svetofor_line(root: Path) -> List[str]:
     """The tier-0 Светофор: ONE line of health numbers at the very top of entry.
 
@@ -282,6 +313,14 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
         lines.append("")
         lines.append("BOARD")
         lines.extend(board_notes)
+
+    # Peripheral notes add-on (deletable with _project_notes_index above): the
+    # project's note cards as a light index — titles+tags only, bodies on demand.
+    note_lines = _project_notes_index(root)
+    if note_lines:
+        lines.append("")
+        lines.append("NOTES")
+        lines.extend(note_lines)
 
     # Peripheral onboarding add-on (deletable with _onboarding_nudge above): one
     # first-run advisory line, silent once onboarding is passed.

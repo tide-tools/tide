@@ -312,3 +312,20 @@ def test_link_never_binds_a_pickup_target(tmp_project):
     seed.write_text("# distil\n", encoding="utf-8")
     assert _link_claude_session(tmp_project, "random-passerby-sid") is None
     assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+
+
+def test_notes_index_lists_titles_not_bodies(tmp_project):
+    # Гриша 17.07: агент видит ИНДЕКС заметок (заголовок+теги), тела не грузятся
+    d = tmp_project / ".tide" / "notes"
+    d.mkdir(parents=True)
+    (d / "01-zaglushka.md").write_text(
+        "# Снять заглушку\n\ntags: деплой, прод\n\n"
+        "    curl -s https://mite.bot/api/maintenance-status\n",
+        encoding="utf-8")
+    out = session_start.render(tmp_project, "worker")
+    assert "NOTES" in out
+    assert "01-zaglushka — Снять заглушку [деплой, прод]" in out
+    assert "curl -s" not in out  # тело в индекс не течёт
+    # без заметок секции нет
+    (d / "01-zaglushka.md").unlink()
+    assert "NOTES" not in session_start.render(tmp_project, "worker")
