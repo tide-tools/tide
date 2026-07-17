@@ -861,3 +861,26 @@ def test_spark_dry_run_writes_nothing(home_with_project):
                      adapter=_OkAdapter(), dry_run=True)
     assert res.ok
     assert all("ghost" not in t.name for t in stream.thread_entries(proj))
+
+
+def test_spark_refuses_thread_with_pending_offer(home_with_project):
+    # cand 116 п.3: ▶ при висящей передаче на ту же нить не рожает дубль
+    home, proj = home_with_project
+    from tide import handoff_queue as hq
+    from tide.arc import stream
+
+    stream.new_thread(proj, "payouts", goal="довести выплаты")
+    hq.offer(home, "build", arc="payouts/build", project="proj", seed="-")
+    with pytest.raises(menu.MenuError, match="висит передача"):
+        menu.spark(home, _spark_entry(home, proj), thread="payouts", adapter=_OkAdapter())
+    # протухший резерв гард не держит: ▶ снова легален
+    key = hq.list_offers(home)[0]["name"]
+    hq.reserve(home, key, session="ghost-sid")
+    rec = hq.list_offers(home)[0]
+    assert rec["pickup_stale"] is False
+    from tide import fields as _f
+    _f.set_field(rec["path"], "reserved-at", "2026-07-16T00:00:00")
+    stale = hq.list_offers(home)[0]
+    assert stale["pickup_stale"] is True
+    res = menu.spark(home, _spark_entry(home, proj), thread="payouts", adapter=_OkAdapter())
+    assert res.ok

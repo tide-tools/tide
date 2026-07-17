@@ -68,13 +68,24 @@ def _get(text: str, key: str, default: str = "-") -> str:
 
 
 def _set_field(path: Path, key: str, value: str) -> None:
-    """Replace the ``key: …`` line in *path* with ``key: value`` (atomic write)."""
+    """Replace the ``key: …`` line in *path* with ``key: value`` (atomic write).
+
+    A key the record doesn't carry yet (legacy file older than the field, e.g.
+    ``reserved-at``) is INSERTED after the last header field instead of being
+    silently ignored — a silent no-op here cost cand 116 its reserve stamp."""
     prefix = key + ":"
     lines = path.read_text(encoding="utf-8").splitlines()
     for i, line in enumerate(lines):
         if line.startswith(prefix):
             lines[i] = "{0} {1}".format(prefix, value)
             break
+    else:
+        last = max((i for i, ln in enumerate(lines)
+                    if re.match(r"^[a-z-]+:", ln)), default=None)
+        if last is not None:
+            lines.insert(last + 1, "{0} {1}".format(prefix, value))
+        else:
+            lines.append("{0} {1}".format(prefix, value))
     _io.atomic_write(path, "\n".join(lines) + "\n")
 
 
@@ -102,6 +113,7 @@ def _record_md(name: str, *, mode: str, arc: str, project: str, seed: str,
         "from-session: {frm}\n"
         "created: {created}\n"
         "pickup-session: -\n"
+        "reserved-at: -\n"
         "taken-by: -\n"
         "taken-at: -\n\n"
         "## note\n{note}\n"
@@ -118,7 +130,7 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
     if not m:
         return None
     text = path.read_text(encoding="utf-8")
-    return {
+    rec = {
         "path": path,
         "name": path.stem,
         "num": m.group(1),
@@ -131,9 +143,35 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
         "from_session": _get(text, "from-session"),
         "created": _get(text, "created"),
         "pickup_session": _get(text, "pickup-session"),
+        "reserved_at": _get(text, "reserved-at"),
         "taken_by": _get(text, "taken-by"),
         "taken_at": _get(text, "taken-at"),
     }
+    rec["pickup_stale"] = _reserve_is_stale(rec)
+    return rec
+
+
+# Резерв без первого хода сессии старше этого окна — протух (cand 116 п.4:
+# ▶ нажали, терминал так и не сказал hello — оффер снова берущийся). Ничего не
+# мутируем (no-autonomy): протухание ВЫЧИСЛЯЕТСЯ, свежий reserve перезаписывает.
+RESERVE_TTL_HOURS = 2
+
+
+def _reserve_is_stale(rec: Dict[str, object]) -> bool:
+    """True когда оффер числится reserved, но подтверждение так и не пришло за TTL."""
+    if rec.get("status") != STATUS_OFFERED:
+        return False
+    pickup = str(rec.get("pickup_session") or "").strip()
+    if not pickup or pickup == "-":
+        return False
+    raw = str(rec.get("reserved_at") or "").strip()
+    if not raw or raw == "-":
+        return True  # легаси-резерв без штампа времени — считаем протухшим
+    try:
+        reserved = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    return (datetime.now() - reserved).total_seconds() > RESERVE_TTL_HOURS * 3600
 
 
 # --- offer-target validation (fail-fast, cands 16/17) -----------------------
@@ -444,9 +482,12 @@ def reserve(home: Path, key: str, *, session: str) -> Dict[str, object]:
     offered — the reservation just records WHICH session is allowed to confirm it,
     so a confirm hook in any OTHER session of the same project won't vacuum it. The
     real flip to ``taken`` happens on that session's first message
-    (:func:`confirm_for_session`).
+    (:func:`confirm_for_session`). Stamps ``reserved-at`` so a hello-less reserve
+    honestly EXPIRES (``pickup_stale``, cand 116 п.4) instead of hanging forever;
+    a fresh reserve simply overwrites a stale one.
     """
     rec = _resolve(home, key)
+    _set_field(rec["path"], "reserved-at", _now())
     _set_field(rec["path"], "pickup-session", session)
     return _parse(rec["path"])
 

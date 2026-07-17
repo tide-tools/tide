@@ -1395,6 +1395,23 @@ def spark(
         thread_entry = resolve_open_entry(project, thread)
         if thread_entry is None or not stream.is_thread(thread_entry):
             raise MenuError("spark: no open thread {0!r} in {1}".format(thread, project.name))
+        # Гард шва (cand 116 п.3): на нити ВИСИТ живая передача — ▶ обязан вести
+        # в pickup, а не молча рожать сессию-дубль рядом с недоподнятой (payouts
+        # 16.07: борд читался как три работы). Протухший резерв (pickup_stale)
+        # гард не держит — та сессия так и не сказала hello.
+        from .. import handoff_queue as _hq
+
+        proj_name = project_entry.get("name") or project.name
+        t_slug = slug.entry_slug(thread_entry.name)
+        for rec in _hq.list_offers(control_home, status=_hq.STATUS_OFFERED):
+            offer_thread = slug.entry_slug(
+                str(rec.get("arc") or "").split("/", 1)[0])
+            if (rec.get("project") == proj_name and offer_thread == t_slug
+                    and not rec.get("pickup_stale")):
+                raise MenuError(
+                    "spark: на нити {0} висит передача {1} — прими её (▶ на строке "
+                    "оффера / tide handoffs take {1}) или дропни; дубль не рожаю".format(
+                        t_slug, rec.get("name")))
     else:
         raise MenuError("spark: give --thread <slug> or --new-thread <name>")
 
