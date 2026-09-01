@@ -28,3 +28,8 @@ htmlcov/
 
 # internal dogfood workspace — never publish
 .tide/
+
+# черновики — только на диске. Под docs/ они уезжали на Pages и отдавались
+# по прямым адресам, поэтому лежат в корне и не трекаются.
+/drafts/
+docs/drafts/
