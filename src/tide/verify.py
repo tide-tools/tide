@@ -591,7 +591,14 @@ def scan_self_written_registry(root: Path) -> List[PortableLeak]:
 # and it is the least-watched surface in the tree, so a name parked in a fixture
 # survives every sweep of the "real" code. Four of the six leaks in the last
 # deanon round were there.
-SHOWCASE_DIRS = ("docs", "skills", "tests")
+#
+# `bench/` joins them on the same argument: it does not ride in the wheel, but it
+# sits in the public repository, and its whole job is to hold questions and
+# reference answers ABOUT a live thread — the one surface in the tree whose
+# content is, by construction, quotations from somebody's real work. The split
+# that keeps it clean (code here, per-thread profiles next to their own thread)
+# is a convention, and a convention nobody scans is a convention that decays.
+SHOWCASE_DIRS = ("docs", "skills", "tests", "bench")
 SHOWCASE_GLOBS = ("README*.md", "QUICKSTART*.md")
 
 
