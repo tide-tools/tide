@@ -1,0 +1,406 @@
+<!doctype html>
+<!doctype html>
+<html lang="ru" data-palette="cobalt">
+<meta charset="utf-8"><title>Current Scale — твои нити</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ════════════════════════════════════════════════════════════
+     CURRENT SCALE — дашборд нитей на tide design system.
+     Структура/UX — порт борда scope; цвет — наши role-токены.
+     LAYER 1 — PALETTE (5 палитр, swap via html[data-palette])
+     ════════════════════════════════════════════════════════════ */
+  html[data-palette="cobalt"]{
+    --bg:#0b0f14; --bg-1:#131a24; --bg-2:#18212d; --inset:#0d141c; --line:#223041; --line-2:#33475b;
+    --ink:#eef3f8; --ink-dim:#a3b4c3; --ink-mute:#657686; --ink-faint:#3d4b58;
+    --c1:#4f93e0; --c1-deep:#2f6bb0; --c1-soft:rgba(79,147,224,.15); --c1-ring:rgba(79,147,224,.42);
+    --c2:#e28a4f; --c2-deep:#c4653a; --c2-soft:rgba(226,138,79,.15); --c2-ring:rgba(226,138,79,.44);
+    --c3:#79c6e0; --c3-soft:rgba(121,198,224,.15);
+    --ok:#54c08b; --warn:#e0a84e; --bad:#e0655a; --on-c1:#07121e; --on-c2:#1a0d04;
+  }
+  html[data-palette="amber"]{
+    --bg:#0a0a0d; --bg-1:#0f0f13; --bg-2:#16161c; --inset:#131318; --line:#1f1f27; --line-2:#2e2e39;
+    --ink:#dddde8; --ink-dim:#8a8a94; --ink-mute:#565662; --ink-faint:#37373f;
+    --c1:#c8780a; --c1-deep:#a5620a; --c1-soft:rgba(200,120,10,.14); --c1-ring:rgba(200,120,10,.42);
+    --c2:#d85a3a; --c2-deep:#b5442a; --c2-soft:rgba(216,90,58,.15); --c2-ring:rgba(216,90,58,.44);
+    --c3:#c8a030; --c3-soft:rgba(200,160,48,.15);
+    --ok:#3fc97a; --warn:#c8a030; --bad:#c44444; --on-c1:#0a0a0d; --on-c2:#1a0a04;
+  }
+  html[data-palette="turquoise"]{
+    --bg:#0a1418; --bg-1:#0f1e24; --bg-2:#14262d; --inset:#0c1a1f; --line:#1e3a42; --line-2:#2a4d57;
+    --ink:#e9f3f1; --ink-dim:#9db8b6; --ink-mute:#5f7d7c; --ink-faint:#3f5a5f;
+    --c1:#35d6c2; --c1-deep:#1fa897; --c1-soft:rgba(53,214,194,.14); --c1-ring:rgba(53,214,194,.42);
+    --c2:#f4b840; --c2-deep:#cf9422; --c2-soft:rgba(244,184,64,.15); --c2-ring:rgba(244,184,64,.44);
+    --c3:#5fd39a; --c3-soft:rgba(95,211,154,.15);
+    --ok:#5fd39a; --warn:#f4b840; --bad:#e0655a; --on-c1:#06201c; --on-c2:#221701;
+  }
+  html[data-palette="sand"]{
+    --bg:#f3efe6; --bg-1:#ffffff; --bg-2:#fbf8f0; --inset:#ebe5d8; --line:#ddd5c6; --line-2:#c7bca6;
+    --ink:#16262b; --ink-dim:#485a5f; --ink-mute:#7c8a8b; --ink-faint:#a9b4b2;
+    --c1:#0f8f88; --c1-deep:#0a6f6b; --c1-soft:rgba(15,143,136,.13); --c1-ring:rgba(15,143,136,.40);
+    --c2:#c1602f; --c2-deep:#9f4a24; --c2-soft:rgba(193,96,47,.13); --c2-ring:rgba(193,96,47,.40);
+    --c3:#2b7fa8; --c3-soft:rgba(43,127,168,.13);
+    --ok:#2c9d6e; --warn:#a9781f; --bad:#c0483c; --on-c1:#ffffff; --on-c2:#ffffff;
+  }
+  html[data-palette="orca"]{
+    --bg:#1b222c; --bg-1:#232a36; --bg-2:#28303d; --inset:#151a21; --line:#2a323e; --line-2:#3a4553;
+    --ink:#e6e9ee; --ink-dim:#8b94a3; --ink-mute:#5c6572; --ink-faint:#3d4552;
+    --c1:#e0603f; --c1-deep:#bd4a2e; --c1-soft:rgba(224,96,63,.15); --c1-ring:rgba(224,96,63,.42);
+    --c2:#e0a63f; --c2-deep:#c0862a; --c2-soft:rgba(224,166,63,.15); --c2-ring:rgba(224,166,63,.44);
+    --c3:#6bb0c9; --c3-soft:rgba(107,176,201,.15);
+    --ok:#35c26e; --warn:#e0a63f; --bad:#e25b4a; --on-c1:#200a06; --on-c2:#1e1405;
+  }
+
+  /* ════════════════════════════════════════════════════════════
+     LAYER 2 — TEMPLATE (только токены, ни одного raw hex ниже)
+     Роли цвета: c2 (hot) = «нужен ты сейчас» — курсор ▶, «твой
+     ход», propose. c1 (main) = структура/интерактив — вопросы,
+     цель, ссылки, M. Один hot-кластер на вид.
+     ════════════════════════════════════════════════════════════ */
+  :root{ --mono:ui-monospace,"SF Mono","JetBrains Mono","Menlo",monospace; }
+  html{ height:100%; overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--bg); }
+  *{ box-sizing:border-box; min-width:0; }
+  body{ margin:0; min-height:100%; background:var(--bg); color:var(--ink-dim);
+    font-family:var(--mono); font-size:13px; line-height:1.65; -webkit-font-smoothing:antialiased; overflow-x:hidden; }
+  .wrap{ max-width:640px; margin:0 auto; padding:22px 20px 52px; }
+
+  /* topbar — brand + палитра (как в ds.html) */
+  .topbar{ position:sticky; top:0; z-index:10; background:color-mix(in srgb,var(--bg) 84%,transparent);
+    backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+  .tbrow{ max-width:640px; margin:0 auto; padding:9px 20px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .brand{ display:flex; align-items:center; gap:8px; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink); white-space:nowrap; }
+  .brand svg{ width:16px; height:16px; flex:none; color:var(--c1); }
+  .palsel{ display:flex; align-items:center; gap:8px; }
+  .palsel .pl{ font-size:8px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-mute); }
+  .palsel select{ appearance:none; font-family:var(--mono); font-size:10px; color:var(--ink); background:var(--bg-1);
+    border:1px solid var(--line); border-radius:5px; padding:6px 26px 6px 10px; cursor:pointer;
+    background-image:linear-gradient(45deg,transparent 50%,var(--ink-mute) 50%),linear-gradient(135deg,var(--ink-mute) 50%,transparent 50%);
+    background-position:calc(100% - 13px) 53%,calc(100% - 9px) 53%; background-size:4px 4px,4px 4px; background-repeat:no-repeat; }
+  .palsel select:focus-visible{ outline:2px solid var(--c1); outline-offset:2px; }
+
+  .eyebrow{ font-size:9px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-mute); margin:0 0 14px; }
+  .intro{ color:var(--ink-dim); font-size:12px; line-height:1.7; margin:0 0 24px; max-width:54ch; }
+
+  .slabel{ font-size:9px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-mute); margin:22px 0 12px; display:flex; align-items:center; gap:12px; }
+  .slabel::after{ content:""; flex:1; height:1px; background:var(--line); }
+
+  /* карты нитей — grayscale, c2 метит только «твой ход» */
+  .grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+  .card{ position:relative; border:1px solid var(--line); border-radius:3px; background:var(--bg-1);
+    padding:17px 10px 12px; display:flex; flex-direction:column; align-items:center; gap:12px; cursor:pointer;
+    transition:border-color .12s ease, background .12s ease; -webkit-tap-highlight-color:transparent; }
+  .card:hover, .card:focus-visible{ border-color:var(--line-2); background:var(--bg-2); outline:none; }
+  .card.move{ border-color:var(--c2-ring); }
+  .card .ic{ color:var(--ink-dim); } .card .ic svg{ width:26px; height:26px; display:block; }
+  .card .nm{ font-size:12px; color:var(--ink); letter-spacing:-.2px; text-align:center; }
+  .card .flag{ font-size:8px; letter-spacing:.16em; text-transform:uppercase; color:var(--c2); }
+  .card .flag.calm{ color:var(--ink-mute); }
+
+  /* бэклог — приглушённее */
+  .brow{ display:flex; flex-wrap:wrap; gap:8px; }
+  .bcard{ flex:1 1 46%; min-width:0; display:flex; align-items:center; gap:10px; border:1px solid var(--line);
+    border-radius:3px; background:var(--bg-1); padding:10px 12px; cursor:pointer; transition:border-color .12s ease; -webkit-tap-highlight-color:transparent; }
+  .bcard:hover, .bcard:focus-visible{ border-color:var(--line-2); outline:none; }
+  .bcard .ic{ color:var(--ink-mute); flex:none; } .bcard .ic svg{ width:16px; height:16px; display:block; }
+  .bcard .nm{ font-size:11.5px; color:var(--ink-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bhint{ color:var(--ink-mute); font-size:11px; margin-top:13px; line-height:1.65; }
+
+  .foot{ border-top:1px solid var(--line); margin-top:28px; padding-top:16px; color:var(--ink-mute); font-size:10px; letter-spacing:.02em; line-height:1.75; }
+  .foot .k{ color:var(--c1); }
+
+  /* провал в нить */
+  .detail{ position:fixed; inset:0; background:var(--bg); z-index:20; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    transform:translateX(100%); transition:transform .2s ease; visibility:hidden; }
+  .detail.open{ transform:translateX(0); visibility:visible; }
+  .dwrap{ max-width:640px; margin:0 auto; padding:22px 20px 48px; }
+  .back{ background:none; border:none; color:var(--ink-mute); font-family:var(--mono); font-size:9px; letter-spacing:.16em; text-transform:uppercase; cursor:pointer; padding:6px 0; }
+  .back:hover{ color:var(--ink-dim); }
+  .dhero{ display:flex; align-items:center; gap:14px; margin-top:14px; }
+  .dhero .dic{ color:var(--ink-dim); } .dhero .dic svg{ width:30px; height:30px; display:block; }
+  .dhero h2{ font-size:21px; font-weight:700; letter-spacing:-.6px; color:var(--ink); margin:0; }
+  .dband{ height:1px; background:var(--line); margin:16px 0; }
+  /* ЕДИНАЯ живая точка — где человек и агент сходятся ПРЯМО СЕЙЧАС (hot) */
+  .dnow{ margin:16px 0 4px; border-left:2px solid var(--c2); background:var(--c2-soft); border-radius:0 3px 3px 0; padding:11px 14px; }
+  .dnow .nhead{ display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .dnow .nl{ font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--c2); }
+  .dnow .nwhere{ font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-mute); }
+  .dnow .nt{ margin-left:auto; font-size:8px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-mute); border:1px solid var(--line-2); border-radius:3px; padding:1px 6px; }
+  .dnow .nt.you{ color:var(--c2); border-color:var(--c2-ring); }
+  .dnow .ns{ margin:0; color:var(--ink); font-size:13px; line-height:1.6; }
+  .dwhy{ color:var(--ink-dim); font-size:13px; line-height:1.7; margin:0; }
+  .dmove{ margin:18px 0; background:var(--inset); border:1px solid var(--c2-ring); border-radius:3px; padding:13px 15px; }
+  .dmove .lbl{ font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--c2); margin-bottom:6px; }
+  .dmove p{ margin:0; color:var(--ink); font-size:13px; line-height:1.6; }
+  .dmore .lbl{ font-size:9px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-mute); margin:18px 0 7px; }
+  .dmore p{ margin:0; color:var(--ink-dim); font-size:12.5px; line-height:1.75; }
+
+  /* дорога → цель */
+  .road{ margin:16px 0 6px; }
+  .road .lbl, .dstruct .lbl{ font-size:9px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-mute); margin:0 0 10px; }
+  .step{ position:relative; display:flex; gap:12px; padding:5px 0 5px 2px; font-size:12.5px; color:var(--ink-dim); }
+  .step .body{ flex:1; min-width:0; }
+  /* маркерная ячейка: фикс-ширина, центрирует маркер → все маркеры и линия на одной оси */
+  .step .mc{ position:relative; flex:none; width:14px; align-self:stretch; display:flex; justify-content:center; }
+  .step .m{ position:relative; flex:none; width:9px; height:9px; margin-top:4px; border-radius:1px; border:1px solid var(--line-2); background:transparent; }
+  .step:not(:last-child) .mc::after{ content:""; position:absolute; left:50%; top:15px; bottom:-10px; width:1px; transform:translateX(-50%); background:var(--line); }
+  .step.done{ color:var(--ink-mute); } .step.done .m{ background:var(--ink-mute); border-color:var(--ink-mute); }
+  /* курсор «сейчас» — hot (c2), единственный на дороге */
+  .step.now{ color:var(--ink); } .step.now .m{ width:13px; height:13px; margin-top:3px; border-radius:50%; border:1.6px solid var(--c2); background:transparent; box-shadow:0 0 0 3px var(--c2-soft); }
+  .step.now .m::before{ content:""; position:absolute; inset:3px; border-radius:50%; background:var(--c2); }
+  /* цель — структурная точка назначения (c1), не соперничает с hot */
+  .step.goal{ color:var(--ink); }
+  .step.goal .m{ width:13px; height:13px; margin-top:3px; border-radius:50%; border:1.6px solid var(--c1); background:transparent; box-shadow:0 0 0 3px var(--c1-soft); }
+  .step.goal .m::before{ content:""; position:absolute; inset:3px; border-radius:50%; background:var(--c1); }
+  .step .gt{ display:block; color:var(--ink); }
+  .step .gs{ display:block; color:var(--ink-dim); font-size:11.5px; margin-top:4px; line-height:1.6; }
+  /* гаттер параллельных сессий — полоса на пройденные шаги; активная = hot */
+  .step .sg{ position:relative; flex:none; width:52px; align-self:stretch; }
+  .step.shas .sg::before{ content:""; position:absolute; right:0; top:-12px; bottom:-12px; width:2px; border-radius:1px; background:var(--line-2); }
+  .step.sfirst .sg::before{ top:9px; }
+  .step.slast .sg::before{ bottom:9px; }
+  .step.sactive .sg::before{ background:var(--c2); opacity:.85; }
+  .step .sn{ position:absolute; right:11px; top:2px; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-mute); white-space:nowrap; }
+  .step.sactive .sn{ color:var(--c2); }
+  .step .ho{ position:absolute; right:-3px; top:-10px; width:7px; height:7px; border-radius:50%; border:1px solid var(--c1-ring); background:var(--bg); }
+  .step .ho::after{ content:""; position:absolute; inset:2px; border-radius:50%; background:var(--c1); opacity:.7; }
+  .step.rich{ align-items:flex-start; padding:8px 0 8px 2px; }
+  /* propose — черновик от агента, ждёт «да»: пунктирное hot-кольцо (курсор-вариант) */
+  .step.propose .m{ width:13px; height:13px; margin-top:3px; border-radius:50%; border:1.6px dashed var(--c2); background:transparent; box-shadow:0 0 0 3px var(--c2-soft); }
+  .step .ptag{ display:inline-block; margin-top:6px; font-size:8.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--c2); border:1px solid var(--c2-ring); border-radius:3px; padding:1px 6px; }
+  /* декомпозиция курсора — сабстепы, разбивку ВИДНО */
+  .substeps{ margin:11px 0 2px; }
+  .sub{ display:flex; gap:9px; padding:3px 0; font-size:12px; color:var(--ink-dim); }
+  .sub .sm{ flex:none; width:7px; height:7px; margin-top:5px; border:1px solid var(--line-2); border-radius:1px; }
+  .sub.done{ color:var(--ink-mute); } .sub.done .sm{ background:var(--ink-mute); border-color:var(--ink-mute); }
+  details.sub{ display:block; }
+  details.sub > summary{ list-style:none; cursor:pointer; display:flex; gap:9px; align-items:flex-start; }
+  details.sub > summary::-webkit-details-marker{ display:none; }
+  details.sub > summary::after{ content:"+"; margin-left:auto; padding-left:10px; color:var(--ink-mute); }
+  details.sub[open] > summary::after{ content:"–"; }
+  details.sub > summary:hover{ color:var(--ink); }
+  .subd{ margin:5px 0 3px 16px; color:var(--ink-mute); font-size:11px; line-height:1.65; }
+  /* точки таймлайна не-шаги: передача ⇄ и вопрос ? — на ОДНОМ потоке; ? = интерактив (c1) */
+  .step.tl .tlm{ display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; margin-top:2px; font-size:11px; line-height:1; color:var(--ink-mute); }
+  .step.tl.q .tlm{ color:var(--c1); }
+  details.tld{ display:block; }
+  details.tld > summary{ list-style:none; cursor:pointer; display:flex; font-size:12px; color:var(--ink-dim); }
+  details.tld > summary::-webkit-details-marker{ display:none; }
+  details.tld > summary::after{ content:"+"; margin-left:auto; padding-left:10px; color:var(--ink-mute); }
+  details.tld[open] > summary::after{ content:"–"; }
+  details.tld > summary:hover{ color:var(--ink); }
+  .step.tl.q details.tld > summary{ color:var(--ink); }
+  .tldd{ margin:5px 0 3px 0; color:var(--ink-mute); font-size:11px; line-height:1.65; white-space:pre-line; }
+  /* прошлые сессии сворачиваются — доска про то, что в фокусе СЕЙЧАС */
+  .road details.past{ margin:0 0 2px; }
+  .road details.past > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:9px; padding:6px 0 6px 2px; font-size:11px; letter-spacing:.03em; color:var(--ink-mute); }
+  .road details.past > summary::-webkit-details-marker{ display:none; }
+  .road details.past > summary::before{ content:"▸"; color:var(--ink-mute); font-size:10px; }
+  .road details.past[open] > summary::before{ content:"▾"; }
+  .road details.past .paststeps{ margin-top:4px; }
+  .mkey{ display:inline-block; font-family:var(--mono); font-size:10px; font-weight:400; color:var(--c1); border:1px solid var(--c1-ring); border-radius:3px; padding:0 4px; line-height:1.5; }
+  .dproj{ font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--ink-mute); margin-top:5px; }
+  @media (prefers-reduced-motion:reduce){ .detail,.card,.bcard{ transition:none; } }
+</style>
+
+<div class="topbar"><div class="tbrow">
+  <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" xmlns="http://www.w3.org/2000/svg"><path d="M2 14c2.5 0 3-5 5.5-5s3 5 5.5 5 3-5 5.5-5"/><path style="stroke:var(--c2)" d="M2 18c2.5 0 3-4 5.5-4"/></svg>current scale</div>
+  <label class="palsel"><span class="pl">палитра</span><select id="pal">
+    <option value="cobalt" selected>cobalt + copper</option>
+    <option value="amber">amber</option>
+    <option value="turquoise">turquoise + orange</option>
+    <option value="sand">sand + aqua · light</option>
+    <option value="orca">orca · slate + coral</option>
+  </select></label>
+</div></div>
+
+<div class="wrap">
+  <div class="eyebrow">current scale · твои нити</div>
+  <p class="intro">Только смотреть: тапни карту — провалишься в нить. Управляешь через агента, не тут. <b class="mkey">M</b> — все проекты.</p>
+
+  <div id="focus">
+    <div class="slabel">в фокусе · 3</div>
+    <div class="grid">
+      <div class="card move" role="button" tabindex="0" data-id="atlas02mapcore"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5 13.5 13.5 8.5 15.5 10.5 10.5Z"/></svg></span><span class="nm">Атлас</span><span class="flag">твой ход</span></div>
+      <div class="card move" role="button" tabindex="0" data-id="verne01betalaunch"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M21 3 3 10.5l6 2.5L11.5 19 21 3Z"/><path d="m9 13 12-10"/></svg></span><span class="nm">Запуск беты</span><span class="flag">твой ход</span></div>
+      <div class="card" role="button" tabindex="0" data-id="personal04q3report"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 3h9l3 3v15H6Z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nm">Отчёт Q3</span><span class="flag calm">в работе</span></div>
+    </div>
+    <div class="slabel">спят · бэклог · 4</div>
+    <div class="brow">
+      <div class="bcard" role="button" tabindex="0" data-id="personal06health"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z"/></svg></span><span class="nm">Здоровье</span></div>
+      <div class="bcard" role="button" tabindex="0" data-id="helm03clidoctor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 5h16v14H4Z"/><path d="m7 9 3 3-3 3M12 15h5"/></svg></span><span class="nm">CLI-доктор</span></div>
+      <div class="bcard" role="button" tabindex="0" data-id="verne04newsletter"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h18v12H3Z"/><path d="m3 7 9 6 9-6"/></svg></span><span class="nm">Рассылка</span></div>
+      <div class="bcard" role="button" tabindex="0" data-id="personal07photoarchive"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 5h16v14H4Z"/><circle cx="9" cy="10" r="1.6"/><path d="m5 17 5-5 4 4 2-2 4 4"/></svg></span><span class="nm">Архив фото</span></div>
+    </div>
+    <div class="bhint">Держишь мало, остальное спит. Взять/убрать из фокуса — скажи агенту.</div>
+  </div>
+
+  <div id="all" hidden>
+    <div class="slabel">atlas · 1</div>
+    <div class="grid">
+      <div class="card" role="button" tabindex="0" data-id="atlas02mapcore"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5 13.5 13.5 8.5 15.5 10.5 10.5Z"/></svg></span><span class="nm">Атлас</span></div>
+    </div>
+    <div class="slabel">verne · 2</div>
+    <div class="grid">
+      <div class="card" role="button" tabindex="0" data-id="verne01betalaunch"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M21 3 3 10.5l6 2.5L11.5 19 21 3Z"/><path d="m9 13 12-10"/></svg></span><span class="nm">Запуск беты</span></div>
+      <div class="card" role="button" tabindex="0" data-id="verne04newsletter"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h18v12H3Z"/><path d="m3 7 9 6 9-6"/></svg></span><span class="nm">Рассылка</span></div>
+    </div>
+    <div class="slabel">личное · 3</div>
+    <div class="grid">
+      <div class="card" role="button" tabindex="0" data-id="personal04q3report"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 3h9l3 3v15H6Z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nm">Отчёт Q3</span></div>
+      <div class="card" role="button" tabindex="0" data-id="personal06health"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z"/></svg></span><span class="nm">Здоровье</span></div>
+      <div class="card" role="button" tabindex="0" data-id="personal07photoarchive"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 5h16v14H4Z"/><circle cx="9" cy="10" r="1.6"/><path d="m5 17 5-5 4 4 2-2 4 4"/></svg></span><span class="nm">Архив фото</span></div>
+    </div>
+    <div class="slabel">helm · 1</div>
+    <div class="grid">
+      <div class="card" role="button" tabindex="0" data-id="helm03clidoctor"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 5h16v14H4Z"/><path d="m7 9 3 3-3 3M12 15h5"/></svg></span><span class="nm">CLI-доктор</span></div>
+    </div>
+  </div>
+
+  <div class="foot"><b class="mkey">M</b> — переключить фокус ⇄ все проекты. Доска только показывает; взять/убрать из фокуса и менять — через чат с агентом (правильный пайплайн). Живое из tide, адрес не меняется.</div>
+</div>
+
+<div class="detail" id="detail" aria-hidden="true">
+  <div class="dwrap">
+    <button class="back" id="back">← все нити</button>
+    <div class="dhero"><span class="dic"></span><div><h2></h2><div class="dproj"></div></div></div>
+    <div class="dnow" hidden><div class="nhead"><span class="nl">▶ сейчас</span><span class="nwhere"></span><span class="nt"></span></div><p class="ns"></p></div>
+    <div class="dband"></div>
+    <p class="dwhy"></p>
+    <div class="dmove"><div class="lbl">твой ход</div><p></p></div>
+    <div class="dstruct"></div>
+  </div>
+</div>
+
+<script>
+/* МОК-данные — выдуманные нити, форма объекта как в scope:
+   name/icon/proj/why/move/struct/now/foldmove */
+const T = {
+"atlas02mapcore": {
+  "name": "Атлас — ядро карты",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M15.5 8.5 13.5 13.5 8.5 15.5 10.5 10.5Z\"/></svg>",
+  "proj": "atlas",
+  "why": "Живая карта знаний: заметки сами складываются в атлас, видно что знаешь и где дыры.",
+  "move": "Раздел «идеи» размечен наполовину; висит вопрос про дубли — ответь, и проход дойдёт до конца сам.",
+  "struct": "<div class=\"road\"><div class=\"lbl\">дорога → цель · один поток</div><details class=\"past\"><summary>каркас · закрыто 3 ✓</summary><div class=\"paststeps\"><div class=\"step done shas sfirst\"><span class=\"sg\"><span class=\"sn\">каркас</span></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Выбрали формат хранилища — plain markdown</div></div><div class=\"step done shas\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Собрали импорт из старых заметок (412 файлов)</div></div><div class=\"step done shas slast\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Подняли поиск по всему корпусу</div></div></div></details><div class=\"step tl ho\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"tlm\">⇄</span></span><div class=\"body\"><details class=\"tld\"><summary>передача нити · каркас готов — держи разметку связей</summary><div class=\"tldd\">Хендофф: импорт и поиск живые, корпус на месте. Дальше — разметка связей между заметками; черновик схемы в workspace, начни с него.</div></details></div></div><div class=\"step now shas sfirst sactive rich\"><span class=\"sg\"><span class=\"sn\">сейчас</span></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\"><span class=\"gt\">Разметить связи между заметками</span><span class=\"gs\">Схема связей утверждена, размечаю корпус по ней — раздел за проход, с проверкой.</span><div class=\"substeps\"><details class=\"sub done\"><summary><span class=\"sm\"></span>схема типов связей — 5 типов</summary><div class=\"subd\">ссылается · развивает · спорит · пример · дубль. Утверждена, дальше не трогаем.</div></details><details class=\"sub done\"><summary><span class=\"sm\"></span>разметка раздела «работа»</summary><div class=\"subd\">86 заметок, 240 связей. Дубли слиты вручную.</div></details><details class=\"sub todo\"><summary><span class=\"sm\"></span>разметка раздела «идеи»</summary><div class=\"subd\">Самый большой раздел, ~180 заметок. Идёт сейчас, примерно половина.</div></details><details class=\"sub todo\"><summary><span class=\"sm\"></span>перекрёстные связи между разделами</summary><div class=\"subd\">После разметки внутри разделов — связать разделы между собой.</div></details></div></div></div><div class=\"step tl q shas sactive\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"tlm\">?</span></span><div class=\"body\"><details class=\"tld\"><summary>Дубли: сливать автоматом или показывать тебе?</summary><div class=\"tldd\">Нашлось 37 пар почти одинаковых заметок. Слить автоматом быстро, но необратимо. · варианты: показывать каждую · слить автоматом · пропустить пока</div></details></div></div><div class=\"step next shas slast sactive\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Индексация — атлас собирается сам</div></div><div class=\"step goal rich\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\"><span class=\"gt\">Живая карта знаний</span><span class=\"gs\">Открываешь атлас — видишь, что знаешь и где дыры. Новое встаёт на место само.</span></div></div></div>",
+  "now": {"where": "разметка связей", "turn": "твой", "state": "Раздел «идеи» размечен наполовину. Висит вопрос про 37 дублей — ответь, и проход дойдёт до конца сам."},
+  "foldmove": true
+},
+"verne01betalaunch": {
+  "name": "Запуск беты",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M21 3 3 10.5l6 2.5L11.5 19 21 3Z\"/><path d=\"m9 13 12-10\"/></svg>",
+  "proj": "verne",
+  "why": "Открыть бету для первых 50 читателей и получить живую обратную связь.",
+  "move": "Анонс собран в двух тонах — тёплый и деловой. Выбери тон, после твоего да рассылка уходит сама.",
+  "struct": "<div class=\"road\"><div class=\"lbl\">дорога → цель · один поток</div><div class=\"step done\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Лендинг беты собран и опубликован</div></div><div class=\"step done\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\">Лист ожидания — 63 адреса</div></div><div class=\"step propose shas sfirst slast sactive rich\"><span class=\"sg\"><span class=\"sn\">сейчас</span></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\"><span class=\"gt\">Разослать анонс беты первым 50</span><span class=\"ptag\">предложено агентом · ждёт твоё да</span><span class=\"gs\">Анонс готов в двух тонах. Выбери тон — дальше рассылка уходит сама и открываем доступ.</span><div class=\"substeps\"><div class=\"sub done\"><span class=\"sm\"></span>черновик анонса — два варианта</div><div class=\"sub todo\"><span class=\"sm\"></span>рассылка по листу ожидания</div><div class=\"sub todo\"><span class=\"sm\"></span>открыть доступ первым 50</div></div></div></div><div class=\"step tl q shas sactive\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"tlm\">?</span></span><div class=\"body\"><details class=\"tld\"><summary>Каким тоном идёт анонс?</summary><div class=\"tldd\">Тёплый — личное письмо от автора. Деловой — короткий продукт-анонс. · варианты: тёплый · деловой</div></details></div></div><div class=\"step goal rich\"><span class=\"sg\"></span><span class=\"mc\"><span class=\"m\"></span></span><div class=\"body\"><span class=\"gt\">Бета живёт — 50 читателей внутри</span><span class=\"gs\">Первые читатели пользуются и пишут; по их следам решаем, что чинить до открытия.</span></div></div></div>",
+  "now": {"where": "анонс беты", "turn": "твой", "state": "Два варианта анонса готовы. Жду тон — после твоего да рассылка уходит сама."},
+  "foldmove": true
+},
+"personal04q3report": {
+  "name": "Отчёт Q3",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M6 3h9l3 3v15H6Z\"/><path d=\"M9 9h6M9 13h6M9 17h4\"/></svg>",
+  "proj": "личное",
+  "why": "Закрыть квартальный отчёт до 15 июля — цифры, таблица, короткая записка.",
+  "move": "",
+  "struct": "<div class=\"dmore\"><div class=\"lbl\">подробнее</div><p>Черновик собран, структура утверждена. Не хватает цифр по июню — ждём выписку (обычно приходит до 10-го). Как придёт — свожу таблицу и отдаю на приёмку. Твоего хода пока нет.</p></div>",
+  "now": {"where": "жду выписку", "turn": "агента", "state": "Черновик готов, жду цифры по июню. Придут — сведу таблицу и позову тебя на приёмку."},
+  "foldmove": false
+},
+"personal06health": {
+  "name": "Здоровье",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z\"/></svg>",
+  "proj": "личное",
+  "why": "вести здоровье — чекапы, привычки, самочувствие",
+  "move": "",
+  "struct": "<div class=\"dmore\"><div class=\"lbl\">подробнее</div><p>Спит. Ближайшее живое — записаться на плановый чекап (последний был в марте) и вернуть утренние пробежки, они держались три недели и сорвались в поездке. Разбудить — скажи агенту.</p></div>",
+  "now": null, "foldmove": false
+},
+"helm03clidoctor": {
+  "name": "CLI-доктор",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M4 5h16v14H4Z\"/><path d=\"m7 9 3 3-3 3M12 15h5\"/></svg>",
+  "proj": "helm",
+  "why": "честная диагностика окружения одной командой — что сломано, что чинить первым",
+  "move": "",
+  "struct": "<div class=\"dmore\"><div class=\"lbl\">подробнее</div><p>Спит после первого захода: собран прототип `helm doctor` с пятью проверками (пути, версии, права, конфиг, сеть). Осталось: честные уровни warn/fail и подсказка «чини это первым». Небольшая нить, будится за вечер.</p></div>",
+  "now": null, "foldmove": false
+},
+"verne04newsletter": {
+  "name": "Рассылка",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M3 6h18v12H3Z\"/><path d=\"m3 7 9 6 9-6\"/></svg>",
+  "proj": "verne",
+  "why": "регулярное письмо читателям — раз в две недели, без надрыва",
+  "move": "",
+  "struct": "<div class=\"dmore\"><div class=\"lbl\">подробнее</div><p>Спит до запуска беты — первые письма логично слать уже бета-читателям. Черновик первого выпуска лежит в workspace.</p></div>",
+  "now": null, "foldmove": false
+},
+"personal07photoarchive": {
+  "name": "Архив фото",
+  "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M4 5h16v14H4Z\"/><circle cx=\"9\" cy=\"10\" r=\"1.6\"/><path d=\"m5 17 5-5 4 4 2-2 4 4\"/></svg>",
+  "proj": "личное",
+  "why": "разобрать фотоархив за три года — дубли, мусор, альбомы",
+  "move": "",
+  "struct": "<div class=\"dmore\"><div class=\"lbl\">подробнее</div><p>Спит. ~48 ГБ, план был: сначала автоматом дубли и смазанные, потом руками альбомы. Ничего не горит — чистый бэклог.</p></div>",
+  "now": null, "foldmove": false
+}
+};
+
+const d = document.getElementById('detail');
+const focusV = document.getElementById('focus');
+const allV = document.getElementById('all');
+const backBtn = document.getElementById('back');
+// «назад» идёт на ШАГ, а не на верхний уровень (решение 13.07): провалился с полки
+// проекта в нить — Esc/кнопка вернут В ПОЛКУ ПРОЕКТА, а не выкинут на грид. navStack
+// помнит цепочку провалов; goingBack гасит запись при возврате; ре-рендер той же
+// нити (авторефреш, id===curId) в стек не пишем.
+let navStack = [], curId = null, goingBack = false;
+function _backLabel(){
+  if(navStack.length){ const p=T[navStack[navStack.length-1]]; return '← '+((p&&p.name)||'назад'); }
+  return allMode ? '← проекты' : '← стол';
+}
+function openT(id){
+  const t=T[id]; if(!t) return;
+  if(!d.classList.contains('open')) navStack=[];                    // свежий заход — стек чист
+  else if(!goingBack && curId && curId!==id) navStack.push(curId);  // провал глубже — помним откуда
+  curId=id;
+  d.querySelector('.dic').innerHTML=t.icon;
+  d.querySelector('.dhero h2').textContent=t.name;
+  d.querySelector('.dproj').textContent=t.proj||'';
+  d.querySelector('.dwhy').textContent=t.why;
+  const nb=d.querySelector('.dnow');
+  if(t.now){ nb.hidden=false;
+    nb.querySelector('.nwhere').textContent=t.now.where||'';
+    nb.querySelector('.ns').textContent=t.now.state||'';
+    const tn=nb.querySelector('.nt'); tn.textContent=t.now.turn?('ход '+t.now.turn):'';
+    tn.className='nt'+(t.now.turn==='твой'?' you':''); }
+  else { nb.hidden=true; }
+  const mv=d.querySelector('.dmove');
+  if(t.move && !t.foldmove){ mv.style.display=''; mv.querySelector('p').textContent=t.move; } else { mv.style.display='none'; }
+  d.querySelector('.dstruct').innerHTML=t.struct||'';
+  backBtn.textContent=_backLabel();
+  d.classList.add('open'); d.setAttribute('aria-hidden','false'); d.scrollTop=0;
+}
+function closeT(){
+  if(navStack.length){ goingBack=true; openT(navStack.pop()); goingBack=false; return; } // на шаг назад — в полку проекта
+  curId=null;
+  d.classList.remove('open'); d.setAttribute('aria-hidden','true');
+}
+function bind(){ document.querySelectorAll('[data-id]').forEach(el=>{
+  el.onclick=()=>openT(el.dataset.id);
+  el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openT(el.dataset.id);} };
+}); }
+bind();
+document.getElementById('back').addEventListener('click',closeT);
+let allMode=false;
+function toggle(){ allMode=!allMode; allV.hidden=!allMode; focusV.hidden=allMode; window.scrollTo(0,0); }
+// печать важнее хоткеев (решение 17.07: «M переключала табы при наборе»):
+// фокус в поле/contenteditable глушит ВСЕ голые буквенно-цифровые хоткеи
+window.inEdit=function(e){ const t=e.target;
+  return t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'
+             ||t.isContentEditable); };
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ if(d.classList.contains('open')) closeT(); return; }
+  if(inEdit(e)) return;
+  if((e.key==='m'||e.key==='M'||e.key==='ь'||e.key==='Ь') && !d.classList.contains('open')) toggle();
+});
+document.querySelectorAll('.mkey').forEach(el=>{ el.style.cursor='pointer'; el.addEventListener('click',()=>{ if(!d.classList.contains('open')) toggle(); }); });
+document.getElementById('pal').addEventListener('change',e=>{ document.documentElement.dataset.palette=e.target.value; });
+</script>
+</html>

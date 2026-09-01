@@ -219,6 +219,65 @@ def serve(home: Path, port: int = DEFAULT_PORT, bind: str = DEFAULT_BIND) -> Thr
         )
 
 
+# --- the living board ------------------------------------------------------
+
+def _living_board() -> Path:
+    """The living board's entry script, when this install carries it.
+
+    Absent while the board is still being unpinned from one machine's paths;
+    present once it ships as ``tide.board``. Either way this module keeps its
+    own simple page as the fallback, so ``tide board`` always serves something.
+    """
+    return Path(__file__).resolve().parent / "board" / "serve_live.py"
+
+
+def _serve_living(home: Path, args) -> int:
+    """Hand the port to the living board (``tide.board.serve_live``).
+
+    Spawned as a child, not imported: it is a script that re-executes its
+    renderer as a subprocess on every request (so a broken render can never
+    take the server down), and it wants to own its argv and its lifetime.
+    ``tide board`` is the door here, not the engine.
+
+    The home goes down as ``$TIDE_HOME`` rather than being guessed again on the
+    other side: this process already resolved it, and two resolutions that can
+    disagree are worse than one.
+    """
+    import os
+    import subprocess
+    import sys
+
+    if args.bind not in ("", DEFAULT_BIND):
+        print("tide board: the living board listens on {0} only — --bind {1} "
+              "ignored (the phone path is `tailscale serve`)".format(
+                  DEFAULT_BIND, args.bind))
+    url = "http://{0}:{1}/".format(DEFAULT_BIND, args.port)
+    print("tide board — {0}".format(home))
+    print("  → {0}   (Ctrl-C to stop)".format(url))
+    print("  " + quickstart.next_step_line("board"))
+    proc = subprocess.Popen(
+        [sys.executable, str(_living_board()), "--port", str(args.port)],
+        env=dict(os.environ, TIDE_HOME=str(home)),
+    )
+    if getattr(args, "open", False):
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 — no browser is not an error for a server
+            pass
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001 — a stuck child must not hang the exit
+            proc.kill()
+        print("\ntide board — stopped")
+        return 0
+
+
 # --- CLI wiring ------------------------------------------------------------
 
 def _cmd_board(args) -> int:
@@ -230,6 +289,13 @@ def _cmd_board(args) -> int:
     if getattr(args, "once", False):
         print(render_page(home))
         return 0
+
+    # The living board when this install carries it, the simple page otherwise.
+    # Absence is not an error: a build that ships without it must still serve
+    # something, and a person asking for their board should get a board rather
+    # than a lecture about a missing file.
+    if not getattr(args, "plain", False) and _living_board().is_file():
+        return _serve_living(home, args)
 
     httpd = serve(home, port=args.port, bind=args.bind)
     shown_host = "127.0.0.1" if args.bind in ("", "0.0.0.0") else args.bind
@@ -275,5 +341,10 @@ def register(subparsers) -> None:
     p.add_argument(
         "--once", action="store_true",
         help="render the page to stdout and exit (no server) — for checks",
+    )
+    p.add_argument(
+        "--plain", action="store_true",
+        help="serve the simple built-in page instead of the living board "
+        "(fallback for a home where the living board will not render)",
     )
     p.set_defaults(func=_cmd_board, _cmd="board")

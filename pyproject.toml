@@ -44,6 +44,12 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The living board ships its own template and shell-kit side. Without these the
+# page renders to a traceback on a fresh install: live_projection looks for
+# scope/index.html next to itself, and a wheel carries only .py by default.
+[tool.setuptools.package-data]
+"tide.board" = ["scope/*.html", "shell/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # src-layout: make `import tide` work without an editable install (pytest >=7).

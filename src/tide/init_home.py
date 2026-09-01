@@ -128,14 +128,15 @@ def unfold_control_home(
         _io.atomic_write(rf, roster.HEADER + "\n")
         created.append("roster.md")
 
-    # .tide/plugins — the core/plugin switchboard (работа 48). Seeded CORE-ONLY,
-    # and ONLY for a home that is genuinely fresh (its roster.md did not exist a
-    # moment ago). An existing home must never gain a file full of ``off`` on a
+    # .tide/plugins — the core/plugin switchboard (работа 48). Seeded with the
+    # board the box promises (threads, desk, works, projects) minus the parts
+    # that are one person's own — see plugins.seed_new_install — and ONLY for a
+    # home that is genuinely fresh (its roster.md did not exist a moment ago). An existing home must never gain a file full of ``off`` on a
     # re-run of `tide init`: that would silently take working surfaces away from
     # someone whose board was fine. No file at all reads as "everything on".
     if "roster.md" in created and not plugins.registry_file(root).is_file():
         plugins.seed_new_install(root)
-        created.append(".tide/plugins (core only)")
+        created.append(".tide/plugins")
 
     # README.md — orientation for a human opening the dir.
     readme = root / "README.md"

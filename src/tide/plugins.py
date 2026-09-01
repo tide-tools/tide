@@ -305,15 +305,34 @@ def set_plugin(name: str, on: bool, home: Optional[Path] = None) -> Path:
     return write_registry(state, home)
 
 
+#: What a fresh install does NOT get: the parts that are one person's own
+#: rather than the stack's. The news feed is pinned to its author's own project
+#: and published site; the drawing canvas reaches for a picture-generation token
+#: in their keychain. Everything else in the catalogue is machinery anybody's
+#: home can use on day one.
+SEEDED_OFF: Set[str] = {"news", "pages"}
+
+
 def seed_new_install(home: Optional[Path] = None) -> Path:
-    """Write a core-only registry — every plugin OFF. What a fresh install gets.
+    """Write the registry a fresh install gets: the board the box promises,
+    minus the parts that belong to one person.
+
+    NOT "everything off". What the box hands over is threads, the inbox desk
+    with its «сейчас от тебя» card, works and projects — so ``issues``,
+    ``work``, ``skills`` and ``canon`` start ON. Seeded off, every one of those
+    tabs would be missing and a new person would open an offcut and reasonably
+    call it broken. What stays off is :data:`SEEDED_OFF`.
 
     Deliberately NOT called from anywhere automatic in an existing home: the
     absence of the file is what keeps an existing board unchanged, and creating
     a file that says ``off`` everywhere would be exactly the change we promised
     not to make.
     """
-    return write_registry({p.name: False for p in PLUGINS}, home)
+    return write_registry(
+        {p.name: (p.default and not p.planned and p.name not in SEEDED_OFF)
+         for p in PLUGINS},
+        home,
+    )
 
 
 # --- CLI wiring ------------------------------------------------------------

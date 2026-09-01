@@ -169,11 +169,74 @@ else
   fail "release artifact pip-installs" "$(tail -2 /tmp/pip.log | tr '\n' ' ')"
 fi
 
+# --- `tide board` itself: the desk, on a machine that has never seen tide -----
+# The point of the release is that a person installs tide, opens the board and
+# sees their DESK — threads, «сейчас от тебя», works, projects — not an empty
+# page and not the 279-line offcut. Serving a pre-rendered file (below) proves
+# the port works; it does not prove the verb does. So run the verb.
+#
+# On its own port: the pre-rendered page below owns $PORT, and two servers on
+# one port is a flake, not a check.
+# $TIDE_HOME, а не cd в дом: ровно так `tide init` и говорит человеку сделать
+# («export TIDE_HOME=…, add to your shell profile»), и проверять надо тот путь,
+# по которому его ведут. Мы стоим в проекте — оттуда доска обязана открываться.
+# Едет ли живая доска В ПАКЕТЕ. Отдельной строкой, потому что её отсутствие
+# деградирует тихо: `tide board` честно отдаёт простую страницу, и по одному
+# только «сервер ответил 200» этого не увидеть.
+# Питон ТОЙ установки, а не любой из PATH: tide живёт в venv, и голый python3
+# про него не знает — на этом diagnostic уже один раз соврал «нет модуля».
+# Берём интерпретатор из ШЕБАНГА самого `tide` — он и есть тот питон, которым
+# команда исполняется, где бы venv ни лежал. Сосед по каталогу врёт: `tide`
+# бывает шимом в ~/.local/bin, рядом с которым питона нет вовсе.
+TPY="$(head -1 "$(command -v tide)" | sed 's/^#!//; s/ .*//')"
+[ -x "$TPY" ] || TPY=python3
+lives="$("$TPY" -c 'import tide.board_server as b; p=b._living_board(); print(("yes" if p.is_file() else "no"), p)' 2>&1 || true)"
+case "$lives" in
+  yes*) pass "the living board rides in the package" ;;
+  *)    fail "the living board rides in the package" "$lives" ;;
+esac
+
+VPORT=$((PORT + 1))
+TIDE_HOME=~/control tide board --port "$VPORT" >/tmp/tideboard.log 2>&1 &
+VERB_PID=$!
+verb=""
+for _ in $(seq 1 30); do
+  verb_body="$(curl -fsS --max-time 20 "http://127.0.0.1:$VPORT/" 2>/dev/null || true)"
+  [ -n "$verb_body" ] && { verb=yes; break; }
+  sleep 1
+done
+if [ -z "$verb" ]; then
+  fail "tide board serves" "$(tail -2 /tmp/tideboard.log 2>/dev/null | tr '\n' ' ')"
+else
+  pass "tide board serves" "on :$VPORT"
+  # Что именно приехало. Ищем ряд вкладок и стол — две вещи, которых у обрезка
+  # нет; их отсутствие означает, что человек открыл доску и не нашёл на ней
+  # своего стола, а это ровно тот провал, ради которого проверка и написана.
+  #
+  # Сравнение БАШЕМ, а не `... | grep -q`: в этом файле стоит `pipefail`, а
+  # `grep -q` закрывает вход на первом же совпадении — и `printf` слева умирает
+  # от SIGPIPE. Конвейер получает 141, проверка читает это как «не нашли» и
+  # честно врёт на полностью исправной странице. Оплачено полутора часами.
+  case "$verb_body" in
+    *'class="vtab'*) pass "the board has its tab row" ;;
+    *) fail "the board has its tab row" "no tab row in $(printf '%s' "$verb_body" | wc -c) bytes" ;;
+  esac
+  case "$verb_body" in
+    *'id="issues"'*) pass "the desk is there (issues)" ;;
+    *) fail "the desk is there (issues)" "log: $(tail -3 /tmp/tideboard.log 2>/dev/null | tr '\n' ' ' | head -c 200)" ;;
+  esac
+  # Плагины свежей установки: стол и работы есть, чужое личное — нет.
+  case "$verb_body" in
+    *'data-v="news"'*) fail "one person's own tabs stay off" "news tab shipped to a fresh home" ;;
+    *) pass "one person's own tabs stay off" ;;
+  esac
+fi
+kill "$VERB_PID" 2>/dev/null || true
+
 # --- the browser leg: a board served over a published port -------------------
-# The engine ships no HTTP server of its own, so we render the board it DOES
-# produce (tide status) into a page and serve it. What this proves is the part
-# that actually breaks in a container: that a freshly installed tide produces a
-# real board, and that the port reaches the host.
+# A pre-rendered page on the published port, so a human running `--board` has
+# something to look at even when the verb above is the thing under repair. What
+# this proves is that the port reaches the host.
 BOARD=~/board
 mkdir -p "$BOARD"
 {

@@ -111,10 +111,13 @@ def test_unknown_refuses_to_switch(home):
         plugins.set_plugin("telepathy", False, home)
 
 
-def test_fresh_install_gets_core_only(home):
+def test_fresh_install_gets_the_board_minus_one_persons_own(home):
+    """Свежий дом получает стол и работы, а не обрезок."""
     plugins.seed_new_install(home)
-    assert plugins.enabled(home) == set()
-    assert plugins.is_enabled("board", home)  # кор остаётся
+    on = plugins.enabled(home)
+    assert {"issues", "work", "skills"} <= on   # стол и работы едут в коробке
+    assert not (plugins.SEEDED_OFF & on)        # чужое личное — нет
+    assert plugins.is_enabled("board", home)    # кор остаётся
 
 
 # --- CLI -------------------------------------------------------------------
@@ -145,12 +148,14 @@ def test_cli_where_prints_the_path(home, monkeypatch, capsys):
 
 # --- установка: свежий дом получает кор, старый — не трогается ---------------
 
-def test_fresh_control_home_gets_a_core_only_registry(tmp_path):
+def test_fresh_control_home_gets_the_board_in_the_box(tmp_path):
     from tide import init_home
     h = tmp_path / "fresh"
     init_home.unfold_control_home(h, name="fresh")
     assert plugins.registry_file(h).is_file()
-    assert plugins.enabled(h) == set()
+    on = plugins.enabled(h)
+    assert {"issues", "work"} <= on          # стол входящих и работы — в коробке
+    assert not (plugins.SEEDED_OFF & on)     # чужое личное — нет
 
 
 def test_rerunning_init_on_an_existing_home_takes_nothing_away(tmp_path):
