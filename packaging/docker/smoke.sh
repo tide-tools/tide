@@ -83,10 +83,15 @@ run "dry-run offers the pull" "would pull"  tide self-update --dry-run
 run "dry-run names the reinstall" "would run" tide self-update --dry-run
 say "rollback is inspectable" "rollback"    tide self-update --rollback --dry-run
 
-# self-update must be able to actually run end to end on a clone install: pull
-# (a no-op here — the clone is already at the tip), gate, reinstall. --no-suite
-# keeps it to the portable gate so the check stays fast enough to run often.
-run "self-update runs on a clone" "" tide self-update --force --no-suite
+# self-update must run end to end on a clone install: pull (a no-op here — the
+# clone is already at the tip), gate, reinstall. Called EXACTLY as a person calls
+# it — no --no-suite. That flag is why this check stayed green through the blocker
+# it was supposed to catch (работа 57 п.6): it switched off the suite leg, which
+# is the leg that refused every ordinary install, because a clone install has no
+# pytest and the gate called that a failure instead of "not applicable".
+# The expected substring also pins the honesty half: the gate must SAY the suite
+# did not apply. A silent green would read as "the tests passed" when none ran.
+run "self-update runs as a person calls it" "not applicable" tide self-update --force
 run "tide report --dry-run"   "what happened" tide report --dry-run --no-network "docker smoke"
 
 # The report must not carry this machine's home path off the machine.

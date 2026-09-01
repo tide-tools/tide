@@ -16,10 +16,12 @@ The gate runs the checks as SUBPROCESSES against the source checkout (cwd=source
 ``PYTHONPATH=<source>/src``) so it verifies the code about to be installed, not
 the currently-loaded (possibly older) in-process package.
 
-Fail-loud, never fail-silent (mirrors :mod:`tide.gate`): if the suite cannot run
-at all (pytest not importable), that is a gate FAILURE, not a skip — an unverified
-update is not an accepted update. ``--no-suite`` is the only way to drop to a
-portable-only gate, and it says so.
+Fail-loud, never fail-silent (mirrors :mod:`tide.gate`) — but "loud" is not the
+same as "red". The suite is a DEV-TREE check: an ordinary install has no pytest
+(the ``test`` extra is declared, never installed by ``install.sh``) and often no
+tests at all, so its absence is NOT APPLICABLE, said out loud, and paid for by an
+import smoke of the incoming code. Where the suite does apply, red still refuses.
+``--no-suite`` remains the way to waive it deliberately, and says so.
 
 :func:`session_note` is the SURFACE-don't-apply probe the SessionStart hook calls.
 """
@@ -105,12 +107,15 @@ class GateResult:
     portable_ok: bool
     suite_ok: bool
     suite_ran: bool
+    smoke_ok: bool = True
+    smoke_ran: bool = False
     messages: List[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        """Green iff portable passed AND the suite ran green (unless suite was waived)."""
-        return self.portable_ok and self.suite_ok
+        """Green iff portable passed, the suite is green *where it applies*, and —
+        where it does not — the engine still imports and answers."""
+        return self.portable_ok and self.suite_ok and self.smoke_ok
 
 
 def run_regression_gate(
@@ -122,8 +127,9 @@ def run_regression_gate(
     """Run the portable check + test suite against *source*; return a :class:`GateResult`.
 
     Both checks run as subprocesses against the source checkout. When *run_suite*
-    is False we drop to a portable-only gate (weaker — say so). If pytest cannot
-    be invoked at all, that is recorded as a suite FAILURE (fail-loud).
+    is False we drop to a portable-only gate (weaker — say so). When the suite does
+    not APPLY — no pytest, or nothing to collect — that is reported as such and an
+    import smoke stands in its place; a suite that applies and fails is still red.
     """
     source_dir = getattr(source, "source_dir", None)
     if source_dir is None:
@@ -158,31 +164,84 @@ def run_regression_gate(
     if not result.portable_ok:
         result.messages.append(_indent(out))
 
-    # 2) the test suite
+    # 2) the test suite — WHERE IT APPLIES.
+    #
+    # The suite is a DEV-TREE check, and treating its absence as a failure broke
+    # the update channel for everyone who is not a tide developer (работа 57 п.6).
+    # A person installs through the front door — `git clone` + `./install.sh` —
+    # which installs the package WITHOUT the `test` extra, so pytest is simply not
+    # there. The gate then said "CANNOT RUN … REFUSED", and `tide self-update`,
+    # which the README offers as an ordinary gesture, could never run at all. Not a
+    # Linux quirk: the same wall stands on a mac.
+    #
+    # So: no tests, or no pytest to run them with → NOT APPLICABLE, not red. It is
+    # never silently passed off as success — it is said out loud and paid for by
+    # the smoke below, which proves the new code actually imports and answers.
+    # Where the suite DOES apply — a dev tree with pytest — nothing is relaxed: a
+    # red suite still refuses the update.
     if not run_suite:
         result.suite_ok = True  # explicitly waived → not counted against the gate
         result.suite_ran = False
         result.messages.append(
             "suite: SKIPPED (--no-suite — portable-only gate, weaker)"
         )
+        _run_import_smoke(python_exe, source_dir, env, result, runner)
         return result
 
     rc, out = runner([python_exe, "-m", "pytest", "-q"], source_dir, env)
-    result.suite_ran = True
-    if _pytest_unavailable(rc, out):
-        result.suite_ok = False
-        result.messages.append(
-            "suite: CANNOT RUN — pytest not importable by {0} (install 'tide[test]' "
-            "or create a dev venv with pytest at {1}/.venv); "
-            "an unverified update is REFUSED, not accepted".format(python_exe, source_dir)
-        )
-        result.messages.append(_indent(out))
+    why = _suite_not_applicable(rc, out)
+    if why:
+        result.suite_ok = True
+        result.suite_ran = False
+        result.messages.append("suite: not applicable ({0})".format(why))
+        _run_import_smoke(python_exe, source_dir, env, result, runner)
         return result
+
+    result.suite_ran = True
     result.suite_ok = rc == 0
     result.messages.append("suite: {0}".format("PASS" if result.suite_ok else "FAIL"))
     if not result.suite_ok:
         result.messages.append(_indent(_tail(out)))
     return result
+
+
+def _run_import_smoke(
+    python_exe: str, source_dir: Path, env: dict, result: GateResult, runner: Runner
+) -> None:
+    """Prove the NEW source imports and answers; mutates *result*.
+
+    What an ordinary install has instead of a suite. It runs the incoming code —
+    ``python -m tide --version`` with the source's ``src/`` first on PYTHONPATH —
+    so the one failure that matters most to a person mid-update, an engine that no
+    longer imports, still refuses the update. Only meaningful when the suite did
+    not run; the suite subsumes it.
+    """
+    rc, out = runner([python_exe, "-m", "tide", "version"], source_dir, env)
+    result.smoke_ran = True
+    result.smoke_ok = rc == 0
+    result.messages.append("smoke (engine imports + answers): {0}{1}".format(
+        "PASS" if result.smoke_ok else "FAIL",
+        " — {0}".format(out.strip().splitlines()[0]) if result.smoke_ok and out.strip() else ""))
+    if not result.smoke_ok:
+        result.messages.append(_indent(_tail(out)))
+
+
+# pytest's own exit code for "I ran, and there was nothing to run".
+_PYTEST_NO_TESTS_RC = 5
+
+
+def _suite_not_applicable(rc: int, out: str) -> str:
+    """Why the suite does not APPLY here, or "" when it does (and its rc counts).
+
+    Asked of pytest itself rather than guessed from the filesystem, so a tree that
+    has a ``tests/`` dir carrying nothing runnable answers correctly too.
+    """
+    if _pytest_unavailable(rc, out):
+        return ("no pytest — a DEV dependency, absent from a normal install; "
+                "`pip install 'tide[test]'` to gate on it too")
+    if rc == _PYTEST_NO_TESTS_RC:
+        return "installed package, no tests — they do not ride in the wheel"
+    return ""
 
 
 def _pytest_unavailable(rc: int, out: str) -> bool:

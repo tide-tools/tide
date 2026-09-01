@@ -113,20 +113,62 @@ def test_gate_red_when_suite_fails():
     assert gate.suite_ok is False
 
 
-def test_gate_red_when_pytest_unavailable_is_failure_not_skip():
-    # FAIL-LOUD: an unverifiable suite must NOT pass the gate.
+def test_gate_without_pytest_is_not_applicable_not_red():
+    """работа 57 п.6 — the blocker an ordinary install hit.
+
+    The front door is `git clone` + `./install.sh`, which installs the package
+    WITHOUT the `test` extra: pytest is simply absent. Calling that a gate FAILURE
+    meant `tide self-update` — offered in the README as an ordinary gesture —
+    could never run for anyone who is not a tide developer. It is NOT APPLICABLE:
+    said out loud, and paid for by the import smoke.
+    """
     runner = FakeRunner(portable=(0, ""), suite=(1, "No module named pytest"))
     gate = core.run_regression_gate(_stale_source(), runner=runner)
+    assert gate.ok is True
+    assert gate.suite_ran is False
+    assert any("not applicable" in m and "no pytest" in m for m in gate.messages)
+    assert not any("CANNOT RUN" in m for m in gate.messages)
+    assert gate.smoke_ran and gate.smoke_ok      # compensated, never just waived
+
+
+def test_gate_with_no_tests_collected_is_not_applicable():
+    # An installed package carries no tests (they never ride in the wheel);
+    # pytest answers rc=5, "nothing to run".
+    runner = FakeRunner(portable=(0, ""), suite=(5, "no tests ran"))
+    gate = core.run_regression_gate(_stale_source(), runner=runner)
+    assert gate.ok is True
+    assert gate.suite_ran is False
+    assert any("not applicable" in m and "no tests" in m for m in gate.messages)
+    assert gate.smoke_ran
+
+
+def test_a_failing_suite_still_refuses_where_it_applies():
+    # The line that must NOT move: pytest present, tests red → update refused.
+    runner = FakeRunner(portable=(0, ""), suite=(1, "14 failed, 2200 passed"))
+    gate = core.run_regression_gate(_stale_source(), runner=runner)
     assert gate.ok is False
-    assert any("CANNOT RUN" in m for m in gate.messages)
+    assert gate.suite_ran is True and gate.suite_ok is False
 
 
-def test_gate_no_suite_waives_suite_but_keeps_portable():
+def test_a_broken_engine_refuses_even_without_a_suite():
+    # What the smoke buys: with no suite to catch it, an incoming build that no
+    # longer imports must still be refused — that is the failure a person can
+    # least afford mid-update.
+    runner = FakeRunner(portable=(0, ""), suite=(1, "No module named pytest"),
+                        smoke=(1, "ImportError: cannot import name 'cli'"))
+    gate = core.run_regression_gate(_stale_source(), runner=runner)
+    assert gate.ok is False
+    assert gate.smoke_ran and gate.smoke_ok is False
+    assert any("smoke" in m and "FAIL" in m for m in gate.messages)
+
+
+def test_gate_no_suite_waives_suite_but_keeps_portable_and_smoke():
     runner = FakeRunner(portable=(0, ""))
     gate = core.run_regression_gate(_stale_source(), run_suite=False, runner=runner)
     assert gate.ok is True
     assert gate.suite_ran is False
     assert not runner.ran("pytest")
+    assert gate.smoke_ran      # waiving the suite does not waive proof it imports
 
 
 def test_gate_on_source_without_checkout_is_red_not_crash():
