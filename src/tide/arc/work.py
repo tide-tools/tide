@@ -629,12 +629,46 @@ def propose(
     return wdir.name, first, last, reopened, owner
 
 
-def _require_word(word: Optional[str], whose: str = "согласовывает человек") -> str:
-    """The human's word IS the agreement — no word, no gesture (as in ``close``)."""
+def _item_number(raw: str, key: str) -> int:
+    """Parse an item number typed on the CLI, or refuse in tide's own words.
+
+    The hints print a literal ``N`` for the number, and a person pastes the line
+    before substituting. argparse's ``type=int`` would answer that with "invalid
+    int value: 'N'" — the parser's voice, at the exact moment the message was
+    trying to teach (работа 57 п.7). So the number arrives as text and lands here.
+    """
+    s = (raw or "").strip()
+    if s.isdigit() and int(s) > 0:
+        return int(s)
+    return _bad_number(s, key)
+
+
+def _bad_number(s: str, key: str) -> int:
+    raise WorkError(
+        "work: {0!r} — это не номер пункта, подставь вместо N число "
+        "(первый пункт — 1). Номера видно в tide work show {1}".format(s, key))
+
+
+def _require_word(word: Optional[str], whose: str = "согласовывает человек",
+                  *, kept: str = "", howto: str = "") -> str:
+    """The human's word IS the agreement — no word, no gesture (as in ``close``).
+
+    THE ONE place the requirement lives, so every caller — CLI, board, API — is
+    refused with the same sentence. The CLI parsers deliberately do NOT mark
+    ``--word`` argparse-required (работа 57 п.5): these are the human's SIGNATURE
+    gestures, met in a person's first hour, and argparse would answer them with
+    "the following arguments are required: --word" — the parser's words, no hint
+    of what to do next. Dropping ``required`` lets the miss reach this guard,
+    which says what happened, *kept* — what stayed as it was — and *howto*, the
+    command with the key already filled in. The refusal itself is unchanged: a
+    blank or whitespace word is still no word.
+    """
     w = (word or "").strip()
     if not w:
-        raise WorkError(
-            "work: {0} — зови с --word «его слово дословно»".format(whose))
+        raise WorkError('work: {0}{1} — зови с --word "его слово дословно"{2}'.format(
+            whose,
+            ", {0}".format(kept) if kept else "",
+            ". {0}".format(howto) if howto else ""))
     return w
 
 
@@ -683,7 +717,11 @@ def agree(
     a fresh ``- [ ]`` is something still to do, so a work parked in review comes
     back to taken. Returns ``(slug, numbers, was_all, moved_to)``.
     """
-    w = _require_word(word)
+    w = _require_word(
+        word, kept="пункты остались предложениями",
+        howto='tide work agree {0} {1} --word "его слово"; '
+             'что предложено — в tide work show {0}'.format(
+                 key, " ".join(str(n) for n in (indexes or [])) or "--all"))
     wdir = _find(root, key)
     f, doc = _read(wdir)
     _require_live(wdir, doc)
@@ -729,7 +767,10 @@ def drop_proposed(
     are all checked — the gate is re-hung here. Returns
     ``(slug, numbers, moved_to)``.
     """
-    w = _require_word(word)
+    w = _require_word(
+        word, "снять предложение — тоже слово человека", kept="ничего не снято",
+        howto='tide work agree {0} --drop {1} --word "его слово"'.format(
+            key, " ".join(str(n) for n in (indexes or [])) or "N"))
     nums = sorted(set(indexes or []))
     if not nums:
         raise WorkError("work: снимать — по номерам: --drop N (можно несколько)")
@@ -842,7 +883,10 @@ def drop_item(
     несделанный пункт, уйдя, может закрыть гейт — статус перевешивается здесь
     же. Returns ``(slug, title, moved_to)``.
     """
-    w = _require_word(word, "снять согласованный пункт может человек")
+    w = _require_word(
+        word, "снять согласованный пункт может человек",
+        kept="пункт {0} остался на месте".format(index),
+        howto='tide work drop {0} {1} --word "его слово"'.format(key, index))
     if index < 1:
         raise WorkError("work: номер пункта считается с 1")
     wdir = _find(root, key)
@@ -945,7 +989,9 @@ def add_fixes(
     texts = [t for t in texts if t and t.strip()]
     if not texts:
         raise WorkError("work: пустой фикс — дай пункты")
-    w = _require_word(word, "фикс несёт накидку человека")
+    w = _require_word(
+        word, "фикс несёт накидку человека", kept="ничего не добавлено",
+        howto='tide work fix {0} "что доделать" --word "его слово"'.format(key))
     blocks = [_item_lines(" ", t) for t in texts]  # validates the titles
     wdir = _find(root, key)
     f, doc = _read(wdir)
@@ -1011,7 +1057,9 @@ def set_title(
     new = " ".join((title or "").split())
     if not new:
         raise WorkError("work: пустой заголовок — дай название работы")
-    w = _require_word(word, "имя работы меняет человек")
+    w = _require_word(
+        word, "имя работы меняет человек", kept="заголовок остался прежним",
+        howto='tide work title {0} "новый заголовок" --word "его слово"'.format(key))
     wdir = _find(root, key)
     f, text = _read(wdir)
     j, old = _head_title(text)
@@ -1343,7 +1391,10 @@ def dispatch(
     """
     who = " ".join((to or "").split())
     if not who:
-        raise WorkError("work: кого отправили? — dispatch зовут с --to «имя»")
+        raise WorkError(
+            "work: кого отправили? — никто не отправлен, статус не тронут; "
+            'dispatch зовут с --to "имя". '
+            'tide work dispatch {0} --to "имя строителя"'.format(key))
     wdir = _find(root, key)
     f, text = _read(wdir)
     st = _status_of(text)
@@ -1485,7 +1536,8 @@ def close(root: Path, key: str, word: str,
     """
     if not (word or "").strip():
         raise WorkError(
-            "work: done ставит человек — закрывай только с --word «его слово»")
+            "work: done ставит человек, {0} осталась открытой — закрывай только "
+            'с --word "его слово". tide work close {0} --word "его слово"'.format(key))
     wdir = _find(root, key)
     f, text = _read(wdir)
     if _status_of(text) == "done":
@@ -1869,9 +1921,15 @@ def _cmd_step(args) -> int:
 
 
 def _cmd_drop(args) -> int:
-    name, title, moved = drop_item(_root(args), args.key, args.index, args.word)
+    if args.index is None:
+        raise WorkError(
+            'work: снимать нечего — скажи номер пункта; N ниже подставь числом, '
+            'номера видно в tide work show {0}. Снимать так: '
+            'tide work drop {0} N --word "его слово"'.format(args.key))
+    index = _item_number(args.index, args.key)
+    name, title, moved = drop_item(_root(args), args.key, index, args.word)
     print("tide: {0} — пункт {1} «{2}» снят (слово человека в журнале)".format(
-        name, args.index, title))
+        name, index, title))
     print("tide: номера ниже сдвинулись на один — курсор и приёмки переехали "
           "следом, журнал прежних жестов не тронут")
     _print_move(name, moved)
@@ -1890,8 +1948,20 @@ def _cmd_at(args) -> int:
 
 
 def _cmd_check(args) -> int:
-    name, reviewed = check(_root(args), args.key, args.index, args.proof)
-    print("tide: {0} — пункт {1} чекнут".format(name, args.index))
+    if args.index is None:
+        raise WorkError(
+            'work: чекать нечего — скажи номер пункта; N ниже подставь числом, '
+            'номера видно в tide work show {0}. Чекать так: '
+            'tide work check {0} N --proof "что проверено"'.format(args.key))
+    index = _item_number(args.index, args.key)
+    if not (args.proof or "").strip():
+        raise WorkError(
+            "work: чек без пруфа не жест — пункт {0} остался как был. "
+            "Пруф это одна строка о том, что реально проверено (не «сделал»): "
+            "tide work check {1} {0} --proof \"что проверено\"".format(
+                index, args.key))
+    name, reviewed = check(_root(args), args.key, index, args.proof)
+    print("tide: {0} — пункт {1} чекнут".format(name, index))
     _print_move(name, "review" if reviewed else None)
     return 0
 
@@ -2014,7 +2084,12 @@ def register(subparsers) -> None:
                     help="explicitly: agree to every '- [?]'")
     gp.add_argument("--drop", nargs="+", type=int, metavar="N",
                     help="drop proposed items N (with their descriptions)")
-    gp.add_argument("--word", required=True,
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: --word" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    gp.add_argument("--word",
                     help="the human's word, verbatim (goes to the journal)")
     _common(gp)
     gp.set_defaults(func=_cmd_agree, _cmd="work agree")
@@ -2023,8 +2098,14 @@ def register(subparsers) -> None:
         "drop", help="drop an AGREED item N — only with the human's word "
                      "(a proposed '- [?]' is dropped via agree --drop)")
     xp.add_argument("key")
-    xp.add_argument("index", type=int, help="item number (from 1)")
-    xp.add_argument("--word", required=True,
+    xp.add_argument("index", nargs="?", help="item number (from 1)")  # str: see check
+
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: index, --word" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    xp.add_argument("--word",
                     help="the human's word, verbatim (goes to the journal)")
     _common(xp)
     xp.set_defaults(func=_cmd_drop, _cmd="work drop")
@@ -2048,7 +2129,12 @@ def register(subparsers) -> None:
     fp.add_argument("items", nargs="+",
                     help="items, one per argument; \\n inside an item ends the "
                          "title, the rest is the description")
-    fp.add_argument("--word", required=True,
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: --word" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    fp.add_argument("--word",
                     help="what the human added, verbatim (goes to the journal)")
     _common(fp)
     fp.set_defaults(func=_cmd_fix, _cmd="work fix")
@@ -2068,7 +2154,12 @@ def register(subparsers) -> None:
                          "journal (status unchanged; call it again and you get "
                          "one more line)")
     dp.add_argument("key")
-    dp.add_argument("--to", required=True, metavar="NAME",
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: --to" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    dp.add_argument("--to", metavar="NAME",
                     help="who was sent out to build")
     _common(dp)
     dp.set_defaults(func=_cmd_dispatch, _cmd="work dispatch")
@@ -2107,8 +2198,16 @@ def register(subparsers) -> None:
     cp = wsub.add_parser(
         "check", help="check item N with proof (all checked → review on its own)")
     cp.add_argument("key")
-    cp.add_argument("index", type=int, help="item number (from 1)")
-    cp.add_argument("--proof", required=True,
+    # index and --proof are NOT argparse-required, on purpose. A check without
+    # proof is the single most common first-hour mistake, and argparse answers it
+    # with "the following arguments are required: index, --proof" — the parser's
+    # words, not tide's, and no hint of what to do next. Accepting them as missing
+    # lets :func:`_cmd_check` say why the gesture exists and what to type (cand 223).
+    # Not type=int: a person pastes the hint before substituting, and argparse
+    # answers "invalid int value: 'N'" — the parser's voice again, at the exact
+    # moment the message was trying to teach. _cmd_check parses it and says what N is.
+    cp.add_argument("index", nargs="?", help="item number (from 1)")
+    cp.add_argument("--proof",
                     help="what exactly was done: a commit, a link, a file")
     _common(cp)
     cp.set_defaults(func=_cmd_check, _cmd="work check")
@@ -2124,7 +2223,12 @@ def register(subparsers) -> None:
         "close", help="close it: done is set ONLY with the human's word (the "
                       "same word accepts everything done)")
     dp.add_argument("key")
-    dp.add_argument("--word", required=True,
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: --word" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    dp.add_argument("--word",
                     help="the human's word that closes and accepts it (goes to "
                          "the journal)")
     _common(dp)
@@ -2134,7 +2238,12 @@ def register(subparsers) -> None:
         "title", help="rename the work: the H1 changes ONLY with the human's word")
     np.add_argument("key")
     np.add_argument("title", nargs="+", help="the new title — short, one line")
-    np.add_argument("--word", required=True,
+    # NOT argparse-required on purpose: this is the human's SIGNATURE, and a
+    # person meets it in their first hour. argparse would answer "the following
+    # arguments are required: --word" — the parser's words, no hint of the next
+    # gesture. The body says what happened, what stayed as it was, and what to
+    # type (cand 223, работа 57 п.5). The refusal itself is unchanged.
+    np.add_argument("--word",
                     help="the human's word, verbatim (goes to the journal)")
     _common(np)
     np.set_defaults(func=_cmd_title, _cmd="work title")

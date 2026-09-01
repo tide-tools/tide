@@ -259,6 +259,151 @@ def test_check_refuses_a_proposed_item_and_keeps_the_file(in_project, capsys):
     assert _text(in_project) == before  # отказ файл не трогает
 
 
+def test_every_hint_survives_a_verbatim_paste(in_project, capsys):
+    """работа 57 п.7 — the teaching message must not send you back to argparse.
+
+    The hints used to read `--word «его слово»`, and guillemets are not shell
+    quotes: pasting one split it into two words and produced
+    `error: unrecognized arguments: слово»`. `<N>` was worse — the shell reads it
+    as a redirect before tide is even reached. Every command a message prints must
+    paste and run as-is.
+    """
+    import re
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "propose", "01", "предложение"])
+    cli.main(["work", "take", "01"])
+    capsys.readouterr()
+    argvs = [["work", "check", "01"], ["work", "check", "01", "1"],
+             ["work", "close", "01"], ["work", "agree", "01", "2"],
+             ["work", "agree", "01", "--drop", "2"], ["work", "fix", "01", "хвост"],
+             ["work", "title", "01", "имя"], ["work", "dispatch", "01"],
+             ["work", "drop", "01"], ["work", "drop", "01", "1"]]
+    hints = []
+    for argv in argvs:
+        cli.main(argv)
+        err = capsys.readouterr().err
+        hints += [h.strip() for h in re.findall(r"tide work [^;.\n]*", err)]
+    assert hints, "the messages stopped printing commands at all"
+    for hint in hints:
+        # shell metacharacters that mangle a paste: guillemets split on the space
+        # inside them, <> redirect, () subshell.
+        assert "«" not in hint and "»" not in hint, hint
+        assert not re.search(r"[<>()]", hint), hint
+
+
+def test_a_pasted_placeholder_number_is_answered_by_tide(in_project, capsys):
+    # The hint prints a literal N. Pasted before substituting, argparse's
+    # type=int would say "invalid int value: 'N'" — the parser's voice at exactly
+    # the wrong moment. tide answers it instead.
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    capsys.readouterr()
+    assert cli.main(["work", "check", "01", "N", "--proof", "п"]) == 1
+    err = capsys.readouterr().err
+    assert "не номер пункта" in err
+    assert "invalid int value" not in err
+    assert cli.main(["work", "drop", "01", "N", "--word", "с"]) == 1
+    assert "не номер пункта" in capsys.readouterr().err
+
+
+def test_the_human_gestures_never_answer_in_argparse(in_project, capsys):
+    """работа 57 п.5 — the six SIGNATURE verbs answer in tide's words, not the parser's.
+
+    A person meets these in their first hour: saying "да" to a plan, closing a work
+    with their word. `error: the following arguments are required: --word` is the
+    worst first impression tide can make at the moment someone signs something.
+    Each refusal must name the gesture, say what stayed as it was, and give the
+    command with the key already filled in.
+    """
+    cli.main(["work", "add", "вылить выплаты"])
+    _seed()
+    cli.main(["work", "propose", "01", "ещё предложение"])
+    cli.main(["work", "take", "01"])
+    capsys.readouterr()
+    cases = [
+        (["work", "close", "01"],                    "done ставит человек", "осталась открытой"),
+        (["work", "agree", "01", "2"],               "согласовывает человек", "остались предложениями"),
+        (["work", "agree", "01", "--drop", "2"],     "снять предложение", "ничего не снято"),
+        (["work", "fix", "01", "хвост"],             "фикс несёт накидку", "ничего не добавлено"),
+        (["work", "title", "01", "новое имя"],       "имя работы меняет человек", "заголовок остался прежним"),
+        (["work", "dispatch", "01"],                 "кого отправили", "никто не отправлен"),
+        (["work", "drop", "01", "1"],                "снять согласованный пункт", "остался на месте"),
+    ]
+    before = _text(in_project)
+    for argv, whose, kept in cases:
+        assert cli.main(argv) == 1, argv
+        err = capsys.readouterr().err
+        assert whose in err, (argv, err)
+        assert kept in err, (argv, err)          # what stayed as it was
+        assert "tide work" in err, (argv, err)   # the next gesture, spelled out
+        assert "required:" not in err, (argv, err)   # never the parser's voice
+    assert _text(in_project) == before   # seven refusals, file untouched
+
+
+def test_drop_without_an_item_number_answers_in_tide_words(in_project, capsys):
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    before = _text(in_project)
+    assert cli.main(["work", "drop", "01"]) == 1
+    err = capsys.readouterr().err
+    assert "скажи номер пункта" in err
+    assert "tide work show 01" in err
+    assert _text(in_project) == before
+
+
+def test_a_blank_word_is_still_refused(in_project, capsys):
+    # Relaxing argparse must NOT relax the requirement: whitespace is not a word.
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    before = _text(in_project)
+    assert cli.main(["work", "close", "01", "--word", "   "]) == 1
+    assert "done ставит человек" in capsys.readouterr().err
+    assert _text(in_project) == before
+
+
+def test_check_without_proof_answers_in_tide_words(in_project, capsys):
+    # cand 223: argparse used to answer this with "the following arguments are
+    # required: --proof" — the parser's words, no hint of the next gesture, in the
+    # first hour of a person's use. The engine must say why proof exists and what
+    # to type.
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    before = _text(in_project)
+    assert cli.main(["work", "check", "01", "1"]) == 1
+    err = capsys.readouterr().err
+    assert "чек без пруфа не жест" in err
+    assert "tide work check 01 1 --proof" in err   # the next gesture, spelled out
+    assert "required:" not in err                  # not argparse's voice
+    assert _text(in_project) == before             # refusal never touches the file
+
+
+def test_check_without_an_item_number_answers_in_tide_words(in_project, capsys):
+    # `tide work check 01` is the other half of the same stumble.
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    before = _text(in_project)
+    assert cli.main(["work", "check", "01"]) == 1
+    err = capsys.readouterr().err
+    assert "скажи номер пункта" in err
+    assert "tide work show 01" in err              # where the numbers are
+    assert _text(in_project) == before
+
+
+def test_check_with_blank_proof_is_refused_too(in_project, capsys):
+    # Whitespace is not a proof — and the message must be the same one.
+    cli.main(["work", "add", "x"])
+    _seed()
+    cli.main(["work", "take", "01"])
+    assert cli.main(["work", "check", "01", "1", "--proof", "   "]) == 1
+    assert "чек без пруфа не жест" in capsys.readouterr().err
+
+
 def test_uncheck_refuses_a_proposed_item(in_project, capsys):
     cli.main(["work", "add", "x"])
     _seed()
