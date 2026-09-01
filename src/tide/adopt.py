@@ -35,7 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import init_home, paths, readme as _readme, roster
+from . import (init_home, layer as _layer, paths, quickstart,
+               readme as _readme, roster, terminal_choice)
 
 # Per-step outcome markers (rendered in the summary).
 DONE = "done"
@@ -92,14 +93,21 @@ def _git_step(path: Path, do_git: bool) -> AdoptStep:
     return AdoptStep("git", DONE, "git init")
 
 
-def _first_commit_step(path: Path, do_git: bool) -> AdoptStep:
-    """Ensure the repo has a FIRST COMMIT (runs after scaffold so ``.tide/`` rides in).
+def _first_commit_step(path: Path, do_git: bool, repo_is_new: bool) -> AdoptStep:
+    """Give a repo tide just created an EMPTY first commit — and commit nowhere else.
 
-    ``git worktree add`` — the Orca spawn path under ``tide menu`` — refuses a
-    repo without HEAD, so a freshly-init'ed project shows up in the picker but
-    dies with a raw trace the moment a thread is spawned in it (cand 32).
-    Adoption isn't done until the dir is worktree-ready. Skips: opted out, not
-    a repo, repo already has commits.
+    Two rules meet here. ``git worktree add`` — the spawn path under ``tide
+    menu`` — refuses a repo without HEAD, so a project with no commit shows up in
+    the picker and dies with a raw trace at pickup (cand 32). And a repository
+    belongs to the person who owns it: tide writes nothing into the history of a
+    repo it did not create (decision 15, работа 60).
+
+    So the commit happens only when *repo_is_new* — this very run ran ``git
+    init`` — and even then it carries **no files** (``--allow-empty``): HEAD
+    exists, the index is untouched, and every file in the dir is still the
+    person's to commit as they see fit. A repo that already existed is left
+    exactly as found, HEAD or no HEAD; when it has no HEAD the skip note says
+    what to run, instead of running it for them.
     """
     if not do_git:
         return AdoptStep("commit", SKIPPED, "skipped (--no-git)")
@@ -112,14 +120,15 @@ def _first_commit_step(path: Path, do_git: bool) -> AdoptStep:
             text=True,
         )
         if probe.returncode == 0:
-            return AdoptStep("commit", SKIPPED, "repo already has commits")
+            return AdoptStep("commit", SKIPPED, "your repo has history — tide commits nothing in it")
+        if not repo_is_new:
+            return AdoptStep(
+                "commit", SKIPPED,
+                "your repo, no commit yet — tide makes none; threads need one "
+                "(git commit --allow-empty -m init)")
         subprocess.run(
-            ["git", "-C", str(path), "add", "-A"],
-            check=True, capture_output=True, text=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(path), "commit", "--quiet",
-             "-m", "chore: tide adopt — project birth"],
+            ["git", "-C", str(path), "commit", "--quiet", "--allow-empty",
+             "-m", "chore: tide adopt — empty first commit so threads can spawn"],
             check=True, capture_output=True, text=True,
         )
     except FileNotFoundError:
@@ -132,7 +141,7 @@ def _first_commit_step(path: Path, do_git: bool) -> AdoptStep:
                 " ".join(detail.split())[:120]
             ),
         )
-    return AdoptStep("commit", DONE, "first commit (worktree-ready)")
+    return AdoptStep("commit", DONE, "empty first commit (worktree-ready; none of your files in it)")
 
 
 def _scaffold_step(path: Path, name: str, intent: str = "") -> AdoptStep:
@@ -164,6 +173,33 @@ def _readme_step(path: Path, name: str, intent: str, canon_was_born: bool) -> Ad
     except (OSError, FileNotFoundError, UnicodeDecodeError) as exc:
         return AdoptStep("readme", WARN, "README not generated ({0})".format(exc))
     return AdoptStep("readme", DONE, "README.md {0} from canon".format(status))
+
+
+def _layer_step(path: Path, shared: bool) -> AdoptStep:
+    """Keep ``.tide/`` out of the project's history — the default (работа 60).
+
+    The exclusion goes into ``.git/info/exclude``: same syntax as ``.gitignore``,
+    same effect, but git does not track that file, so the line stays on this
+    machine. ``.gitignore`` is deliberately never touched — it is committed and
+    reviewed, and one person's "ignore my tool" would ride into a colleague's
+    pull request.
+    """
+    if shared:
+        _layer.set_mode(path, _layer.SHARED)
+        return AdoptStep("layer", SKIPPED,
+                         "--shared — .tide/ is committed with this project")
+    verdict = _layer.ensure_local(path)
+    if verdict == "excluded":
+        return AdoptStep("layer", DONE,
+                         ".tide/ stays on this machine (.git/info/exclude, not .gitignore)")
+    if verdict == "already":
+        return AdoptStep("layer", SKIPPED, ".git/info/exclude already keeps .tide/ local")
+    if verdict == "shared":
+        return AdoptStep("layer", SKIPPED, "this project shares its .tide/ (tide layer local)")
+    if verdict == "tracked":
+        return AdoptStep("layer", WARN,
+                         ".tide/ is already tracked in this repo — 'tide layer untrack' takes it out")
+    return AdoptStep("layer", SKIPPED, "no git repo — nothing to keep out of")
 
 
 def _orca_step(abs_path: str, do_orca: bool) -> AdoptStep:
@@ -223,6 +259,7 @@ def adopt(
     do_git: bool = True,
     do_orca: bool = True,
     intent: str = "",
+    shared: bool = False,
 ) -> AdoptReport:
     """Make *path* a working tide project, idempotently; return an :class:`AdoptReport`.
 
@@ -230,6 +267,8 @@ def adopt(
     *do_orca* opt out of the git-init / Orca-registration steps. *intent* is the
     human's one-line goal (``--goal``): it seeds the canon's "What it is" and the
     README projected from it, so the project is born already saying what it is.
+    *shared* opts this project into a committed ``.tide/`` (a team running one
+    thread together); the default keeps the layer on this machine.
     Re-running on an already-adopted dir is a no-op-ish success (every step
     reports ``skipped``).
     """
@@ -238,15 +277,17 @@ def adopt(
     abs_str = str(abs_path)
 
     report = AdoptReport(path=abs_path, name=proj_name)
-    report.steps.append(_git_step(abs_path, do_git))
+    git_step = _git_step(abs_path, do_git)
+    report.steps.append(git_step)
     # Whether the canon is born in THIS run decides if --goal reached it — read
     # before the scaffold writes, since scaffold_project preserves an existing one.
     canon_was_born = not paths.canon_file(abs_path).exists()
     report.steps.append(_scaffold_step(abs_path, proj_name, intent))
+    report.steps.append(_layer_step(abs_path, shared))
     report.steps.append(_readme_step(abs_path, proj_name, intent, canon_was_born))
-    # The first commit runs last of the file-writing steps so canon + README both
-    # ride into it.
-    report.steps.append(_first_commit_step(abs_path, do_git))
+    # Only a repo THIS run created gets a commit, and an empty one — see
+    # _first_commit_step.
+    report.steps.append(_first_commit_step(abs_path, do_git, git_step.status == DONE))
     report.steps.append(_orca_step(abs_str, do_orca))
     report.steps.append(_roster_step(proj_name, abs_str))
     return report
@@ -271,8 +312,19 @@ def _cmd_adopt(args) -> int:
         do_git=not getattr(args, "no_git", False),
         do_orca=not getattr(args, "no_orca", False),
         intent=getattr(args, "intent", None) or "",
+        shared=getattr(args, "shared", False),
     )
     print(render_report(report))
+    # The terminal was chosen silently and met, if at all, as a grey `orca` line
+    # in the steps above. Say it plainly (работа 59 п.5) — and end on the route,
+    # because this is where a person asks "and now what?".
+    print()
+    for line in terminal_choice.announce_lines(Path(getattr(args, "path", None) or ".")):
+        print(line)
+    print()
+    print("next: open the board and watch it:")
+    print("      tide board --open")
+    print(quickstart.next_step_line("adopt"))
     return 0
 
 
@@ -290,6 +342,14 @@ def register(subparsers) -> None:
         help=(
             "one line saying what this project is — seeds the canon at birth and "
             "the README projected from it (omit and the canon is born blank)"
+        ),
+    )
+    p.add_argument(
+        "--shared",
+        action="store_true",
+        help=(
+            "commit .tide/ with the project — for a team running one thread "
+            "together (default: the layer stays on this machine)"
         ),
     )
     p.add_argument("--no-git", action="store_true", help="do not 'git init' the directory")

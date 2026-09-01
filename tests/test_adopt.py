@@ -221,8 +221,8 @@ def _real_git(root, *argv):
 
 
 def test_adopt_makes_first_commit_worktree_ready(home, target, monkeypatch):
-    # Real git: init happens, scaffold lands, then the FIRST COMMIT rides —
-    # `git worktree add` (the tide menu spawn path) needs HEAD to exist.
+    # Real git: init happens, scaffold lands, and an EMPTY first commit gives the
+    # repo a HEAD — `git worktree add` (the tide menu spawn path) needs one.
     monkeypatch.setattr(shutil, "which", lambda name: None)  # skip orca only
 
     report = adopt.adopt(target, do_orca=False)
@@ -234,14 +234,27 @@ def test_adopt_makes_first_commit_worktree_ready(home, target, monkeypatch):
         capture_output=True, text=True,
     )
     assert head.returncode == 0  # worktree-ready
-    # the scaffold rode into the birth commit
+
+
+def test_birth_commit_carries_no_files_at_all(home, target, monkeypatch):
+    """Работа 60: HEAD exists so threads spawn, and not one file rode into it.
+
+    The layer is excluded and the person's own files (README included) are left
+    untracked — theirs to commit, or not.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    (target / "mine.txt").write_text("mine\n", encoding="utf-8")
+
+    adopt.adopt(target, do_orca=False, intent=GOAL)
+
     tracked = subprocess.run(
         ["git", "-C", str(target), "ls-files"], capture_output=True, text=True
     ).stdout
-    assert ".tide/canon/CANON.md" in tracked
+    assert tracked.strip() == ""
+    assert (target / "README.md").is_file()      # written, just not committed
 
 
-def test_adopt_skips_commit_when_repo_has_history(home, target, monkeypatch):
+def test_adopt_makes_no_commit_in_a_repo_with_history(home, target, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     _real_git(target, "init", "-q")
     _real_git(target, "config", "user.email", "t@example.com")
@@ -249,10 +262,37 @@ def test_adopt_skips_commit_when_repo_has_history(home, target, monkeypatch):
     (target / "a.txt").write_text("x\n", encoding="utf-8")
     _real_git(target, "add", ".")
     _real_git(target, "commit", "-qm", "existing")
+    before = subprocess.run(
+        ["git", "-C", str(target), "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
 
     report = adopt.adopt(target, do_orca=False)
+
     assert report.step("commit").status == adopt.SKIPPED
-    assert "already has commits" in report.step("commit").detail
+    assert "commits nothing" in report.step("commit").detail
+    after = subprocess.run(
+        ["git", "-C", str(target), "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
+    assert after == before
+    # and the working tree is as it was: nothing staged, nothing untracked
+    assert subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True, text=True).stdout.strip() == ""
+
+
+def test_adopt_leaves_a_headless_repo_of_theirs_alone(home, target, monkeypatch):
+    """A repo the person made themselves and has not committed in yet is not ours."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    _real_git(target, "init", "-q")
+
+    report = adopt.adopt(target, do_orca=False)
+
+    assert report.step("commit").status == adopt.SKIPPED
+    assert "--allow-empty" in report.step("commit").detail
+    head = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--verify", "--quiet", "HEAD"],
+        capture_output=True, text=True)
+    assert head.returncode != 0  # still theirs to open
 
 
 def test_adopt_no_git_skips_commit_step(home, target, monkeypatch):
@@ -361,7 +401,8 @@ def test_cli_adopt_goal_reaches_the_canon(home, target, monkeypatch, capsys):
     assert "README.md generated from canon" in capsys.readouterr().out
 
 
-def test_readme_rides_into_the_birth_commit(home, target, monkeypatch):
+def test_readme_is_left_for_the_human_to_commit(home, target, monkeypatch):
+    """The README is written, and left untracked — committing it is their call."""
     monkeypatch.setattr(shutil, "which", lambda name: None)  # real git, no orca
 
     adopt.adopt(target, name="demo", do_orca=False, intent=GOAL)
@@ -369,4 +410,9 @@ def test_readme_rides_into_the_birth_commit(home, target, monkeypatch):
     tracked = subprocess.run(
         ["git", "-C", str(target), "ls-files"], capture_output=True, text=True
     ).stdout
-    assert "README.md" in tracked
+    assert "README.md" not in tracked
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"], capture_output=True, text=True
+    ).stdout
+    assert "README.md" in status          # visible to them, waiting
+    assert ".tide/" not in status         # the layer is not, it is excluded

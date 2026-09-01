@@ -158,6 +158,14 @@ def _register_adopt(sub) -> None:
     register_adopt(sub)
 
 
+def _register_layer(sub) -> None:
+    # работа 60: where the operator layer lives — on this machine (default) or
+    # committed with the project. Owns .git/info/exclude; never .gitignore.
+    from .layer import register as register_layer
+
+    register_layer(sub)
+
+
 def _register_mcp(sub) -> None:
     # tide mcp — per-project scoped MCP management (state/mcp.json + context.json).
     from .mcp import register as register_mcp
@@ -482,6 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_install_skills(subparsers)
     _register_roster(subparsers)
     _register_adopt(subparsers)
+    _register_layer(subparsers)
     _register_mcp(subparsers)
     _register_menu(subparsers)
     _register_context(subparsers)

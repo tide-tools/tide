@@ -65,6 +65,62 @@ cd ~/control || exit 1
 run "tide roster add"         ""      tide roster add demo /home/tester/code/demo
 run "tide roster ls"          "demo"  tide roster ls
 
+# --- the layer stays OUT of someone else's repository (работа 60) ------------
+# The first hour on a fresh laptop: tide adopted a working repo and its own files
+# showed up in that project's commit. The promise checked here, on a repo that
+# already HAS history: no commit, no line in .gitignore, working tree as found —
+# and the project still visible to the board.
+mkdir -p ~/code/theirs && cd ~/code/theirs || exit 1
+git init -q .
+git config user.email theirs@example.com
+git config user.name theirs
+echo "print('their code')" > app.py
+git add -A && git commit -qm "their own first commit" >/dev/null 2>&1
+BEFORE="$(git rev-list --count HEAD)"
+
+run "adopt a repo that has history" "" tide adopt --name theirs --no-orca
+
+AFTER="$(git rev-list --count HEAD)"
+[ "$AFTER" = "$BEFORE" ] && pass "not one commit added" "still $BEFORE" \
+  || fail "not one commit added" "$BEFORE → $AFTER"
+DIRT="$(git status --porcelain)"
+[ -z "$DIRT" ] && pass "working tree exactly as found" \
+  || fail "working tree exactly as found" "$(printf '%s' "$DIRT" | tr '\n' ' ')"
+[ ! -e .gitignore ] && pass ".gitignore untouched (never created)" \
+  || fail ".gitignore untouched (never created)" "$(cat .gitignore | tr '\n' ' ')"
+grep -q '^/\.tide/$' .git/info/exclude \
+  && pass "the exclusion is local to this machine" ".git/info/exclude" \
+  || fail "the exclusion is local to this machine" "no /.tide/ in .git/info/exclude"
+[ -d .tide ] && pass "the layer is there, just not in git" || fail "the layer is there, just not in git"
+run "the board renders their project" "" tide status
+say "tide layer says where it lives" "stays on this machine" tide layer
+
+cd ~/control || exit 1
+run "roster takes their project" "" tide roster add theirs /home/tester/code/theirs
+run "board sees both projects"  "theirs" tide roster ls
+
+# The way out for whoever already committed the layer: index cleared, files kept,
+# history honestly left alone.
+mkdir -p ~/code/burned && cd ~/code/burned || exit 1
+git init -q .
+git config user.email burned@example.com
+git config user.name burned
+mkdir -p .tide/canon && echo "# CANON.md — burned" > .tide/canon/CANON.md
+echo "code" > app.py
+git add -A && git commit -qm "the layer went in by accident" >/dev/null 2>&1
+HEAD_WAS="$(git rev-parse HEAD)"
+
+say "untrack says what it will do" "does NOT rewrite history" tide layer untrack
+
+[ -z "$(git ls-files -- .tide/)" ] && pass "layer off the index" \
+  || fail "layer off the index" "$(git ls-files -- .tide/ | tr '\n' ' ')"
+[ -f .tide/canon/CANON.md ] && pass "every file still on disk" || fail "every file still on disk"
+[ "$(git rev-parse HEAD)" = "$HEAD_WAS" ] && pass "history not rewritten" \
+  || fail "history not rewritten" "HEAD moved"
+git ls-tree -r --name-only HEAD | grep -q '^\.tide/' \
+  && pass "old commit still carries it — as the command said" \
+  || fail "old commit still carries it — as the command said"
+
 # --- the board + a unit of work ---------------------------------------------
 cd ~/code/demo || exit 1
 run "tide status (the board)" ""      tide status
