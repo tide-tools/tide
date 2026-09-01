@@ -1,42 +1,44 @@
-# Доска
+# The board
 
-`tide board` поднимает доску из пакета: маленький сервер на localhost, который
-на каждый запрос заново собирает проекцию твоего контрол-дома — стрим самого
-дома, стрим каждого проекта из ростера и карточки работ (когда включён плагин
-`work`). Страница сама перезагружается раз в 30 секунд; никакой базы и
-никакого кэша — что в `.tide/`, то и на экране.
+*Русская версия: [board.ru.md](board.ru.md)*
+
+`tide board` raises the board out of the package: a small server on localhost
+that rebuilds the projection of your control-home on every request — the home's
+own stream, a stream for each project in the roster, and the work cards (when
+the `work` plugin is on). The page reloads itself every 30 seconds; no database
+and no cache — what's in `.tide/` is what's on the screen.
 
 ```bash
 tide board                # http://127.0.0.1:8765
-tide board --open         # то же + сразу открыть браузер
-tide board --port 9000    # порт не зашит — любой свободный
+tide board --open         # the same, plus open the browser right away
+tide board --port 9000    # the port isn't baked in — any free one
 ```
 
-Сервер слушает только localhost (это осознанное решение, не ограничение):
-наружу доску выносит tailscale, не открытый порт.
+The server listens on localhost only (a decision, not a limitation): the board
+goes outside through tailscale, not through an open port.
 
-## С телефона
+## From your phone
 
-Сервер остаётся на localhost; до телефона доску доносит [tailscale](https://tailscale.com)
-(бесплатного плана хватает):
+The server stays on localhost; [tailscale](https://tailscale.com) carries the
+board to your phone (the free plan is enough):
 
-1. Поставь Tailscale на мак и на телефон, войди в один tailnet.
-2. На маке, при работающем `tide board`:
+1. Install Tailscale on the Mac and on the phone, sign into the same tailnet.
+2. On the Mac, with `tide board` running:
 
    ```bash
    tailscale serve --bg 8765
-   tailscale serve status       # покажет https://<имя-мака>.<tailnet>.ts.net
+   tailscale serve status       # prints https://<mac-name>.<tailnet>.ts.net
    ```
 
-3. Открой этот адрес в браузере телефона. HTTPS и доступ только для твоих
-   устройств tailscale даёт сам.
+3. Open that address in the phone's browser. HTTPS and access limited to your
+   own devices come from tailscale itself.
 
-Снять: `tailscale serve reset`.
+To take it down: `tailscale serve reset`.
 
-## Как служба (macOS, чтобы доска жила всегда)
+## As a service (macOS, so the board is always up)
 
-`tide board` — обычный процесс: закрыл терминал — доска погасла. Чтобы она
-поднималась сама при входе в систему, поставь launchd-агент. Файл
+`tide board` is an ordinary process: close the terminal and the board goes dark.
+To have it come up on login, install a launchd agent. The file
 `~/Library/LaunchAgents/com.tide.board.plist`:
 
 ```xml
@@ -46,12 +48,12 @@ tide board --port 9000    # порт не зашит — любой свобод
 <plist version="1.0"><dict>
   <key>Label</key><string>com.tide.board</string>
   <key>ProgramArguments</key><array>
-    <string>/Users/ТЫ/.local/bin/tide</string>
+    <string>/Users/YOU/.local/bin/tide</string>
     <string>board</string>
     <string>--port</string><string>8765</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>TIDE_HOME</key><string>/Users/ТЫ/tide-home</string>
+    <key>TIDE_HOME</key><string>/Users/YOU/tide-home</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -60,21 +62,21 @@ tide board --port 9000    # порт не зашит — любой свобод
 </dict></plist>
 ```
 
-Два пути подставь свои: `which tide` скажет первый, твой контрол-дом — второй.
-Дальше:
+Substitute your own two paths: `which tide` gives the first, your control-home
+is the second. Then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.tide.board.plist    # поставить
-launchctl unload ~/Library/LaunchAgents/com.tide.board.plist  # снять
+launchctl load ~/Library/LaunchAgents/com.tide.board.plist    # install
+launchctl unload ~/Library/LaunchAgents/com.tide.board.plist  # remove
 ```
 
-## Стык с живой доской
+## Where the live board joins
 
-У этой доски есть старшая сестра — живая интерактивная доска верфи
-(`tide-stack/board`: вкладки, кнопки работ, возврат в сессии, ~12 тысяч строк).
-Она в пакете НЕ едет: сегодня она прибита к одной машине абсолютными путями
-(кандидат 187) и несёт поверхности, которых у свежей установки нет. Стык
-намечен так: когда её отвяжут от домашних путей, верб `tide board` научится
-запускать её вместо встроенной страницы — тот же адрес, та же команда, богаче
-страница. До тех пор встроенная проекция — честный минимум: видно всё, нажимать
-пока нечего.
+This board has an older sister — the live interactive board of the yard
+(`tide-stack/board`: tabs, work buttons, jumping back into sessions, ~12 thousand
+lines). It does NOT travel in the package: today it's nailed to one machine by
+absolute paths (candidate 187) and carries surfaces a fresh install doesn't have.
+The joint is sketched like this: once it's unpinned from home paths, the `tide
+board` verb will learn to launch it instead of the built-in page — same address,
+same command, richer page. Until then the built-in projection is an honest
+minimum: you can see everything, there's just nothing to press yet.

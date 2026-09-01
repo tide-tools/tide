@@ -1153,7 +1153,7 @@ def register(arc_subparsers) -> None:
 
     snp = arc_subparsers.add_parser("new-session", help="create a session NN-<slug>/ inside a thread (-p thread), chained from the last (or --from)")
     snp.add_argument("slug")
-    snp.add_argument("-p", "--thread", required=True, help="the thread (тред) to add the session to")
+    snp.add_argument("-p", "--thread", required=True, help="the thread to add the session to")
     snp.add_argument("--from", dest="from_ref", metavar="REF", help="fork lineage from this session (branch/handoff); default = previous session")
     snp.add_argument("--goal", dest="goal_text", metavar="TEXT", help="fill the session's goal: at birth")
     snp.set_defaults(func=_cmd_new_session, _cmd="arc new-session")

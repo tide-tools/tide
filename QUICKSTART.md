@@ -1,38 +1,40 @@
-# tide — первый час
+# tide — the first hour
 
-Один проход: поставил → дом → проект → доска → первая закрытая работа.
-На каждом шаге написано, что ты увидишь. Нужен Python ≥ 3.12; для шага 6 —
-[Claude Code](https://claude.com/claude-code) (сама механика tide работает и без него).
+*Русская версия: [QUICKSTART.ru.md](QUICKSTART.ru.md)*
 
-Команды здесь показаны, чтобы ты понял цикл руками. В живой работе их ходит
-агент в сессии — ты говоришь словами.
+One pass: install → home → project → board → your first closed work.
+Every step says what you'll see. Needs Python ≥ 3.12; step 6 needs
+[Claude Code](https://claude.com/claude-code) (tide's own machinery works without it).
+
+The commands are spelled out here so you feel the cycle by hand. In real work an
+agent in a session walks them — you speak in words.
 
 ---
 
-## 1. Поставить
+## 1. Install
 
 ```bash
 git clone https://github.com/tide-tools/tide && cd tide
 ./install.sh
 ```
 
-**Увидишь:** `✓ tide <версия>` и подсказку следующего жеста. Если PATH не
-подхватился — скрипт печатает одну строку, которую надо добавить в профиль
-шелла, и это единственное, что тут можно «настраивать».
+**You'll see:** `✓ tide <version>` and a hint for the next gesture. If PATH
+didn't pick it up, the script prints one line to add to your shell profile —
+and that's the only thing here you ever "configure".
 
-## 2. Развернуть дом
+## 2. Unfold a home
 
-Дом (control-home) — одна папка, из которой ты ведёшь все проекты:
+The home (control-home) is one folder you lead every project from:
 
 ```bash
 mkdir ~/tide-home && cd ~/tide-home
 tide init --git
 ```
 
-**Увидишь** список созданного:
+**You'll see** a list of what was created:
 
 ```
-tide: tide control-home ready at /Users/ты/tide-home
+tide: tide control-home ready at /Users/you/tide-home
   + canon/CANON.md
   + state/strictness
   + .tide/
@@ -40,107 +42,122 @@ tide: tide control-home ready at /Users/ты/tide-home
   + .tide/plugins (core only)
   + README.md
   + git repo (birth commit)
-  + хуки Claude → …/.claude/settings.json (6)
-  + скиллы → …/skills: handoff, offload, tide-flow
+  + Claude hooks → …/.claude/settings.json (6)
+  + skills → …/skills: handoff, offload, tide-flow
 ```
 
-Хуки и скиллы встали сами — агент, открытый в этом доме, с первого дня умеет
-передать нить и выгрузиться. Свежий дом получает только кор; съёмные части
-смотри в `tide plugins`.
+Hooks and skills landed on their own — an agent opened in this home knows how to
+hand off the thread and offload from day one. A fresh home gets the core only;
+removable parts live in `tide plugins`.
 
-Чтобы `tide` находил дом из любой папки, добавь в профиль шелла:
+Now tell the shell where the home is — otherwise the next step will create a
+project but won't write it into the roster. It isn't an error, just one skipped
+line in the middle of an otherwise successful run:
+
+```
+  · roster  no control-home — set $TIDE_HOME or run 'tide init' somewhere
+```
+
+Miss that line and the project never shows up on the board.
 
 ```bash
 export TIDE_HOME=~/tide-home
 ```
 
-## 3. Завести проект
+Put the same line in your shell profile so `tide` finds the home from any folder
+and in later sessions.
 
-Проект — любая папка с кодом, старая или новая:
+## 3. Adopt a project
+
+A project is any folder with code, old or new:
 
 ```bash
-cd ~/code/myapp
-tide adopt --goal "маленькое веб-приложение — проба tide"
+mkdir -p ~/code/myapp && cd ~/code/myapp   # or step into a project you already have
+tide adopt --goal "a small web app — trying tide"
 ```
 
-**Увидишь** шаги усыновления:
+**You'll see** the adoption steps:
 
 ```
-tide: adopted myapp at /Users/ты/code/myapp
+tide: adopted myapp at /Users/you/code/myapp
   ✓ git     git init
   ✓ tide    scaffolded .tide/ (canon seeded with the goal)
   ✓ readme  README.md generated from canon
   ✓ commit  first commit (worktree-ready)
   · orca    orca CLI not on PATH — optional terminal manager, tide works without it
-  ✓ roster  rostered → /Users/ты/tide-home
+  ✓ roster  rostered → /Users/you/tide-home
 ready: tide menu → myapp
 ```
 
-Проект рождается говорящим: его README и канон несут твою цель, не шаблонные
-заглушки. В ростере дома он уже есть. Строка `orca` — про Orca, опциональный
-терминал-менеджер для мака: нет его — шаг просто пропускается, всё работает и
-так (не звать вовсе — `tide adopt --no-orca`).
+The project is born speaking: its README and canon carry your goal, not template
+filler. It's already in the home's roster. The `orca` line is about Orca, an
+optional terminal manager for macOS: if you don't have it the step is simply
+skipped and everything works anyway (to skip it entirely — `tide adopt --no-orca`).
 
-## 4. Открыть доску
+## 4. Open the board
 
 ```bash
 tide board --open
 ```
 
-**Увидишь** в браузере (http://127.0.0.1:8765): стрим дома, стрим myapp,
-строку HEALTH у каждого. Страница сама перечитывает `.tide/` каждые 30 секунд —
-всё, что ты сделаешь дальше, появится тут без перезапуска. Порт — флагом
-`--port`; с телефона и как службу — [docs/board.md](docs/board.md).
+**You'll see** in the browser (http://127.0.0.1:8765): the home's stream, myapp's
+stream, a HEALTH line on each. The page re-reads `.tide/` every 30 seconds —
+everything you do next shows up there without a restart. The port is a flag,
+`--port`; for your phone and as a service — [docs/board.md](docs/board.md).
 
-## 5. Первая работа — до закрытой
+## 5. First work — all the way to closed
 
-Работа — карточка согласования: агент предлагает шаги, ты говоришь «да»,
-агент чекает пункты только с пруфом, закрываешь — ты. Сами команды `tide work …`
-работают всегда, из коробки. Съёмная часть `work` добавляет поверх них скилл
-tide-work агенту и вкладку работ на доске — включи, чтобы в шаге 6 агент уже
-умел этот цикл (один раз на дом):
+A work is an agreement card: the agent proposes steps, you say yes, the agent
+checks items only with proof, and you close it. The `tide work …` commands always
+work, out of the box. The removable `work` part adds the tide-work skill for the
+agent and a works tab on the board — switch it on so the agent already knows this
+cycle in step 6 (once per home):
 
 ```bash
-tide plugins on work        # скилл агенту + место на доске; вербы работают и без этого
+tide plugins on work        # skill for the agent + a place on the board; the verbs work without it
 ```
 
-Проведи одну работу руками, чтобы увидеть цикл:
+Walk one work by hand to see the cycle:
 
 ```bash
 cd ~/code/myapp
-tide work add "приложение здоровается — проверить запуск"
-tide work propose 01 "запустить приложение и увидеть ответ"  # агентский жест: предложение
-tide work agree 01 --word "да"                               # твоё слово
-tide work take 01 --by "первая сессия"
-tide work check 01 1 --proof "запустил — отвечает"           # чек не проходит без пруфа
-tide work close 01 --word "принято"                          # done ставит только человек
+tide work add "the app says hello — check that it starts"
+tide work propose 01 "start the app and see it answer"   # an agent gesture: a proposal
+tide work agree 01 --word "yes"                          # your word
+tide work take 01 --by "first session"
+tide work check 01 1 --proof "started it — it answers"   # a check won't pass without proof
+tide work close 01 --word "accepted"                     # done is set by the human alone
 ```
 
-**Увидишь** после каждого жеста короткий ответ — что произошло и подсказку
-следующего жеста (обычно две строки), а на доске — карточку, которая прошла
-open → taken → review → done. `tide work show 01` покажет журнал: каждый
-жест — строка, со словами человека.
+**You'll see** a short answer after each gesture — what happened and a hint for
+the next one (usually two lines) — and on the board, a card that went
+open → taken → review → done. `tide work show 01` prints the journal: every
+gesture is a line, with the human's words in it.
 
-## 6. Сессия — дальше словами
+## 6. A session — from here on, in words
 
 ```bash
 cd ~/tide-home
 tide menu
 ```
 
-**Увидишь** пикер проектов; выбери myapp. Вторым вопросом спросит тред
-(`Thread … 0) + new thread` / `select>`) — жми Enter: новый, и назови его
-(тред — линия работы внутри проекта). Откроется терминал
-с Claude уже в контексте: роль, канон проекта, активная нить, ростер. Дальше ты
-говоришь, что хочешь («заведи работу: …», «передай нить», «покажи статус») —
-вербы из шага 5 агент ходит сам.
+**You'll see** a project picker; choose myapp. The second question is the
+thread — `Thread for myapp — continue one, or start new:`, with
+`0) + new thread` as the first row of the list. Press Enter for a new one and
+name it (a thread is a line of work inside a project). The third is the session
+inside that thread — `Session in thread … — continue one, or start new:`, with
+`0) + new session` there too. Enter again. A terminal opens
+with Claude already in context: its role, the project's canon, the live thread,
+the roster. From here you say what you want ("add a work: …", "hand off the
+thread", "show me the status") — the agent walks the verbs from step 5 itself.
 
-Сессии из `tide menu` открываются с полными правами инструментов
-(`--dangerously-skip-permissions`) — осознанный дефолт для интерактивной
-головы; вернуть обычные подтверждения — `tide menu --no-skip-permissions`.
+Sessions from `tide menu` open with full tool permissions
+(`--dangerously-skip-permissions`) — a deliberate default for an interactive
+head; to get the usual confirmations back, `tide menu --no-skip-permissions`.
 
 ---
 
-Захотел глубже: `tide help` — все команды; [README.md](README.md) — модель
-целиком; [docs/board.md](docs/board.md) — доска службой и с телефона.
-Сломалось — `tide report "что случилось"`: исходник у тебя, боль — автору.
+Want to go deeper: `tide help` — every command; [README.md](README.md) — the
+whole model; [docs/board.md](docs/board.md) — the board as a service and on your
+phone. Broken? `tide report "what happened"`: the source is yours, the pain goes
+to the author.

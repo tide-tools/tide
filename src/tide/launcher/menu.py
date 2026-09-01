@@ -256,7 +256,7 @@ def list_sessions(project: Path, thread_slug: str) -> List[Dict[str, str]]:
 
 def render_thread_menu(project_name: str, threads: List[Dict[str, str]]) -> str:
     """Numbered thread pick-list for *project_name*; ``0`` is the '+ new' row."""
-    lines = ["Thread (тред) for {0} — 0 = new thread, or continue one:".format(project_name)]
+    lines = ["Thread for {0} — 0 = new thread, or continue one:".format(project_name)]
     lines.append("  0) + new thread")
     for i, p in enumerate(threads, start=1):
         goal = p.get("goal") or ""
@@ -355,7 +355,7 @@ def _resolve_thread(project, project_name, *, thread_ref, new_thread, interactiv
         return None
     threads = list_threads(project)
     choice = select.select(
-        "Thread (тред) for {0} — continue one, or start new:".format(project_name),
+        "Thread for {0} — continue one, or start new:".format(project_name),
         [_thread_label(p) for p in threads],
         allow_new=True,
         new_label="+ new thread",
@@ -611,7 +611,7 @@ def _pick_thread_interactive(project, project_name, offer_threads=frozenset()):
         for t in ordered
     ]
     choice = select.select(
-        "Thread (тред) for {0} — continue one, or start new:".format(project_name),
+        "Thread for {0} — continue one, or start new:".format(project_name),
         labels,
         allow_new=True, new_label="+ new thread", allow_back=True,
     )
@@ -1397,21 +1397,21 @@ def register(subparsers) -> None:
         action="store_true",
         help="include archived projects in the pick-list (default: active only)",
     )
-    p.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
+    p.add_argument("--adapter", help="terminal adapter (orca|macos|tmux; default: pinned in settings, else auto-detect)")
     p.add_argument("--role", help="session role (default: orchestrator)")
     p.add_argument(
         "--thread",
         "--prism",  # back-compat alias (thread was once 'prism')
         dest="thread",
         metavar="SLUG",
-        help="continue an existing thread (тред) by slug (else 0=new in the picker)",
+        help="continue an existing thread by slug (else 0=new in the picker)",
     )
     p.add_argument(
         "--new-thread",
         "--new-prism",  # back-compat alias
         dest="new_thread",
         metavar="NAME",
-        help="start a fresh thread (тред) with this name",
+        help="start a fresh thread with this name",
     )
     p.add_argument(
         "--session",
@@ -1448,7 +1448,7 @@ def register(subparsers) -> None:
         help="▶ start a fresh session in a thread — tide creates + pins + registers it (board's ▶)",
     )
     sp.add_argument("project", help="roster project name")
-    sp.add_argument("--thread", metavar="SLUG", help="continue an existing thread (тред) by slug")
+    sp.add_argument("--thread", metavar="SLUG", help="continue an existing thread by slug")
     sp.add_argument("--new-thread", dest="new_thread", metavar="NAME",
                     help="start a fresh thread with this name")
     sp.add_argument("--goal", help="goal line for a new thread")
@@ -1456,7 +1456,7 @@ def register(subparsers) -> None:
                     help="the session's FIRST turn, in your words (default: the wired "
                          "▶ trigger — close the start-gate, build a plan). One line: "
                          "a newline would submit it early")
-    sp.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
+    sp.add_argument("--adapter", help="terminal adapter (orca|macos|tmux; default: pinned in settings, else auto-detect)")
     sp.add_argument("--role", help="session role (default: orchestrator)")
     sp.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="build the arc + launch command without opening a terminal")

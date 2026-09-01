@@ -219,7 +219,7 @@ def _wire_harness(root: Path) -> List[str]:
 
         path, wired = install_hooks(root)
         if wired:
-            notes.append("хуки Claude → {0} ({1})".format(path, len(wired)))
+            notes.append("Claude hooks → {0} ({1})".format(path, len(wired)))
     except Exception:  # noqa: BLE001 — the harness must not kill an init
         pass
     try:
@@ -228,12 +228,12 @@ def _wire_harness(root: Path) -> List[str]:
         done = [n for n, verdict in install_skills()
                 if verdict in ("linked", "copied", "replaced")]
         if done:
-            notes.append("скиллы → {0}: {1}".format(
+            notes.append("skills → {0}: {1}".format(
                 default_target_dir(), ", ".join(done)))
     except ValueError as exc:
         # No source checkout (published-channel install). Say so — a silent skip
         # would leave the person wondering why their agent knows no handoff.
-        notes.append("скиллы НЕ поставлены: {0}".format(exc))
+        notes.append("skills NOT installed: {0}".format(exc))
     except Exception:  # noqa: BLE001 — no ~/.claude at all: skip quietly
         pass
     return notes

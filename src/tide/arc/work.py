@@ -1960,7 +1960,7 @@ def register(subparsers) -> None:
     """Add the ``work`` command group to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
         "work",
-        help="работы: add/plan/propose/agree/drop/fix/take/step/check/uncheck/"
+        help="works: add/plan/propose/agree/drop/fix/take/step/check/uncheck/"
              "close/reopen/title/list/show")
     wsub = p.add_subparsers(dest="work_cmd")
 
@@ -1969,179 +1969,188 @@ def register(subparsers) -> None:
             "--project",
             help="target ANOTHER rostered project's works (by roster name)")
 
-    ap = wsub.add_parser("add", help="завести работу (зеркало формы доски)")
-    ap.add_argument("text", nargs="+", help="что сделать — одной строкой")
-    ap.add_argument("--deadline", help="YYYY-MM-DD (один дедлайн на работу)")
+    ap = wsub.add_parser("add", help="add a work (mirrors the board's form)")
+    ap.add_argument("text", nargs="+", help="what to do — one line")
+    ap.add_argument("--deadline", help="YYYY-MM-DD (one deadline per work)")
     ap.add_argument("--for", dest="for_project",
-                    help="поле project: в паспорте — где меняется мир")
+                    help="the 'project:' field — where the world changes")
     ap.add_argument("--cand", metavar="KEY",
-                    help="родить из кандидата (NN / NN-slug / slug): его текст "
-                         "ложится черновиком в ## план, сам он уходит с полки "
-                         "в __dropped__; имя работы всё равно ИЗ АРГУМЕНТА")
+                    help="born from a candidate (NN / NN-slug / slug): its text "
+                         "lands as a draft in '## план', the candidate leaves "
+                         "the shelf for __dropped__; the work's name still comes "
+                         "FROM THE ARGUMENT")
     _common(ap)
     ap.set_defaults(func=_cmd_add, _cmd="work add")
 
     pp = wsub.add_parser(
-        "plan", help="предложить план работы текстом (секция ## план; статус "
-                     "не двигает)")
+        "plan", help="propose the work's plan as text (the '## план' section; "
+                     "does not move status)")
     pp.add_argument("key")
     pp.add_argument("text", nargs="+",
-                    help="текст плана; \\n в аргументе — перенос строки")
+                    help="the plan text; \\n in the argument is a line break")
     _common(pp)
     pp.set_defaults(func=_cmd_plan, _cmd="work plan")
 
     op = wsub.add_parser(
-        "propose", help="предложить пункты чеклиста как «- [?]» — ждут «да» "
-                        "человека")
+        "propose", help="propose checklist items as '- [?]' — they wait for the "
+                        "human's yes")
     op.add_argument("key")
     op.add_argument("items", nargs="+",
-                    help="пункты, по одному аргументу; \\n в пункте — тайтл, "
-                         "дальше описание")
+                    help="items, one per argument; \\n inside an item ends the "
+                         "title, the rest is the description")
     op.add_argument("--replace", action="store_true",
-                    help="снять прежние «- [?]» и предложить эти (согласованные "
-                         "пункты не трогает)")
+                    help="drop the previous '- [?]' and propose these (agreed "
+                         "items are left alone)")
     _common(op)
     op.set_defaults(func=_cmd_propose, _cmd="work propose")
 
     gp = wsub.add_parser(
-        "agree", help="«да» человека словом: «- [?]» → «- [ ]» (--drop — «нет»)")
+        "agree", help="the human's yes, in words: '- [?]' → '- [ ]' "
+                      "(--drop is the no)")
     gp.add_argument("key")
     gp.add_argument("indexes", nargs="*", type=int, metavar="N",
-                    help="номера пунктов; без них — все предложенные разом")
+                    help="item numbers; without them, every proposed item at once")
     gp.add_argument("--all", action="store_true",
-                    help="явно: подтвердить все «- [?]»")
+                    help="explicitly: agree to every '- [?]'")
     gp.add_argument("--drop", nargs="+", type=int, metavar="N",
-                    help="снять предложенные пункты N (с их описаниями)")
+                    help="drop proposed items N (with their descriptions)")
     gp.add_argument("--word", required=True,
-                    help="слово человека дословно (в журнал)")
+                    help="the human's word, verbatim (goes to the journal)")
     _common(gp)
     gp.set_defaults(func=_cmd_agree, _cmd="work agree")
 
     xp = wsub.add_parser(
-        "drop", help="снять СОГЛАСОВАННЫЙ пункт N — только со словом человека "
-                     "(предложение «- [?]» снимают через agree --drop)")
+        "drop", help="drop an AGREED item N — only with the human's word "
+                     "(a proposed '- [?]' is dropped via agree --drop)")
     xp.add_argument("key")
-    xp.add_argument("index", type=int, help="номер пункта (с 1)")
+    xp.add_argument("index", type=int, help="item number (from 1)")
     xp.add_argument("--word", required=True,
-                    help="слово человека дословно (в журнал)")
+                    help="the human's word, verbatim (goes to the journal)")
     _common(xp)
     xp.set_defaults(func=_cmd_drop, _cmd="work drop")
 
     kp = wsub.add_parser(
         "checklist",
-        help="жест 1: заменить чеклист СОГЛАСОВАННЫМИ пунктами (+журнал)")
+        help="gesture 1: replace the checklist with AGREED items (+journal)")
     kp.add_argument("key")
     kp.add_argument("items", nargs="+",
-                    help="пункты, по одному аргументу; \\n в пункте — тайтл, "
-                         "дальше описание")
+                    help="items, one per argument; \\n inside an item ends the "
+                         "title, the rest is the description")
     kp.add_argument("--force", action="store_true",
-                    help="заменить несмотря на чекнутые (слово человека)")
+                    help="replace despite checked items (the human's word)")
     _common(kp)
     kp.set_defaults(func=_cmd_checklist, _cmd="work checklist")
 
     fp = wsub.add_parser(
-        "fix", help="накидка человека у приёмки: пункты в ## фиксы, сразу "
-                    "согласованные его словом")
+        "fix", help="what the human adds at acceptance: items into '## фиксы', "
+                    "agreed by their word right away")
     fp.add_argument("key")
     fp.add_argument("items", nargs="+",
-                    help="пункты, по одному аргументу; \\n в пункте — тайтл, "
-                         "дальше описание")
+                    help="items, one per argument; \\n inside an item ends the "
+                         "title, the rest is the description")
     fp.add_argument("--word", required=True,
-                    help="накидка человека дословно (в журнал)")
+                    help="what the human added, verbatim (goes to the journal)")
     _common(fp)
     fp.set_defaults(func=_cmd_fix, _cmd="work fix")
 
-    tp = wsub.add_parser("take", help="взять работу: open → taken (+нить, +журнал)")
-    tp.add_argument("key", help="NN, NN-slug или slug работы")
-    tp.add_argument("--by", help="кто берёт (в taken-by и журнал)")
-    tp.add_argument("--word", help="слово человека, по которому берёшь")
-    tp.add_argument("--thread", help="ответственная нить явно (иначе — авто "
-                    "из сессии, что зовёт)")
+    tp = wsub.add_parser("take", help="take the work: open → taken "
+                                      "(+thread, +journal)")
+    tp.add_argument("key", help="NN, NN-slug or the work's slug")
+    tp.add_argument("--by", help="who takes it (into taken-by and the journal)")
+    tp.add_argument("--word", help="the human's word you're taking it on")
+    tp.add_argument("--thread", help="the owning thread, explicitly (otherwise "
+                    "auto, from the calling session)")
     _common(tp)
     tp.set_defaults(func=_cmd_take, _cmd="work take")
 
     dp = wsub.add_parser(
-        "dispatch", help="отметить, что строитель отправлен: строка в журнал "
-                         "(статус не двигает; повторный — ещё одна строка)")
+        "dispatch", help="mark that a builder was sent out: a line in the "
+                         "journal (status unchanged; call it again and you get "
+                         "one more line)")
     dp.add_argument("key")
-    dp.add_argument("--to", required=True, metavar="ИМЯ",
-                    help="кого отправили строить")
+    dp.add_argument("--to", required=True, metavar="NAME",
+                    help="who was sent out to build")
     _common(dp)
     dp.set_defaults(func=_cmd_dispatch, _cmd="work dispatch")
 
     hp = wsub.add_parser(
-        "thread", help="ответственная нить работы: прикрепить/сменить/снять")
+        "thread", help="the work's owning thread: attach / change / clear")
     hp.add_argument("key")
-    hp.add_argument("--set", help="слаг нити (NN-@slug) или адрес proj/NN-@slug")
-    hp.add_argument("--clear", action="store_true", help="снять нить")
+    hp.add_argument("--set", help="the thread's slug (NN-@slug) or an address "
+                                  "proj/NN-@slug")
+    hp.add_argument("--clear", action="store_true", help="clear the thread")
     _common(hp)
     hp.set_defaults(func=_cmd_thread, _cmd="work thread")
 
     stp = wsub.add_parser(
-        "step", help="шаг плана нити, к которому идёт работа (обычно приезжает "
-                     "сам вместе с нитью — руками только когда промолчал)")
+        "step", help="the thread's plan step this work heads for (usually "
+                     "arrives with the thread — by hand only when it stayed "
+                     "silent)")
     stp.add_argument("key")
-    stp.add_argument("--set", type=int, metavar="N", help="номер шага (с 1)")
-    stp.add_argument("--clear", action="store_true", help="снять шаг")
-    stp.add_argument("--word", help="слово человека, если шаг ставит он (в журнал)")
+    stp.add_argument("--set", type=int, metavar="N", help="step number (from 1)")
+    stp.add_argument("--clear", action="store_true", help="clear the step")
+    stp.add_argument("--word", help="the human's word, if they set the step "
+                                    "(goes to the journal)")
     _common(stp)
     stp.set_defaults(func=_cmd_step, _cmd="work step")
 
     atp = wsub.add_parser(
-        "at", help="курсор: на каком пункте исполнитель сейчас (доска "
-                   "подчёркивает его). Снимается сам, когда пункт чекнут")
+        "at", help="cursor: which item the doer is on right now (the board "
+                   "underlines it). Clears itself when the item is checked")
     atp.add_argument("key")
     atp.add_argument("index", type=int, nargs="?",
-                     help="номер пункта (с 1); без него — с --clear")
-    atp.add_argument("--clear", action="store_true", help="снять курсор")
+                     help="item number (from 1); without it, use --clear")
+    atp.add_argument("--clear", action="store_true", help="clear the cursor")
     _common(atp)
     atp.set_defaults(func=_cmd_at, _cmd="work at")
 
     cp = wsub.add_parser(
-        "check", help="чекнуть пункт N с пруфом (все чекнуты → review сам)")
+        "check", help="check item N with proof (all checked → review on its own)")
     cp.add_argument("key")
-    cp.add_argument("index", type=int, help="номер пункта (с 1)")
+    cp.add_argument("index", type=int, help="item number (from 1)")
     cp.add_argument("--proof", required=True,
-                    help="что именно сделано: коммит, ссылка, файл")
+                    help="what exactly was done: a commit, a link, a file")
     _common(cp)
     cp.set_defaults(func=_cmd_check, _cmd="work check")
 
-    up = wsub.add_parser("uncheck", help="расчекнуть пункт N (review → taken)")
+    up = wsub.add_parser("uncheck", help="uncheck item N (review → taken)")
     up.add_argument("key")
     up.add_argument("index", type=int)
-    up.add_argument("--reason", help="почему расчекнут (в журнал)")
+    up.add_argument("--reason", help="why it was unchecked (goes to the journal)")
     _common(up)
     up.set_defaults(func=_cmd_uncheck, _cmd="work uncheck")
 
     dp = wsub.add_parser(
-        "close", help="закрыть: done ставится ТОЛЬКО со словом человека (им же "
-                      "принимается всё сделанное)")
+        "close", help="close it: done is set ONLY with the human's word (the "
+                      "same word accepts everything done)")
     dp.add_argument("key")
     dp.add_argument("--word", required=True,
-                    help="слово человека, которым закрыто и принято (в журнал)")
+                    help="the human's word that closes and accepts it (goes to "
+                         "the journal)")
     _common(dp)
     dp.set_defaults(func=_cmd_close, _cmd="work close")
 
     np = wsub.add_parser(
-        "title", help="переименовать работу: H1 меняется ТОЛЬКО со словом человека")
+        "title", help="rename the work: the H1 changes ONLY with the human's word")
     np.add_argument("key")
-    np.add_argument("title", nargs="+", help="новый заголовок — коротко, одной строкой")
+    np.add_argument("title", nargs="+", help="the new title — short, one line")
     np.add_argument("--word", required=True,
-                    help="слово человека дословно (в журнал)")
+                    help="the human's word, verbatim (goes to the journal)")
     _common(np)
     np.set_defaults(func=_cmd_title, _cmd="work title")
 
-    rp = wsub.add_parser("reopen", help="открыть закрытую заново: done → open")
+    rp = wsub.add_parser("reopen", help="open a closed work again: done → open")
     rp.add_argument("key")
-    rp.add_argument("--word", help="слово человека (в журнал)")
+    rp.add_argument("--word", help="the human's word (goes to the journal)")
     _common(rp)
     rp.set_defaults(func=_cmd_reopen, _cmd="work reopen")
 
-    lp = wsub.add_parser("list", help="доска работ текстом (живые + закрытые)")
+    lp = wsub.add_parser("list", help="the works board as text (live + closed)")
     _common(lp)
     lp.set_defaults(func=_cmd_list, _cmd="work list")
 
-    sp = wsub.add_parser("show", help="паспорт работы как есть (файл = правда)")
+    sp = wsub.add_parser("show", help="the work's card as it is (the file is "
+                                      "the truth)")
     sp.add_argument("key")
     _common(sp)
     sp.set_defaults(func=_cmd_show, _cmd="work show")

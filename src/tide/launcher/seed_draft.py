@@ -458,10 +458,11 @@ def register_draft(hsub) -> None:
     """Повесить ``draft`` на группу ``handoffs`` (зовётся из handoff_queue.register)."""
     dp = hsub.add_parser(
         "draft",
-        help="черновик сида по контракту семи блоков — из пульса, решений, кандидатов",
+        help="draft a handoff seed on the seven-block contract — from the "
+             "pulse, the decisions and the candidates",
     )
     dp.add_argument(
         "session", nargs="?",
-        help="арка-сессии (по умолчанию текущая, по $CLAUDE_CODE_SESSION_ID)",
+        help="the session arc (default: the current one, via $CLAUDE_CODE_SESSION_ID)",
     )
     dp.set_defaults(func=_cmd_draft, _cmd="handoffs draft")

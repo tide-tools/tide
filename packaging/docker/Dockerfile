@@ -26,8 +26,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# tide's board speaks Russian; without a UTF-8 locale the check's own output
-# mangles it and a real encoding bug would be indistinguishable from noise.
+# The surfaces speak English, but the cards on disk still carry Russian section
+# headers and journal lines; without a UTF-8 locale the check's own output mangles
+# them and a real encoding bug would be indistinguishable from noise.
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # A release install must work for a NON-root user — root masks permission bugs.

@@ -1,85 +1,88 @@
 # tide
 
-**Машина, которой ведут несколько проектов из одного места. CLI + markdown +
-доска на localhost.**
+*Русская версия: [README.ru.md](README.ru.md)*
 
-Ты ведёшь несколько проектов разом. У каждого — свой контекст, свои
-недоделанные линии, и между сессиями всё это теряется. tide держит нить:
-всё состояние — обычный markdown в `.tide/` каждого проекта (его можно `cat`,
-`grep` и `diff`), команды — один бинарник `tide`, вид сверху — доска в браузере.
+**One seat for many projects. CLI + markdown + a board on localhost.**
+
+You run several projects at once. Each has its own context, its own unfinished
+lines, and between sessions all of it goes missing. tide holds the thread: all
+state is plain markdown in each project's `.tide/` (you can `cat`, `grep` and
+`diff` it), the commands are one binary `tide`, and the view from above is a
+board in the browser.
 
 The whole idea on one page: https://tide-tools.github.io/tide/
 
-## Живая модель
+## The living model
 
-- **Контрол-дом** — одна папка, из которой ты ведёшь всё: реестр проектов
-  (`roster.md`) плюс собственный `.tide/` (tide ведёт сам себя тем же способом).
-- **Проекты** живут где жили; tide кладёт слой `.tide/` поверх и вписывает их
-  в ростер (`tide adopt`).
-- **Нити** — работа идёт линиями, у нити есть цель и план; внутри нити —
-  **сессии**: одна села, поработала, передала следующей (handoff). Нить не
-  рвётся, даже когда чат кончился.
-- **Работы** — согласование человек↔агент на одной карточке: свободный текст,
-  чеклист, журнал. Агент предлагает пункты и чекает их только с пруфом;
-  «сделано» ставит только человек, словом.
-- **Доска** — `tide board`: страница на localhost со стримами дома и всех
-  проектов и карточками работ. Стол входящих (issues) и другие поверхности —
-  съёмные части, смотри `tide plugins`.
+- **Control-home** — one folder you lead everything from: the project registry
+  (`roster.md`) plus its own `.tide/` (tide runs itself the same way).
+- **Projects** stay where they live; tide lays a `.tide/` layer on top and
+  writes them into the roster (`tide adopt`).
+- **Threads** — work runs in lines; a thread has a goal and a plan, and inside
+  it live **sessions**: one sits down, works, hands off to the next. The thread
+  doesn't break when the chat ends.
+- **Works** — the human↔agent agreement on one card: free text, a checklist, a
+  journal. The agent proposes items and checks them only with proof; "done" is
+  set by the human alone, with a word.
+- **The board** — `tide board`: a page on localhost with the streams of the
+  home and every project, and the work cards. The inbox table (issues) and
+  other surfaces are removable parts — see `tide plugins`.
 
-Агенту в сессии команды помнить не надо — ты говоришь словами, он ходит
-вербами `tide`. Полный список: `tide help`.
+An agent in a session doesn't have to remember commands — you speak in words,
+it walks the `tide` verbs. Full list: `tide help`.
 
-## Установка
+## Install
 
-Нужен **Python ≥ 3.12**. Главная дверь — клон и одна команда:
+Needs **Python ≥ 3.12**. The main door is a clone and one command:
 
 ```bash
 git clone https://github.com/tide-tools/tide && cd tide
 ./install.sh
 ```
 
-`install.sh` кладёт `tide` на PATH (через pipx, если он есть, иначе — свой
-venv + симлинк) и говорит следующий жест. Исходник при этом остаётся у тебя —
-это не побочный эффект, а суть: сломалось — чинится на месте (см. ниже).
+`install.sh` puts `tide` on your PATH (through pipx if you have it, otherwise
+its own venv + a symlink) and tells you the next gesture. The source stays with
+you — that's not a side effect, that's the point: when it breaks, you fix it in
+place (see below).
 
-Дальше — [QUICKSTART.md](QUICKSTART.md): один проход от пустой папки до первой
-закрытой работы.
+Next: [QUICKSTART.md](QUICKSTART.md) — one pass from an empty folder to your
+first closed work.
 
-Homebrew остаётся вторым каналом (`brew tap tide-tools/tide
+Homebrew stays the second channel (`brew tap tide-tools/tide
 https://github.com/tide-tools/homebrew-tide && brew install tide-tools/tide/tide`),
-но несёт только бинарник — скиллы, хуки и доска едут в клоне.
+but it carries the binary only — skills, hooks and the board travel with the clone.
 
-## Слой поверх, а не внутри
+## A layer on top, not inside
 
-tide-слой — внешний по отношению к твоему рабочему репозиторию. В живом
-репозитории tide ничего не коммитит: `.tide/` просто лежит рядом с кодом, и
-держать его в истории проекта или добавить `.tide/` в `.gitignore` — твой
-выбор. Пакет обезличен: скиллы говорят ролями, не именами, и никаких чужих
-путей в твой проект не приезжает.
+The tide layer is external to your working repository. tide commits nothing
+inside a live repo: `.tide/` simply sits next to the code, and whether you keep
+it in the project's history or add `.tide/` to `.gitignore` is your call. The
+package is impersonal: skills speak in roles, not names, and no one else's
+paths arrive in your project.
 
-## Доска, в том числе с телефона
+## The board, phone included
 
 ```bash
 tide board --open
 ```
 
-Сервер слушает только localhost; до телефона доску доносит `tailscale serve` —
-две команды, инструкция в [docs/board.md](docs/board.md). Там же — как
-поставить доску launchd-службой, чтобы жила сама.
+The server listens on localhost only; `tailscale serve` carries the board to
+your phone — two commands, instructions in [docs/board.md](docs/board.md). Same
+page: how to run the board as a launchd service so it lives on its own.
 
-## Обновления и починка
+## Updates and repairs
 
-- `tide self-update` — сам скажет, когда появился свежий релиз; на клоне это
-  `git pull` + переустановка, с гейтом и откатом.
-- Сломалось — исходник уже у тебя: правь, прогони `./install.sh` (переустановка
-  на месте), и отправь боль автору — `tide report "что случилось"` (уходит
-  gh-issue или файлом, домашние пути вычищаются).
+- `tide self-update` — it tells you when a fresh release lands; on a clone
+  that's `git pull` + reinstall, gated, with rollback.
+- Broken? The source is already yours: fix it, run `./install.sh` (reinstall in
+  place), and send the pain upstream — `tide report "what happened"` (goes out
+  as a gh issue or a file, home paths scrubbed).
 
-## Разработка
+## Development
 
 ```bash
-python3.12 -m pytest -q     # суита накопительная и держится зелёной
-packaging/docker/run.sh     # чистая машина: clone → install → доска, в докере
+python3.12 -m pytest -q     # the suite is cumulative and stays green
+packaging/docker/run.sh     # a clean machine: clone → install → board, in docker
 ```
 
-Маленький UNIX-инструмент, сделан таким нарочно. MIT.
+A small UNIX tool, deliberately so. MIT.

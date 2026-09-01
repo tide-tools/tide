@@ -396,6 +396,6 @@ def register(subparsers) -> None:
         "--line",
         action="store_true",
         dest="line",
-        help="print ONLY the tier-0 health line (Светофор) + tristate exit code (0/1/2)",
+        help="print ONLY the tier-0 health line (the traffic light) + tristate exit code (0/1/2)",
     )
     p.set_defaults(func=_cmd_doctor, _cmd="doctor")

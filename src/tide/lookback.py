@@ -180,7 +180,7 @@ def register(subparsers) -> None:
     """Add the top-level ``lookback`` command group (called by cli.py)."""
     p = subparsers.add_parser(
         "lookback",
-        help="reading watermark (отлив): status / mark after a full pass / audit log",
+        help="reading watermark (the ebb): status / mark after a full pass / audit log",
     )
     lsub = p.add_subparsers(dest="lookback_cmd")
 

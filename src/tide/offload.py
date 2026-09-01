@@ -410,11 +410,15 @@ def register(subparsers) -> None:
     """Add the top-level ``offload`` command (called by cli.py)."""
     p = subparsers.add_parser(
         "offload",
-        help="по-ходовая выгрузка: строка в ## context паспорта сессии (+ --cursor)",
+        help="offload as you go: a line into the session's '## context' "
+             "(+ --cursor)",
     )
     p.add_argument("session", help="open session slug (nested resolve across threads)")
-    p.add_argument("--cursor", help="ТЕКУЩЕЕ ДЕЙСТВИЕ одной строкой, настоящее время («женю доску с формой»)")
+    p.add_argument("--cursor", help="WHAT YOU ARE DOING right now, one line, "
+                                    "present tense ('wiring the board to the form')")
     p.add_argument("--next", dest="next_steps",
-                   help="1–3 следующих шага через « · » — доска покажет как «дальше»")
-    p.add_argument("note", nargs="*", help="context note: что решил/сделал, по-человечески")
+                   help="1-3 next steps separated by ' · ' — the board shows "
+                        "them as what's next")
+    p.add_argument("note", nargs="*", help="context note: what you decided or "
+                                           "did, in plain words")
     p.set_defaults(func=_cmd_offload, _cmd="offload")

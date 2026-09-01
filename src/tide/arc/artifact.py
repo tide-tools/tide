@@ -386,7 +386,7 @@ def _cmd_show(args) -> int:
 def register(subparsers) -> None:
     """Add the ``artifact`` command group to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
-        "artifact", help="артефакты: то, что агент кладёт человеку на стол — "
+        "artifact", help="artifacts: what the agent puts on the human's table — "
                          "add/list/show/taken/reopen")
     asub = p.add_subparsers(dest="artifact_cmd")
 
@@ -396,37 +396,41 @@ def register(subparsers) -> None:
             help="target ANOTHER rostered project's artifacts (by roster name)")
 
     ap = asub.add_parser(
-        "add", help="подать вещь на стол: сообщение, команда или файл")
+        "add", help="put a thing on the table: a message, a command or a file")
     ap.add_argument("caption", nargs="+",
-                    help="подпись — что это и что с ним сделать")
-    ap.add_argument("--text", help="текст сообщения; \\n в аргументе — перенос строки")
-    ap.add_argument("--cmd", help="команда на запуск, как есть")
-    ap.add_argument("--file", dest="file", help="путь к файлу, как есть")
-    ap.add_argument("--ask", help="вопрос человеку: агент встал и ждёт слова "
-                                  "(отвечают словом в сессию, не кнопкой)")
-    ap.add_argument("--work", help="NN работы, из которой вещь вышла")
+                    help="the caption — what it is and what to do with it")
+    ap.add_argument("--text", help="the message text; \\n in the argument is a "
+                                   "line break")
+    ap.add_argument("--cmd", help="a command to run, as is")
+    ap.add_argument("--file", dest="file", help="a path to a file, as is")
+    ap.add_argument("--ask", help="a question for the human: the agent has "
+                                  "stopped and waits for a word (answered in "
+                                  "the session, not with a button)")
+    ap.add_argument("--work", help="NN of the work this thing came out of")
     _common(ap)
     ap.set_defaults(func=_cmd_add, _cmd="artifact add")
 
     tp = asub.add_parser(
-        "taken", help="забрано: new → taken ТОЛЬКО со словом человека")
-    tp.add_argument("key", help="NN, NN-slug или slug артефакта")
+        "taken", help="taken off the table: new → taken, ONLY with the human's word")
+    tp.add_argument("key", help="NN, NN-slug or the artifact's slug")
     tp.add_argument("--word", required=True,
-                    help="слово человека дословно (в журнал)")
+                    help="the human's word, verbatim (goes to the journal)")
     _common(tp)
     tp.set_defaults(func=_cmd_taken, _cmd="artifact taken")
 
-    rp = asub.add_parser("reopen", help="вернуть на стол: taken → new")
+    rp = asub.add_parser("reopen", help="put it back on the table: taken → new")
     rp.add_argument("key")
-    rp.add_argument("--word", help="слово человека (в журнал)")
+    rp.add_argument("--word", help="the human's word (goes to the journal)")
     _common(rp)
     rp.set_defaults(func=_cmd_reopen, _cmd="artifact reopen")
 
-    lp = asub.add_parser("list", help="стол текстом: живые + забранные счётом")
+    lp = asub.add_parser("list", help="the table as text: live ones in full, "
+                                      "taken ones as a count")
     _common(lp)
     lp.set_defaults(func=_cmd_list, _cmd="artifact list")
 
-    sp = asub.add_parser("show", help="паспорт артефакта как есть (файл = правда)")
+    sp = asub.add_parser("show", help="the artifact's card as it is (the file "
+                                      "is the truth)")
     sp.add_argument("key")
     _common(sp)
     sp.set_defaults(func=_cmd_show, _cmd="artifact show")

@@ -100,7 +100,7 @@ def test_cli_init_wires_the_hooks_and_delivers_the_skills(in_empty, capsys, monk
     assert (skills / "handoff" / "SKILL.md").is_file()
     assert (skills / "offload").is_symlink()
     out = capsys.readouterr().out
-    assert "хуки Claude" in out and "скиллы" in out
+    assert "Claude hooks" in out and "skills" in out
 
 
 def test_cli_init_never_touches_a_foreign_skill(in_empty, monkeypatch):
