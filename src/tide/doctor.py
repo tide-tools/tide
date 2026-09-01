@@ -205,12 +205,27 @@ def check_hooks(root: Optional[Path]) -> CheckResult:
     )
 
 
-def check_install_marker(marker_path: Optional[Path] = None) -> CheckResult:
+def _running_version() -> str:
+    """The version of the code answering right now (lazy: keeps this module pure)."""
+    from . import __version__
+
+    return __version__
+
+
+def check_install_marker(marker_path: Optional[Path] = None,
+                         running: Optional[str] = None) -> CheckResult:
     """Pass when the marker is valid; warn when absent (fresh install); fail when corrupt.
 
     An ABSENT marker is normal on a fresh install (the first ``tide self-update``
     lays it down) — a warn, not a failure. A PRESENT-but-unparseable / version-less
     marker is genuine corruption — a fail.
+
+    A marker that names an OLDER version than the code answering right now is a
+    warn too: it means the files execute at one version while the installation on
+    disk was laid down at another, which is exactly the state that let five
+    releases pass with every command-line surface quoting a stale number. The
+    fix is a reinstall, and the line says so rather than leaving the two numbers
+    sitting next to each other for a human to spot.
     """
     path = Path(marker_path) if marker_path is not None else default_marker_path()
     if not path.is_file():
@@ -227,7 +242,16 @@ def check_install_marker(marker_path: Optional[Path] = None) -> CheckResult:
             "install-marker", STATUS_FAIL,
             "install marker malformed (no 'version'): {0}".format(path),
         )
-    return CheckResult("install-marker", STATUS_OK, "install marker valid (version {0})".format(data["version"]))
+    marked = data["version"]
+    live = running if running is not None else _running_version()
+    if live and marked != live:
+        return CheckResult(
+            "install-marker", STATUS_WARN,
+            "installed {0}, but the code answering is {1} — reinstall so every "
+            "surface quotes one number ('tide self-update', or "
+            "'pip install -e .' in the checkout)".format(marked, live),
+        )
+    return CheckResult("install-marker", STATUS_OK, "install marker valid (version {0})".format(marked))
 
 
 def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:

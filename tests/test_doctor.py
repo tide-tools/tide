@@ -193,7 +193,7 @@ def test_check_hooks_fails_on_invalid_settings_json(tmp_project):
 def test_check_install_marker_passes_on_valid_marker(tmp_path):
     marker = tmp_path / "install-marker.json"
     marker.write_text(json.dumps({"version": "1.0.3", "commit": "abc"}), encoding="utf-8")
-    res = doctor.check_install_marker(marker_path=marker)
+    res = doctor.check_install_marker(marker_path=marker, running="1.0.3")
     assert res.status == doctor.STATUS_OK
     assert "1.0.3" in res.detail
 
@@ -399,3 +399,13 @@ def test_roster_worktrees_ok_and_empty(tmp_path):
     roster.add(home, "p", str(good))
     res = doctor.check_roster_worktrees(home)
     assert res.status == doctor.STATUS_OK
+
+
+def test_marker_older_than_the_running_code_is_a_warn_with_the_fix(tmp_path):
+    """Five releases passed with every surface quoting a stale number — say it."""
+    marker = tmp_path / "install-marker.json"
+    marker.write_text(json.dumps({"version": "1.0.43"}), encoding="utf-8")
+    res = doctor.check_install_marker(marker_path=marker, running="1.0.48")
+    assert res.status == doctor.STATUS_WARN
+    assert "1.0.43" in res.detail and "1.0.48" in res.detail
+    assert "reinstall" in res.detail
