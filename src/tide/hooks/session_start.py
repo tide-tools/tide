@@ -325,6 +325,36 @@ def _session_decisions(root: Path, session: Optional[str]) -> List[str]:
         return []
 
 
+THREAD_SCREEN_POINTER = (
+    "tide · to see the whole thread — goal, current step, decisions by state, "
+    "what's moving, what waits for the human: `tide thread` (hygiene: "
+    "`tide thread --check`). Ask the machine before asking the human to retell it."
+)
+
+
+def _thread_screen_pointer(root: Path, session: Optional[str]) -> List[str]:
+    """One line pointing a fresh session at ``tide thread`` — or [].
+
+    The screen's named consumer (release decision 25 — у всякой записи назван
+    потребитель) is the session that just woke up with nothing but a seed. If
+    nobody tells it the screen exists, it does what it has always done: asks the
+    human to retell the thread. Printed only when this session actually sits in a
+    thread; best-effort and silent otherwise, like every other hook add-on.
+    """
+    if not session:
+        return []
+    try:
+        from .. import offload
+
+        entry = offload.find_session_by_claude_id(Path(root), session)
+        if entry is None:
+            return []
+        entry.parents[1]        # raises IndexError when it is not inside a thread
+        return [THREAD_SCREEN_POINTER]
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        return []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
     """Render the SessionStart text: health line + board + role reminder + warnings.
@@ -342,6 +372,7 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
     # Cold entry shows LIVE work only: closed threads are finished history (live:
     # 18 of 23 STREAM rows) and belong to `tide status`, not to the opening breath.
     lines += [board.render_board(root, include_closed=False), "", _role_reminder(role)]
+    lines += _thread_screen_pointer(root, session)
 
     # cand 128-A: the current nit's OPEN decisions ride in right below the role, so
     # an in-place/resume session sees what's already concluded and doesn't re-decide

@@ -142,15 +142,31 @@ def test_block_next_splits_the_middot_chain():
     ]
 
 
-def test_block_decisions_open_before_settled_and_drops_superseded():
+def test_block_decisions_puts_the_unkept_promises_first():
     recs = [
-        {"num": "01", "what": "оседает", "status": "settled", "slug": "a"},
-        {"num": "02", "what": "живое", "status": "open", "slug": "b"},
+        {"num": "01", "what": "выполнено", "status": "accepted",
+         "done": "2026-09-01", "slug": "a"},
+        {"num": "02", "what": "живое", "status": "accepted", "slug": "b"},
         {"num": "03", "what": "история", "status": "superseded", "slug": "c"},
+        {"num": "04", "what": "снято", "status": "dropped", "slug": "d"},
     ]
     assert seed_draft.block_decisions(recs) == [
-        "- 02 — живое (open)",
-        "- 01 — оседает (settled)",
+        "- 02 — живое (not done)",
+        "- 01 — выполнено (done)",
+    ]
+
+
+def test_block_decisions_reads_the_pre_two_axis_spellings():
+    """Old logs say open/settled — the seed must still group them right."""
+    recs = [
+        {"num": "01", "what": "осевшее", "status": "settled", "status_raw": "settled",
+         "slug": "a"},
+        {"num": "02", "what": "живое", "status": "open", "status_raw": "open",
+         "slug": "b"},
+    ]
+    assert seed_draft.block_decisions(recs) == [
+        "- 02 — живое (not done)",
+        "- 01 — осевшее (done)",
     ]
 
 
@@ -219,8 +235,8 @@ def test_build_draft_maps_every_source_to_its_block(tmp_project, session):
     assert "воркер строит tide handoffs draft" in out          # курсор
     assert "разложили маппинг источник→блок" in out            # хвост пульса
     assert "- принять работу 16" in out and "- чекнуть шаг 2" in out
-    assert "- 02 — воркеры видны только через работу (open)" in out
-    assert "- 01 — контракт сида: семь блоков (settled)" in out
+    assert "- 02 — воркеры видны только через работу (not done)" in out
+    assert "- 01 — контракт сида: семь блоков (done)" in out
     assert "- кандидаты сессии: 01" in out
     assert "- доска = launchd-служба на :8452" in out          # окружение как есть
     # решения: open идёт ПЕРЕД settled

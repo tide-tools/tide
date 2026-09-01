@@ -214,20 +214,26 @@ def block_next(nxt: Sequence[str]) -> List[str]:
 
 
 def block_decisions(records: Sequence[Dict[str, object]]) -> List[str]:
-    """Решения нити: ``NN — what (status)``, сначала open, потом settled.
+    """Решения нити: ``NN — what (status)``, сначала accepted, потом done.
 
-    Open — то, что нить УЖЕ решила и не перерешивает; settled осело в канон, но
-    в сиде остаётся анти-перерешиванием. ``superseded`` — история, её в сид не
-    тащим. Порядок внутри группы — по номеру: номер и есть хронология.
+    Сначала то, что В СИЛЕ и ещё НЕ выполнено — принимающая сессия чаще всего
+    ломает именно это, потому что оно выглядит как незанятое место. Следом
+    выполненное: оно тоже анти-перерешивание, но спорить с ним уже дороже.
+    ``superseded``/``dropped`` — история, её в сид не тащим. Порядок внутри
+    группы — по номеру: номер и есть хронология.
     """
+    from ..arc import decision  # lazy: decision reaches up into cli (known debt)
+
+    live = [r for r in records
+            if decision.normalize_status(str(r.get("status") or "")) == decision.ACCEPTED]
     out: List[str] = []
-    for want in ("open", "settled"):
-        for rec in records:
-            status = str(rec.get("status") or "open").strip() or "open"
-            if status != want:
+    for done in (False, True):
+        for rec in live:
+            if decision.is_done(rec) is not done:
                 continue
             what = str(rec.get("what") or "").strip() or str(rec.get("slug") or "")
-            out.append("- {0} — {1} ({2})".format(rec.get("num"), what, status))
+            out.append("- {0} — {1} ({2})".format(
+                rec.get("num"), what, "done" if done else "not done"))
     return out
 
 

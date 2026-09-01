@@ -428,3 +428,37 @@ def test_find_by_sid_falls_back_to_closed_sessions(tmp_project):
     s.rename(closed)  # арка закрыта, чат (sid) продолжает жить
     hit = find_session_by_claude_id(tmp_project, "sid-closed-live")
     assert hit == closed
+
+
+# --- summary: the arc says in one line what it holds (work 64, point 3) -------
+
+def test_summary_replaces_the_template_placeholder(tmp_project, session):
+    passport = offload.offload(tmp_project, "otliv",
+                               summary="три отчёта дня и карта нити")
+    text = passport.read_text(encoding="utf-8")
+    body = text.partition(offload.SUMMARY_SECTION)[2].partition("\n## ")[0].strip()
+    assert body == "три отчёта дня и карта нити"
+    assert "a few plain sentences" not in text      # the placeholder is gone
+
+
+def test_summary_is_rewritten_not_appended(tmp_project, session):
+    offload.offload(tmp_project, "otliv", summary="первая редакция")
+    passport = offload.offload(tmp_project, "otliv", summary="вторая редакция")
+    body = passport.read_text(encoding="utf-8").partition(
+        offload.SUMMARY_SECTION)[2].partition("\n## ")[0].strip()
+    assert body == "вторая редакция"               # a showcase, not a journal
+
+
+def test_summary_alone_is_enough_to_pulse(tmp_project, session):
+    """A summary is a real pulse — it must not need a note to be accepted."""
+    passport = offload.offload(tmp_project, "otliv", summary="что тут лежит")
+    assert (fields.read_field(passport, "offloaded-at") or "").startswith("20")
+
+
+def test_summary_does_not_disturb_cursor_or_context(tmp_project, session):
+    offload.offload(tmp_project, "otliv", note="сделал раз", cursor="делаю два")
+    passport = offload.offload(tmp_project, "otliv", summary="витрина арки")
+    text = passport.read_text(encoding="utf-8")
+    assert "сделал раз" in text
+    cursor = text.partition(offload.CURSOR_SECTION)[2].partition("\n## ")[0].strip()
+    assert cursor == "делаю два"

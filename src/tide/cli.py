@@ -392,6 +392,16 @@ def _register_decision(sub) -> None:
     register_decision(sub)
 
 
+def _register_thread(sub) -> None:
+    # work 64 (release, step 10): «покажи нить» — one screen a thread is
+    # understood from (goal · plan step · decisions by state · what moves · what
+    # waits for the human), plus the ONE hygiene check behind release decision 28.
+    # A projection over plan.md / decisions.md / works / passports — no store.
+    from .arc.thread_screen import register as register_thread
+
+    register_thread(sub)
+
+
 def _register_plan(sub) -> None:
     # 19-tide-plan-board: the focus board (доска wake) bound to a goal-arc —
     # board.json in the arc workspace with ≤7 focus + ≤3 path + a distill axis.
@@ -520,6 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_work(subparsers)
     _register_artifact(subparsers)
     _register_decision(subparsers)
+    _register_thread(subparsers)
     _register_plan(subparsers)
     _register_handoffs(subparsers)
     _register_offload(subparsers)

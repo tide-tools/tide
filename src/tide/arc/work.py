@@ -148,9 +148,13 @@ _ACCEPT_ONE_RE = re.compile(r"^- .+ — пункт (\d+) принят рукой
 _ACCEPT_ALL_RE = re.compile(r"^- .+ — {0}\s*$".format(re.escape(ACCEPT_ALL_LINE)))
 # шаг плана нити: «- [>] 3. имя шага | что делается | результат: «…»»
 # состояние — [x] пройден, [>] текущий, [ ] будущий (пишет curate.validate_step)
-_PLAN_STEP_RE = re.compile(r"^- \[([x> ])\]\s*(\d{1,3})\.\s*(.*)$")
+_PLAN_STEP_RE = re.compile(r"^- \[([x>~ ])\]\s*(\d{1,3})\.\s*(.*)$")
 PLAN_STEPS_TITLE = "шаги"
 CURRENT_STEP = ">"
+# A step the thread retired without doing — dissolved into another step, or found
+# unnecessary. Parsed so a reader's count matches the file a human is looking at;
+# a step invisible to the parser is how a plan and its screen start disagreeing.
+RETIRED_STEP = "~"
 # a work card is read at a glance on the board — longer is a warning, not a bar
 TITLE_MAX = 80
 _TITLE_IN_JOURNAL = 60
@@ -1163,6 +1167,11 @@ def plan_steps(root: Path, thread: str) -> List[Tuple[int, str, str]]:
     Читается ``<нить>/plan.md``, раздел ``## шаги``. Имя шага — то, что до
     первой ``|``: строка шага несёт три поля (имя · что делается · результат), а
     в глаза человеку смотрит первое.
+
+    Заголовка ``## шаги`` может не быть — половина живых планов кладёт шаги прямо
+    под шапку. Тогда читаем файл целиком: форма строки шага (``- [x] N. …``)
+    достаточно узкая, чтобы не спутать её с прозой, а «плана нет» на плане из
+    шести шагов — это ровно то враньё экрана, ради которого всё и затевалось.
     """
     d = thread_dir(root, thread)
     if d is None:
@@ -1174,9 +1183,7 @@ def plan_steps(root: Path, thread: str) -> List[Tuple[int, str, str]]:
         lines = plan.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return []
-    found = _section(lines, PLAN_STEPS_TITLE)
-    if not found:
-        return []
+    found = _section(lines, PLAN_STEPS_TITLE) or (0, len(lines))
     out = []
     for ln in lines[found[0]:found[1]]:
         m = _PLAN_STEP_RE.match(ln)
@@ -1186,14 +1193,47 @@ def plan_steps(root: Path, thread: str) -> List[Tuple[int, str, str]]:
     return out
 
 
-def current_plan_step(root: Path, thread: str) -> Optional[int]:
-    """Номер шага, помеченного ``[>]`` в плане нити — или None.
+def current_plan_steps(root: Path, thread: str) -> List[int]:
+    """Номера текущих шагов плана нити — пусто, когда текущий никем не назван.
 
-    None и когда плана нет, и когда текущий шаг никем не помечен: работа тогда
-    остаётся без адреса, и это честнее, чем угадать «наверное, первый».
+    Два способа сказать «мы здесь», оба живые: метка ``[>]`` на строке шага и
+    прозаический заголовок ``## текущий шаг — 9 (…) и 10 (…)``. Метка старше,
+    заголовок пишут руками, и на нити release живёт именно он — читая только
+    метку, мы говорили «шаг не проставлен» там, где человек написал его прямым
+    текстом, и работы рождались без адреса. Метка имеет приоритет: она стоит на
+    самой строке шага и однозначна.
+
+    Шагов может быть НЕСКОЛЬКО (развилка идёт параллельно) — заголовок это прямо
+    допускает, поэтому здесь список, а не одно число.
     """
-    return next((n for n, st, _ in plan_steps(root, thread) if st == CURRENT_STEP),
-                None)
+    marked = [n for n, st, _ in plan_steps(root, thread) if st == CURRENT_STEP]
+    if marked:
+        return marked
+    d = thread_dir(root, thread)
+    if d is None:
+        return []
+    plan = d / "plan.md"
+    if not plan.is_file():
+        return []
+    try:
+        text = plan.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    line = re.search(r"^##\s*текущий шаг\s*[—-]\s*(.+)$", text, re.M)
+    if not line:
+        return []
+    known = {n for n, _, _ in plan_steps(root, thread)}
+    return [int(n) for n in re.findall(r"\b(\d{1,3})\b", line.group(1))
+            if int(n) in known]
+
+
+def current_plan_step(root: Path, thread: str) -> Optional[int]:
+    """Первый из :func:`current_plan_steps` — или None, когда текущий не назван.
+
+    None честнее догадки «наверное, первый»: работа тогда остаётся без адреса,
+    и это видно.
+    """
+    return next(iter(current_plan_steps(root, thread)), None)
 
 
 def plan_step_title(root: Path, thread: str, step: int) -> str:

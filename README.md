@@ -20,10 +20,18 @@ The whole idea on one page: https://tide-tools.github.io/tide/
   writes them into the roster (`tide adopt`).
 - **Threads** — work runs in lines; a thread has a goal and a plan, and inside
   it live **sessions**: one sits down, works, hands off to the next. The thread
-  doesn't break when the chat ends.
+  doesn't break when the chat ends. `tide thread` prints the whole thing on one
+  screen — goal, current step, decisions by state, what's moving, what's waiting
+  on you, where the material of past sessions sits.
 - **Works** — the human↔agent agreement on one card: free text, a checklist, a
   journal. The agent proposes items and checks them only with proof; "done" is
   set by the human alone, with a word.
+- **Decisions** — what a thread concluded, one file per thread, on two separate
+  axes: is it still **in force** (`accepted` · `superseded` · `dropped`), and was
+  it **carried out** (a `done:` date, plus the `work:` that did it). They are not
+  the same question — a decision can bind for years without anyone acting on it,
+  which is exactly what went unnoticed here. `tide thread --check` finds the live
+  promises with nobody carrying them.
 - **The board** — `tide board`: a page on localhost with the streams of the
   home and every project, and the work cards. The inbox table (issues) and
   other surfaces are removable parts — see `tide plugins`.

@@ -32,6 +32,7 @@ from .arc.stream import StreamError
 CONTEXT_SECTION = "## context"
 CURSOR_SECTION = "## cursor — resume here"
 NEXT_SECTION = "## next"
+SUMMARY_SECTION = "## summary"
 OFFLOADED_FIELD = "offloaded-at"
 CLAUDE_SESSION_FIELD = "claude-session"
 
@@ -93,18 +94,24 @@ def find_session_by_claude_id(root: Path, session_id: str) -> Optional[Path]:
 # --- the offload write -------------------------------------------------------
 
 def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
-            next_steps: str = "") -> Path:
-    """Append *note* to ``## context``; optionally reset cursor and ``## next``.
+            next_steps: str = "", summary: str = "") -> Path:
+    """Append *note* to ``## context``; optionally reset cursor, ``## next``, summary.
 
     ФОРМА ЗАПИСИ (закон доски, 07.07 — «агенты пишут так, чтобы можно
     было анализировать»): cursor = ТЕКУЩЕЕ ДЕЙСТВИЕ одной строкой, настоящее
     время («женю доску с формой записи»); next = 1–3 следующих шага через « · »;
     note = что решил/сделал, по-человечески, без тех-жаргона в первых словах.
     Доска показывает их буквально: cursor → «сейчас», next → «дальше».
+
+    *summary* — ЧТО В ЭТОЙ АРКЕ ЛЕЖИТ, одной строкой, для того, кто выбирает,
+    в какую арку войти. До этого ``## summary`` заполнялся только на хендоффе,
+    поэтому у живых сессий он стоял шаблонной болванкой, и оркестратор не мог
+    отличить арку с тремя отчётами дня от пустой. Строка живёт здесь, а не в
+    ``## context``: context — журнал (растёт), summary — витрина (переписывается).
     """
-    if not any(s.strip() for s in (note or "", cursor or "", next_steps or "")):
+    if not any(s.strip() for s in (note or "", cursor or "", next_steps or "", summary or "")):
         raise OffloadError(
-            "offload: nothing to write — pass a note and/or --cursor/--next "
+            "offload: nothing to write — pass a note and/or --cursor/--next/--summary "
             "(правило: одна строка «где стою / что решил / что дальше»)"
         )
     entry = find_session(Path(root), ref)
@@ -113,11 +120,12 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
         raise OffloadError(
             "offload: no open session matching {0!r}. Open sessions: {1}".format(ref, names)
         )
-    return write_pulse(entry, note=note, cursor=cursor, next_steps=next_steps)
+    return write_pulse(entry, note=note, cursor=cursor, next_steps=next_steps,
+                       summary=summary)
 
 
 def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
-                next_steps: str = "") -> Path:
+                next_steps: str = "", summary: str = "") -> Path:
     """Write a pulse to a KNOWN session dir — the resolution-free core of :func:`offload`.
 
     Callers that already hold the exact session dir MUST use this, not ``offload(root,
@@ -152,6 +160,8 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
         _replace_section(passport, CURSOR_SECTION, " ".join(cursor.split()))
     if (next_steps or "").strip():
         _replace_section(passport, NEXT_SECTION, " ".join(next_steps.split()))
+    if (summary or "").strip():
+        _replace_section(passport, SUMMARY_SECTION, " ".join(summary.split()))
     fields.set_field(passport, OFFLOADED_FIELD, _now_iso())
     return passport
 
@@ -316,7 +326,9 @@ def _cmd_offload(args) -> int:
     note = " ".join(getattr(args, "note", []) or [])
     cursor = getattr(args, "cursor", "") or ""
     next_steps = getattr(args, "next_steps", "") or ""
-    passport = offload(root, args.session, note=note, cursor=cursor, next_steps=next_steps)
+    summary = getattr(args, "summary", "") or ""
+    passport = offload(root, args.session, note=note, cursor=cursor,
+                       next_steps=next_steps, summary=summary)
     print("tide: offloaded → {0}".format(passport))
     confirmed = _confirm_pending_pickup(passport)
     if confirmed:
@@ -419,6 +431,9 @@ def register(subparsers) -> None:
     p.add_argument("--next", dest="next_steps",
                    help="1-3 next steps separated by ' · ' — the board shows "
                         "them as what's next")
+    p.add_argument("--summary",
+                   help="ONE line: what this arc holds, for whoever is choosing "
+                        "which arc to open — rewritten, not appended")
     p.add_argument("note", nargs="*", help="context note: what you decided or "
                                            "did, in plain words")
     p.set_defaults(func=_cmd_offload, _cmd="offload")

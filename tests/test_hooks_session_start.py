@@ -490,3 +490,27 @@ def test_render_injects_open_decisions_below_role(tmp_project):
     decision.add_decision(tmp_project, "решение для рендера", thread_ref="prz", dslug="r")
     out = session_start.render(tmp_project, "orchestrator", session="sid-xyz")
     assert "Решения этой нити" in out and "решение для рендера" in out
+
+
+# --- the thread screen pointer (work 64): the screen's reader must be told ----
+
+def test_pointer_names_the_thread_screen_for_a_session_inside_a_thread(tmp_project):
+    from tide import fields
+    from tide.arc import stream
+
+    stream.new_thread(tmp_project, "release", goal="отдать стек своим")
+    entry = stream.new_session(tmp_project, "release", "priemka")
+    fields.set_field(entry / "arc.md", "claude-session", "sid-1")
+    out = session_start.render(tmp_project, "orchestrator", session="sid-1")
+    assert session_start.THREAD_SCREEN_POINTER in out
+    assert "tide thread" in out
+
+
+def test_pointer_is_silent_without_a_session_id(tmp_project):
+    assert session_start.THREAD_SCREEN_POINTER not in session_start.render(
+        tmp_project, "orchestrator")
+
+
+def test_pointer_is_silent_when_the_sid_matches_nothing(tmp_project):
+    out = session_start.render(tmp_project, "orchestrator", session="sid-ghost")
+    assert session_start.THREAD_SCREEN_POINTER not in out
