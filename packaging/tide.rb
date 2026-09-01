@@ -1,4 +1,4 @@
-# Homebrew formula for tide — simplified, synchronous orchestration machine.
+# Homebrew formula for tide — one seat for many projects (CLI + markdown + a board).
 #
 # Distribution channel: Homebrew tap (installs the published release sdist — no PyPI).
 # Tap this formula with:
@@ -24,7 +24,7 @@
 class Tide < Formula
   include Language::Python::Virtualenv
 
-  desc "Simplified, synchronous, human-driven orchestration machine (pure CLI + markdown)"
+  desc "One seat for many projects: CLI + markdown + a board on localhost"
   homepage "https://github.com/tide-tools/tide"
 
   url "https://github.com/tide-tools/tide/releases/download/v1.0.2/tide-1.0.2.tar.gz"
