@@ -265,6 +265,60 @@ def test_scan_showcase_keeps_invented_fixture_paths_in_tests(tmp_path):
     assert verify.scan_showcase(tmp_path, ["Stem"]) == []
 
 
+def test_prose_is_not_scanned_for_the_bare_login(tmp_path, monkeypatch):
+    # A login is a MACHINE token and usually an ordinary word (demo, user, test).
+    # Aimed at prose and fixtures it finds the dictionary, not a person: the
+    # clean-machine check runs as `tester` and went red on a signer fixture spelled
+    # `tester`. A red gate makes `tide self-update` REFUSE, so this cost every user
+    # with a common login their updates. The package scan below still catches it.
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
+    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
+    root = tmp_path / "repo"
+    root.mkdir()
+    _showcase_tree(root)
+    (root / "tests" / "test_thing.py").write_text(
+        'curate.validate_step(t, "1", who="tester")\n', encoding="utf-8")
+    monkeypatch.setattr(verify, "repo_root", lambda: root)
+    pkg = root / "src" / "tide"
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    report = verify.check_portable(pkg_dir=pkg)
+    assert report.ok, report.messages
+
+
+def test_a_login_the_owner_listed_himself_still_guards_prose(tmp_path, monkeypatch):
+    # Dropping the login is about a word that merely happens to be a login — not an
+    # exemption. An owner who lists it says "this word IS me", and it stays armed.
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: ["tester"])
+    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
+    root = tmp_path / "repo"
+    root.mkdir()
+    _showcase_tree(root)
+    (root / "docs" / "RELEASING.md").write_text("ask tester first\n", encoding="utf-8")
+    monkeypatch.setattr(verify, "repo_root", lambda: root)
+    pkg = root / "src" / "tide"
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    report = verify.check_portable(pkg_dir=pkg)
+    assert not report.ok
+    assert any(lk.source == "docs/RELEASING.md" for lk in report.leaks)
+
+
+def test_the_login_still_guards_shipped_code(tmp_path, monkeypatch):
+    # The narrowing is scoped to prose: in shipped source a username can only be a
+    # leak, and that rule is untouched.
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
+    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
+    monkeypatch.setattr(verify, "repo_root", lambda: None)
+    pkg = tmp_path / "tide"
+    pkg.mkdir()
+    (pkg / "boom.py").write_text('PATH = "/somewhere/tester/cache"\n', encoding="utf-8")
+    report = verify.check_portable(pkg_dir=pkg)
+    assert not report.ok
+    assert any(lk.detail == "tester" for lk in report.leaks)
+
+
 # --- the traps: one spelling never covers the others -----------------------
 
 def test_tokens_match_case_insensitively():

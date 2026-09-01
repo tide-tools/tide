@@ -430,11 +430,23 @@ def default_instance_tokens() -> List[str]:
     ``--instance-token`` (e.g. known instance project-names).
     """
     home = Path.home()
-    tokens = {str(home), home.name}
+    tokens = {str(home), machine_login_token()}
     tokens.update(home_instance_tokens())
     tokens.discard("")
     tokens.discard("/")
     return sorted(t for t in tokens if t)
+
+
+def machine_login_token() -> str:
+    """The current user's bare login name — an auto-token about the MACHINE.
+
+    Split out of :func:`default_instance_tokens` because it is the one auto-token
+    that must not be aimed at prose: see :func:`check_portable`.
+    """
+    try:
+        return Path.home().name
+    except (RuntimeError, OSError):
+        return ""
 
 
 def scan_text(text: str, source: str, tokens: List[str], *,
@@ -567,6 +579,10 @@ def scan_showcase(root: Path, tokens: List[str]) -> List[PortableLeak]:
     ``str(Path.home())``), so a genuine path leak is still caught here — by name,
     which is what a published page can actually expose.
 
+    For the same reason the caller (:func:`check_portable`) does not aim the bare
+    LOGIN auto-token at these files — in prose an ordinary-word login is a word,
+    not a person. The home path and the owner's own list still apply here.
+
     The same holds for ``tests/``, where invented home paths are the FIXTURES:
     a dozen made-up users across the suite are the very inputs the abs-path rule is
     tested with. Scanning them for shape would fail the suite that proves the rule
@@ -674,7 +690,23 @@ def check_portable(
             "human-facing surfaces: skipped (not a dev tree — no repo above the package)"
         )
     else:
-        show_leaks = scan_showcase(root, tokens)
+        # The bare login is a MACHINE token and, very often, an ordinary English
+        # word. In shipped CODE that is still a leak by definition. In PROSE and
+        # FIXTURES it is vocabulary: for the plainest such logins this tree holds
+        # hundreds to thousands of innocent matches across docs/ and tests/, so
+        # aiming the login there finds the dictionary, not a person. Paid for on
+        # the clean machine, whose login is exactly such a word: the gate went red
+        # on a signer fixture that happened to spell it — and a red gate makes
+        # `tide self-update` REFUSE, so every person with an ordinary login would
+        # have lost their updates. Prose therefore keeps the home PATH (a hard
+        # identity, still an auto-token) and the owner's own list, and drops the
+        # bare login — unless the owner listed it themselves, which is a
+        # deliberate "this word IS me" and stays armed.
+        listed = {t.lower() for t in (instance_tokens or [])} | {t.lower() for t in personal}
+        login = machine_login_token().lower()
+        surface_tokens = [t for t in tokens
+                          if not login or t.lower() != login or t.lower() in listed]
+        show_leaks = scan_showcase(root, surface_tokens)
         report.leaks.extend(show_leaks)
         report.messages.append(
             "human-facing surfaces ({0}, {1}): {2}".format(
