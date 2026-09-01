@@ -1490,6 +1490,24 @@ def test_find_by_nn_slug_and_ambiguity(in_project, capsys):
         work._find(in_project, "nope")
 
 
+def test_find_accepts_bare_number(in_project):
+    """Живой прогон новичка: add печатает «01-…», человек набирает «1».
+
+    Голое число равно номеру работы: 1 == 01. Номера уникальны, коллизий нет.
+    """
+    cli.main(["work", "add", "try the loop"])
+    assert work._find(in_project, "1").name == "01-try-the-loop"
+    assert work._find(in_project, "01").name == "01-try-the-loop"
+
+
+def test_find_miss_hints_at_key_shape(in_project):
+    cli.main(["work", "add", "x"])
+    with pytest.raises(work.WorkError) as e:
+        work._find(in_project, "99")
+    assert "работы зовутся 01, 02" in str(e.value)
+    assert "tide work list" in str(e.value)
+
+
 def test_list_orders_live_by_deadline_closed_last(in_project, capsys):
     cli.main(["work", "add", "late", "--deadline", "2026-08-01"])
     cli.main(["work", "add", "soon", "--deadline", "2026-07-01"])

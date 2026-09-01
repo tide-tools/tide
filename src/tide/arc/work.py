@@ -184,20 +184,31 @@ def _work_slug(text: str) -> str:
 
 
 def _find(root: Path, key: str) -> Path:
-    """Resolve a work dir by NN, NN-slug or slug; fail loud on 0 or 2+ hits."""
+    """Resolve a work dir by NN, NN-slug or slug; fail loud on 0 or 2+ hits.
+
+    A bare number matches too: ``1`` is the work ``01-…`` — humans type what
+    ``add`` printed, minus the leading zero. Numbers are unique per project,
+    so the shortcut cannot make a key ambiguous.
+    """
     wdir = works_dir(root)
     key = (key or "").strip().rstrip("/")
     if not key:
         raise WorkError("work: пустой ключ")
+    want_num = int(key) if key.isdigit() else None
     hits = []
     for p in sorted(wdir.iterdir()) if wdir.is_dir() else []:
         if not p.is_dir() or not (p / "work.md").is_file():
             continue
         num, _, rest = p.name.partition("-")
-        if key in (p.name, num, rest):
+        if key in (p.name, num, rest) or (
+                want_num is not None and num.isdigit()
+                and int(num) == want_num):
             hits.append(p)
     if not hits:
-        raise WorkError("work: не нашёл работу {0!r} в {1}".format(key, wdir))
+        raise WorkError(
+            "work: не нашёл работу {0!r} в {1} "
+            "(работы зовутся 01, 02, … — смотри tide work list)".format(
+                key, wdir))
     if len(hits) > 1:
         raise WorkError(
             "work: ключ {0!r} неоднозначен: {1}".format(
