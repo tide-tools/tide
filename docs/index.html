@@ -3,891 +3,102 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>tide — one seat for many projects. CLI + markdown + a board.</title>
-  <meta name="description" content="tide keeps the thread across sessions: projects adopted in place, threads of sessions with real handoffs, works agreed between you and the agent, and a board on localhost. State is plain markdown you can read.">
-  <meta name="color-scheme" content="dark">
+  <title>tide — one seat for many projects</title>
+  <meta name="description" content="tide-stack: one seat for many projects — threads, works, a board. CLI + markdown; state you can read by hand. Works with Claude Code.">
+  <meta name="color-scheme" content="light dark">
   <style>
-    /* ─── TOKENS ─────────────────────────────────────────────── */
-    :root {
-      --bg:           #0a0c0d;
-      --bg-2:         #080a0a;
-      --surface:      #0f1314;
-      --surface-hi:   #131819;
-      --border:       #1a2122;
-      --border-hi:    #28332f;
-      --text:         #d4dad8;
-      --text-soft:    #aab2af;
-      --text-muted:   #79817e;
-      --text-faint:   #444c49;
-      --accent:       #2dd4bf;   /* turquoise — the chosen identity */
-      --accent-hi:    #5eead4;
-      --accent-deep:  #14b8a6;
-      --accent-dim:   rgba(45, 212, 191, 0.16);
-      --accent-faint: rgba(45, 212, 191, 0.055);
-      --term-bg:      #070a0a;
-      --term-comment: #586663;
-
-      --mono: "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code",
-              "Menlo", "Consolas", "Liberation Mono", monospace;
-      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-              "Helvetica Neue", Arial, sans-serif;
-
-      --max:  720px;
-      --wide: 1000px;
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #111111;
+      font: 15px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     }
-
-    /* ─── RESET ──────────────────────────────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    html {
-      font-family: var(--sans);
-      font-size: 16px;
-      background: var(--bg);
-      color: var(--text);
-      scroll-behavior: smooth;
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
+    main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
+    h1 { font-size: 24px; font-weight: 700; letter-spacing: .04em; margin: 0 0 12px; }
+    h2 { font-size: 15px; font-weight: 700; letter-spacing: .10em; margin: 48px 0 12px; }
+    p  { margin: 12px 0; }
+    ol { margin: 0; padding-left: 2em; }
+    li { margin: 6px 0; }
+    pre {
+      margin: 16px 0;
+      padding: 0;
+      font: inherit;
+      overflow-x: auto;
     }
-    body { min-height: 100vh; overflow-x: hidden; line-height: 1.6; }
-
-    ::selection { background: var(--accent-dim); color: var(--accent-hi); }
-
-    h1, h2, h3, h4 {
-      font-family: var(--mono);
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      line-height: 1.15;
-    }
-
-    p { line-height: 1.75; color: var(--text-soft); }
-
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { color: var(--accent-hi); }
-
-    code, .mono { font-family: var(--mono); }
-
-    .prose code {
-      font-size: 0.85em;
-      color: var(--accent);
-      background: var(--accent-faint);
-      padding: 0.12em 0.4em;
-      border-radius: 3px;
-      border: 1px solid rgba(45, 212, 191, 0.12);
-    }
-    strong { color: #eaf0ee; font-weight: 600; }
-    em { color: var(--text-muted); font-style: italic; }
-
-    /* ─── LAYOUT ─────────────────────────────────────────────── */
-    .container { max-width: var(--max); margin: 0 auto; padding: 0 2rem; }
-    .container--wide { max-width: var(--wide); margin: 0 auto; padding: 0 2rem; }
-
-    /* ─── ANIMATION ──────────────────────────────────────────── */
-    @keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes growRight { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-
-    .hero-eyebrow { animation: fadeIn 0.8s ease 0.1s both; }
-    .hero-title   { animation: fadeUp 1s ease 0.2s both; }
-    .hero-rule    { animation: growRight 1.2s ease 0.45s both; transform-origin: left; }
-    .hero-sub     { animation: fadeUp 0.85s ease 0.55s both; }
-    .hero-cta     { animation: fadeUp 0.85s ease 0.75s both; }
-    .hero-meta    { animation: fadeIn 0.9s ease 0.95s both; }
-
-    @supports (animation-timeline: view()) {
-      @media (prefers-reduced-motion: no-preference) {
-        .reveal { opacity: 0; animation: fadeUp 0.6s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 30%; }
-        .reveal-slow { opacity: 0; animation: fadeUp 0.8s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 34%; }
-        .reveal-fade { opacity: 0; animation: fadeIn 0.7s ease forwards; animation-timeline: view(); animation-range: entry 0% entry 26%; }
-      }
-    }
-
-    /* ─── NAV ────────────────────────────────────────────────── */
-    .nav {
-      position: sticky; top: 0; z-index: 50;
-      backdrop-filter: blur(12px);
-      background: rgba(10, 12, 13, 0.72);
-      border-bottom: 1px solid var(--border);
-    }
-    .nav-inner {
-      display: flex; align-items: center; justify-content: space-between;
-      height: 56px;
-    }
-    .nav-brand {
-      font-family: var(--mono); font-weight: 600; font-size: 0.95rem;
-      color: var(--text); letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.6rem;
-    }
-    .nav-brand .tilde { color: var(--accent); }
-    .nav-links { display: flex; gap: 1.75rem; align-items: center; }
-    .nav-link {
-      font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.04em;
-      color: var(--text-muted); text-transform: uppercase;
-    }
-    .nav-link:hover { color: var(--accent); }
-    @media (max-width: 640px) { .nav-links .nav-link:not(.nav-link--repo) { display: none; } }
-
-    /* ─── HERO ───────────────────────────────────────────────── */
-    .hero { padding: 7.5rem 0 6rem; position: relative; overflow: hidden; }
-    .hero::before {
-      content: ""; position: absolute; inset: 0;
-      background: radial-gradient(ellipse 75% 55% at 50% -5%, rgba(45, 212, 191, 0.06) 0%, transparent 65%);
-      pointer-events: none;
-    }
-    .hero-eyebrow {
-      font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.32em;
-      text-transform: uppercase; color: var(--accent);
-      margin-bottom: 2.25rem; display: flex; align-items: center; gap: 1rem;
-    }
-    .hero-eyebrow::after { content: ""; flex: 1; max-width: 64px; height: 1px; background: var(--accent); opacity: 0.4; }
-
-    .hero-title {
-      font-size: clamp(2.9rem, 8vw, 5.6rem);
-      font-weight: 700; letter-spacing: -0.045em; line-height: 0.98;
-      margin-bottom: 2.25rem; color: #eaf2ef;
-    }
-    .hero-title span { color: var(--accent); }
-
-    .hero-rule {
-      width: 100%; height: 1px; margin-bottom: 2.25rem; opacity: 0.4;
-      background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
-    }
-    .hero-sub {
-      font-size: clamp(1.02rem, 2.3vw, 1.22rem); line-height: 1.62;
-      color: var(--text-soft); max-width: 56ch; margin-bottom: 2.75rem;
-    }
-    .hero-sub strong { color: #eaf0ee; }
-
-    .hero-cta { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 3.25rem; }
-    .btn {
-      font-family: var(--mono); font-size: 0.82rem; letter-spacing: 0.01em;
-      padding: 0.8rem 1.4rem; border: 1px solid var(--border-hi);
-      display: inline-flex; align-items: center; gap: 0.6rem;
-      transition: border-color 0.2s, background 0.2s, color 0.2s;
-    }
-    .btn--primary {
-      background: var(--accent); color: #04201c; border-color: var(--accent); font-weight: 600;
-    }
-    .btn--primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); color: #04201c; }
-    .btn--ghost { color: var(--text-soft); background: transparent; }
-    .btn--ghost:hover { border-color: var(--accent); color: var(--accent); }
-
-    .hero-meta { display: flex; gap: 2.5rem; flex-wrap: wrap; }
-    .hero-meta-item { display: flex; flex-direction: column; gap: 0.35rem; }
-    .hero-meta-label { font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-faint); }
-    .hero-meta-value { font-family: var(--mono); font-size: 0.82rem; color: var(--text-muted); }
-    .hero-meta-value b { color: var(--accent); font-weight: 600; }
-
-    /* ─── CHAPTER ────────────────────────────────────────────── */
-    .chapter { padding: 5.5rem 0; border-top: 1px solid var(--border); }
-    .chapter--wide { }
-    .chapter-header { margin-bottom: 3rem; display: flex; align-items: baseline; gap: 1.5rem; }
-    .chapter-num {
-      font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.24em;
-      text-transform: uppercase; color: var(--accent); white-space: nowrap;
-      padding-top: 0.25rem; flex-shrink: 0;
-    }
-    .chapter-title { font-size: clamp(1.5rem, 3.6vw, 2.15rem); font-weight: 600; letter-spacing: -0.025em; color: #eaf2ef; line-height: 1.2; }
-    .chapter-lead { font-size: 1.05rem; color: var(--text-soft); max-width: 60ch; margin-bottom: 0.5rem; }
-
-    .prose p + p { margin-top: 1.5rem; }
-
-    /* ─── PAIN GRID ──────────────────────────────────────────── */
-    .pain-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1rem; margin-top: 2.75rem; }
-    @media (max-width: 760px) { .pain-grid { grid-template-columns: 1fr; } }
-    .pain-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-top: 2px solid rgba(196, 92, 76, 0.5);
-      padding: 1.6rem 1.5rem; position: relative;
-    }
-    .pain-glyph { font-family: var(--mono); font-size: 0.7rem; color: #c45c4c; opacity: 0.8; letter-spacing: 0.1em; margin-bottom: 0.9rem; }
-    .pain-name { font-family: var(--mono); font-size: 0.92rem; font-weight: 600; color: #e6c0b8; margin-bottom: 0.7rem; letter-spacing: -0.01em; }
-    .pain-body { font-size: 0.9rem; line-height: 1.65; color: var(--text-muted); }
-
-    /* ─── ANSWER / KEYSTONE ──────────────────────────────────── */
-    .keystone {
-      margin-top: 2.75rem; padding: 2.25rem 2.25rem 2.5rem;
-      background: var(--accent-faint); border: 1px solid rgba(45, 212, 191, 0.22);
-      position: relative; overflow: hidden;
-    }
-    .keystone::after {
-      content: "≈"; position: absolute; right: 1.75rem; bottom: 0.6rem;
-      font-size: 6rem; color: var(--accent); opacity: 0.05; line-height: 1; font-family: var(--mono);
-    }
-    .keystone-label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent); margin-bottom: 1.25rem; }
-    .answer-list { display: flex; flex-direction: column; gap: 1.1rem; }
-    .answer-row { display: flex; gap: 1rem; align-items: flex-start; }
-    .answer-mark { font-family: var(--mono); color: var(--accent); font-size: 0.85rem; padding-top: 0.18rem; flex-shrink: 0; }
-    .answer-text { font-size: 0.96rem; line-height: 1.6; color: var(--text-soft); }
-    .answer-text b { color: #eaf0ee; font-weight: 600; }
-
-    /* ─── SHOWCASE — the centerpiece ─────────────────────────── */
-    .showcase { padding: 6rem 0; border-top: 1px solid var(--border); background:
-      radial-gradient(ellipse 90% 40% at 50% 0%, rgba(45, 212, 191, 0.035), transparent 70%); }
-    .showcase-intro { max-width: 62ch; margin-bottom: 1rem; }
-
-    .flow { margin-top: 3.5rem; display: flex; flex-direction: column; gap: 0; }
-    .step { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0 1.75rem; }
-    @media (max-width: 640px) { .step { grid-template-columns: 2.5rem 1fr; gap: 0 1rem; } }
-
-    .step-rail { display: flex; flex-direction: column; align-items: center; }
-    .step-num {
-      width: 3.25rem; height: 3.25rem; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--surface); border: 1px solid var(--border-hi);
-      font-family: var(--mono); font-size: 0.95rem; font-weight: 700; color: var(--accent);
-      flex-shrink: 0; position: relative; z-index: 2;
-    }
-    @media (max-width: 640px) { .step-num { width: 2.5rem; height: 2.5rem; font-size: 0.8rem; } }
-    .step-line { width: 1px; flex: 1; background: linear-gradient(180deg, var(--border-hi), var(--border)); min-height: 1rem; }
-    .step:last-child .step-line { background: transparent; }
-
-    .step-body { padding-bottom: 3rem; min-width: 0; }
-    .step:last-child .step-body { padding-bottom: 0; }
-    .step-kicker { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.5rem; }
-    .step-title { font-size: 1.25rem; font-weight: 600; color: #eaf2ef; margin-bottom: 0.7rem; letter-spacing: -0.02em; }
-    .step-desc { font-size: 0.95rem; line-height: 1.7; color: var(--text-muted); max-width: 60ch; margin-bottom: 1.25rem; }
-    .step-desc b { color: var(--text-soft); font-weight: 600; }
-
-    /* ─── TERMINAL ───────────────────────────────────────────── */
-    .term {
-      background: var(--term-bg); border: 1px solid var(--border);
-      border-radius: 7px; overflow: hidden; box-shadow: 0 14px 40px -24px rgba(0,0,0,0.9);
-    }
-    .term-bar {
-      display: flex; align-items: center; gap: 0.5rem;
-      padding: 0.6rem 0.9rem; background: #0c1011; border-bottom: 1px solid var(--border);
-    }
-    .term-dot { width: 10px; height: 10px; border-radius: 50%; background: #232a2a; }
-    .term-dot:nth-child(1) { background: #2a3433; }
-    .term-title { margin-left: 0.6rem; font-family: var(--mono); font-size: 0.66rem; color: var(--text-faint); letter-spacing: 0.06em; }
-    .term-title .badge { color: var(--accent); }
-    .term-body {
-      padding: 1.1rem 1.25rem; font-family: var(--mono);
-      font-size: 0.82rem; line-height: 1.85; overflow-x: auto;
-    }
-    .term-body .l { white-space: pre; display: block; }
-    .term .prompt { color: var(--accent); }
-    .term .cmd { color: #e2e8e6; }
-    .term .flag { color: var(--accent-hi); }
-    .term .cmt { color: var(--term-comment); }
-    .term .out { color: var(--text-muted); }
-    .term .ok { color: var(--accent); }
-    .term .warn { color: #d9a441; }
-    .term .you { color: #9fb4cf; }
-
-    .step-note {
-      margin-top: 1rem; font-size: 0.84rem; line-height: 1.6; color: var(--text-muted);
-      border-left: 2px solid var(--border-hi); padding-left: 1rem;
-    }
-    .step-note b { color: var(--accent); font-weight: 600; }
-
-    /* payoff band */
-    .payoff {
-      margin-top: 3.5rem; padding: 2.25rem; text-align: center;
-      background: var(--accent-faint); border: 1px solid rgba(45, 212, 191, 0.22);
-    }
-    .payoff-thread {
-      font-family: var(--mono); font-size: 0.8rem; color: var(--text-muted);
-      margin-bottom: 1.25rem; letter-spacing: 0.02em; line-height: 2;
-    }
-    .payoff-thread .node { color: var(--accent); }
-    .payoff-thread .arrow { color: var(--text-faint); padding: 0 0.5rem; }
-    .payoff-line { font-size: 1.08rem; line-height: 1.6; color: var(--text-soft); max-width: 54ch; margin: 0 auto; }
-    .payoff-line b { color: #eaf0ee; }
-
-    /* ─── CAPABILITY GRID ────────────────────────────────────── */
-    .cap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 3rem; }
-    @media (max-width: 860px) { .cap-grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 560px) { .cap-grid { grid-template-columns: 1fr; } }
-    .cap {
-      background: var(--surface); border: 1px solid var(--border);
-      padding: 1.4rem 1.5rem; transition: border-color 0.2s, background 0.2s; position: relative; overflow: hidden;
-    }
-    .cap::before {
-      content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-      background: linear-gradient(90deg, var(--accent) 0%, transparent 60%);
-      opacity: 0; transition: opacity 0.2s;
-    }
-    .cap:hover { border-color: var(--border-hi); background: var(--surface-hi); }
-    .cap:hover::before { opacity: 1; }
-    .cap-cmd { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); margin-bottom: 0.7rem; letter-spacing: -0.01em; }
-    .cap-name { font-family: var(--mono); font-size: 0.88rem; font-weight: 600; color: #e3e9e7; margin-bottom: 0.6rem; }
-    .cap-body { font-size: 0.85rem; line-height: 1.65; color: var(--text-muted); }
-
-    /* ─── UNIX PITCH ─────────────────────────────────────────── */
-    .pitch-list { margin-top: 2.5rem; display: flex; flex-direction: column; gap: 1rem; }
-    .pitch-item {
-      display: grid; grid-template-columns: minmax(0, 13rem) 1fr; gap: 1.5rem;
-      padding: 1.25rem 1.5rem; background: var(--surface); border: 1px solid var(--border); align-items: baseline;
-    }
-    @media (max-width: 640px) { .pitch-item { grid-template-columns: 1fr; gap: 0.5rem; } }
-    .pitch-key { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--accent); letter-spacing: -0.01em; }
-    .pitch-val { font-size: 0.88rem; line-height: 1.65; color: var(--text-muted); }
-    .pitch-val code { font-family: var(--mono); font-size: 0.85em; color: var(--text-soft); background: var(--accent-faint); padding: 0.08em 0.34em; border-radius: 3px; }
-
-    /* ─── INSTALL ────────────────────────────────────────────── */
-    .install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-top: 2.75rem; }
-    @media (max-width: 760px) { .install-grid { grid-template-columns: 1fr; } }
-    .install-card { background: var(--surface); border: 1px solid var(--border); padding: 1.6rem 1.6rem 1.75rem; min-width: 0; }
-    .install-label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.4rem; }
-    .install-sub { font-size: 0.84rem; color: var(--text-muted); margin-bottom: 1.1rem; line-height: 1.55; }
-    .codeblock {
-      background: var(--term-bg); border: 1px solid var(--border); border-radius: 6px;
-      padding: 1rem 1.15rem; font-family: var(--mono); font-size: 0.79rem; line-height: 1.95; overflow-x: auto;
-    }
-    .codeblock .l { white-space: pre; display: block; }
-    .codeblock .prompt { color: var(--accent); }
-    .codeblock .cmd { color: #e2e8e6; }
-    .codeblock .flag { color: var(--accent-hi); }
-    .codeblock .cmt { color: var(--term-comment); }
-    .install-foot { margin-top: 1.75rem; font-size: 0.86rem; color: var(--text-muted); line-height: 1.65; }
-    .install-foot code { font-family: var(--mono); color: var(--accent); background: var(--accent-faint); padding: 0.1em 0.38em; border-radius: 3px; font-size: 0.9em; }
-
-    /* ─── CLOSER ─────────────────────────────────────────────── */
-    .closer { padding: 7rem 0 5rem; border-top: 1px solid var(--border); text-align: center; }
-    .closer-glyph { font-family: var(--mono); font-size: 1.5rem; color: var(--accent); opacity: 0.5; margin-bottom: 2.25rem; letter-spacing: 0.55em; }
-    .closer-title { font-size: clamp(1.5rem, 4vw, 2.3rem); font-weight: 600; letter-spacing: -0.025em; margin-bottom: 1.75rem; color: #eaf2ef; line-height: 1.25; }
-    .closer p { font-size: 1rem; line-height: 1.8; color: var(--text-muted); max-width: 52ch; margin: 0 auto; }
-    .closer p + p { margin-top: 1.25rem; }
-    .closer-cta { margin-top: 2.75rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-
-    /* ─── FOOTER ─────────────────────────────────────────────── */
-    .site-footer { padding: 2.5rem 0; border-top: 1px solid var(--border); background: var(--bg-2); }
-    .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-    .footer-text { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.08em; color: var(--text-faint); }
-    .footer-text a { color: var(--text-muted); }
-    .footer-text a:hover { color: var(--accent); }
-
-    @media (max-width: 640px) {
-      .container, .container--wide { padding: 0 1.25rem; }
-      .hero { padding: 5rem 0 4rem; }
-      .chapter, .showcase { padding: 4rem 0; }
-      .hero-meta { gap: 1.5rem; }
+    .cmt { opacity: .55; }
+    a { color: inherit; }
+    hr { border: 0; border-top: 1px solid currentColor; opacity: .2; margin: 48px 0; }
+    footer { margin-top: 48px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111111; color: #e6e6e6; }
     }
   </style>
 </head>
 <body>
+<main>
 
-  <!-- ═══════════ NAV ═══════════════════════════════════════ -->
-  <nav class="nav">
-    <div class="container--wide nav-inner">
-      <span class="nav-brand"><span class="tilde">~</span>tide</span>
-      <div class="nav-links">
-        <a class="nav-link" href="#pain">the pain</a>
-        <a class="nav-link" href="#showcase">how it runs</a>
-        <a class="nav-link" href="#capabilities">capabilities</a>
-        <a class="nav-link" href="#install">install</a>
-        <a class="nav-link nav-link--repo" href="https://github.com/tide-tools/tide">github ↗</a>
-      </div>
-    </div>
-  </nav>
+  <h1>TIDE-STACK</h1>
+  <p>One seat for many projects — threads, works, a board.<br>
+  CLI + markdown; sessions run with <a href="https://claude.com/claude-code">Claude Code</a>.</p>
 
-  <!-- ═══════════ HERO ══════════════════════════════════════ -->
-  <header class="hero">
-    <div class="container">
-      <div class="hero-eyebrow">tide · one seat, many projects</div>
-      <h1 class="hero-title">
-        Stop re-explaining<br>your work <span>every<br>single time.</span>
-      </h1>
-      <div class="hero-rule"></div>
-      <p class="hero-sub">
-        You run several projects at once. Each has its own context, its own unfinished
-        lines — and between sessions it all leaks away. <strong>tide</strong> keeps the
-        thread: state is plain markdown in each project's <code>.tide/</code> — you can
-        <code>cat</code>, <code>grep</code> and <code>diff</code> it — the commands are
-        one <code>tide</code> binary, and the view from above is a board in your browser.
-      </p>
-      <div class="hero-cta">
-        <a class="btn btn--primary" href="#install">$ ./install.sh</a>
-        <a class="btn btn--ghost" href="#showcase">Watch a real run →</a>
-      </div>
-      <div class="hero-meta">
-        <div class="hero-meta-item">
-          <span class="hero-meta-label">Surface</span>
-          <span class="hero-meta-value"><b>CLI + markdown</b> + a board</span>
-        </div>
-        <div class="hero-meta-item">
-          <span class="hero-meta-label">Model</span>
-          <span class="hero-meta-value">projects · threads · works</span>
-        </div>
-        <div class="hero-meta-item">
-          <span class="hero-meta-label">Runtime</span>
-          <span class="hero-meta-value">Python ≥ 3.12</span>
-        </div>
-        <div class="hero-meta-item">
-          <span class="hero-meta-label">License</span>
-          <span class="hero-meta-value">MIT</span>
-        </div>
-      </div>
-    </div>
-  </header>
+  <h2>PARTS</h2>
+  <ol>
+    <li>PROJECTS — any folder with code, adopted in place</li>
+    <li>THREADS — lines of sessions inside a project, with real handoffs</li>
+    <li>PLUGINS SYSTEM — a small core; removable parts switched per home</li>
+    <li>UPDATES SYSTEM — gated self-update with rollback</li>
+    <li>TIDE CLI — every gesture is a command; agents walk the same verbs</li>
+    <li>THE BOARD — home and every project on one localhost page</li>
+    <li>SYSTEM SKILLS AND HOOKS — land in Claude Code when the home unfolds</li>
+    <li>THREAD STRUCTURE — state is plain markdown in .tide/, readable by hand</li>
+  </ol>
 
-  <main>
+  <h2>YOU CAN</h2>
+  <ol>
+    <li>INSTALL — CLI tool, Claude skills and hooks, in one script</li>
+    <li>UPDATE — one command, gated, with rollback</li>
+    <li>FIX BUGS — the source is already yours; fix and reinstall in place</li>
+    <li>REPORT — send the pain upstream in one command</li>
+    <li>WORK IN THREADS — via CLI and the board: create, handoff, resume, close</li>
+    <li>UNDERSTAND HOW TO USE IT — the first hour, step by step, in <a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">QUICKSTART.md</a></li>
+  </ol>
 
-    <!-- ─── I. THE PAIN ──────────────────────────────────────── -->
-    <section class="chapter" id="pain">
-      <div class="container">
-        <div class="chapter-header reveal">
-          <span class="chapter-num">§ 01</span>
-          <h2 class="chapter-title">Three ways the work leaks away.</h2>
-        </div>
-        <p class="chapter-lead reveal-fade">
-          You're not slow. The tools are leaking the work faster than you can do it.
-          Three leaks, every project, every week.
-        </p>
+  <h2>INSTALL</h2>
 
-        <div class="pain-grid reveal-slow">
-          <div class="pain-card">
-            <div class="pain-glyph">01 / amnesia</div>
-            <div class="pain-name">Context dies between sessions</div>
-            <div class="pain-body">
-              You open a fresh chat and re-explain the whole project from scratch — where things
-              are, what you decided, why. The thread you built yesterday is gone. You pay the
-              briefing tax again, and again.
-            </div>
-          </div>
-          <div class="pain-card">
-            <div class="pain-glyph">02 / plumbing</div>
-            <div class="pain-name">Plumbing eats your attention</div>
-            <div class="pain-body">
-              Spawning terminals, tracking what's open, remembering to merge notes — the
-              coordination overhead consumes the one thing that's actually scarce: your judgment.
-              You babysit the machine instead of steering it.
-            </div>
-          </div>
-          <div class="pain-card">
-            <div class="pain-glyph">03 / scatter</div>
-            <div class="pain-name">Work never becomes truth</div>
-            <div class="pain-body">
-              Decisions live in chat scrollback. A finished task leaves no durable trace.
-              Two weeks later nobody — not you, not an agent — can answer "what is true about
-              this project right now?" It scattered and it's gone.
-            </div>
-          </div>
-        </div>
+  <pre><span class="cmt"># clone and install — puts tide on your PATH</span>
+git clone https://github.com/tide-tools/tide && cd tide
+./install.sh
 
-        <div class="keystone reveal">
-          <div class="keystone-label">tide's answer</div>
-          <div class="answer-list">
-            <div class="answer-row">
-              <span class="answer-mark">→</span>
-              <span class="answer-text">
-                <b>State lives in files, not in a chat.</b> Everything is plain markdown under
-                <code>.tide/</code> — <code>cat</code>, <code>grep</code>, <code>diff</code> it.
-                A session starts empty and re-hydrates by reading. The thread is never lost.
-              </span>
-            </div>
-            <div class="answer-row">
-              <span class="answer-mark">→</span>
-              <span class="answer-text">
-                <b>Work runs in threads, and a thread outlives its sessions.</b> Inside a thread,
-                one session sits down, works, hands off to the next. The chat ends; the thread
-                doesn't.
-              </span>
-            </div>
-            <div class="answer-row">
-              <span class="answer-mark">→</span>
-              <span class="answer-text">
-                <b>Your word is spent only where it's irreplaceable.</b> A <em>work</em> is one
-                card you and the agent agree on: the agent proposes steps and checks them off
-                only with proof; <b>done</b> is set by you, in a word.
-              </span>
-            </div>
-            <div class="answer-row">
-              <span class="answer-mark">→</span>
-              <span class="answer-text">
-                <b>One view from above.</b> <code>tide board</code> serves a page on localhost
-                with the stream of your home and of every project — and the work cards on it.
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+<span class="cmt"># unfold a home — one folder you lead everything from</span>
+mkdir ~/tide-home && cd ~/tide-home
+tide init --git
+export TIDE_HOME=~/tide-home    <span class="cmt"># add to your shell profile</span>
 
-    <!-- ─── II. THE SHOWCASE ─────────────────────────────────── -->
-    <section class="showcase" id="showcase">
-      <div class="container">
-        <div class="chapter-header reveal">
-          <span class="chapter-num">§ 02</span>
-          <h2 class="chapter-title">One real run, end to end.</h2>
-        </div>
-        <p class="showcase-intro chapter-lead reveal-fade">
-          The exact route of the <a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">first
-          hour</a>, shown once so you see the cycle with your own hands. In live work the agent
-          in a session runs these; you steer in prose.
-        </p>
+<span class="cmt"># adopt a project — any folder with code, old or new</span>
+cd ~/code/myapp
+tide adopt --goal "a small web app — trying tide"
 
-        <div class="flow">
+<span class="cmt"># open the board</span>
+tide board --open               <span class="cmt"># http://127.0.0.1:8765</span>
+tailscale serve --bg 8765       <span class="cmt"># the same board on your phone</span>
 
-          <!-- STEP 1 -->
-          <article class="step reveal">
-            <div class="step-rail"><div class="step-num">1</div><div class="step-line"></div></div>
-            <div class="step-body">
-              <div class="step-kicker">Home</div>
-              <h3 class="step-title">One folder you lead everything from</h3>
-              <p class="step-desc">
-                The <b>control-home</b> holds the roster of your projects and its own
-                <code>.tide/</code> — tide leads itself the same way. Claude hooks and skills
-                land by themselves: an agent opened in this home can hand off the thread and
-                offload from day one.
-              </p>
-              <div class="term" role="img" aria-label="Terminal: tide init unfolds a control-home">
-                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">~/tide-home · <span class="badge">tide init</span></span></div>
-                <div class="term-body">
-<span class="l"><span class="prompt">$</span> <span class="cmd">mkdir ~/tide-home && cd ~/tide-home</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide init</span> <span class="flag">--git</span></span>
-<span class="l"><span class="out">  + roster.md · canon/CANON.md · .tide/ · plugins (core only)</span></span>
-<span class="l"><span class="out">  + git repo (birth commit)</span></span>
-<span class="l"><span class="out">  + Claude hooks · skills: handoff, offload, tide-flow</span></span>
-<span class="l"><span class="ok">  ✓ tide control-home ready</span></span>
-                </div>
-              </div>
-            </div>
-          </article>
+<span class="cmt"># update · fix · report</span>
+tide self-update                <span class="cmt"># git pull + reinstall — gated, with rollback</span>
+./install.sh                    <span class="cmt"># fixed the source? reinstall in place</span>
+tide report "what happened"     <span class="cmt"># the pain goes upstream</span></pre>
 
-          <!-- STEP 2 -->
-          <article class="step reveal">
-            <div class="step-rail"><div class="step-num">2</div><div class="step-line"></div></div>
-            <div class="step-body">
-              <div class="step-kicker">Adopt</div>
-              <h3 class="step-title">Projects live where they live</h3>
-              <p class="step-desc">
-                Any folder with code, old or new. <code>tide adopt</code> lays the
-                <code>.tide/</code> layer on top, seeds the canon with <b>your goal</b>,
-                generates a README that speaks it, and writes the project into the home's
-                roster. tide commits nothing into your working repo.
-              </p>
-              <div class="term" role="img" aria-label="Terminal: tide adopt takes an existing project under the home">
-                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">~/code/myapp · <span class="badge">tide adopt</span></span></div>
-                <div class="term-body">
-<span class="l"><span class="prompt">$</span> <span class="cmd">cd ~/code/myapp</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide adopt</span> <span class="flag">--goal</span> <span class="cmd">"a small web app — trying tide"</span></span>
-<span class="l"><span class="out">  ✓ tide     scaffolded .tide/ (canon seeded with the goal)</span></span>
-<span class="l"><span class="out">  ✓ readme   README.md generated from canon</span></span>
-<span class="l"><span class="out">  ✓ roster   rostered → ~/tide-home</span></span>
-<span class="l"><span class="ok">  ready: tide menu → myapp</span></span>
-                </div>
-              </div>
-            </div>
-          </article>
+  <p>Homebrew carries the binary only — skills, hooks and the board travel with the clone:</p>
 
-          <!-- STEP 3 -->
-          <article class="step reveal">
-            <div class="step-rail"><div class="step-num">3</div><div class="step-line"></div></div>
-            <div class="step-body">
-              <div class="step-kicker">See</div>
-              <h3 class="step-title">The board — home and every project on one page</h3>
-              <p class="step-desc">
-                A page on localhost: a stream per project, a HEALTH line on each, work cards
-                when the work surface is on. No database, no cache — it rebuilds the
-                projection from <code>.tide/</code> on every request, and re-reads every
-                30 seconds. What's in the files is what's on screen.
-              </p>
-              <div class="term" role="img" aria-label="Terminal: tide board serves the localhost board">
-                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">the view from above · <span class="badge">tide board</span></span></div>
-                <div class="term-body">
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide board</span> <span class="flag">--open</span></span>
-<span class="l"><span class="out">  → serving http://127.0.0.1:8765 · localhost only</span></span>
-<span class="l"><span class="out">  streams: tide-home · myapp      HEALTH on each</span></span>
-                </div>
-              </div>
-              <p class="step-note"><b>Phone too.</b> The server stays on localhost; <code>tailscale serve</code> carries the board to your phone — two commands, in <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a>, next to the launchd recipe that keeps the board alive on its own.</p>
-            </div>
-          </article>
+  <pre>brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide
+brew install tide-tools/tide/tide</pre>
 
-          <!-- STEP 4 -->
-          <article class="step reveal">
-            <div class="step-rail"><div class="step-num">4</div><div class="step-line"></div></div>
-            <div class="step-body">
-              <div class="step-kicker">Agree</div>
-              <h3 class="step-title">A work — driven to closed, with proofs</h3>
-              <p class="step-desc">
-                A <b>work</b> is the agreement card between you and the agent: free text, a
-                checklist, one deadline, a journal where every gesture is a line. The agent
-                proposes and checks only with proof; <b>done is set only by a human</b>.
-                Switch the surface on once per home, then watch one card cross the whole
-                state machine.
-              </p>
-              <div class="term" role="img" aria-label="Terminal: one work crosses open, taken, review, done">
-                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">open → taken → review → <span class="badge">done</span></span></div>
-                <div class="term-body">
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide plugins on work</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work add "the app greets — check it runs"</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work propose 01 "run the app and see the answer"</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work agree 01</span> <span class="flag">--word</span> <span class="cmd">"yes"</span>  <span class="cmt"># your word</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work take 01</span> <span class="flag">--by</span> <span class="cmd">"first session"</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work check 01 1</span> <span class="flag">--proof</span> <span class="cmd">"ran it — it answers"</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide work close 01</span> <span class="flag">--word</span> <span class="cmd">"accepted"</span>  <span class="cmt"># done: human only</span></span>
-<span class="l"><span class="ok">  ✓ done — the journal holds every gesture, with your words</span></span>
-                </div>
-              </div>
-            </div>
-          </article>
+  <hr>
 
-          <!-- STEP 5 -->
-          <article class="step reveal">
-            <div class="step-rail"><div class="step-num">5</div><div class="step-line"></div></div>
-            <div class="step-body">
-              <div class="step-kicker">Talk</div>
-              <h3 class="step-title">From here on — words, not commands</h3>
-              <p class="step-desc">
-                <code>tide menu</code> picks a project, then a thread, and opens a terminal
-                with Claude already in context: role, the project's canon, the active thread,
-                the roster. You say what you want — <em>"start a work: …"</em>, <em>"hand off
-                the thread"</em>, <em>"show status"</em> — and the agent walks the verbs from
-                step 4 itself. This step needs
-                <a href="https://claude.com/claude-code">Claude Code</a>; the tide mechanics
-                work without it.
-              </p>
-              <div class="term" role="img" aria-label="Terminal: tide menu opens a seeded Claude session">
-                <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
-                  <span class="term-title">~/tide-home · <span class="badge">tide menu</span></span></div>
-                <div class="term-body">
-<span class="l"><span class="prompt">$</span> <span class="cmd">cd ~/tide-home</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide menu</span></span>
-<span class="l"><span class="out">  project › myapp</span></span>
-<span class="l"><span class="out">  thread  › + new thread</span></span>
-<span class="l"><span class="out">  → terminal opens · Claude seeded: role, canon, thread, roster</span></span>
-<span class="l"><span class="you">you ›</span> <span class="cmd">start a work: greet users on first launch</span></span>
-                </div>
-              </div>
-              <p class="step-note"><b>Full permissions by default.</b> Sessions from <code>tide menu</code> open with tool confirmations skipped — a deliberate default for the interactive head; <code>tide menu --no-skip-permissions</code> brings the prompts back.</p>
-            </div>
-          </article>
-
-        </div>
-
-        <!-- PAYOFF -->
-        <div class="payoff reveal">
-          <div class="payoff-thread">
-            <span class="node">session A</span><span class="arrow">──╮</span><br>
-            <span class="arrow">　　　　　╰─ handoff ─╮</span><br>
-            <span class="node">session B</span><span class="arrow"> ─ close ─→ </span><span class="node">work · done</span>
-          </div>
-          <p class="payoff-line">
-            The thread crossed two sessions and the work <b>closed with proofs and your word</b>.
-            Nothing was re-explained. Nothing scattered. The board saw every move — in files
-            you can read.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ─── III. CAPABILITIES ────────────────────────────────── -->
-    <section class="chapter" id="capabilities">
-      <div class="container--wide">
-        <div class="chapter-header reveal">
-          <span class="chapter-num">§ 03</span>
-          <h2 class="chapter-title">What the one binary gives you.</h2>
-        </div>
-        <p class="chapter-lead reveal-fade">
-          Namespaced subcommands that compose the way <code class="mono" style="color:var(--accent)">git&nbsp;&lt;verb&gt;</code> does. Honest and concrete — every one is real. The full tree: <code class="mono" style="color:var(--accent)">tide help</code>.
-        </p>
-
-        <div class="cap-grid reveal-slow">
-          <div class="cap">
-            <div class="cap-cmd">tide init --git</div>
-            <div class="cap-name">A control-home</div>
-            <div class="cap-body">One folder you lead everything from: the roster of projects plus its own <code class="mono" style="color:var(--accent)">.tide/</code>. Claude hooks and skills install themselves on init.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide adopt</div>
-            <div class="cap-name">Projects, in place</div>
-            <div class="cap-body">Any folder with code. tide lays <code class="mono" style="color:var(--accent)">.tide/</code> on top, seeds the canon with your goal, writes a README that speaks it, and rosters the project.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide menu</div>
-            <div class="cap-name">Seeded sessions</div>
-            <div class="cap-body">Pick a project, pick a thread — a terminal opens with Claude already in context: role, canon, active thread, roster. You talk from there.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide work …</div>
-            <div class="cap-name">Works: agreement on a card</div>
-            <div class="cap-body">Free text + checklist + journal. The agent proposes, you say the word, checks pass only with proof — and done is set only by your hand.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide handoffs</div>
-            <div class="cap-name">The thread, carried</div>
-            <div class="cap-body">One session sits down, works, hands the thread to the next. The chat ends; the thread doesn't. The handoff skill ships with the home.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide board</div>
-            <div class="cap-name">The view from above</div>
-            <div class="cap-body">A localhost page rebuilt from <code class="mono" style="color:var(--accent)">.tide/</code> on every request: home stream, every project, HEALTH, work cards. Phone via tailscale.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide plugins</div>
-            <div class="cap-name">Core and the removable</div>
-            <div class="cap-body">A fresh home gets the core only. Surfaces like works or the issues inbox switch on per home — one gesture, skills ride along.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide self-update</div>
-            <div class="cap-name">Gated self-update</div>
-            <div class="cap-body">Tells you itself when a fresh release is out. On a clone it's <code class="mono" style="color:var(--accent)">git pull</code> + reinstall — gated, with a rollback.</div>
-          </div>
-          <div class="cap">
-            <div class="cap-cmd">tide report</div>
-            <div class="cap-name">Pain goes upstream</div>
-            <div class="cap-body">Something broke? The source is already yours — fix it on the spot, then send the pain to the author. Home paths are scrubbed on the way out.</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ─── IV. WHY THIS SHAPE ───────────────────────────────── -->
-    <section class="chapter" id="shape">
-      <div class="container">
-        <div class="chapter-header reveal">
-          <span class="chapter-num">§ 04</span>
-          <h2 class="chapter-title">Built like a small UNIX tool, on purpose.</h2>
-        </div>
-        <div class="pitch-list reveal-slow">
-          <div class="pitch-item">
-            <span class="pitch-key">One binary</span>
-            <span class="pitch-val"><code>tide adopt …</code>, <code>tide work …</code>, <code>tide board</code> — namespaced verbs that compose like <code>git</code>. No platform to host, just the point you lead from.</span>
-          </div>
-          <div class="pitch-item">
-            <span class="pitch-key">Plain text is the DB</span>
-            <span class="pitch-val">Everything is markdown under <code>&lt;project&gt;/.tide/</code>. No database, no cache: even the board rebuilds its projection from the files on every request. <code>cat</code>, <code>grep</code>, <code>diff</code> and <code>git</code> just work on your state.</span>
-          </div>
-          <div class="pitch-item">
-            <span class="pitch-key">You steer in words</span>
-            <span class="pitch-val">The agent in a session doesn't memorize commands — you say what you want, it walks the <code>tide</code> verbs. You never type the inner verbs by hand.</span>
-          </div>
-          <div class="pitch-item">
-            <span class="pitch-key">A layer, not a takeover</span>
-            <span class="pitch-val">tide commits nothing into your working repo: <code>.tide/</code> just sits next to the code, and tracking or ignoring it is your call. The package is depersonalized — skills speak in roles, not names.</span>
-          </div>
-          <div class="pitch-item">
-            <span class="pitch-key">Dogfooded</span>
-            <span class="pitch-val">tide is led as a tide project, in its own <code>.tide/</code>. The machine runs itself.</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ─── V. INSTALL ───────────────────────────────────────── -->
-    <section class="chapter" id="install">
-      <div class="container">
-        <div class="chapter-header reveal">
-          <span class="chapter-num">§ 05</span>
-          <h2 class="chapter-title">Install — the whole path, on this page.</h2>
-        </div>
-        <p class="chapter-lead reveal-fade">
-          Requires Python ≥ 3.12. Everything below takes you from zero to a living board;
-          sessions (<code>tide menu</code>) also need
-          <a href="https://claude.com/claude-code">Claude Code</a> — the tide mechanics work
-          without it.
-        </p>
-
-        <div class="pitch-list reveal-slow">
-          <div class="install-card">
-            <div class="install-label">01 · The main door</div>
-            <div class="install-sub">Clone and one command. <code class="mono" style="color:var(--accent)">install.sh</code> puts <code class="mono" style="color:var(--accent)">tide</code> on your PATH — pipx if you have it, its own venv + symlink otherwise — and says the next gesture. The source stays with you, on purpose.</div>
-            <div class="codeblock" role="img" aria-label="Install from the clone">
-<span class="l"><span class="prompt">$</span> <span class="cmd">git clone https://github.com/tide-tools/tide && cd tide</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">./install.sh</span></span>
-<span class="l"><span class="cmt"># ✓ tide &lt;version&gt; — and a hint at the next gesture</span></span>
-            </div>
-          </div>
-
-          <div class="install-card">
-            <div class="install-label">02 · Homebrew — binary only</div>
-            <div class="install-sub">The second channel: carries just the binary — the skills, hooks and board travel with the clone. Fine for later.</div>
-            <div class="codeblock" role="img" aria-label="Homebrew install commands">
-<span class="l"><span class="prompt">$</span> <span class="cmd">brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">brew install tide-tools/tide/tide</span></span>
-            </div>
-          </div>
-          <div class="install-card">
-            <div class="install-label">03 · Unfold a home</div>
-            <div class="install-sub">One folder you lead everything from. Claude hooks and skills land by themselves. Add the export to your shell profile so <code class="mono" style="color:var(--accent)">tide</code> finds the home from any folder.</div>
-            <div class="codeblock" role="img" aria-label="Unfold the control-home">
-<span class="l"><span class="prompt">$</span> <span class="cmd">mkdir ~/tide-home && cd ~/tide-home</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide init</span> <span class="flag">--git</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">export TIDE_HOME=~/tide-home</span></span>
-            </div>
-          </div>
-
-          <div class="install-card">
-            <div class="install-label">04 · Adopt a project</div>
-            <div class="install-sub">Any folder with code, old or new. It is born speaking: its README and canon carry your goal, and the home's roster already holds it.</div>
-            <div class="codeblock" role="img" aria-label="Adopt an existing project">
-<span class="l"><span class="prompt">$</span> <span class="cmd">cd ~/code/myapp</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide adopt</span> <span class="flag">--goal</span> <span class="cmd">"a small web app — trying tide"</span></span>
-            </div>
-          </div>
-          <div class="install-card">
-            <div class="install-label">05 · Open the board</div>
-            <div class="install-sub">Home and every project on one page, re-read from <code class="mono" style="color:var(--accent)">.tide/</code> every 30 seconds. The server listens on localhost only; tailscale carries it to your phone — that, and the launchd service, in <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a>.</div>
-            <div class="codeblock" role="img" aria-label="Open the board, and reach it from a phone">
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide board</span> <span class="flag">--open</span></span>
-<span class="l"><span class="cmt"># http://127.0.0.1:8765</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tailscale serve --bg 8765</span></span>
-<span class="l"><span class="cmt"># the same board on your phone — HTTPS, your tailnet only</span></span>
-            </div>
-          </div>
-
-          <div class="install-card">
-            <div class="install-label">06 · Update · fix · report</div>
-            <div class="install-sub">It tells you itself when a fresh release is out. Broke something? The source is already yours — fix it, reinstall in place, send the pain upstream.</div>
-            <div class="codeblock" role="img" aria-label="Update, fix on the spot, report upstream">
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide self-update</span></span>
-<span class="l"><span class="cmt"># git pull + reinstall — gated, with rollback</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">./install.sh</span></span>
-<span class="l"><span class="cmt"># fixed the source? reinstall in place</span></span>
-<span class="l"><span class="prompt">$</span> <span class="cmd">tide report "what happened"</span></span>
-<span class="l"><span class="cmt"># lands as a gh-issue or a file · home paths scrubbed</span></span>
-            </div>
-          </div>
-        </div>
-
-        <p class="install-foot reveal-fade">
-          From here it's words: <code>cd ~/tide-home</code> → <code>tide menu</code> opens a
-          seeded Claude session — you talk, the agent walks the verbs. The first hour, step by
-          step: <a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">QUICKSTART.md</a>.
-          The full command tree: <code>tide help</code>.
-        </p>
-      </div>
-    </section>
-
-  </main>
-
-  <!-- ═══════════ CLOSER ════════════════════════════════════ -->
-  <section class="closer">
-    <div class="container">
-      <div class="closer-glyph reveal">≈ ≈ ≈</div>
-      <h2 class="closer-title reveal">The thread doesn't break.<br>The truth doesn't scatter.</h2>
-      <div class="reveal-slow">
-        <p>
-          tide doesn't ask you to be more disciplined about context, plumbing, or notes.
-          It removes the work that required the discipline.
-        </p>
-        <p>
-          State lives in files. Threads outlive their sessions. Your word is spent only
-          where it's irreplaceable — and the board shows it all.
-        </p>
-      </div>
-      <div class="closer-cta reveal-fade">
-        <a class="btn btn--primary" href="https://github.com/tide-tools/tide">View on GitHub ↗</a>
-        <a class="btn btn--ghost" href="#install">Install →</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- ═══════════ FOOTER ════════════════════════════════════ -->
-  <footer class="site-footer">
-    <div class="container--wide">
-      <div class="footer-inner">
-        <span class="footer-text">~tide · CLI + markdown + a board on localhost · MIT</span>
-        <span class="footer-text"><a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a></span>
-      </div>
-    </div>
+  <footer>
+    <p><a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">QUICKSTART.md</a> · <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a> · <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a></p>
+    <p class="cmt">MIT · Python ≥ 3.12 · sessions need Claude Code</p>
   </footer>
 
+</main>
 </body>
 </html>
