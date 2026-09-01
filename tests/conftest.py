@@ -101,7 +101,16 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # `tide arc new-session` would stamp it into fresh test sessions (cand 93-board-spark),
     # polluting the "a fresh session has no head" assumption across the suite.
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    # Same reason, the other half of the pair (cand 144): every tide command now binds
+    # `(sid, handle)` from its own env (`sessions.self_register`), so a suite that
+    # inherited the developer's pane handle would write the runner's own terminal into
+    # whatever registry the test points at. Drop both — a test has no terminal.
+    monkeypatch.delenv("ORCA_TERMINAL_HANDLE", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    # `tide init` delivers the skills as part of the install (work 49) — point the
+    # target at a per-test tmp dir so no test can ever link into the developer's
+    # real ~/.claude/skills (which holds ~30 personal skills of theirs).
+    monkeypatch.setenv("TIDE_SKILLS_DIR", str(tmp_path / "claude-skills"))
     # Tests legitimately create many arcs per second (a rate only a runaway loop
     # produces in real life) — lift the spawn backpressure for the suite; the
     # gate's own tests in test_arc_gates.py set a low limit explicitly.

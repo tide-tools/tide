@@ -49,15 +49,14 @@ def test_pickup_pins_sid_reserves_and_records(tmp_path):
         seed_file=str(seed), trigger="go", title="t", handoff_key=key,
     )
     assert res.ok
-    sid = fields.read_field(sess / "arc.md", "claude-session")
+    # подпись A: оффер ЗАРЕЗЕРВИРОВАН за sid, но статус остаётся offered до первого хода
+    rec = handoff_queue.list_offers(home)[0]
+    assert rec["status"] == handoff_queue.STATUS_OFFERED
+    sid = rec["pickup_session"]
     assert sid and not sid.startswith("<")
     # sid минтит tide и он же уходит в argv — никогда не вычитывается назад из claude
     joined = " ".join(adapter.spawned["command"])
     assert "--session-id {0}".format(sid) in joined
-    # подпись A: оффер ЗАРЕЗЕРВИРОВАН за sid, но статус остаётся offered до первого хода
-    rec = handoff_queue.list_offers(home)[0]
-    assert rec["status"] == handoff_queue.STATUS_OFFERED
-    assert rec["pickup_session"] == sid
     # sid ориджина не наследуется никогда (cand 103)
     assert sid != "origin-sid"
     # лончер — единственный писатель реестра
@@ -66,6 +65,41 @@ def test_pickup_pins_sid_reserves_and_records(tmp_path):
     claimed = handoff_queue.confirm_for_session(home, sid)
     assert claimed and claimed["name"] == key
     assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_TAKEN
+    # и ровно этот ход штампует паспорт — sid в нити появляется вместе с приёмом
+    assert fields.read_field(sess / "arc.md", "claude-session") == sid
+
+
+def test_pickup_leaves_passport_unstamped_until_reception(tmp_path):
+    # cand 140: подъём штамповал claude-session ДО первого хода сессии. 19.07 Orca
+    # умерла в `login:` — и в нити остался sid, которому не отвечает ни один
+    # транскрипт; фантом считался новейшей сессией и забирал голову у живой.
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    launch_session(
+        home, project=proj, session_dir=sess, adapter=_FakeAdapter(),
+        seed_file=str(seed), trigger="go", title="t", handoff_key=key,
+    )
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+
+
+def test_failed_pickup_leaves_no_phantom_sid_in_the_thread(tmp_path):
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    res = launch_session(
+        home, project=proj, session_dir=sess, adapter=_FakeAdapter(ok=False),
+        seed_file=str(seed), trigger="go", title="t", handoff_key=key,
+    )
+    assert not res.ok
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    # ...и повторный подъём проходит начисто: оффер жив, резерв перезаписывается
+    adapter = _FakeAdapter()
+    assert launch_session(
+        home, project=proj, session_dir=sess, adapter=adapter,
+        seed_file=str(seed), trigger="go", title="t", handoff_key=key,
+    ).ok
+    rec = handoff_queue.list_offers(home)[0]
+    assert rec["status"] == handoff_queue.STATUS_OFFERED
+    assert "--session-id {0}".format(rec["pickup_session"]) in " ".join(adapter.spawned["command"])
+    handoff_queue.confirm_for_session(home, rec["pickup_session"])
+    assert fields.read_field(sess / "arc.md", "claude-session") == rec["pickup_session"]
 
 
 def test_pickup_failed_spawn_leaves_offer_recoverable(tmp_path):
@@ -78,8 +112,7 @@ def test_pickup_failed_spawn_leaves_offer_recoverable(tmp_path):
     assert not res.ok
     rec = handoff_queue.list_offers(home)[0]
     assert rec["status"] == handoff_queue.STATUS_OFFERED  # оффер не съеден
-    sid = fields.read_field(sess / "arc.md", "claude-session")
-    assert registry.recorded_handle(home, sid) is None  # реестр не врёт
+    assert registry.recorded_handle(home, rec["pickup_session"]) is None  # реестр не врёт
 
 
 def test_fresh_launch_pins_sid_and_records(tmp_path):
@@ -112,7 +145,9 @@ def test_dry_run_touches_nothing_shared(tmp_path):
 def test_pickup_never_inherits_a_stale_pin(tmp_path):
     # e2e 14.07: the pickup session's passport arrived pre-pinned with a FOREIGN sid
     # (the creator's own, stamped at birth) — trusting it spawned claude onto an id
-    # already in use and it died on boot. A pickup always mints fresh and re-pins.
+    # already in use and it died on boot. A pickup always mints fresh; since cand 140
+    # the stale pin is CLEARED rather than overwritten (the passport stays honest
+    # until reception) and the fresh sid lands there on the first move.
     home, proj, sess, seed, key = _pickup_fixture(tmp_path)
     fields.set_field(sess / "arc.md", "claude-session", "creator-own-sid")
     adapter = _FakeAdapter()
@@ -121,10 +156,12 @@ def test_pickup_never_inherits_a_stale_pin(tmp_path):
         seed_file=str(seed), trigger="go", title="t", handoff_key=key,
     )
     assert res.ok
-    sid = fields.read_field(sess / "arc.md", "claude-session")
-    assert sid != "creator-own-sid"
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    sid = handoff_queue.list_offers(home)[0]["pickup_session"]
+    assert sid and sid != "creator-own-sid"
     assert "--session-id {0}".format(sid) in " ".join(adapter.spawned["command"])
-    assert handoff_queue.list_offers(home)[0]["pickup_session"] == sid
+    handoff_queue.confirm_for_session(home, sid)
+    assert fields.read_field(sess / "arc.md", "claude-session") == sid
 
 
 def test_launch_wires_the_project_hooks(tmp_path):
@@ -164,7 +201,7 @@ def test_pickup_second_click_focuses_not_duplicates(tmp_path, monkeypatch):
     # first click: real launch path (reserve + spawn + record)
     launch_session(home, project=proj, session_dir=sess, adapter=adapter,
                    seed_file=str(seed), trigger="go", title="t", handoff_key=key)
-    sid = fields.read_field(sess / "arc.md", "claude-session")
+    sid = handoff_queue.list_offers(home)[0]["pickup_session"]
     first_handle = registry.recorded_handle(home, sid)
     # second click: run_pickup sees the reservation + live handle → focus, no spawn
     focuser = _FakeAdapter()
@@ -185,7 +222,7 @@ def test_pickup_second_click_never_relaunches_even_if_focus_flakes(tmp_path, mon
     adapter = _FakeAdapter()
     launch_session(home, project=proj, session_dir=sess, adapter=adapter,
                    seed_file=str(seed), trigger="go", title="t", handoff_key=key)
-    sid_before = fields.read_field(sess / "arc.md", "claude-session")
+    sid_before = handoff_queue.list_offers(home)[0]["pickup_session"]
     flaky = _FakeAdapter()
     flaky.focus = lambda h: False  # tab is booting — focus flakes
     monkeypatch.setattr(pickup_mod, "get_adapter", lambda name=None: flaky)
@@ -193,6 +230,33 @@ def test_pickup_second_click_never_relaunches_even_if_focus_flakes(tmp_path, mon
     out = pickup_mod.run_pickup(home, key)
     assert out["ok"] is True and out["action"] == "already-launching"
     assert flaky.spawned is None  # no duplicate spawn
-    # the pin and the reservation are untouched — no re-mint
-    assert fields.read_field(sess / "arc.md", "claude-session") == sid_before
+    # the reservation is untouched — no re-mint
     assert handoff_queue.list_offers(home)[0]["pickup_session"] == sid_before
+
+
+def test_stale_reservation_lets_the_offer_be_raised_again(tmp_path, monkeypatch):
+    # 19.07: подъём сорвался (Orca умерла в `login:`), но вкладка осталась в реестре —
+    # гард вечно фокусировал труп, и оффер нельзя было поднять руками. Протухший
+    # резерв — свидетельство обратного: ▶ нажали, hello не пришло. Пускаем заново.
+    from tide.launcher import pickup as pickup_mod
+
+    home, proj, sess, seed, key = _pickup_fixture(tmp_path)
+    launch_session(home, project=proj, session_dir=sess, adapter=_FakeAdapter(),
+                   seed_file=str(seed), trigger="go", title="t", handoff_key=key)
+    dead_sid = handoff_queue.list_offers(home)[0]["pickup_session"]
+    # состарим резерв за TTL, оставив запись реестра на месте (вкладка «живая»)
+    old = "2020-01-01T00:00:00"
+    handoff_queue._set_field(handoff_queue.list_offers(home)[0]["path"], "reserved-at", old)
+    assert handoff_queue.list_offers(home)[0]["pickup_stale"] is True
+
+    relaunch = _FakeAdapter()
+    monkeypatch.setattr(pickup_mod, "get_adapter", lambda name=None: relaunch)
+    monkeypatch.setattr(pickup_mod._menu, "resolve_adapter_name", lambda root, o: None)
+    monkeypatch.setattr(pickup_mod._menu, "list_entries",
+                        lambda h: [{"name": "proj", "path": str(proj)}])
+    out = pickup_mod.run_pickup(home, key)
+    assert out["ok"] is True and out["action"] == "spawned"
+    fresh_sid = handoff_queue.list_offers(home)[0]["pickup_session"]
+    assert fresh_sid != dead_sid  # свежий резерв перезаписал мёртвый
+    assert "--session-id {0}".format(fresh_sid) in " ".join(relaunch.spawned["command"])
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()

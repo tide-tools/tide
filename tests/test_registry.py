@@ -109,3 +109,64 @@ def test_prune_keeps_everything_when_live_set_empty(tmp_path):
     registry.record(tmp_path, "sid-2", "term_b", "/b")
     assert registry.prune(tmp_path, live_handles=set()) == 0
     assert set(registry.read(tmp_path)) == {"sid-1", "sid-2"}
+
+
+# --- self_pair (the session's own identity, cand 144) ----------------------
+
+def test_self_pair_reads_the_pane_env():
+    env = {registry.ENV_SESSION_ID: " sid-1 ", registry.ENV_TERMINAL_HANDLE: "term_a "}
+    assert registry.self_pair(env) == ("sid-1", "term_a")
+
+
+def test_self_pair_empty_outside_a_session_terminal():
+    # the board's server / a plain shell: one or both missing ⇒ nothing to record
+    assert registry.self_pair({}) == ("", "")
+    assert registry.self_pair({registry.ENV_SESSION_ID: "sid-1"}) == ("sid-1", "")
+    assert registry.self_pair({registry.ENV_TERMINAL_HANDLE: "term_a"}) == ("", "term_a")
+
+
+# --- forget_handle (one dead terminal, one sweep) --------------------------
+
+def test_forget_handle_drops_every_record_of_the_corpse(tmp_path):
+    registry.record(tmp_path, "sid-1", "term_dead", "/a")
+    registry.record(tmp_path, "sid-2", "term_dead", "/b")  # same tab, second session
+    registry.record(tmp_path, "sid-3", "term_live", "/c")
+    assert registry.forget_handle(tmp_path, "term_dead") == 2
+    assert set(registry.read(tmp_path)) == {"sid-3"}
+
+
+def test_forget_handle_is_idempotent_and_ignores_empty(tmp_path):
+    registry.record(tmp_path, "sid-1", "term_a", "/a")
+    assert registry.forget_handle(tmp_path, "term_ghost") == 0
+    assert registry.forget_handle(tmp_path, "") == 0
+    assert set(registry.read(tmp_path)) == {"sid-1"}
+
+
+# --- migrate (one schema, said out loud) -----------------------------------
+
+def test_migrate_drops_legacy_arc_keyed_records(tmp_path):
+    registry.record(tmp_path, "sid-1", "term_a", "/p/.tide/arcs/01-@t")
+    registry.record(tmp_path, "/p/.tide/arcs/05-@handoff", "term_old", "")
+    assert registry.migrate(tmp_path) == 1
+    assert set(registry.read(tmp_path)) == {"sid-1"}
+
+
+def test_migrate_is_idempotent_on_a_clean_registry(tmp_path):
+    registry.record(tmp_path, "sid-1", "term_a", "/a")
+    assert registry.migrate(tmp_path) == 0
+    assert registry.migrate(tmp_path) == 0
+    assert set(registry.read(tmp_path)) == {"sid-1"}
+
+
+def test_migrate_survives_a_garbled_registry(tmp_path):
+    # an incompatible file must never take the command down with it
+    (tmp_path / registry.REGISTRY_FILENAME).write_text("]not json[", encoding="utf-8")
+    assert registry.migrate(tmp_path) == 0
+    assert registry.recorded_handle(tmp_path, "sid-1") is None
+
+
+def test_recorded_handle_no_longer_answers_from_an_arc_key(tmp_path):
+    # cand 144: an arc key cannot tell a thread's sessions apart, so it must not
+    # answer at all — focusing the wrong tab is worse than a duplicate.
+    registry.record(tmp_path, "/abs/arc/path", "term_old", "/abs/arc/path")
+    assert registry.recorded_handle(tmp_path, "sid-1", arc="/abs/arc/path") is None

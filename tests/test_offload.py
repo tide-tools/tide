@@ -345,6 +345,52 @@ def test_cli_offload_confirms_a_stranded_reservation(tmp_project, session, monke
     assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_TAKEN
 
 
+def test_cli_offload_confirms_a_reservation_with_an_unstamped_passport(
+    tmp_project, session, monkeypatch, tmp_path, capsys
+):
+    # cand 140: паспорт до приёма ПУСТ, значит по sid резерв уже не найти — пульс
+    # опознаёт сессию по её каталогу (сид оффера лежит внутри) и штампует sid сам.
+    from tests.conftest import build_tide_skeleton
+    from tide import handoff_queue, paths
+
+    home = tmp_path / "control-home"
+    home.mkdir()
+    build_tide_skeleton(home, name="home", control_home=True)
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+
+    handoff_queue.offer(home, "otliv", arc="hygiene/otliv", project="proj",
+                        seed=str(session / "input" / "handoff-seed.md"),
+                        from_session="origin-sid")
+    key = handoff_queue.list_offers(home)[0]["name"]
+    handoff_queue.reserve(home, key, session="sid-reserved")
+    assert not (fields.read_field(session / "arc.md", "claude-session") or "").strip()
+
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "hygiene/otliv", "--cursor", "жив и работаю"]) == 0
+    assert "confirmed by this pulse" in capsys.readouterr().out
+    assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_TAKEN
+    assert fields.read_field(session / "arc.md", "claude-session") == "sid-reserved"
+
+
+def test_pulse_never_confirms_an_unreserved_offer(tmp_project, session, monkeypatch, tmp_path):
+    # обратная сторона: оффер БЕЗ резерва пульс не забирает — «поднять» его ещё никто
+    # не пробовал, и приём не может случиться сам собой.
+    from tests.conftest import build_tide_skeleton
+    from tide import handoff_queue, paths
+
+    home = tmp_path / "control-home"
+    home.mkdir()
+    build_tide_skeleton(home, name="home", control_home=True)
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(home))
+
+    handoff_queue.offer(home, "otliv", arc="hygiene/otliv", project="proj",
+                        seed=str(session / "input" / "handoff-seed.md"))
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "hygiene/otliv", "--cursor", "жив"]) == 0
+    assert handoff_queue.list_offers(home)[0]["status"] == handoff_queue.STATUS_OFFERED
+    assert not (fields.read_field(session / "arc.md", "claude-session") or "").strip()
+
+
 # --- cand 106 (второй ложняк) + 108 + 109 -----------------------------------
 
 

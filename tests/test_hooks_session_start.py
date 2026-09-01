@@ -53,6 +53,44 @@ def test_render_includes_board_and_role_reminder(tmp_project):
     assert "ORCHESTRATOR" in text
 
 
+def test_orchestrator_reminder_states_the_gate_limits_up_front(tmp_project):
+    """The head must open knowing its cage, not learn it one denied command at a time.
+
+    Cand 155: every trip into the role-gate costs a round. The opening line now
+    carries the SAME allowed-surface sentence the gate prints when it refuses —
+    quoted from ``role_gate.ALLOWED_SURFACE``, so the two can never disagree.
+    """
+    from tide.hooks import role_gate
+
+    text = session_start.render(tmp_project, "orchestrator")
+    assert role_gate.ALLOWED_SURFACE in text
+    assert role_gate.ALLOWED_SURFACE in role_gate.DENY_MESSAGE
+
+    # The worker is ungated — spelling out an allowlist there would be a lie.
+    assert role_gate.ALLOWED_SURFACE not in session_start.ROLE_REMINDERS["worker"]
+
+
+def test_cold_entry_stream_hides_closed_threads(tmp_project):
+    """Sealed threads are finished history — off the opening breath, on `tide status`.
+
+    Live they were 18 of 23 STREAM rows: every closed thread plus each of its
+    sub-arcs, all of them long done.
+    """
+    from tide.arc import board
+
+    stream.new_arc(tmp_project, "alive")
+    buried = stream.new_arc(tmp_project, "buried")
+    (buried / "output" / "r.md").write_text("done\n", encoding="utf-8")
+    strip_placeholders(buried / "arc.md")
+    stream.close(tmp_project, "buried")
+
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "01-alive" in text
+    assert "__02-buried__" not in text
+    # `tide status` still renders the whole stream, closed history included
+    assert "__02-buried__" in board.render_board(tmp_project)
+
+
 def test_render_worker_role_reminder(tmp_project):
     text = session_start.render(tmp_project, "worker")
     assert "WORKER" in text
@@ -64,15 +102,59 @@ def test_render_unknown_role_falls_back_to_worker(tmp_project):
     assert "WORKER" in text
 
 
-def test_render_flags_drift_on_open_arc(tmp_project):
+def test_orchestrator_seed_role_and_hook_oneliner_tell_one_truth():
+    """Decision 11 (cold-start): the hook one-liner and the seed ## Role agree.
+
+    A cold orchestrator hears its role twice — once from the SessionStart hook's
+    one-liner, once from the shipped ``prompts/orchestrator.md`` embedded as the
+    seed's ``## Role``. Those two used to disagree: the hook said "merge canon, sign
+    contracts" (06-25 full model) while the prompt said "do NOT dispatch worker
+    subagents" (06-29 minimal-mode) — two epochs, incompatible, in one entry. This
+    pins the single truth the owner signed:
+
+    * BOTH carry the dispatch mechanism (the role-gate physically forces it).
+    * NEITHER carries the stale minimal-mode ban on dispatch.
+    * NEITHER tells the head it stamps canon/contracts itself — those are the
+      human's signature at the gate.
+    """
+    from tide.launcher import seed
+
+    one_liner = session_start.ROLE_REMINDERS["orchestrator"]
+    role_prompt = seed.read_role_prompt("orchestrator") or ""
+    assert role_prompt, "prompts/orchestrator.md must ship"
+
+    # One truth: both say the head dispatches build-work to workers.
+    assert "dispatch" in one_liner.lower()
+    assert "dispatch" in role_prompt.lower()
+
+    # The stale minimal-mode ban is gone from both.
+    for text in (one_liner.lower(), role_prompt.lower()):
+        assert "do not dispatch" not in text
+        assert "don't dispatch" not in text
+
+    # The head does not stamp canon/contracts on its own (decision 11: the human
+    # signs the gate). The old one-liner literally said "merge canon, sign contracts".
+    assert "merge canon" not in one_liner.lower()
+    assert "sign contracts" not in one_liner.lower()
+    assert "merge canon" not in role_prompt.lower()
+
+
+def test_render_reports_drift_once_in_the_health_footer(tmp_project):
+    """Drift is named in ONE place — the HEALTH footer, which aggregates.
+
+    It used to be reported twice: the footer's ``drift: <names>`` line AND a
+    per-arc ``⚠ drift: …`` block under WARNINGS right below it (live: 4 of the 5
+    WARNINGS lines were that echo). The footer now carries the re-stamp command
+    the WARNINGS block used to carry, so nothing actionable was lost.
+    """
     # Open an arc (stamps current canon-rev), then move CANON.md so it drifts.
     stream.new_arc(tmp_project, "do-thing")
     canon = tmp_project / ".tide" / "canon" / "CANON.md"
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     text = session_start.render(tmp_project, "orchestrator")
-    assert "WARNINGS" in text
-    assert "drift" in text
-    assert "do-thing" in text
+    assert "drift: 01-do-thing" in text          # named, once, in the footer…
+    assert "tide arc resume" in text             # …with the fix alongside it
+    assert "⚠ drift:" not in text                # and never echoed as a WARNING
 
 
 def test_render_flags_unmerged_delta(tmp_project):
@@ -164,14 +246,59 @@ def test_draft_contract_does_not_anchor(tmp_project):
 
 # --- readme drift warnings (criterion F) -----------------------------------
 
+def _write_canon_content(root) -> None:
+    """Fill CANON.md so the project is no longer a NEWBORN (empty skeleton).
+
+    A just-adopted project has blank sections and no README; the readme-drift
+    reproach holds its tongue over that (see the newborn tests below). Tests that
+    want the reproach must therefore give the project a canon to lag behind.
+    """
+    canon = root / ".tide" / "canon" / "CANON.md"
+    canon.write_text(
+        canon.read_text(encoding="utf-8").replace(
+            "## What it is\n", "## What it is\n\nA real project with real canon.\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_render_warns_readme_drift_when_stale(tmp_project):
     """SessionStart includes a readme drift warning when the README is stale/missing."""
     # Open an arc to suppress the arc-first advisory.
     stream.new_arc(tmp_project, "do-thing")
+    _write_canon_content(tmp_project)  # not a newborn — the reproach applies
     # README never generated → code 1 → warning expected.
     text = session_start.render(tmp_project, "orchestrator")
     assert "readme: drift" in text
     assert "WARNINGS" in text
+
+
+# --- newborn silence: no README yet, canon still a blank skeleton -----------
+
+def test_no_readme_reproach_for_a_newborn_project(tmp_project):
+    """A freshly-adopted project (blank canon, no README) is NOT scolded.
+
+    ``tide adopt`` writes only the four-heading canon skeleton and no README, so
+    "readme: drift — run 'tide readme'" blamed the agent for the absence of
+    something that should not exist yet.
+    """
+    stream.new_arc(tmp_project, "do-thing")  # suppress arc-first
+    assert session_start._is_newborn(tmp_project)
+    assert session_start._readme_drift_warnings(tmp_project) == []
+
+
+def test_readme_reproach_returns_once_the_canon_says_something(tmp_project):
+    """A MATURE project with real canon and no README is still flagged."""
+    _write_canon_content(tmp_project)
+    assert not session_start._is_newborn(tmp_project)
+    warnings = session_start._readme_drift_warnings(tmp_project)
+    assert warnings and "readme: drift" in warnings[0]
+
+
+def test_an_existing_readme_means_not_newborn(tmp_project):
+    """Even on a blank canon, a README that EXISTS puts the project past birth."""
+    readme.generate(tmp_project)
+    assert not session_start._is_newborn(tmp_project)
 
 
 def test_render_no_readme_warning_when_current(tmp_project):
@@ -216,6 +343,8 @@ def test_readme_drift_warning_emits_stderr_advisory_on_exception(
     The no-raise contract is still preserved (warnings list still returns []).
     """
     import tide.readme as _readme
+
+    _write_canon_content(tmp_project)  # past newborn, so check() is actually reached
 
     def boom(root):
         raise RuntimeError("simulated readme check explosion")
@@ -329,3 +458,35 @@ def test_notes_index_lists_titles_not_bodies(tmp_project):
     # без заметок секции нет
     (d / "01-zaglushka.md").unlink()
     assert "NOTES" not in session_start.render(tmp_project, "worker")
+
+
+# --- decision injection (cand 128-A) ---------------------------------------
+
+def test_session_decisions_surfaces_the_nits_open_decisions(tmp_project):
+    from tide import fields
+    from tide.arc import decision
+
+    stream.new_thread(tmp_project, "prz")
+    sess = stream.new_session(tmp_project, "prz", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "sid-123")
+    decision.add_decision(tmp_project, "решили Z", thread_ref="prz", dslug="zed")
+    lines = session_start._session_decisions(tmp_project, "sid-123")
+    assert any("Решения этой нити" in ln for ln in lines)
+    assert any("решили Z" in ln for ln in lines)
+
+
+def test_session_decisions_silent_without_sid_or_match(tmp_project):
+    assert session_start._session_decisions(tmp_project, None) == []
+    assert session_start._session_decisions(tmp_project, "ghost-sid") == []
+
+
+def test_render_injects_open_decisions_below_role(tmp_project):
+    from tide import fields
+    from tide.arc import decision
+
+    stream.new_thread(tmp_project, "prz")
+    sess = stream.new_session(tmp_project, "prz", "work")
+    fields.set_field(sess / "arc.md", "claude-session", "sid-xyz")
+    decision.add_decision(tmp_project, "решение для рендера", thread_ref="prz", dslug="r")
+    out = session_start.render(tmp_project, "orchestrator", session="sid-xyz")
+    assert "Решения этой нити" in out and "решение для рендера" in out

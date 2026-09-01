@@ -33,27 +33,50 @@ DEFAULT_LANG = "en"
 # so honesty checks (doctor's empty-skeleton warn) must exempt it.
 JOURNAL_SECTION = "Canon journal"
 
+# The section a newborn project's intent is seeded into (``tide adopt --goal``):
+# "what this project is" is exactly the question a cold agent opens with.
+INTENT_SECTION = "What it is"
+
 # Canonical H2 section titles, in order. Kept in sync with the conftest skeleton
 # template so a hand-built fixture and a real ``canon init`` agree byte-for-byte.
 SECTIONS: List[str] = [
-    "What it is",
+    INTENT_SECTION,
     "State & components",
     "Interfaces / how used",
     JOURNAL_SECTION,
 ]
 
 
-def canon_template(name: str) -> str:
+def seed_line(intent: str) -> str:
+    """Normalise a free-text *intent* into one canon-safe body line (may be empty).
+
+    Whitespace (newlines included) collapses to single spaces so the seed can never
+    inject blank-line breaks, and leading ``#`` is stripped so a goal phrased as a
+    heading cannot open a bogus H2 that :func:`scan_text` would parse as a section.
+    """
+    return " ".join(intent.split()).lstrip("#").strip()
+
+
+def canon_template(name: str, intent: str = "") -> str:
     """Return the seed ``CANON.md`` text for a project called *name*.
 
     Header ``# CANON.md — <name>`` then the four canonical H2 sections, each
     separated by a blank line. The trailing ``## Canon journal`` is the merge
     anchor and is intentionally left empty.
+
+    *intent* — an optional one-line seed (``tide adopt --goal``) written under
+    :data:`INTENT_SECTION`, so a newborn project says what it is instead of
+    handing the first agent four blank headings. Empty *intent* reproduces the
+    bare skeleton byte-for-byte (the conftest fixture depends on that).
     """
+    seed = seed_line(intent)
     body = ["# CANON.md — {0}".format(name), ""]
     for title in SECTIONS:
         body.append("## {0}".format(title))
         body.append("")
+        if seed and title == INTENT_SECTION:
+            body.append(seed)
+            body.append("")
     # body currently ends with a trailing "" after the last section → one \n.
     return "\n".join(body)
 
@@ -68,10 +91,13 @@ def init(
     name: Optional[str] = None,
     lang: str = DEFAULT_LANG,
     force: bool = False,
+    intent: str = "",
 ) -> Path:
     """Seed ``<root>/.tide/canon/`` with ``CANON.md`` + ``config``.
 
-    *name* defaults to the project dir name. Existing files are preserved unless
+    *name* defaults to the project dir name. *intent* seeds the "What it is"
+    section (see :func:`canon_template`); it only applies to a canon being
+    written, never to one being preserved. Existing files are preserved unless
     *force* is set (so re-running ``canon init`` never clobbers a real CANON).
     Returns the ``canon/`` directory path.
 
@@ -89,13 +115,26 @@ def init(
 
     canon = paths.canon_file(root)
     if force or not canon.exists():
-        _io.atomic_write(canon, canon_template(project_name))
+        _io.atomic_write(canon, canon_template(project_name, intent=intent))
 
     cfg = paths.canon_config(root)
     if force or not cfg.exists():
         _io.atomic_write(cfg, config_text(lang))
 
     return canon_directory
+
+
+def is_empty_skeleton(text: str) -> bool:
+    """True when CANON.md *text* is a fresh ``init`` skeleton: headings, no content.
+
+    A newborn project (``tide adopt``) gets exactly this — the four H2 headings with
+    blank bodies. Nothing has been said yet, so surfaces that reproach a project for
+    lagging behind its canon (README drift) must hold their tongue over it.
+    ``Canon journal`` is the merge anchor and is INTENTIONALLY empty — exempt, as in
+    :func:`tide.doctor.check_canon`, which shares this predicate.
+    """
+    content = {t: b for t, b in scan_text(text).items() if t != JOURNAL_SECTION}
+    return bool(content) and all(not body.strip() for body in content.values())
 
 
 def read(root: Path) -> str:

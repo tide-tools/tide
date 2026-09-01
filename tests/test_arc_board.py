@@ -179,7 +179,106 @@ def test_health_footer_drift_includes_subarcs(tmp_project):
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
     out = board.render_board(tmp_project)
     health = out[out.index("HEALTH"):]
-    assert "01-wire" in health.split("drift:")[1]
+    # qualified thread/session — a bare "01-wire" cannot be told from another
+    # thread's "01-wire" (live board had four indistinguishable "02-priem")
+    assert "01-@ship/01-wire" in health.split("drift:")[1]
+
+
+# --- drift under a SEALED thread is history, not live work -----------------
+
+def _move_canon(tmp_project):
+    """Advance the canon rev without restamping anything → everything open drifts."""
+    canon = paths.canon_file(tmp_project)
+    canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
+
+
+def test_drift_skips_sessions_under_a_closed_thread(tmp_project):
+    """A sub-arc under a sealed thread is finished history — never drift.
+
+    Live regression: 19 of the board's 23 drift rows sat under ``__…__`` threads
+    that cold entry does not even render, so the line pointed at nothing.
+    """
+    stream.new_goal(tmp_project, "ship")
+    stream.new_arc(tmp_project, "wire", goal_slug="ship")  # open dir, sealed parent
+    stream.close(tmp_project, "ship", force=True)
+    _move_canon(tmp_project)
+
+    drifted = board._drifted_entries(tmp_project, rev.compute(tmp_project))
+    assert drifted == []
+    assert "drift: none" in board.render_board(tmp_project)
+
+
+def test_drift_keeps_sessions_under_an_open_thread(tmp_project):
+    """The mirror case: the same sub-arc under a LIVE thread still drifts."""
+    stream.new_goal(tmp_project, "ship")
+    stream.new_arc(tmp_project, "wire", goal_slug="ship")
+    _move_canon(tmp_project)
+
+    labels = [
+        board.drift_label(tmp_project, d)
+        for d in board._drifted_entries(tmp_project, rev.compute(tmp_project))
+    ]
+    assert labels == ["01-@ship", "01-@ship/01-wire"]
+
+
+def test_closed_thread_subarc_has_no_inline_drift_flag(tmp_project):
+    """STREAM agrees with the footer: no ⚠ drift on a sealed thread's session."""
+    stream.new_goal(tmp_project, "ship")
+    stream.new_arc(tmp_project, "wire", goal_slug="ship")
+    stream.close(tmp_project, "ship", force=True)
+    _move_canon(tmp_project)
+
+    out = board.render_board(tmp_project)
+    line = next(ln for ln in out.splitlines() if "01-wire" in ln)
+    assert board.DRIFT_FLAG not in line
+
+
+def test_drift_label_qualifies_subarc_but_not_top_entry(tmp_project):
+    stream.new_goal(tmp_project, "ship")
+    sub = stream.new_arc(tmp_project, "wire", goal_slug="ship")
+    top = stream.new_arc(tmp_project, "alpha")
+    assert board.drift_label(tmp_project, top) == "02-alpha"
+    assert board.drift_label(tmp_project, sub) == "01-@ship/01-wire"
+
+
+def test_drift_line_caps_long_list_with_honest_remainder(tmp_project):
+    """Past the cap the line counts the rest out loud — never a silent trim."""
+    over = board.DRIFT_LIST_MAX + 3
+    for i in range(over):
+        stream.new_arc(tmp_project, "arc{0}".format(i))
+    _move_canon(tmp_project)
+
+    out = board.render_board(tmp_project)
+    drift_line = next(ln for ln in out.splitlines() if ln.strip().startswith("drift:"))
+    assert "+3 more" in drift_line
+    assert board.DRIFT_FLAG in drift_line          # points at the full list in STREAM
+    # and every one of them is still individually flagged up in STREAM
+    assert out.count(board.DRIFT_FLAG) == over + 1  # per-arc flags + the footer hint
+
+
+def test_drift_line_lists_all_names_at_the_cap(tmp_project):
+    for i in range(board.DRIFT_LIST_MAX):
+        stream.new_arc(tmp_project, "arc{0}".format(i))
+    _move_canon(tmp_project)
+
+    drift_line = next(
+        ln for ln in board.render_board(tmp_project).splitlines()
+        if ln.strip().startswith("drift:")
+    )
+    assert "more" not in drift_line
+
+
+def test_status_dict_drift_matches_the_footer(tmp_project):
+    """The JSON twin reports the same qualified, sealed-filtered list."""
+    stream.new_goal(tmp_project, "ship")
+    stream.new_arc(tmp_project, "wire", goal_slug="ship")
+    stream.new_goal(tmp_project, "old")
+    stream.new_arc(tmp_project, "ghost", goal_slug="old")
+    stream.close(tmp_project, "old", force=True)
+    _move_canon(tmp_project)
+
+    health = board.project_status_dict(tmp_project)["health"]
+    assert health["drifted_entries"] == ["01-@ship", "01-@ship/01-wire"]
 
 
 # --- supersede link --------------------------------------------------------

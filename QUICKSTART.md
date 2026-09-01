@@ -1,155 +1,144 @@
-# tide — quickstart
+# tide — первый час
 
-Zero → one closed unit of work. You need **Python ≥ 3.12**.
+Один проход: поставил → дом → проект → доска → первая закрытая работа.
+На каждом шаге написано, что ты увидишь. Нужен Python ≥ 3.12; для шага 6 —
+[Claude Code](https://claude.com/claude-code) (сама механика tide работает и без него).
 
-The whole idea: you **steer in plain words**, an orchestrator session **runs the
-commands**, and the result lands as durable truth in plain markdown you can read.
-You almost never type the inner verbs yourself — they're shown here only so you can
-see what the session is doing on your behalf.
+Команды здесь показаны, чтобы ты понял цикл руками. В живой работе их ходит
+агент в сессии — ты говоришь словами.
 
 ---
 
-## 1. Install
-
-### From source (current, before PyPI/Homebrew release)
+## 1. Поставить
 
 ```bash
-cd tide
+git clone https://github.com/tide-tools/tide && cd tide
 ./install.sh
-tide --version        # tide 0.1.0
 ```
 
-`install.sh` puts `tide` on your PATH under a 3.12 interpreter (pipx if you have it,
-otherwise a private venv + symlink). If `~/.local/bin` isn't on your PATH yet, the
-script prints the one line to add.
+**Увидишь:** `✓ tide <версия>` и подсказку следующего жеста. Если PATH не
+подхватился — скрипт печатает одну строку, которую надо добавить в профиль
+шелла, и это единственное, что тут можно «настраивать».
 
-### Via pip (once published to PyPI — human-gated, requires token rotation)
+## 2. Развернуть дом
+
+Дом (control-home) — одна папка, из которой ты ведёшь все проекты:
 
 ```bash
-pip install tide          # or: pipx install tide
-tide --version
+mkdir ~/tide-home && cd ~/tide-home
+tide init --git
 ```
 
-### Via Homebrew tap (live)
+**Увидишь** список созданного:
+
+```
+tide: tide control-home ready at /Users/ты/tide-home
+  + canon/CANON.md
+  + state/strictness
+  + .tide/
+  + roster.md
+  + .tide/plugins (core only)
+  + README.md
+  + git repo (birth commit)
+  + хуки Claude → …/.claude/settings.json (6)
+  + скиллы → …/skills: handoff, offload, tide-flow
+```
+
+Хуки и скиллы встали сами — агент, открытый в этом доме, с первого дня умеет
+передать нить и выгрузиться. Свежий дом получает только кор; съёмные части
+смотри в `tide plugins`.
+
+Чтобы `tide` находил дом из любой папки, добавь в профиль шелла:
 
 ```bash
-brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide
-brew install tide-tools/tide/tide
-tide --version
+export TIDE_HOME=~/tide-home
 ```
 
-The formula pins the immutable `v0.1.0` release-asset sdist (stable sha256). The
-template in `packaging/tide.rb` documents how a new version is cut.
+## 3. Завести проект
+
+Проект — любая папка с кодом, старая или новая:
+
+```bash
+cd ~/code/myapp
+tide adopt --goal "маленькое веб-приложение — проба tide"
+```
+
+**Увидишь** шаги усыновления:
+
+```
+tide: adopted myapp at /Users/ты/code/myapp
+  ✓ git     git init
+  ✓ tide    scaffolded .tide/ (canon seeded with the goal)
+  ✓ readme  README.md generated from canon
+  ✓ commit  first commit (worktree-ready)
+  · orca    orca CLI not on PATH — optional terminal manager, tide works without it
+  ✓ roster  rostered → /Users/ты/tide-home
+ready: tide menu → myapp
+```
+
+Проект рождается говорящим: его README и канон несут твою цель, не шаблонные
+заглушки. В ростере дома он уже есть. Строка `orca` — про Orca, опциональный
+терминал-менеджер для мака: нет его — шаг просто пропускается, всё работает и
+так (не звать вовсе — `tide adopt --no-orca`).
+
+## 4. Открыть доску
+
+```bash
+tide board --open
+```
+
+**Увидишь** в браузере (http://127.0.0.1:8765): стрим дома, стрим myapp,
+строку HEALTH у каждого. Страница сама перечитывает `.tide/` каждые 30 секунд —
+всё, что ты сделаешь дальше, появится тут без перезапуска. Порт — флагом
+`--port`; с телефона и как службу — [docs/board.md](docs/board.md).
+
+## 5. Первая работа — до закрытой
+
+Работа — карточка согласования: агент предлагает шаги, ты говоришь «да»,
+агент чекает пункты только с пруфом, закрываешь — ты. Включи съёмную часть
+(один раз на дом):
+
+```bash
+tide plugins on work        # скилл tide-work приедет этим же жестом
+```
+
+И проведи одну работу руками, чтобы увидеть цикл:
+
+```bash
+cd ~/code/myapp
+tide work add "приложение здоровается — проверить запуск"
+tide work propose 01 "запустить приложение и увидеть ответ"  # агентский жест: предложение
+tide work agree 01 --word "да"                               # твоё слово
+tide work take 01 --by "первая сессия"
+tide work check 01 1 --proof "запустил — отвечает"           # чек не проходит без пруфа
+tide work close 01 --word "принято"                          # done ставит только человек
+```
+
+**Увидишь** после каждого жеста короткий ответ — что произошло и подсказку
+следующего жеста (обычно две строки), а на доске — карточку, которая прошла
+open → taken → review → done. `tide work show 01` покажет журнал: каждый
+жест — строка, со словами человека.
+
+## 6. Сессия — дальше словами
+
+```bash
+cd ~/tide-home
+tide menu
+```
+
+**Увидишь** пикер проектов; выбери myapp. Вторым вопросом спросит тред
+(`Thread … 0) + new thread` / `select>`) — жми Enter: новый, и назови его
+(тред — линия работы внутри проекта). Откроется терминал
+с Claude уже в контексте: роль, канон проекта, активная нить, ростер. Дальше ты
+говоришь, что хочешь («заведи работу: …», «передай нить», «покажи статус») —
+вербы из шага 5 агент ходит сам.
+
+Сессии из `tide menu` открываются с полными правами инструментов
+(`--dangerously-skip-permissions`) — осознанный дефолт для интерактивной
+головы; вернуть обычные подтверждения — `tide menu --no-skip-permissions`.
 
 ---
 
-## 2. Unfold a control-home
-
-The control-home is the single place you lead all your projects from. Make an empty
-dir and unfold tide into it:
-
-```bash
-mkdir ~/control && cd ~/control
-tide init --name control
-```
-
-You now have a `roster.md` (the projects you lead) and a dogfood `.tide/` — the
-control-home is itself a tide project.
-
----
-
-## 3. Register the projects you lead
-
-Projects live anywhere on disk; the roster just points at them.
-
-```bash
-tide roster add myapp ~/code/myapp
-tide roster ls
-# myapp | /Users/you/code/myapp
-```
-
----
-
-## 4. Open an orchestrator session — then steer in prose
-
-```bash
-tide                  # interactive picker → pick the project(s)
-tide menu --pick all  # non-interactive
-```
-
-This opens a terminal seeded as an **orchestrator** (`TIDE_ROLE=orchestrator`, the
-project's canon + active arc + roster already loaded). From here you **talk**, and
-the session does the work:
-
-> **you:** let's ship onboarding — clicking "start" walks the user through 3 steps,
-> no console errors.
-
-The orchestrator translates that into the loop:
-
-1. **carves an arc** — one bounded unit of work
-   (`tide arc new ship-onboarding` → `tide arc open ship-onboarding`).
-2. **binds a contract** — your goal + hard criteria
-   (`tide contract new …` → `tide contract sign …`). In a **strict** project it asks
-   you to sign first; in **loose** it runs synchronously.
-3. **dispatches a worker** — a subagent that builds the work into the arc's
-   `output/` and proposes the durable change in `delta.md`. A worker can never merge
-   canon or close a contract.
-4. **lands it in front of you** — `tide contract report/proof/accept`, then
-   `tide contract close`, which **merges the delta into `CANON.md`**. That merge is
-   the single serialization point, and it only happens in a live orchestrator
-   session.
-
-You never had to type any of that. You said what you wanted, signed once, and the
-truth got reconciled.
-
----
-
-## 5. See where you are, any time
-
-```bash
-tide status            # the current project's STREAM board
-tide status --all      # roster-wide; flags unmerged deltas + drift
-```
-
-The board flags anything dangling — an unmerged delta, or an open arc still stamped
-at an older canon-rev (drift). The one load-bearing rule: **you cannot open the
-next arc while the last closed arc's delta is still unmerged.** Truth is reconciled
-before new work begins, every time.
-
----
-
-## 6. Stop cleanly — handoff
-
-When a session gets heavy, you don't have to remember "what was going on." Say
-*"handoff"* / *"let's wrap up"* and the orchestrator distils the thread into the arc
-and forks a fresh session already on the focus:
-
-```bash
-tide handoff ship-onboarding --mode continue --summary-file <distil>
-```
-
-The next session starts on the focus, not on a pile of chat.
-
----
-
-## See it run for real
-
-`examples/tide-pool/` is a complete, real tide run: a single-file browser game built
-**feature-by-feature** through three arcs (`f1-core` → `f2-upgrades` → `f3-persist`),
-each one a signed-and-closed contract whose delta was merged before the next arc
-could exist. Read **[`examples/tide-pool/SHOWCASE.md`](examples/tide-pool/SHOWCASE.md)**
-— it walks the whole loop, including the two moments tide *refused* to open the next
-arc because the previous delta was still unmerged. `examples/dogfood-runA/` and
-`runB/` are two more finished `.tide/` trees you can `cat`, `grep`, and `diff`.
-
----
-
-## The loop in one line
-
-```
-roster add → tide (orchestrator) → say the goal → arc · contract · worker · canon-merge → status / handoff
-```
-
-Everything is plain markdown under `<project>/.tide/`. Next: read
-**[README.md](README.md)** for the full command surface and the on-disk invariants,
-or run `tide help`.
+Захотел глубже: `tide help` — все команды; [README.md](README.md) — модель
+целиком; [docs/board.md](docs/board.md) — доска службой и с телефона.
+Сломалось — `tide report "что случилось"`: исходник у тебя, боль — автору.

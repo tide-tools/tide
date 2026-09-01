@@ -267,3 +267,163 @@ def test_gate_python_prefers_source_dev_venv(tmp_path):
 
 def test_gate_python_falls_back_to_source_python(tmp_path):
     assert core._gate_python(tmp_path, "/sandbox/python") == "/sandbox/python"
+
+
+# --- cand 141: an editable install is an accepted NO-OP ----------------------
+#
+# The nightmare this guards: a dev whose tide runs editable out of a checkout
+# types `tide self-update` mid-session and the installer fires at the very files
+# the running process is loading from. Under a Homebrew/system interpreter that
+# fails on externally-managed-environment; at best it re-links what is already
+# linked. Either way the honest answer is "nothing to install" — and it must be
+# an ACCEPTED no-op (exit 0), not a failure.
+
+
+@dataclass
+class FakeEditableSource(FakeSource):
+    """A local checkout the running tide loads its code from."""
+
+    editable: bool = True
+    uv_tool: bool = False
+
+
+def _editable_stale() -> FakeEditableSource:
+    return FakeEditableSource(Revision("0.1.0", "old"), Revision("0.2.0", "new"))
+
+
+def test_editable_install_is_never_stale():
+    # marker lags the checkout's pyproject — but the running code IS the checkout,
+    # so there is no pending update to report.
+    status = core.check_for_update(_editable_stale())
+    assert status.stale is False
+
+
+def test_self_update_editable_is_accepted_noop():
+    runner = FakeRunner()
+    res = core.self_update(_editable_stale(), runner=runner)
+    assert res.accepted is True
+    assert res.applied is False
+    assert runner.calls == []  # nothing ran at all — not even the gate
+    joined = " ".join(res.messages)
+    assert "editable install" in joined
+    assert "git -C /src pull" in joined
+
+
+def test_self_update_editable_noop_survives_force():
+    # --force must NOT punch through: forcing an installer at a live editable
+    # install is exactly the machine-breaking move this guard exists to stop.
+    runner = FakeRunner()
+    res = core.self_update(_editable_stale(), force=True, runner=runner)
+    assert res.accepted is True
+    assert res.applied is False
+    assert runner.calls == []
+    assert "--force does NOT override" in " ".join(res.messages)
+
+
+def test_uv_tool_install_is_not_treated_as_editable():
+    # A uv-tool sandbox holds a real COPY, not a link — it genuinely needs a
+    # reinstall, so the no-op must not swallow it.
+    s = FakeEditableSource(Revision("0.1.0", "old"), Revision("0.2.0", "new"))
+    s.uv_tool = True
+    runner = FakeRunner()
+    res = core.self_update(s, runner=runner)
+    assert res.applied is True
+    assert runner.calls  # the gate + install really ran
+
+
+def test_session_note_silent_for_editable_install():
+    assert core.session_note(lambda: _editable_stale()) is None
+
+
+# --- the MAIN install door: git clone + install.sh ---------------------------
+#
+# The shape most people handed tide will have. It is NOT editable (install.sh
+# copies the checkout into a pipx/venv install), so the running code does not
+# follow the checkout; and unlike a published install there IS a checkout. The
+# newer tide lives on the REMOTE, so the pull has to happen before the staleness
+# verdict — otherwise self-update compares the install against a checkout that
+# never moved and says "already current" forever.
+
+
+@dataclass
+class FakeCloneSource(FakeSource):
+    editable: bool = False
+    uv_tool: bool = False
+    upstream_ref: Optional[str] = "origin/main"
+    pulled_to: Optional[Revision] = None
+
+    def upstream(self):
+        return self.upstream_ref
+
+    def pull_command(self):
+        return ["git", "-C", str(self.source_dir), "pull", "--ff-only"]
+
+
+def _clone_source(**kw) -> FakeCloneSource:
+    rev = Revision("0.1.0", "old")
+    return FakeCloneSource(rev, rev, **kw)
+
+
+def test_clone_install_pulls_before_judging_staleness(monkeypatch):
+    # Install and checkout agree at 0.1.0 — a pull is what reveals 0.2.0.
+    source = _clone_source()
+    runner = FakeRunner()
+
+    def after_pull(cmd, cwd=None, env=None):
+        if "pull" in cmd:
+            source.available_rev = Revision("0.2.0", "new")
+            return 0, "Updating old..new"
+        return runner(cmd, cwd, env)
+
+    res = core.self_update(source, runner=after_pull)
+    assert res.applied is True
+    assert res.accepted is True
+    assert "pulling origin/main" in " ".join(res.messages)
+
+
+def test_clone_install_without_the_pull_sees_nothing_to_do(monkeypatch):
+    # --no-pull is the honest escape hatch, and it reports the consequence.
+    source = _clone_source()
+    runner = FakeRunner()
+    res = core.self_update(source, pull=False, runner=runner)
+    assert res.applied is False
+    assert res.accepted is True
+    assert "already current" in " ".join(res.messages)
+    assert not any("pull" in " ".join(c) for c in runner.calls)
+
+
+def test_clone_install_with_no_upstream_says_where_to_get_a_newer_tide():
+    source = _clone_source(upstream_ref=None)
+    runner = FakeRunner()
+    res = core.self_update(source, runner=runner)
+    assert res.accepted is False
+    assert res.applied is False
+    assert runner.calls == []  # nothing gated, nothing installed
+    assert "tracks no remote" in " ".join(res.messages)
+
+
+def test_a_pull_that_will_not_fast_forward_refuses_and_installs_nothing():
+    # We never merge, rebase or reset somebody else's clone.
+    source = _clone_source()
+    calls = []
+
+    def runner(cmd, cwd=None, env=None):
+        calls.append(cmd)
+        if "pull" in cmd:
+            return 1, "fatal: Not possible to fast-forward, aborting."
+        return 0, ""
+
+    res = core.self_update(source, runner=runner)
+    assert res.accepted is False
+    assert res.applied is False
+    assert len(calls) == 1  # only the pull ran
+    assert "REFUSED" in " ".join(res.messages)
+    assert "your clone is untouched" in " ".join(res.messages)
+
+
+def test_editable_install_never_reaches_the_pull_path():
+    # An editable checkout is a dev's own tree; self-update must not pull it.
+    runner = FakeRunner()
+    res = core.self_update(_editable_stale(), runner=runner)
+    assert res.accepted is True
+    assert runner.calls == []

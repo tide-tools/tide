@@ -168,10 +168,17 @@ def test_orca_self_heals_unregistered_repo(monkeypatch):
 
     assert res.ok is True
     assert "registering repo" in res.detail.lower()
-    # exactly: create (fail) → repo add → create (retry)
-    assert len(calls) == 3
+    # the heal itself: create (fail) → repo add → create (retry) …
+    assert calls[0][:3] == ["orca", "terminal", "create"]
     assert calls[1] == ["orca", "repo", "add", "--path", "/p/fresh"]
     assert calls[2][:3] == ["orca", "terminal", "create"]
+    # … then _raise_app brings the window forward: screen-lock probe + `orca open`
+    assert calls[3][0].endswith("ioreg")
+    assert calls[4] == ["orca", "open"]
+    assert len(calls) == 5
+    # ONE registration, ONE retry — the self-heal never loops
+    assert sum(1 for c in calls if c[:2] == ["orca", "repo"]) == 1
+    assert sum(1 for c in calls if c[:3] == ["orca", "terminal", "create"]) == 2
 
 
 def test_orca_spawn_returns_terminal_handle_from_json(monkeypatch):
@@ -210,6 +217,53 @@ def test_orca_spawn_falls_back_to_title_when_handle_unparseable(monkeypatch):
     monkeypatch.setattr(_sp, "run", fake_run)
     res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x")
     assert res.ok is True and res.ref == "tide-x"  # legible fallback, spawn still succeeds
+
+
+def test_orca_say_sends_the_turn_through_the_orca_cli(monkeypatch):
+    """say types the words into the LIVE terminal and submits them (работа 44 п.8).
+
+    Через родной `orca terminal send`, а не keystroke: русская раскладка перемолола
+    бы реплику, как перемалывала бы команду запуска (см. докстринг модуля)."""
+    import json as _json
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return _sp.CompletedProcess(args=argv, returncode=0,
+                                    stdout=_json.dumps({"ok": True}), stderr="")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    assert a.say("term_live", "план работы 44 согласован — веди её") is True
+    argv = seen[0]
+    assert argv[:3] == ["orca", "terminal", "send"]
+    assert "--terminal" in argv and "term_live" in argv
+    assert "--enter" in argv  # без него реплика легла бы в промпт и осталась там
+    assert "план работы 44 согласован — веди её" in argv
+
+
+def test_orca_say_is_honest_when_the_words_do_not_land(monkeypatch):
+    """Не доехало — False, и никакой имитации: наверху это станет «скажи сам»."""
+    import json as _json
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    monkeypatch.setattr(_sp, "run", lambda argv, **kw: _sp.CompletedProcess(
+        args=argv, returncode=0, stdout=_json.dumps({"ok": False}), stderr=""))
+    assert a.say("term_live", "поехали") is False
+    # нет orca / нет ручки / нет слов — тоже честное «не доставлено», без вызова
+    monkeypatch.setattr(_sp, "run", lambda *a_, **k: pytest.fail("не должно звать orca"))
+    assert a.say("term_live", "   ") is False
+    assert a.say("", "поехали") is False
+
+
+def test_base_adapter_says_it_has_no_channel():
+    """Дефолт контракта — False: адаптер без канала не смеет молча «доставить»."""
+    assert base.TerminalAdapter.say(object(), "term_x", "поехали") is False
 
 
 def test_orca_non_selector_failure_does_not_register_or_retry(monkeypatch):

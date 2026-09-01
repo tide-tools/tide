@@ -28,6 +28,18 @@ def test_scaffold_uses_dir_name_when_name_omitted(tmp_path: Path):
     assert "alpha" in paths.canon_file(proj).read_text(encoding="utf-8")
 
 
+def test_scaffold_passes_intent_into_the_canon(tmp_path: Path):
+    init_home.scaffold_project(tmp_path, name="demo", intent="A thing that does a thing.")
+    sections = store.scan(tmp_path)
+    assert sections[store.INTENT_SECTION] == "A thing that does a thing."
+    assert not store.is_empty_skeleton(store.read(tmp_path))
+
+
+def test_scaffold_without_intent_is_unchanged(tmp_path: Path):
+    init_home.scaffold_project(tmp_path, name="demo")
+    assert store.is_empty_skeleton(store.read(tmp_path))
+
+
 def test_scaffold_does_not_make_roster(tmp_path: Path):
     init_home.scaffold_project(tmp_path)
     assert not paths.roster_file(tmp_path).exists()

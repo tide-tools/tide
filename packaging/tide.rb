@@ -6,10 +6,20 @@
 #   brew install tide-tools/tide/tide
 #
 # The url pins the IMMUTABLE release-asset sdist uploaded to the GitHub release
-# (NOT the /archive/ tarball — its sha is unstable across force-pushes). To cut a
-# new version: build the sdist, `gh release create vX.Y.Z dist/tide-X.Y.Z.tar.gz`,
-# then set url to that asset + sha256 = `shasum -a 256` of the UPLOADED asset, and
-# bump the test version below. Source repo lives at tide-tools/tide.
+# (NOT the /archive/ tarball — its sha is unstable across force-pushes).
+#
+# DO NOT cut a version by hand. `tide release` does all of it — preflight, the
+# regression gate, `git archive` of the tag, `gh release create`, and rewriting
+# the three fields below (url, sha256, and the smoke version in `test do`) from
+# the sha256 of the artifact it just built. Hand-editing is how a formula ends up
+# pinning a digest that does not match its url, which breaks the install for
+# everyone who taps it.
+#
+#   tide release --dry-run     # see the whole plan + this formula as it would be
+#   tide release               # cut it (asks before pushing anything)
+#
+# This file is the TEMPLATE of record; the live formula is Formula/tide.rb in the
+# tap at tide-tools/homebrew-tide. Source repo lives at tide-tools/tide.
 
 class Tide < Formula
   include Language::Python::Virtualenv

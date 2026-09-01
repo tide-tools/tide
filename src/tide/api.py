@@ -61,6 +61,7 @@ from .arc.curate import (
 # --- handoffs (two-stage offer → take) -----------------------------------------------
 from .handoff_queue import (
     confirm_for_session,
+    confirm_for_session_dir,
     drop,
     is_dissolved,
     list_offers,
@@ -96,7 +97,8 @@ __all__ = [
     "dismiss", "drop_candidate", "drop_thread", "hold", "retire_sessions",
     "validate_step",
     # handoffs
-    "confirm_for_session", "drop", "is_dissolved", "list_offers", "multiples", "offer",
+    "confirm_for_session", "confirm_for_session_dir", "drop", "is_dissolved",
+    "list_offers", "multiples", "offer",
     "reserve", "take", "validate_target",
     # pulse
     "find_session", "find_session_by_claude_id", "nudge_reason", "offload",

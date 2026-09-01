@@ -432,8 +432,10 @@ def test_handoffs_shown_at_type_step(tmp_path, monkeypatch):
 
 
 def test_launch_handoff_pins_session_id_for_menu_resume(tmp_control_home, tmp_path):
-    # After pickup the session must be RESUMABLE from the menu: the new claude
-    # session id is pinned onto the handoff's target session passport.
+    # After RECEPTION the session must be RESUMABLE from the menu: the new claude
+    # session id is pinned onto the handoff's target session passport. The pin lands
+    # on the first move, not at spawn (cand 140) — a launch that never reached a
+    # terminal must leave no sid behind.
     from tide.launcher import menu
     from tide.adapters import SpawnResult
     from tide import fields
@@ -459,8 +461,11 @@ def test_launch_handoff_pins_session_id_for_menu_resume(tmp_control_home, tmp_pa
         rec, [{"name": "tide-stack", "path": str(proj)}],
         control_home=tmp_control_home, adapter=FakeAdapter(), dry_run=False,
     )
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    reserved = str(hq.list_offers(tmp_control_home)[0]["pickup_session"]).strip()
+    hq.confirm_for_session(tmp_control_home, reserved)  # the session's first move
     pinned = fields.read_field(sess / "arc.md", "claude-session")
-    assert pinned and len(pinned) > 10  # a uuid was stamped → menu can --resume it
+    assert pinned == reserved and len(pinned) > 10  # a uuid was stamped → menu --resume
 
 
 def test_install_hooks_wires_user_prompt_submit(tmp_project):

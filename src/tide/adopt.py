@@ -8,10 +8,17 @@ four-step recipe:
 
 1. Resolve an absolute path; the project *name* defaults to the dir's basename.
 2. ``git init`` when the dir is not already a repo (tolerates a missing ``git``).
-3. Scaffold ``.tide/`` when absent (reuses :func:`tide.init_home.scaffold_project`).
-4. Register with Orca (``orca repo add --path <abs> --json``) when the CLI is on
+3. Scaffold ``.tide/`` when absent (reuses :func:`tide.init_home.scaffold_project`),
+   seeding the canon's intent from ``--goal`` when the human gave one.
+4. Project that canon into a ``README.md`` — only when a goal was seeded, so the
+   user door opens on something real instead of a generated stub.
+5. Register with Orca (``orca repo add --path <abs> --json``) when the CLI is on
    PATH — an already-registered path is success, not a failure.
-5. Add to the control-home roster (skipped gracefully when none resolves).
+6. Add to the control-home roster (skipped gracefully when none resolves).
+
+Birth without ``--goal`` is unchanged: a four-heading canon skeleton and no
+README, which the SessionStart newborn guard is deliberately silent about
+(``tide.hooks.session_start._is_newborn``). Nothing is ever demanded of the human.
 
 Every step is non-destructive + re-runnable: a second ``tide adopt`` on the same
 dir is a no-op-ish success. Logic is plain functions returning an
@@ -23,11 +30,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import init_home, paths, roster
+from . import init_home, paths, readme as _readme, roster
 
 # Per-step outcome markers (rendered in the summary).
 DONE = "done"
@@ -127,21 +135,55 @@ def _first_commit_step(path: Path, do_git: bool) -> AdoptStep:
     return AdoptStep("commit", DONE, "first commit (worktree-ready)")
 
 
-def _scaffold_step(path: Path, name: str) -> AdoptStep:
+def _scaffold_step(path: Path, name: str, intent: str = "") -> AdoptStep:
     """Lay down ``.tide/`` when absent (idempotent via scaffold_project)."""
     existed = paths.tide_dir(path).is_dir()
-    init_home.scaffold_project(path, name=name)
+    init_home.scaffold_project(path, name=name, intent=intent)
     if existed:
         return AdoptStep("tide", SKIPPED, ".tide/ already present")
+    if intent.strip():
+        return AdoptStep("tide", DONE, "scaffolded .tide/ (canon seeded with the goal)")
     return AdoptStep("tide", DONE, "scaffolded .tide/")
 
 
+def _readme_step(path: Path, name: str, intent: str, canon_was_born: bool) -> AdoptStep:
+    """Project the freshly-seeded canon into README.md — the project's user door.
+
+    Runs only when this very run seeded the canon from ``--goal``. Without a goal
+    the canon is a blank skeleton and a README off it would be the stub this step
+    exists to prevent; over a canon that already existed, the goal was not applied
+    (scaffold is non-destructive), so writing a README would be a surprise edit of
+    someone else's project.
+    """
+    if not intent.strip():
+        return AdoptStep("readme", SKIPPED, "no --goal — canon has nothing to project yet")
+    if not canon_was_born:
+        return AdoptStep("readme", SKIPPED, "canon already written — --goal not applied")
+    try:
+        _text, status = _readme.generate(path, fallback_name=name)
+    except (OSError, FileNotFoundError, UnicodeDecodeError) as exc:
+        return AdoptStep("readme", WARN, "README not generated ({0})".format(exc))
+    return AdoptStep("readme", DONE, "README.md {0} from canon".format(status))
+
+
 def _orca_step(abs_path: str, do_orca: bool) -> AdoptStep:
-    """Register *abs_path* with Orca; an already-known path counts as success."""
+    """Register *abs_path* with Orca; an already-known path counts as success.
+
+    Darwin-gated exactly like :func:`tide.adapters.default_adapter_name`: on
+    Linux an ``orca`` on PATH is the GNOME screen-reader, and calling it with
+    ``repo add`` would launch a screen-reader with junk arguments (finding 5,
+    release panel 2026-08). Orca the terminal manager is a Mac app.
+    """
     if not do_orca:
         return AdoptStep("orca", SKIPPED, "skipped (--no-orca)")
+    if sys.platform != "darwin":
+        return AdoptStep(
+            "orca", SKIPPED,
+            "non-macOS — Orca (optional Mac terminal manager) not called")
     if shutil.which("orca") is None:
-        return AdoptStep("orca", SKIPPED, "orca CLI not on PATH")
+        return AdoptStep(
+            "orca", SKIPPED,
+            "orca CLI not on PATH — optional terminal manager, tide works without it")
     try:
         subprocess.run(
             ["orca", "repo", "add", "--path", abs_path, "--json"],
@@ -180,12 +222,16 @@ def adopt(
     name: Optional[str] = None,
     do_git: bool = True,
     do_orca: bool = True,
+    intent: str = "",
 ) -> AdoptReport:
     """Make *path* a working tide project, idempotently; return an :class:`AdoptReport`.
 
     *name* overrides the project name (default: the dir's basename). *do_git* /
-    *do_orca* opt out of the git-init / Orca-registration steps. Re-running on an
-    already-adopted dir is a no-op-ish success (every step reports ``skipped``).
+    *do_orca* opt out of the git-init / Orca-registration steps. *intent* is the
+    human's one-line goal (``--goal``): it seeds the canon's "What it is" and the
+    README projected from it, so the project is born already saying what it is.
+    Re-running on an already-adopted dir is a no-op-ish success (every step
+    reports ``skipped``).
     """
     abs_path = Path(path).expanduser().resolve()
     proj_name = (name or "").strip() or abs_path.name
@@ -193,7 +239,13 @@ def adopt(
 
     report = AdoptReport(path=abs_path, name=proj_name)
     report.steps.append(_git_step(abs_path, do_git))
-    report.steps.append(_scaffold_step(abs_path, proj_name))
+    # Whether the canon is born in THIS run decides if --goal reached it — read
+    # before the scaffold writes, since scaffold_project preserves an existing one.
+    canon_was_born = not paths.canon_file(abs_path).exists()
+    report.steps.append(_scaffold_step(abs_path, proj_name, intent))
+    report.steps.append(_readme_step(abs_path, proj_name, intent, canon_was_born))
+    # The first commit runs last of the file-writing steps so canon + README both
+    # ride into it.
     report.steps.append(_first_commit_step(abs_path, do_git))
     report.steps.append(_orca_step(abs_str, do_orca))
     report.steps.append(_roster_step(proj_name, abs_str))
@@ -218,6 +270,7 @@ def _cmd_adopt(args) -> int:
         name=getattr(args, "name", None),
         do_git=not getattr(args, "no_git", False),
         do_orca=not getattr(args, "no_orca", False),
+        intent=getattr(args, "intent", None) or "",
     )
     print(render_report(report))
     return 0
@@ -230,6 +283,15 @@ def register(subparsers) -> None:
     )
     p.add_argument("path", nargs="?", default=".", help="directory to adopt (default: cwd)")
     p.add_argument("--name", help="project name (default: dir basename)")
+    p.add_argument(
+        "--goal",
+        dest="intent",
+        metavar="TEXT",
+        help=(
+            "one line saying what this project is — seeds the canon at birth and "
+            "the README projected from it (omit and the canon is born blank)"
+        ),
+    )
     p.add_argument("--no-git", action="store_true", help="do not 'git init' the directory")
     p.add_argument("--no-orca", action="store_true", help="do not register the repo with Orca")
     p.set_defaults(func=_cmd_adopt, _cmd="adopt")

@@ -139,6 +139,62 @@ def version_is_newer(available: str, installed: str) -> bool:
     return a > i
 
 
+def package_runs_from(source_dir: Path) -> bool:
+    """True when the RUNNING ``tide`` package is loaded straight out of *source_dir*.
+
+    The honest test for "this install is editable": the module file executing right
+    now lives INSIDE the checkout. It catches every editable shape — ``pip -e``
+    (which records ``direct_url.json``), a bare ``tide.pth`` pointing at ``src/``,
+    a ``PYTHONPATH`` run — where the metadata-only probe (:func:`editable_origin`)
+    sees nothing. Never raises: an unresolvable path reads as "not editable".
+    """
+    try:
+        here = Path(__file__).resolve()
+        root = Path(source_dir).resolve()
+    except (OSError, ValueError):  # pragma: no cover - resolution is near-total
+        return False
+    return root == here or root in here.parents
+
+
+def is_clone_install(source: object) -> bool:
+    """True for the MAIN install door: a git clone that ``install.sh`` installed FROM.
+
+    This is the shape most people who are handed tide will have — ``git clone`` +
+    ``./install.sh``, which copies the checkout into a pipx/venv install. It is
+    NOT editable (the running code is a copy), so the checkout does not move on
+    its own; and unlike a published install there IS a checkout, which is where a
+    newer tide comes from. Updating one therefore means ``git pull`` FIRST, then
+    reinstall — without the pull, ``self-update`` compares the install against a
+    checkout that has not moved and reports "already current" forever.
+
+    Detected by CAPABILITY, not by class: a source is a clone install when it can
+    be pulled (it offers ``upstream`` + ``pull_command``) and is not one of the two
+    shapes for which pulling is wrong — an editable checkout (the dev's own tree,
+    never ours to move) or a uv-tool sandbox (a copy with no checkout behind it).
+    Whether the checkout actually HAS a remote is :meth:`LocalSourceCheckout.upstream`'s
+    answer, given at the moment it matters, in plain words.
+    """
+    if is_editable_install(source) or bool(getattr(source, "uv_tool", False)):
+        return False
+    if getattr(source, "source_dir", None) is None:
+        return False
+    return hasattr(source, "pull_command") and hasattr(source, "upstream")
+
+
+def is_editable_install(source: object) -> bool:
+    """True when *source* is a checkout the running tide loads its code from.
+
+    The decisive property for self-update: an editable install has NOTHING to
+    install — the files on disk ARE the files that run, so a ``git pull`` is the
+    whole update and ``pip install`` would only re-link an already-linked package
+    (and, under a Homebrew/system interpreter, fail on externally-managed-environment).
+    A ``uv tool`` sandbox is explicitly NOT editable — it holds a real copy.
+    """
+    return bool(getattr(source, "editable", False)) and not bool(
+        getattr(source, "uv_tool", False)
+    )
+
+
 def prefers_newer_only(source: VersionSource) -> bool:
     """Whether *source* judges staleness by a strictly-newer version only.
 
@@ -421,6 +477,28 @@ class LocalSourceCheckout:
         cmd.append(str(self.source_dir))
         return cmd
 
+    def pull_command(self) -> List[str]:
+        """How to bring the checkout forward before reinstalling from it.
+
+        ``--ff-only`` on purpose: a self-update may fast-forward a checkout, never
+        merge one. If the user has local commits or a diverged branch, that is a
+        decision only they can make, and the refusal says so rather than quietly
+        creating a merge commit in someone's clone.
+        """
+        return ["git", "-C", str(self.source_dir), "pull", "--ff-only"]
+
+    def upstream(self) -> Optional[str]:
+        """The tracking branch this checkout pulls from, or None when it has none.
+
+        A clone made by ``git clone`` always has one; a directory that was
+        ``git init``-ed locally does not, and for that one "update" has no meaning
+        — better to say so than to run a pull that fails with git's own wording.
+        """
+        res = _git(self.source_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        if res.returncode != 0:
+            return None
+        return res.stdout.strip() or None
+
     def probe_reachable(self) -> Tuple[bool, str]:
         """Reachable when the source checkout still exists on disk (no network)."""
         src_dir = Path(self.source_dir)
@@ -665,15 +743,25 @@ class PublishedChannelSource:
     def rollback_command(self) -> List[str]:
         """Pin a reinstall of the CURRENTLY-installed version (recorded pre-upgrade).
 
-        Always via pip-from-git@<tag>: it is the only version-pinned reinstall that
-        works regardless of channel (a brew keg can't downgrade to an exact past
-        version, but pip-from-git can pin the tag).
+        Points at the IMMUTABLE release sdist asset — the very artifact the brew
+        formula pins (see ``packaging/tide.rb`` and ``tide release``). Pip installs
+        exactly that file into the interpreter tide already runs under, which is the
+        only version-pinned reinstall that works regardless of channel: a brew keg
+        cannot ``brew install`` an exact past version, and a git+ URL needs git and
+        a mutable ref. ``--force-reinstall`` because a rollback is a DOWNGRADE and
+        plain ``--upgrade`` would refuse it.
         """
         version = self.installed().version
         return [
-            self.python_exe, "-m", "pip", "install", "--upgrade",
-            "git+https://github.com/{0}@v{1}".format(self.repo, version),
+            self.python_exe, "-m", "pip", "install", "--force-reinstall",
+            self.sdist_asset_url(version),
         ]
+
+    def sdist_asset_url(self, version: str) -> str:
+        """The immutable release-asset sdist URL for *version* (what the formula pins)."""
+        return "https://github.com/{0}/releases/download/v{1}/tide-{1}.tar.gz".format(
+            self.repo, version
+        )
 
     # -- release artifact (the gated published install) ----------------------
 
@@ -849,7 +937,11 @@ def resolve_source(
     marker_path = marker_path or default_marker_path(env)
 
     origin = editable_origin()
-    origin_editable = origin[1] if origin else True  # default editable: dev shape
+    # None = "the metadata does not say"; then we DETECT it from where the running
+    # package actually loads from (see package_runs_from). Guessing "editable"
+    # blindly, as this used to, made self-update offer a `pip install -e` against a
+    # checkout it had no evidence it was running from (cand 141).
+    origin_editable: Optional[bool] = origin[1] if origin else None
 
     override = env.get("TIDE_SOURCE")
     source_dir: Optional[Path] = None
@@ -863,10 +955,15 @@ def resolve_source(
         source_dir = _walk_up_to_checkout(Path(__file__))
 
     if source_dir is not None and source_dir.is_dir():
+        editable = (
+            origin_editable
+            if origin_editable is not None
+            else package_runs_from(source_dir)
+        )
         return LocalSourceCheckout(
             source_dir=source_dir,
             python_exe=python_exe,
-            editable=origin_editable,
+            editable=editable,
             marker_path=marker_path,
             uv_tool=is_uv_tool_python(python_exe, env),
         )

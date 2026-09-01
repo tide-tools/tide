@@ -158,6 +158,28 @@ def generate(
     return text, ("regenerated" if existed else "generated")
 
 
+def is_manual_control_home_readme(root: Path) -> bool:
+    """True for a control-home whose README was never generated from canon.
+
+    ``tide init`` itself writes the control-home an orientation README (layout +
+    daily verbs) that is NOT a canon projection — so the drift gate scolding it
+    with "readme: drift" at birth was the tool contradicting its own init (work
+    51, newborn simulation). A control-home README with no tide-readme stamp is
+    that orientation page: the health surfaces skip the drift flag for it. The
+    moment someone generates it (`tide readme` — stamp present), the normal
+    drift rules apply again.
+    """
+    try:
+        if not paths.is_control_home(Path(root)):
+            return False
+        f = readme_file(root)
+        if not f.is_file():
+            return False
+        return parse_stamp(f.read_text(encoding="utf-8")) is None
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def check(root: Path) -> Tuple[int, List[str]]:
     """Tri-state drift gate for the derived README — mirrors :func:`tide.gate.decide`.
 

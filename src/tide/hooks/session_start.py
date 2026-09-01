@@ -24,12 +24,19 @@ from typing import List, Optional
 
 from .. import fields, paths, slug, sync
 from ..arc import board
-from . import edit_gate
+from . import edit_gate, role_gate
 
 ROLE_REMINDERS = {
+    # The allowed surface is quoted from the gate itself (role_gate.ALLOWED_SURFACE),
+    # not re-typed: the head learns the cage on the way in instead of finding the
+    # bars one denied command at a time, and the two texts cannot drift apart.
     "orchestrator": (
-        "tide · role: ORCHESTRATOR — you run the CLI; open/close arcs, merge "
-        "canon, sign contracts. The user doesn't learn the commands — you do."
+        "tide · role: ORCHESTRATOR — you hold the CLI (`tide …`) and dispatch "
+        "build-work to worker subagents; you read, talk, orchestrate — you don't "
+        "Write/Edit yourself. The human leads by WHAT and signs the gates (rules, "
+        "plans, canon, contracts); don't mint ceremony unasked.\n"
+        "tide · your hands: " + role_gate.ALLOWED_SURFACE
+        + " Doesn't fit? Shape it or dispatch — don't spend a round finding out."
     ),
     "worker": (
         "tide · role: WORKER — work ONE open arc; write only its own output/ + "
@@ -43,18 +50,11 @@ def _role_reminder(role: str) -> str:
     return ROLE_REMINDERS.get(role, ROLE_REMINDERS["worker"])
 
 
-def _drift_warnings(root: Path) -> List[str]:
-    """Warning lines for OPEN entries whose stamped canon-rev != the current one."""
-    warnings: List[str] = []
-    for entry in edit_gate.open_entries(root):
-        if sync.has_drifted(entry, root):
-            warnings.append(
-                "  ⚠ drift: {0} — canon moved since open; re-read CANON.md "
-                "+ re-stamp ('tide arc resume {1}')".format(
-                    entry.name, slug.entry_slug(entry.name)
-                )
-            )
-    return warnings
+# Drift is deliberately NOT a WARNINGS section: the board's HEALTH footer
+# (``board._health_lines``) already aggregates every drifted entry onto ONE line
+# and now carries the re-stamp command, while this hook was re-listing the same
+# arcs one line each right below it (live: 4 of 5 WARNINGS lines were that echo).
+# One fact, one place — the footer, because it aggregates.
 
 
 def _unmerged_warnings(root: Path) -> List[str]:
@@ -106,16 +106,44 @@ def _has_signed_contract(root: Path) -> bool:
     )
 
 
+def _is_newborn(root: Path) -> bool:
+    """True for a just-adopted project: no README yet AND canon still a blank skeleton.
+
+    ``tide adopt`` writes neither a README nor any canon content — only the four-
+    heading skeleton. Reproaching such a project for "readme: drift" scolds the
+    agent for the absence of something that should not exist yet. Once ANY canon is
+    written (or a README exists at all), this is no longer a newborn and the normal
+    drift rules apply. Defensive: any read problem ⇒ not newborn (stay loud).
+    """
+    try:
+        from .. import readme as _readme  # lazy: keep SessionStart import-light
+        from ..canon import store as _store
+
+        if _readme.readme_file(root).is_file():
+            return False
+        return _store.is_empty_skeleton(_store.read(root))
+    except Exception:  # noqa: BLE001 — unreadable canon is not a newborn
+        return False
+
+
 def _readme_drift_warnings(root: Path) -> List[str]:
     """Warning line when the current project's README has drifted from canon.
 
     Emits a single line for code 1 (stale / missing / hand-edited / canon moved
     ahead). Code 0 (current) and code 2 (oracle-error: no CANON.md) are silent —
-    the hook must never raise or break a session on any error.
+    the hook must never raise or break a session on any error. A NEWBORN project
+    (:func:`_is_newborn`) is silent too: there is no README because there is not
+    yet a canon to derive one from.
     """
     try:
         from .. import readme as _readme  # lazy: keep SessionStart import-light
 
+        if _is_newborn(root):
+            return []
+        if _readme.is_manual_control_home_readme(root):
+            # The home's init-written orientation README is manual by design —
+            # not drift (work 51; same exemption as the board HEALTH footer).
+            return []
         code, _reasons = _readme.check(root)
         if code == 1:
             return ["  readme: drift — run 'tide readme' to regenerate"]
@@ -273,6 +301,30 @@ def _svetofor_line(root: Path) -> List[str]:
         return []
 
 
+def _session_decisions(root: Path, session: Optional[str]) -> List[str]:
+    """The current nit's OPEN decisions, as lines — or [] (cand 128-A).
+
+    Resolves the running *session* (sid) → its session arc → its nit, then renders
+    that nit's open decisions (the anti-re-litigation set). Best-effort and silent:
+    no sid, no match, or no open decisions → ``[]`` (a hook must never break or add
+    noise). Bounded to this nit + capped in :func:`render_open_for_context` (131).
+    """
+    if not session:
+        return []
+    try:
+        from .. import offload
+        from ..arc import decision
+
+        entry = offload.find_session_by_claude_id(root, session)
+        if entry is None:
+            return []
+        thread_slug = slug.entry_slug(entry.parents[1].name)
+        block = decision.render_open_for_context(root, thread_slug)
+        return block.splitlines() if block else []
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        return []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
     """Render the SessionStart text: health line + board + role reminder + warnings.
@@ -287,11 +339,20 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
     lines: List[str] = _svetofor_line(root)
     if lines:
         lines.append("")
-    lines += [board.render_board(root), "", _role_reminder(role)]
+    # Cold entry shows LIVE work only: closed threads are finished history (live:
+    # 18 of 23 STREAM rows) and belong to `tide status`, not to the opening breath.
+    lines += [board.render_board(root, include_closed=False), "", _role_reminder(role)]
+
+    # cand 128-A: the current nit's OPEN decisions ride in right below the role, so
+    # an in-place/resume session sees what's already concluded and doesn't re-decide
+    # it. Silent when there are none (best-effort, never breaks the session).
+    decisions = _session_decisions(root, session)
+    if decisions:
+        lines.append("")
+        lines.extend(decisions)
 
     warnings = (
-        _drift_warnings(root)
-        + _unmerged_warnings(root)
+        _unmerged_warnings(root)
         + _deferred_warnings(root)
         + _readme_drift_warnings(root)
         + _arc_first_warnings(root, role)
@@ -431,13 +492,15 @@ def cmd_session_start(args) -> int:
         except Exception:  # noqa: BLE001 — a hook must never break a session
             pass
         try:
-            # The reconcile sweeper (principle №1): backfill a MISSING sid→terminal
-            # record so «вернуться в сессию» works on EVERY path of ascent — bare
-            # `claude` by hand, a spawn whose registry write failed. Never overwrites.
+            # The reconcile sweeper (principle №1): bind sid→terminal so «вернуться в
+            # сессию» works on EVERY path of ascent — bare `claude` by hand, a spawn
+            # whose registry write failed. The session's OWN handle (from the pane's
+            # env) leads; the cwd match over `orca terminal list` is the fallback.
             from .. import registry as _registry, sessions as _sessions
             _sessions.reconcile_registry(
                 paths.control_home(), root, session,
                 terminals=_registry.orca_terminal_list(),
+                own_handle=_registry.self_pair()[1],
             )
         except Exception:  # noqa: BLE001 — the sweeper is best-effort by design
             pass

@@ -24,9 +24,12 @@ def test_global_rules_shipped():
 
 def test_seed_now_embeds_shipped_orchestrator_prompt():
     # U12 ships prompts/orchestrator.md → read_role_prompt resolves it (was None before).
-    # Minimal-mode rewrite: a tide session bound to a thread/session, no
-    # contract/canon ceremony.
+    # Decision 11 (cold-start): ONE truth of the role — the head holds the CLI and
+    # DISPATCHES build-work to workers; the human leads by "what" and signs the gates;
+    # no ceremony (contract/canon) minted unasked. (The 06-29 minimal-mode "do NOT
+    # dispatch" was a stale half-pivot, reverted here.)
     text = seed.read_role_prompt("orchestrator")
     assert text is not None
     assert "tide" in text and "session" in text.lower()
     assert "thread" in text.lower()
+    assert "dispatch" in text.lower()  # dispatch is the norm, not a ban

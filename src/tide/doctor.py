@@ -152,8 +152,7 @@ def check_canon(root: Optional[Path]) -> CheckResult:
     # is not a canon. A fresh `canon init` skeleton has all four headings with
     # blank bodies — saying OK over it teaches people to trust an empty file.
     # ("Canon journal" is the merge anchor and is INTENTIONALLY empty — exempt.)
-    content = {t: b for t, b in sections.items() if t != store.JOURNAL_SECTION}
-    if content and all(not body.strip() for body in content.values()):
+    if store.is_empty_skeleton(text):
         return CheckResult(
             "canon", STATUS_WARN,
             "CANON.md is an empty skeleton (all sections blank) — write the canon "

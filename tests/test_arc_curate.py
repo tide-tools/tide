@@ -203,3 +203,62 @@ def test_reconcile_never_overwrites_and_never_guesses(tmp_path):
         terminals=[{"handle": "t1", "worktreePath": "/p/roj"},
                    {"handle": "t2", "worktreePath": "/p/roj"}]) is None
     assert registry.recorded_handle(tmp_path, "sid-2") is None
+
+
+def test_reconcile_own_handle_binds_amid_many_terminals(tmp_path):
+    # the cand 144 repro: the project already has two tabs (the duplicate made the
+    # second), so the cwd count is never 1 and the old sweeper bailed forever. The
+    # session's own handle does not count anything, so it binds regardless.
+    from tide import registry, sessions
+    note = sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-1",
+        terminals=[{"handle": "t1", "worktreePath": "/p/roj"},
+                   {"handle": "t2", "worktreePath": "/p/roj"}],
+        own_handle="t2")
+    assert note and "t2" in note
+    assert registry.recorded_handle(tmp_path, "sid-1") == "t2"
+
+
+def test_reconcile_own_handle_overwrites_a_stale_record(tmp_path):
+    # a reboot killed the old tab; the session came back by hand in a NEW one — the
+    # registry must follow the session, not keep pointing at the corpse
+    from tide import registry, sessions
+    registry.record(tmp_path, "sid-1", "term_dead", "/p/roj")
+    note = sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-1", terminals=[], own_handle="term_new")
+    assert note and "term_new" in note
+    assert registry.recorded_handle(tmp_path, "sid-1") == "term_new"
+
+
+def test_reconcile_own_handle_does_not_rewrite_an_exact_record(tmp_path):
+    from tide import registry, sessions
+    registry.record(tmp_path, "sid-1", "term_a", "/p/roj")
+    assert sessions.reconcile_registry(
+        tmp_path, Path("/p/roj"), "sid-1", terminals=[], own_handle="term_a") is None
+
+
+# --- sessions.self_register (every tide command binds its own pane) -------------------
+
+def test_self_register_binds_the_pair_from_the_env(tmp_path):
+    from tide import registry, sessions
+    env = {registry.ENV_SESSION_ID: "sid-1", registry.ENV_TERMINAL_HANDLE: "term_a"}
+    assert sessions.self_register(tmp_path, arc="/p/roj", env=env) == "term_a"
+    assert registry.recorded_handle(tmp_path, "sid-1") == "term_a"
+    # already exact → no second write
+    assert sessions.self_register(tmp_path, arc="/p/roj", env=env) is None
+
+
+def test_self_register_follows_the_session_to_a_new_tab(tmp_path):
+    from tide import registry, sessions
+    registry.record(tmp_path, "sid-1", "term_old", "/p/roj")
+    env = {registry.ENV_SESSION_ID: "sid-1", registry.ENV_TERMINAL_HANDLE: "term_new"}
+    assert sessions.self_register(tmp_path, env=env) == "term_new"
+    assert registry.recorded_handle(tmp_path, "sid-1") == "term_new"
+
+
+def test_self_register_is_a_noop_outside_a_session_terminal(tmp_path):
+    from tide import registry, sessions
+    assert sessions.self_register(tmp_path, env={}) is None
+    assert sessions.self_register(
+        tmp_path, env={registry.ENV_SESSION_ID: "sid-1"}) is None
+    assert registry.read(tmp_path) == {}

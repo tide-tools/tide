@@ -282,7 +282,12 @@ def test_rollback_command_pins_installed_version(tmp_path: Path):
     src.write_marker((tmp_path / "install-marker.json"), Revision("0.1.0"), tmp_path)
     s = _published(tmp_path)
     cmd = s.rollback_command()
-    assert cmd[-1] == "git+https://github.com/tide-tools/tide@v0.1.0"
+    # the IMMUTABLE release-asset sdist — the same artifact the brew formula
+    # pins, so a rollback lands exactly the bytes that were published.
+    assert cmd[-1] == (
+        "https://github.com/tide-tools/tide/releases/download/v0.1.0/tide-0.1.0.tar.gz"
+    )
+    assert "--force-reinstall" in cmd  # a rollback is a DOWNGRADE; --upgrade refuses
 
 
 def test_record_install_stamps_version_only(tmp_path: Path):
@@ -469,7 +474,9 @@ def test_published_update_green_gate_installs_stamps_and_records_rollback(tmp_pa
     assert src.read_marker(s.marker_path)["version"] == "1.0.1"
     rollback = src.read_rollback(s.rollback_path)
     assert rollback["version"] == "0.1.0"
-    assert rollback["command"][-1] == "git+https://github.com/tide-tools/tide@v0.1.0"
+    assert rollback["command"][-1] == (
+        "https://github.com/tide-tools/tide/releases/download/v0.1.0/tide-0.1.0.tar.gz"
+    )
 
 
 def test_published_update_brew_channel_uses_brew_install(tmp_path: Path):

@@ -1,11 +1,13 @@
 """tide — simplified orchestration machine.
 
-Pure CLI + markdown files. Synchronous, human-driven, NO autonomy:
-no web surface, no Telegram, no background daemon. One binary, namespaced
-subcommands (arc / canon / contract / candidate / roster) wired by ``cli.py``.
+Pure CLI + markdown files. Synchronous, human-driven, NO autonomy: no Telegram,
+no background decisions. The one web surface is the read-only localhost board
+(``tide board`` — :mod:`tide.board_server`). One binary, namespaced subcommands
+(arc / canon / contract / candidate / roster) wired by ``cli.py``.
 
-See README.md "## build conventions" for the handler pattern every module
-follows and where on-disk state lives (per-project ``.tide/{canon,arcs,state}``).
+Every command module follows the same ``register(subparsers)`` / thin-handler
+pattern (see ``cli.py``); on-disk state lives per-project in
+``.tide/{canon,arcs,state}`` (see ``paths.py``).
 """
 
 from __future__ import annotations

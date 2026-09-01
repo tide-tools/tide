@@ -315,3 +315,65 @@ def test_resolve_source_detects_uv_tool(tmp_path: Path):
     )
     assert source.uv_tool is True
     assert source.install_command()[0] == "uv"
+
+
+# --- editable detection (cand 141) -------------------------------------------
+
+
+def test_package_runs_from_is_true_for_the_real_checkout():
+    # These tests import `tide` from THIS repo, so the running package does load
+    # out of it — which is precisely what makes this install editable.
+    repo = Path(src.__file__).resolve().parents[3]
+    assert src.package_runs_from(repo) is True
+
+
+def test_package_runs_from_is_false_for_an_unrelated_dir(tmp_path: Path):
+    assert src.package_runs_from(tmp_path) is False
+
+
+def test_is_editable_install_reads_the_flag(tmp_path: Path):
+    assert src.is_editable_install(_checkout(tmp_path, editable=True, marker=tmp_path / "m")) is True
+    assert src.is_editable_install(_checkout(tmp_path, editable=False, marker=tmp_path / "m")) is False
+
+
+def test_is_editable_install_false_for_uv_tool_sandbox(tmp_path: Path):
+    # A uv-tool sandbox holds a real copy, never a link — it is not editable
+    # however the metadata reads.
+    co = _checkout(tmp_path, editable=True, marker=tmp_path / "m")
+    co.uv_tool = True
+    assert src.is_editable_install(co) is False
+
+
+def test_is_editable_install_false_for_published_channel(tmp_path: Path):
+    s = src.PublishedChannelSource(
+        python_exe="/py",
+        marker_path=tmp_path / "m.json",
+        cache_path=tmp_path / "c.json",
+        rollback_path=tmp_path / "r.json",
+    )
+    assert src.is_editable_install(s) is False
+
+
+def test_resolve_source_does_not_guess_editable_for_a_foreign_dir(tmp_path: Path, monkeypatch):
+    # No direct_url metadata + an override pointing at a checkout the running
+    # package does NOT load from → honestly non-editable (it used to default to
+    # editable=True and offer a bogus `pip install -e`).
+    monkeypatch.setattr(src, "editable_origin", lambda: None)
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n', encoding="utf-8")
+    source = src.resolve_source(
+        env={"TIDE_SOURCE": str(tmp_path)}, python_exe="/py", marker_path=tmp_path / "m.json"
+    )
+    assert source.editable is False
+    assert "-e" not in source.install_command()
+
+
+def test_resolve_source_detects_editable_without_direct_url(monkeypatch):
+    # A bare `tide.pth` install records no direct_url.json — the shape on a dev
+    # machine that predates pip -e. Detection must still land on editable.
+    monkeypatch.setattr(src, "editable_origin", lambda: None)
+    repo = Path(src.__file__).resolve().parents[3]
+    source = src.resolve_source(
+        env={"TIDE_SOURCE": str(repo)}, python_exe="/py", marker_path=Path("/tmp/m.json")
+    )
+    assert source.editable is True
+    assert src.is_editable_install(source) is True

@@ -119,3 +119,18 @@ class TerminalAdapter(ABC):
         to resume/spawn.
         """
         return False
+
+    def say(self, handle: str, text: str) -> bool:
+        """Give the LIVE session behind *handle* a turn: type *text* and submit it.
+
+        Focus only brings a window forward — the session keeps sitting on its last
+        turn and learns nothing. When the human presses a button on the board (a work
+        plan agreed, say), the session it belongs to must actually HEAR that, and the
+        only honest way is the same one a human has: put the words in its prompt and
+        press Enter. Never called on its own — a turn is given ONLY on a human's
+        gesture (canon: synchronous, no waking sessions by ourselves).
+
+        Default: this adapter has no channel into a live terminal, so it says so
+        (False) and the caller must NOT pretend the words were delivered.
+        """
+        return False

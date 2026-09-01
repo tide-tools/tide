@@ -24,11 +24,25 @@ def test_build_seed_carries_project_role_and_canon():
     assert "## Roster" not in out
 
 
-def test_build_seed_falls_back_to_role_reminder_when_no_prompt():
+def test_build_seed_drops_the_role_section_when_no_prompt_is_shipped():
+    # The seed no longer re-renders the one-line role reminder: the SessionStart
+    # hook prints it in EVERY session and the launcher installs that hook before
+    # every spawn, so a seeded session heard it once already. Absent a shipped
+    # prompts/<role>.md the section is dropped — the header still names the role.
     out = seed.build_seed(project_name="demo", role="worker", canon_text="x")
-    # worker reminder text leaks through the fallback
-    assert "WORKER" in out
-    assert "ONE open arc" in out
+    assert "WORKER" in out          # the header still says which role this is
+    assert "## Role" not in out
+    assert "ONE open arc" not in out  # the hook's reminder text, not the seed's
+
+
+def test_build_seed_keeps_a_shipped_role_prompt():
+    # a real prompts/<role>.md is substantive (not the hook's one-liner) — it rides.
+    out = seed.build_seed(
+        project_name="demo", role="worker", canon_text="x",
+        prompt_text="# worker\nDo the one arc, write only its output.",
+    )
+    assert "## Role" in out
+    assert "Do the one arc" in out
 
 
 def test_build_seed_includes_arc_and_roster_when_given():
@@ -104,6 +118,20 @@ def test_plain_arc_seed_has_no_law_47_definition():
     assert "Закон 47" not in out
 
 
+def test_seed_leaves_the_open_decisions_to_the_session_start_hook(tmp_project):
+    # cand 128-A ships the nit's OPEN decisions into a fresh session — but the
+    # SessionStart hook already injects that exact block from the same source, and
+    # the launcher binds the sid into the session passport BEFORE spawn, so the hook
+    # resolves the nit and prints it. Rendering it in the seed too printed it TWICE.
+    from tide.arc import decision, stream
+
+    stream.new_thread(tmp_project, "prz")
+    stream.new_session(tmp_project, "prz", "work")
+    decision.add_decision(tmp_project, "мы решили X", thread_ref="prz", dslug="keep-x")
+    out = seed.seed_for_project(tmp_project, arc_ref="work", thread_name="prz")
+    assert decision.CONTEXT_HEADER not in out
+
+
 # --- disk wrapper seed_for_project -----------------------------------------
 
 def test_seed_for_project_reads_canon(tmp_project):
@@ -149,3 +177,25 @@ def test_seed_for_project_no_roster_when_not_control_home(tmp_project):
     # a plain project (no roster.md) → no roster section even if control_home passed
     out = seed.seed_for_project(tmp_project, control_home=tmp_project)
     assert "## Roster" not in out
+
+
+def test_seed_roster_hides_archived_projects(tmp_control_home):
+    # An archived project is a dead path — handing it to a fresh session is 13 rows
+    # of noise on the live home. The picker already filters; the seed now agrees.
+    # `tide roster ls` (roster.render_list) still shows everything — that is its job.
+    roster.add(tmp_control_home, "live", "/p/live")
+    roster.add(tmp_control_home, "old", "/p/old", status=roster.STATUS_ARCHIVED)
+    out = seed.seed_for_project(tmp_control_home, control_home=tmp_control_home)
+    assert "live | /p/live" in out
+    assert "/p/old" not in out
+    assert "/p/old" in roster.render_list(tmp_control_home)  # ls is untouched
+
+
+def test_seed_roster_note_is_one_line_carrying_both_commands(tmp_control_home):
+    # The two evergreen paragraphs collapsed into one line; neither command is lost.
+    roster.add(tmp_control_home, "live", "/p/live")
+    out = seed.seed_for_project(tmp_control_home, control_home=tmp_control_home)
+    note = out.split("live | /p/live", 1)[1].split("## Launch", 1)[0].strip()
+    assert "tide candidate add" in note
+    assert "tide adopt" in note
+    assert len(note.splitlines()) == 1

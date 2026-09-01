@@ -40,6 +40,8 @@ from .source import (
     Revision,
     VersionSource,
     clear_broken,
+    is_clone_install,
+    is_editable_install,
     prefers_newer_only,
     read_broken,
     read_rollback,
@@ -211,17 +213,55 @@ class UpdateStatus:
 
 
 def check_for_update(source: VersionSource) -> UpdateStatus:
-    """Compute the :class:`UpdateStatus` for *source* (no gate, no install)."""
+    """Compute the :class:`UpdateStatus` for *source* (no gate, no install).
+
+    An EDITABLE install is never stale (cand 141): the files on disk are the files
+    that run, so the install marker lagging the checkout's pyproject is bookkeeping
+    drift, not a pending update. Folding that here — the one chokepoint both
+    ``--check`` and :func:`session_note` read — is what stops a dev machine being
+    nagged every session about an update that has, by construction, already landed.
+    """
     installed = source.installed()
     available = source.available()
+    stale = revision_is_stale(
+        installed, available, newer_only=prefers_newer_only(source)
+    )
+    if stale and is_editable_install(source):
+        stale = False
     return UpdateStatus(
         source_name=source.name(),
         installed=installed,
         available=available,
-        stale=revision_is_stale(
-            installed, available, newer_only=prefers_newer_only(source)
-        ),
+        stale=stale,
     )
+
+
+# --- the editable no-op (cand 141) ------------------------------------------
+
+
+def editable_noop_messages(source: VersionSource, *, force: bool = False) -> List[str]:
+    """The honest word for "your tide is editable — there is nothing to install".
+
+    Deliberately says WHY, not just "skipped": the human should leave knowing that
+    the update already happened when the files changed, and knowing the one command
+    that DOES move an editable checkout forward (``git pull``).
+    """
+    source_dir = getattr(source, "source_dir", "?")
+    lines = [
+        "editable install — tide runs straight out of {0}".format(source_dir),
+        "nothing to install: the files on disk ARE the files that run, so this "
+        "checkout is current the moment it changes",
+        "to move it forward: git -C {0} pull".format(source_dir),
+        "no-op — nothing was touched",
+    ]
+    if force:
+        lines.insert(
+            3,
+            "--force does NOT override this: re-running the installer on a live "
+            "editable install can only break it. To re-link the console script by "
+            "hand: {0}".format(" ".join(source.install_command())),
+        )
+    return lines
 
 
 # --- the self-update flow ---------------------------------------------------
@@ -241,11 +281,51 @@ class SelfUpdateResult:
     messages: List[str] = field(default_factory=list)
 
 
+def pull_checkout(
+    source: VersionSource, res: SelfUpdateResult, *, runner: Runner = _default_runner
+) -> bool:
+    """Fast-forward a CLONE install's checkout before reinstalling from it.
+
+    This is the update for the main install door (``git clone`` + ``install.sh``):
+    the newer tide lives on the remote, not in the local checkout, so without this
+    step ``self-update`` compares the install against a checkout that never moved
+    and cheerfully reports "already current" forever.
+
+    Returns True when it is safe to carry on. A checkout with no upstream, or one
+    that will not fast-forward, gets a plain-words explanation and a False — we do
+    not merge, rebase or reset somebody else's clone.
+    """
+    upstream = source.upstream() if hasattr(source, "upstream") else None
+    if upstream is None:
+        res.messages.append(
+            "this tide was installed from {0}, but that checkout tracks no remote "
+            "— there is nowhere to pull a newer version from. Re-clone from the "
+            "release repo, or reinstall from a checkout that has an origin.".format(
+                getattr(source, "source_dir", "?")
+            )
+        )
+        return False
+    cmd = source.pull_command()
+    res.messages.append("pulling {0}: {1}".format(upstream, " ".join(cmd)))
+    rc, out = runner(cmd, None, None)
+    if rc != 0:
+        res.messages.append(
+            "REFUSED — could not fast-forward the checkout. Nothing was installed; "
+            "your clone is untouched. Sort the checkout out by hand (local commits, "
+            "a diverged branch or uncommitted work), then re-run."
+        )
+        res.messages.append(_indent(_tail(out)))
+        return False
+    res.messages.append(_indent(_tail(out, 4)))
+    return True
+
+
 def self_update(
     source: VersionSource,
     *,
     force: bool = False,
     run_suite: bool = True,
+    pull: bool = True,
     runner: Runner = _default_runner,
 ) -> SelfUpdateResult:
     """Detect staleness → gate → (re)install → stamp. The full supervised update.
@@ -254,6 +334,13 @@ def self_update(
     the REGRESSION GATE runs first: only a green gate proceeds to ``pip install``
     + a post-install smoke + stamping the marker. A red gate refuses with the
     detail attached — nothing is installed.
+
+    An EDITABLE install short-circuits to an ACCEPTED no-op before any of that
+    (cand 141) — including under ``--force``. The installer must never fire at a
+    checkout the running tide is loading its code from: at best it re-links what
+    is already linked, at worst (a Homebrew/system interpreter, an
+    externally-managed environment) it fails half-way and leaves the dev's machine
+    without a working tide mid-session.
     """
     status = check_for_update(source)
     res = SelfUpdateResult(
@@ -264,6 +351,21 @@ def self_update(
         accepted=False,
         applied=False,
     )
+
+    if is_editable_install(source):
+        res.accepted = True
+        res.applied = False
+        res.messages.extend(editable_noop_messages(source, force=force))
+        return res
+
+    # A CLONE install's newer tide is on the remote, so the pull comes BEFORE the
+    # staleness verdict — otherwise we would compare against a checkout that has
+    # not moved and stop right here.
+    if pull and is_clone_install(source):
+        if not pull_checkout(source, res, runner=runner):
+            return res
+        status = check_for_update(source)
+        res.installed, res.available, res.stale = status.installed, status.available, status.stale
 
     if not status.stale and not force:
         res.accepted = True  # nothing to do = the desired state

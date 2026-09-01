@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import build_tide_skeleton
-from tide import adopt, paths, roster
+from tide import adopt, cli, paths, readme, roster
+from tide.canon import store
+from tide.hooks import session_start
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -53,6 +56,7 @@ def test_adopt_scaffolds_tide_and_rosters(home, target, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    monkeypatch.setattr(sys, "platform", "darwin")
 
     report = adopt.adopt(target, name="demo")
 
@@ -107,10 +111,32 @@ def test_no_orca_skips_orca(home, target, monkeypatch):
 def test_orca_absent_skips_with_note(home, target, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp())
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(sys, "platform", "darwin")
     report = adopt.adopt(target)
     step = report.step("orca")
     assert step.status == adopt.SKIPPED
     assert "PATH" in step.detail
+    # the skip explains itself: Orca is optional, nothing is broken without it
+    assert "optional" in step.detail
+
+
+def test_orca_not_called_off_darwin_even_when_on_path(home, target, monkeypatch):
+    """Finding 5 (release panel): on Linux `orca` is the GNOME screen-reader.
+
+    An orca binary on PATH off-Darwin must NOT be invoked — `orca repo add`
+    would launch a screen-reader with junk arguments. The step skips with a
+    note instead, exactly like the adapters registry gate.
+    """
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: calls.append(argv) or _cp())
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/orca")
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    report = adopt.adopt(target)
+    step = report.step("orca")
+    assert step.status == adopt.SKIPPED
+    assert "macOS" in step.detail
+    assert not any(c[:1] == ["orca"] for c in calls)
 
 
 def test_git_missing_warns_and_continues(home, target, monkeypatch):
@@ -137,6 +163,7 @@ def test_orca_already_registered_is_success(home, target, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    monkeypatch.setattr(sys, "platform", "darwin")
 
     report = adopt.adopt(target)
     assert report.step("orca").status == adopt.DONE
@@ -233,3 +260,113 @@ def test_adopt_no_git_skips_commit_step(home, target, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     report = adopt.adopt(target, do_git=False)
     assert report.step("commit").status == adopt.SKIPPED
+
+
+# --- birth with intent: --goal seeds the canon and the user door ------------
+
+def _stub_env(monkeypatch):
+    """Neutralise git + orca so a test exercises only the file-writing steps."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp())
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+
+GOAL = "A board that shows the factory its own state."
+
+
+def test_adopt_with_goal_seeds_the_canon(home, target, monkeypatch):
+    _stub_env(monkeypatch)
+
+    report = adopt.adopt(target, name="demo", intent=GOAL)
+
+    sections = store.scan(target)
+    assert sections[store.INTENT_SECTION] == GOAL
+    assert not store.is_empty_skeleton(store.read(target))
+    assert "canon seeded" in report.step("tide").detail
+
+
+def test_adopt_with_goal_generates_a_readme_that_says_something(home, target, monkeypatch):
+    _stub_env(monkeypatch)
+
+    report = adopt.adopt(target, name="demo", intent=GOAL)
+
+    assert report.step("readme").status == adopt.DONE
+    text = readme.readme_file(target).read_text(encoding="utf-8")
+    assert text.startswith("# demo")
+    assert GOAL in text                      # not a stub — the intent is on the page
+    assert readme.STAMP_PREFIX in text       # derived + stamped, not hand-written
+
+
+def test_adopt_with_goal_leaves_no_drift_behind(home, target, monkeypatch):
+    """The pair born together must already pass the gate the hook reproaches on."""
+    _stub_env(monkeypatch)
+    adopt.adopt(target, name="demo", intent=GOAL)
+
+    code, reasons = readme.check(target)
+    assert (code, reasons) == (0, [])
+    assert session_start._readme_drift_warnings(target) == []
+
+
+def test_adopt_goal_normalises_a_multiline_goal(home, target, monkeypatch):
+    _stub_env(monkeypatch)
+    adopt.adopt(target, name="demo", intent="  a goal\n  spread over lines  ")
+    assert store.scan(target)[store.INTENT_SECTION] == "a goal spread over lines"
+
+
+# --- birth without intent: everything exactly as before --------------------
+
+def test_adopt_without_goal_writes_no_readme(home, target, monkeypatch):
+    _stub_env(monkeypatch)
+
+    report = adopt.adopt(target, name="demo")
+
+    assert report.step("readme").status == adopt.SKIPPED
+    assert "no --goal" in report.step("readme").detail
+    assert not readme.readme_file(target).exists()
+
+
+def test_adopt_without_goal_stays_a_silent_newborn(home, target, monkeypatch):
+    """The whole point of the old behaviour: nothing is demanded of the human."""
+    _stub_env(monkeypatch)
+    adopt.adopt(target, name="demo")
+
+    assert store.is_empty_skeleton(store.read(target))
+    assert session_start._is_newborn(target)
+    assert session_start._readme_drift_warnings(target) == []
+
+
+def test_adopt_goal_does_not_touch_an_already_adopted_project(home, target, monkeypatch):
+    """Re-running with a goal must not rewrite someone else's canon or README."""
+    _stub_env(monkeypatch)
+    adopt.adopt(target, name="demo")                       # born blank
+    paths.canon_file(target).write_text("# CANON.md — demo\n\n## What it is\n\nmine\n",
+                                        encoding="utf-8")
+
+    report = adopt.adopt(target, name="demo", intent=GOAL)  # late goal
+
+    assert report.step("readme").status == adopt.SKIPPED
+    assert "canon already written" in report.step("readme").detail
+    assert "mine" in paths.canon_file(target).read_text(encoding="utf-8")
+    assert not readme.readme_file(target).exists()
+
+
+# --- CLI + commit wiring ---------------------------------------------------
+
+def test_cli_adopt_goal_reaches_the_canon(home, target, monkeypatch, capsys):
+    _stub_env(monkeypatch)
+
+    rc = cli.main(["adopt", str(target), "--name", "demo", "--goal", GOAL])
+
+    assert rc == 0
+    assert store.scan(target)[store.INTENT_SECTION] == GOAL
+    assert "README.md generated from canon" in capsys.readouterr().out
+
+
+def test_readme_rides_into_the_birth_commit(home, target, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # real git, no orca
+
+    adopt.adopt(target, name="demo", do_orca=False, intent=GOAL)
+
+    tracked = subprocess.run(
+        ["git", "-C", str(target), "ls-files"], capture_output=True, text=True
+    ).stdout
+    assert "README.md" in tracked

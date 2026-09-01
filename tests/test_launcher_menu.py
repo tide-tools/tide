@@ -630,8 +630,10 @@ def test_pickup_reserves_then_first_prompt_takes(home_with_project):
                         control_home=home, adapter=_OkAdapter())
     reserved = hq.list_offers(home)[0]
     assert reserved["status"] == "offered"
-    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
-    assert reserved["pickup_session"] == sid
+    sid = str(reserved["pickup_session"]).strip()
+    assert sid and sid != "-"
+    # cand 140: до приёма sid живёт ТОЛЬКО в резерве — паспорт нити ещё чист
+    assert not (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
     assert hq.confirm_for_session(home, sid)
     assert hq.list_offers(home)[0]["status"] == "taken"
 
@@ -639,29 +641,34 @@ def test_pickup_reserves_then_first_prompt_takes(home_with_project):
 def test_pickup_records_sid_in_launch_registry(home_with_project):
     # cand 94: a successful launch records sid → terminal handle so ▶ resolves THIS tab
     home, proj = home_with_project
-    from tide import fields, registry
+    from tide import handoff_queue as hq, registry
 
     record, sess = _seed_offer(home, proj)
     menu.launch_handoff(record, menu.list_entries(home),
                         control_home=home, adapter=_OkAdapter())
-    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    sid = str(hq.list_offers(home)[0]["pickup_session"]).strip()
     reg = registry.read(home)
     assert sid in reg
     assert reg[sid]["handle"] == "stub"
     assert reg[sid]["arc"] == str(sess)
 
 
-def test_pickup_stamps_passport_active_and_pins_session(home_with_project):
+def test_pickup_pins_session_on_the_reception_beat(home_with_project):
+    # cand 140: ⟳-резюм нужен sid в паспорте — но ставит его ПРИЁМ, а не подъём.
+    # Штамп авансом переживал сорвавшийся подъём и делал головой нити чат-фантом.
     home, proj = home_with_project
-    from tide import fields
+    from tide import fields, handoff_queue as hq
 
     record, sess = _seed_offer(home, proj)
     menu.launch_handoff(record, menu.list_entries(home),
                         control_home=home, adapter=_OkAdapter())
     passport = sess / "arc.md"
+    assert not (fields.read_field(passport, "claude-session") or "").strip()
+    sid = str(hq.list_offers(home)[0]["pickup_session"]).strip()
+    hq.confirm_for_session(home, sid)
     assert fields.read_field(passport, "status") == "active"
-    # the pinned claude session id makes the picked-up session resumable
-    assert (fields.read_field(passport, "claude-session") or "").strip()
+    # the pinned claude session id makes the received session resumable
+    assert fields.read_field(passport, "claude-session") == sid
 
 
 def test_first_prompt_fires_reception_pulse_so_board_sees_it_live(home_with_project):
@@ -674,7 +681,7 @@ def test_first_prompt_fires_reception_pulse_so_board_sees_it_live(home_with_proj
     menu.launch_handoff(record, menu.list_entries(home),
                         control_home=home, adapter=_OkAdapter())
     assert "нить принята" not in (sess / "arc.md").read_text(encoding="utf-8")
-    sid = (fields.read_field(sess / "arc.md", "claude-session") or "").strip()
+    sid = str(hq.list_offers(home)[0]["pickup_session"]).strip()
     hq.confirm_for_session(home, sid)
     passport_text = (sess / "arc.md").read_text(encoding="utf-8")
     # the mechanical pulse lands in ## context and stamps offloaded-at (board = live)
@@ -785,3 +792,32 @@ def test_spark_refuses_thread_with_pending_offer(home_with_project):
     assert stale["pickup_stale"] is True
     res = menu.spark(home, _spark_entry(home, proj), thread="payouts", adapter=_OkAdapter())
     assert res.ok
+
+
+def test_spark_say_replaces_the_wired_first_turn(home_with_project):
+    # работа 44 п.8: сессию поднимают ПОД конкретное дело (план уже согласован),
+    # и зашитый триггер «закрой старт-гейт, построй план» ей врёт про то, зачем её
+    # позвали. --say сеет первый ход словами того, кто поднял.
+    home, proj = home_with_project
+    from tide.arc import stream
+
+    stream.new_thread(proj, "release", goal="довести релиз")
+    said = "Человек согласовал план работы 44 — веди её до приёмки"
+    res = menu.spark(home, _spark_entry(home, proj), thread="release",
+                     say=said, adapter=_OkAdapter())
+    assert res.ok
+    argv = res.commands[0]
+    assert argv[-1] == said                       # первый ход — трейлинг-позиционал
+    assert not any("старт-гейт" in a for a in argv)  # зашитый триггер не поехал
+
+
+def test_spark_without_say_keeps_the_wired_trigger(home_with_project):
+    # флаг ДОБАВЛЯЕТ дверь, а не подменяет ▶ с полки: пустой --say — прежний триггер
+    home, proj = home_with_project
+    from tide.arc import stream
+
+    stream.new_thread(proj, "release", goal="довести релиз")
+    for blank in (None, "   "):
+        res = menu.spark(home, _spark_entry(home, proj), thread="release",
+                         say=blank, adapter=_OkAdapter())
+        assert any("старт-гейт" in a for a in res.commands[0])

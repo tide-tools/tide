@@ -25,9 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional
 
-from .. import paths, slug
-from ..canon import store
-from ..hooks.session_start import ROLE_REMINDERS
+from .. import paths
 
 ROLE_ORCHESTRATOR = "orchestrator"
 ROLE_WORKER = "worker"
@@ -85,11 +83,16 @@ def read_role_prompt(role: str) -> Optional[str]:
     return text or None
 
 
-def _role_block(role: str, prompt_text: Optional[str]) -> str:
-    """The role section body: the shipped prompt if present, else the reminder."""
-    if prompt_text:
-        return prompt_text
-    return ROLE_REMINDERS.get(role, ROLE_REMINDERS[ROLE_WORKER])
+def _role_block(role: str, prompt_text: Optional[str]) -> Optional[str]:
+    """The role section body — the shipped prompt, or None when none is shipped.
+
+    The one-line role reminder is NOT re-rendered here: the SessionStart hook
+    prints it in every session, and the launcher installs that hook before every
+    spawn (``launcher.launch``), so a seeded session heard it once already. Absent
+    a shipped ``prompts/<role>.md`` the section is simply dropped — the seed header
+    already names the role.
+    """
+    return prompt_text or None
 
 
 # --- arc passport resolution -----------------------------------------------
@@ -143,10 +146,10 @@ def build_seed(
 ) -> str:
     """Assemble the seed string from already-resolved pieces (pure, no I/O).
 
-    Sections, in order: a header naming the project + role, the role block (shipped
-    prompt or the fallback reminder), the project ``CANON.md``, the active entry
-    passport (only when *arc_ref* is given), the control-home roster (only when
-    *roster_text* is given), and a closing launch hint. When *thread_name* is given
+    Sections, in order: a header naming the project + role, the role block (only
+    when a ``prompts/<role>.md`` is shipped), the project ``CANON.md``, the active
+    entry passport (only when *arc_ref* is given), the control-home roster (only
+    when *roster_text* is given), and a closing launch hint. When *thread_name* is given
     the active entry is framed as a **session inside a thread (тред)**; the
     ``## cursor`` is the resume point. Empty pieces render as an explicit ``(…)``
     note so the shape is stable for snapshot tests.
@@ -157,9 +160,13 @@ def build_seed(
         "You are opening a fresh **{0}** tide session for project **{1}**.".format(
             role.upper(), project_name
         ),
-        "",
-        "## Role",
-        _role_block(role, prompt_text),
+    ]
+
+    role_block = _role_block(role, prompt_text)
+    if role_block:
+        lines += ["", "## Role", role_block]
+
+    lines += [
         "",
         "## CANON.md — {0}".format(project_name),
         canon_text.strip() if canon_text.strip() else "(no canon yet — run 'tide canon init')",
@@ -181,6 +188,11 @@ def build_seed(
                 "",
                 arc_text.strip() if (arc_text and arc_text.strip()) else "(no session passport found)",
             ]
+            # The nit's OPEN decisions (cand 128-A) are NOT rendered here: the
+            # SessionStart hook injects the same block from the same source
+            # (``decision.render_open_for_context``), and the launcher binds the sid
+            # into the session passport BEFORE spawn — so the hook resolves the nit
+            # and prints them once. Rendering them here too printed them twice.
         else:
             lines += [
                 "",
@@ -189,24 +201,19 @@ def build_seed(
             ]
 
     if roster_text is not None:
+        # ONE line instead of the two evergreen paragraphs that used to sit here
+        # (cand 127): both said the same two things forever — park a neighbour's
+        # work as a candidate there, and «заводим проект» means `tide adopt`, not a
+        # new thread. Compressed to the two commands with the reason each exists.
         lines += [
             "",
             "## Roster (control-home)",
             roster_text.strip() if roster_text.strip() else "(no projects)",
             "",
-            "Notice work that belongs to a NEIGHBOUR project (above)? Don't lose it and "
-            "don't context-switch — drop it as a candidate there: "
-            "`tide candidate add <slug> \"<the idea>\" --project <roster-name>`. It lands "
-            "in that project's backlog (tagged with where it came from) for its "
-            "orchestrator to promote later. Capturing is cheap; promoting stays local.",
-            "",
-            "A NEW PROJECT ≠ a new thread. A thread (`NN-@slug` in `.tide/arcs/`) is a "
-            "work-line INSIDE a project and never shows in the project picker — the "
-            "picker is exactly this roster. When the human says «заводим проект», run "
-            "`tide adopt <abs-path> [--name <roster-name>]`: git init + first commit + "
-            "`.tide/` scaffold + roster row, idempotent — the project appears in the "
-            "picker and is worktree-ready. Creating a thread instead strands them "
-            "looking for a project that isn't there.",
+            "Work for a NEIGHBOUR project — park it there, don't context-switch: "
+            "`tide candidate add <slug> \"<idea>\" --project <roster-name>`. "
+            "«Заводим проект» — `tide adopt <abs-path> [--name <roster-name>]` (a "
+            "thread `NN-@slug` is a work-line INSIDE a project, never a roster row).",
         ]
 
     lines += [
@@ -254,10 +261,16 @@ def seed_for_project(
     roster_text: Optional[str] = None
     if control_home is not None:
         from .. import roster as roster_mod
+        from . import menu as menu_mod
 
         home = Path(control_home)
         if paths.is_control_home(home):
-            roster_text = roster_mod.render_list(home)
+            # ARCHIVED projects are dead paths a fresh session must never be handed
+            # (live: 13 of 27 rows). The picker already hides them — same filter here
+            # (``tide roster ls`` keeps showing everything; that is its job).
+            roster_text = roster_mod.render_entries(
+                menu_mod.active_entries(roster_mod.read_roster(home))
+            )
 
     return build_seed(
         project_name=project_name,

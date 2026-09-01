@@ -294,13 +294,18 @@ def _confirm_pending_pickup(passport: Path) -> Optional[str]:
     proving it is alive — a stronger hello than a prompt — so it closes the same
     seam through the same single flip point (I4). Silent no-op for ordinary
     sessions; never breaks an offload.
+
+    Two ways in, because the passport is unstamped until reception (cand 140):
+    by pinned sid when there is one, else by the session's own directory — the
+    offer's seed lives inside it, so the reservation is found without a sid.
     """
     try:
         from . import handoff_queue
+        home = paths.control_home()
         sid = (fields.read_field(passport, CLAUDE_SESSION_FIELD) or "").strip()
-        if not sid:
-            return None
-        claimed = handoff_queue.confirm_for_session(paths.control_home(), sid)
+        claimed = handoff_queue.confirm_for_session(home, sid) if sid else None
+        if claimed is None:
+            claimed = handoff_queue.confirm_for_session_dir(home, Path(passport).parent)
         return str(claimed["name"]) if claimed else None
     except Exception:  # noqa: BLE001 — the fallback must never break a pulse
         return None

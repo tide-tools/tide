@@ -17,8 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 
 # --- config (overridable via env) -------------------------------------------
-TIDE_HOME="${TIDE_HOME:-$HOME/.local/share/tide}"
-VENV_DIR="$TIDE_HOME/venv"
+# NB: $TIDE_HOME is NOT used here on purpose — to the tide CLI that variable
+# means "your control-home" (the dir with roster.md). Reusing it as the venv
+# location would dump a venv into someone's control-home the moment they set
+# TIDE_HOME the way the docs tell them to. The install dir has its own knob.
+INSTALL_DIR="${TIDE_INSTALL_DIR:-$HOME/.local/share/tide}"
+VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="${TIDE_BIN_DIR:-$HOME/.local/bin}"
 MIN_MAJOR=3
 MIN_MINOR=12
@@ -67,7 +71,7 @@ install_via_pipx() {
 install_via_venv() {
   say "no pipx → installing into a dedicated venv ($VENV_DIR)"
   if [ ! -x "$VENV_DIR/bin/python" ]; then
-    mkdir -p "$TIDE_HOME"
+    mkdir -p "$INSTALL_DIR"
     "$PYTHON" -m venv "$VENV_DIR"
   fi
   # quiet, idempotent install/upgrade of THIS checkout into the venv
@@ -104,6 +108,19 @@ if [ -n "$TIDE_BIN" ]; then
   VERSION_OUT="$("$TIDE_BIN" --version 2>&1 || true)"
   say "installed: $TIDE_BIN"
   printf '\033[32m✓ %s\033[0m\n' "$VERSION_OUT"
+
+  # Record WHAT we just installed. Without this the install has no marker, so
+  # tide compares the bare metadata version against the checkout's commit, they
+  # never match, and a brand-new install greets you with "update available" —
+  # pointing at the very commit you just installed. Best-effort: a machine that
+  # cannot write the marker still has a working tide.
+  "$TIDE_BIN" self-update --stamp >/dev/null 2>&1 || true
+
+  # One gesture per step from here on — say the next one out loud.
+  echo
+  say "next: make yourself a control-home (the one place you lead from):"
+  printf '      mkdir ~/tide-home && cd ~/tide-home && tide init --git\n'
+  say "then open the board:  tide board --open"
 else
   warn "tide is installed but not yet on PATH for this shell — open a new shell or fix PATH (see above)."
   warn "direct check: $VENV_DIR/bin/tide --version"

@@ -54,7 +54,6 @@ design conversation; OPEN questions marked ⛏.
 - A session carrying a **pending handoff** shows marked **⇄** and floats to the tip; picking it
   opens a **pick up / dismiss** sub-choice — pick up launches from the distil seed, dismiss calls
   `tide handoffs drop` (soft-archive + prune the untouched session).
-- Routines differ: a **run** is a fresh execution, so the routine picker keeps **"+ new run"**.
 
 ## Session title + summary (for reading sessions later)
 - Each session has an **index** (its NN number), a **title:** (human, one line), and a

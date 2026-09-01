@@ -8,13 +8,15 @@ differ only in HOW they build the spec, never in WHAT the harness guarantees.
 
 Gesture order (invariant: everything file-side happens BEFORE the terminal exists):
 
-1. **sid** — pinned into the session's passport (``claude-session:``) before any
-   spawn; tide mints the id, it is never read back out of claude.
+1. **sid** — tide mints the id and puts it in argv; it is never read back out of
+   claude. On a PICKUP the passport is NOT stamped here (cand 140) — see gesture 2.
 2. **reserve** (pickup only) — ``handoffs.reserve(key, sid)`` pins WHICH session may
    confirm the offer; the status stays ``offered``. The flip to ``taken`` happens on
    the session's FIRST message (UserPromptSubmit hook → ``confirm_for_session``) —
    the reception is real only when the terminal actually said hello (signed A,
-   2026-07-14). A failed spawn therefore never eats the offer.
+   2026-07-14). A failed spawn therefore never eats the offer. The SAME beat stamps
+   ``claude-session:`` into the passport (``handoff_queue._stamp_reception``), so the
+   sid the thread reads as its head always belongs to a chat that exists.
 3. **command** — the one scoped builder (``build_launch``): strict-MCP profile on
    EVERY path (the board's old inline pickup dropped it).
 4. **spawn** via the adapter.
@@ -58,23 +60,33 @@ def launch_session(
     """
     from . import menu as _menu  # lazy: menu imports us nowhere, but keep it one-way
 
-    # 1. sid before birth of the terminal (pin survives a failed spawn — harmless).
+    # 1. sid before birth of the terminal.
     #    DRY-RUN пишет НИЧЕГО (cand 98): sid минтится только в память, паспорт
     #    не трогается — сборка команды честная, диск чистый.
     import uuid as _uuid
 
     if seed_file:
-        # A pickup ALWAYS mints a fresh sid and re-pins the passport (cand 103: the
-        # origin's sid is never inherited). The stored pin on a pickup session is
-        # whoever touched the arc before — the offerer, or the creator's own id
-        # stamped at birth (e2e 14.07: a trusted stale pin spawned claude onto a sid
-        # already in use and it died on boot). Fresh launch on the distil, no resume.
+        # A pickup ALWAYS mints a fresh sid (cand 103: the origin's sid is never
+        # inherited). The stored pin on a pickup session is whoever touched the arc
+        # before — the offerer, or the creator's own id stamped at birth (e2e 14.07:
+        # a trusted stale pin spawned claude onto a sid already in use and it died on
+        # boot). Fresh launch on the distil, no resume.
+        #
+        # The passport is left UNSTAMPED until the session says hello (cand 140,
+        # canon №1: the thread's head is DERIVED from the newest ACCEPTED session,
+        # not stamped in advance). A pre-stamp made every failed ascent leave a sid
+        # behind that no transcript answers to — 19.07 Orca died in `login:` and the
+        # phantom outranked the live session as head of the thread, so the board's
+        # ⟳ led nowhere. The honest stamp rides the reception beat
+        # (``handoff_queue._stamp_reception``), fired by the first message or, when
+        # the hook could not, by the first pulse. A stale pin is CLEARED here so the
+        # unstamped window can't be read as somebody else's live chat either.
         session_id = str(_uuid.uuid4())
         resume = False
         if not dry_run:
             from .. import fields as _fields
 
-            _fields.set_field(Path(session_dir) / "arc.md", "claude-session", session_id)
+            _fields.remove_field(Path(session_dir) / "arc.md", "claude-session")
     elif dry_run:
         session_id, resume = str(_uuid.uuid4()), False
     else:

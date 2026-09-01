@@ -89,6 +89,17 @@ def register_hook_group(subparsers) -> None:
         "role-gate",
         help="PreToolUse: deny orchestrator from doing worker-work (Write/Edit/mutating Bash)",
     )
+    # The manikin: ask the gate how it would judge a command instead of running
+    # it to find out. --explain-file keeps the probe string off the shell's hands
+    # entirely, which is the safe way to test a gate (candidate 166).
+    rg.add_argument(
+        "--explain", metavar="COMMAND",
+        help="dry-run: print how the gate would judge COMMAND, execute nothing",
+    )
+    rg.add_argument(
+        "--explain-file", metavar="PATH",
+        help="same, reading the command from PATH (safest — the shell never sees it)",
+    )
     rg.set_defaults(func=role_gate.cmd_role_gate, _cmd="hook role-gate")
 
     hc = hsub.add_parser(

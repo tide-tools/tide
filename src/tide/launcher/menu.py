@@ -812,10 +812,11 @@ def launch_handoff(
     seeded by the handoff seed file (``--append-system-prompt`` so it starts already
     oriented), with a pinned session id.
 
-    On a SUCCESSFUL launch it marks the offer ``taken`` — a picked-up handoff leaves
-    the handoffs list at once (the thread is now a live, resumable session: its
-    claude id is pinned to the passport). A FAILED launch (``res.ok`` false) leaves
-    the offer hanging, recoverable — the two-stage guarantee kicks in only on errors.
+    The launch RESERVES the offer for the minted sid; the flip to ``taken`` — and the
+    ``claude-session:`` pin on the passport — ride the session's first message. A
+    FAILED launch (``res.ok`` false) therefore leaves the offer hanging and the
+    passport clean: nothing to pick up twice, no sid pointing at a chat that never
+    opened (cand 140).
     """
     proj_entry = next((e for e in entries if e["name"] == record["project"]), None)
     if proj_entry is None:
@@ -943,6 +944,12 @@ def build_launch(
         # fresh launch gets. A bare --strict-mcp-config here would drop the project's
         # --mcp-config (e.g. mitehq's linear-mite), so resumed sessions lost MCP.
         resume_cmd += context.scoped_flags(context.load_profile(project))
+        # The reopened conversation gets the same first turn as a fresh one (`tide
+        # return --say`): claude takes a trailing positional prompt on --resume too.
+        # Without this a resume opened silently and the human's press — the reason
+        # we reopened at all — reached the agent nowhere.
+        if user_prompt:
+            resume_cmd.append(user_prompt)
         shell = "{0} || {1}".format(shlex.join(resume_cmd), shlex.join(fresh))
         return _with_role_env(["sh", "-c", shell], role)
     return _with_role_env(fresh, role)
@@ -1257,6 +1264,7 @@ def spark(
     thread: Optional[str] = None,
     new_thread: Optional[str] = None,
     goal: Optional[str] = None,
+    say: Optional[str] = None,
     adapter,
     role: str = DEFAULT_ROLE,
     skip_permissions: bool = True,
@@ -1266,6 +1274,13 @@ def spark(
 
     The board's ▶ used to launch claude in the project root and have IT run ``tide arc
     new-session`` after start — a divergent flow that left the board blind and couldn't
+    *say* replaces the wired first turn (:func:`_spark_trigger`) with the caller's own
+    words. The default trigger tells a fresh session to close the start-gate and build
+    a plan — right for ▶ off the shelf, wrong for every surface that raises a session
+    FOR something concrete (the board's «да» on a work gate: the plan is already
+    agreed, the session is being raised to run it). Without this such a session opened
+    oriented at nothing and had to guess why it exists.
+
     resolve the tab. ``spark`` unifies ▶ onto the SAME path as menu/pickup: create the
     session in tide FIRST, bind + pin its claude id (``_session_binding`` →
     ``_bind_claude_session``), launch via the adapter, and record ``sid → terminal`` in
@@ -1327,7 +1342,8 @@ def spark(
     # ▶ is non-interactive (launched from the board, nobody at the terminal): give the
     # fresh session a first user turn so it STARTS the pickup instead of sitting blank
     # (cand 96). Interactive doors (tide go/menu) leave this empty — the human types.
-    binding["user_prompt"] = _spark_trigger(container_slug, project_entry.get("name") or project.name)
+    binding["user_prompt"] = (say or "").strip() or _spark_trigger(
+        container_slug, project_entry.get("name") or project.name)
     spark_entry = {**project_entry, "session": binding}
     # ONE launch path (wave 3) — same gesture order as pickup/menu.
     from .launch import launch_session  # lazy: sibling module
@@ -1360,6 +1376,7 @@ def cmd_spark(args) -> int:
         thread=getattr(args, "thread", None),
         new_thread=getattr(args, "new_thread", None),
         goal=getattr(args, "goal", None),
+        say=getattr(args, "say", None),
         adapter=adapter,
         role=getattr(args, "role", None) or DEFAULT_ROLE,
         skip_permissions=not getattr(args, "no_skip_permissions", False),
@@ -1435,6 +1452,10 @@ def register(subparsers) -> None:
     sp.add_argument("--new-thread", dest="new_thread", metavar="NAME",
                     help="start a fresh thread with this name")
     sp.add_argument("--goal", help="goal line for a new thread")
+    sp.add_argument("--say", metavar="TEXT",
+                    help="the session's FIRST turn, in your words (default: the wired "
+                         "▶ trigger — close the start-gate, build a plan). One line: "
+                         "a newline would submit it early")
     sp.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
     sp.add_argument("--role", help="session role (default: orchestrator)")
     sp.add_argument("--dry-run", action="store_true", dest="dry_run",

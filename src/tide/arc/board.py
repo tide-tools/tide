@@ -12,6 +12,8 @@ a *rendered* projection — never stored — of the work stream:
   badge (no ``0/0``) — the badge only means something once there is a substream.
 * **drift flag** — tide invention: an OPEN entry whose stamped ``canon-rev``
   differs from the current one has drifted (canon moved under it) and is flagged.
+  A session under a SEALED (``__…__``) thread is exempt: the thread is finished
+  history, so its sessions owe the fresh canon nothing.
 * **unmerged-delta flag** — tide invention: a CLOSED arc still carrying an
   unmerged ``delta.md`` is the between-arcs barrier offender (decision 9); listed
   so the orchestrator merges it through the gate.
@@ -57,13 +59,20 @@ def _entry_num(name: str) -> int:
 
 
 def _stream_entries(stream_dir: Path) -> List[Path]:
-    """Child entry dirs of *stream_dir* (excludes ``candidates/``), numeric order."""
+    """Child entry dirs of *stream_dir* (excludes the service dirs), numeric order.
+
+    ``candidates/``, ``works/`` and ``artifacts/`` live beside the stream but are
+    their own surfaces (backlog, work-cards, the desk) — listed by their own
+    verbs. Rendered as stream rows they showed up as a bogus ``works  [draft]``
+    entry on every board that had a work-card (work 51, newborn simulation).
+    """
     if not Path(stream_dir).is_dir():
         return []
+    service = {paths.CANDIDATES_DIRNAME, "works", "artifacts"}
     entries = [
         p
         for p in Path(stream_dir).iterdir()
-        if p.is_dir() and p.name != paths.CANDIDATES_DIRNAME
+        if p.is_dir() and p.name not in service
     ]
     return sorted(entries, key=lambda p: (_entry_num(p.name), p.name))
 
@@ -96,22 +105,29 @@ def _supersedes_suffix(entry_dir: Path) -> str:
     return "  (supersedes {0})".format(prev) if prev else ""
 
 
-def _is_drifted(entry_dir: Path, current_rev: str) -> bool:
+def _is_drifted(entry_dir: Path, current_rev: str, *, parent_closed: bool = False) -> bool:
     """True for an OPEN entry whose stamped canon-rev differs from *current_rev*.
 
     Closed entries are done (and may legitimately carry an older stamp), so drift
     is only flagged on still-open work — the case the sync barrier cares about. A
     never-stamped open entry is not drift (nothing to compare).
+
+    *parent_closed* extends that to a session sitting under a SEALED thread: the
+    thread is history, so its sessions are history too — an open-looking sub-arc
+    dir under ``__NN-@thread__`` is not live work and owes the fresh canon
+    nothing. Without this the live board listed 19 such ghosts (of 23), all of
+    them under threads cold entry does not even render.
     """
-    if slug.is_closed_entry(entry_dir.name):
+    if parent_closed or slug.is_closed_entry(entry_dir.name):
         return False
     stamped = _field(entry_dir, "canon-rev")
     return bool(stamped) and stamped != current_rev
 
 
-def _drift_suffix(entry_dir: Path, current_rev: str) -> str:
+def _drift_suffix(entry_dir: Path, current_rev: str, *, parent_closed: bool = False) -> str:
     """Inline ``⚠ drift`` flag for an OPEN drifted entry (see :func:`_is_drifted`)."""
-    return "  {0}".format(DRIFT_FLAG) if _is_drifted(entry_dir, current_rev) else ""
+    drifted = _is_drifted(entry_dir, current_rev, parent_closed=parent_closed)
+    return "  {0}".format(DRIFT_FLAG) if drifted else ""
 
 
 # --- goal badge ------------------------------------------------------------
@@ -158,7 +174,7 @@ def _top_line(entry_dir: Path, current_rev: str) -> str:
     return line
 
 
-def _sub_line(sub_dir: Path, current_rev: str) -> str:
+def _sub_line(sub_dir: Path, current_rev: str, *, parent_closed: bool = False) -> str:
     """Render one indented sub-arc line (``✓`` closed without status / ``○`` open)."""
     closed = slug.is_closed_entry(sub_dir.name)
     tick = TICK_CLOSED if closed else TICK_OPEN
@@ -169,16 +185,24 @@ def _sub_line(sub_dir: Path, current_rev: str) -> str:
     if goal_line:
         line += "  {0}".format(goal_line)
     line += _supersedes_suffix(sub_dir)
-    line += _drift_suffix(sub_dir, current_rev)
+    line += _drift_suffix(sub_dir, current_rev, parent_closed=parent_closed)
     return line
 
 
 # --- merge-health footer (tide net-new, fix F4) ----------------------------
 
 def _drifted_entries(root: Path, current_rev: str) -> List[Path]:
-    """Every OPEN stream entry (top + goal sub-arcs) that has drifted, in order."""
+    """Every OPEN stream entry (top + goal sub-arcs) that has drifted, in order.
+
+    A CLOSED top-level entry is skipped whole — the thread itself is not drift
+    (it is done) and neither is anything inside it, so the walk does not descend.
+    Sealed threads are already dropped from cold-entry STREAM; listing their
+    sessions here pointed the human at rows the board does not show.
+    """
     drifted: List[Path] = []
     for entry in _stream_entries(paths.arcs_dir(Path(root))):
+        if slug.is_closed_entry(entry.name):
+            continue
         if _is_drifted(entry, current_rev):
             drifted.append(entry)
         if slug.is_goal_entry(entry.name):
@@ -186,6 +210,39 @@ def _drifted_entries(root: Path, current_rev: str) -> List[Path]:
                 if _is_drifted(sub, current_rev):
                     drifted.append(sub)
     return drifted
+
+
+def drift_label(root: Path, entry_dir: Path) -> str:
+    """Board-facing name of a drifted entry: ``thread/session`` for a sub-arc.
+
+    A bare dir name is ambiguous across threads — the live board showed four
+    different ``02-priem`` rows with nothing to tell them apart. Qualifying a
+    sub-arc with its thread both disambiguates the row and spells the resume
+    gesture: ``19-@work/01-start`` → ``tide arc resume 01-start -p 19-@work``.
+    """
+    try:
+        parts = Path(entry_dir).relative_to(paths.arcs_dir(Path(root))).parts
+    except ValueError:
+        return Path(entry_dir).name
+    return "/".join(p for p in parts if p != paths.ARCS_DIRNAME)
+
+
+# Cap on names spelled out in the ``drift:`` line. Beyond it the line stops being
+# readable, but nothing is dropped silently (project rule): the remainder is
+# counted out loud and every drifted row still carries its own inline ``⚠ drift``
+# in STREAM above.
+DRIFT_LIST_MAX = 12
+
+
+def _drift_names(root: Path, drifted: List[Path]) -> str:
+    """Comma-joined :func:`drift_label` names, capped with an honest ``+N more``."""
+    labels = [drift_label(root, d) for d in drifted]
+    if len(labels) <= DRIFT_LIST_MAX:
+        return ", ".join(labels)
+    shown = labels[:DRIFT_LIST_MAX]
+    return "{0}, +{1} more (see '{2}' in STREAM)".format(
+        ", ".join(shown), len(labels) - DRIFT_LIST_MAX, DRIFT_FLAG
+    )
 
 
 def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[str]:
@@ -204,7 +261,13 @@ def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[s
         lines.append("  unmerged: none")
     drifted = _drifted_entries(root, current_rev)
     if drifted:
-        lines.append("  drift: {0}".format(", ".join(d.name for d in drifted)))
+        # The footer is now the ONE place drift is reported (SessionStart used to
+        # repeat it as a per-arc WARNINGS block), so it carries the fix too —
+        # mirroring how the `deferred:` line below carries `tide reconcile`.
+        lines.append(
+            "  drift: {0} → re-read CANON.md + 'tide arc resume <slug>'"
+            " (thread/session → add '-p <thread>')".format(_drift_names(root, drifted))
+        )
     else:
         lines.append("  drift: none")
 
@@ -230,12 +293,18 @@ def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[s
     from .. import readme as _readme  # lazy: keep arc.board import-light
 
     try:
-        readme_code, _readme_reasons = _readme.check(root)
-        if readme_code == 0:
-            lines.append("  readme: ok")
-        elif readme_code == 1:
-            lines.append("  readme: drift (run 'tide readme')")
-        # code 2 → stay silent (matches existing oracle-error conventions)
+        if _readme.is_manual_control_home_readme(root):
+            # The control-home's own orientation README (written by `tide init`)
+            # is not a canon projection — flagging it as drift scolded every
+            # fresh home at birth (work 51).
+            lines.append("  readme: manual (control-home orientation page)")
+        else:
+            readme_code, _readme_reasons = _readme.check(root)
+            if readme_code == 0:
+                lines.append("  readme: ok")
+            elif readme_code == 1:
+                lines.append("  readme: drift (run 'tide readme')")
+            # code 2 → stay silent (matches existing oracle-error conventions)
     except Exception:
         pass  # HEALTH must never raise; skip silently on unexpected error
 
@@ -244,21 +313,31 @@ def _health_lines(root: Path, current_rev: str, offenders: List[Path]) -> List[s
 
 # --- whole-board render ----------------------------------------------------
 
-def render_board(root: Path) -> str:
-    """Render the full STREAM board for project *root* (pure, snapshot-testable)."""
+def render_board(root: Path, *, include_closed: bool = True) -> str:
+    """Render the full STREAM board for project *root* (pure, snapshot-testable).
+
+    *include_closed* False drops CLOSED (``__…__``) top-level entries — with their
+    substreams — from STREAM. Sealed threads are finished history: on a live board
+    they were 18 of 23 rows, and on cold entry that history is pure noise (the
+    SessionStart hook passes False). ``tide status`` keeps the full stream, closed
+    included — reading back is what it is for.
+    """
     root = Path(root)
     current_rev = rev.compute(root)
     arcs = paths.arcs_dir(root)
     lines: List[str] = ["STREAM"]
 
     entries = _stream_entries(arcs)
+    if not include_closed:
+        entries = [e for e in entries if not slug.is_closed_entry(e.name)]
     if not entries:
         lines.append("  (empty stream)")
     for entry in entries:
         lines.append(_top_line(entry, current_rev))
         if slug.is_goal_entry(entry.name):
+            closed = slug.is_closed_entry(entry.name)
             for sub in _stream_entries(entry / paths.ARCS_DIRNAME):
-                lines.append(_sub_line(sub, current_rev))
+                lines.append(_sub_line(sub, current_rev, parent_closed=closed))
 
     # tide net-new: between-arcs barrier offenders (closed arcs w/ unmerged delta).
     from .. import sync  # lazy: sync imports arc.stream at top, not arc.board.
@@ -371,7 +450,13 @@ def render_entry_summary(root: Path) -> str:
 
 # --- JSON projection (same data render_board computes; for canon/drift dashboards) --
 
-def _entry_dict(entry_dir: Path, current_rev: str, *, include_sub: bool) -> Dict[str, object]:
+def _entry_dict(
+    entry_dir: Path,
+    current_rev: str,
+    *,
+    include_sub: bool,
+    parent_closed: bool = False,
+) -> Dict[str, object]:
     """Pure dict projection of one stream entry — the SAME fields the line renderers read.
 
     Mirrors :func:`_top_line` (top entries, ``include_sub=True`` → badge + ``sub_arcs``)
@@ -383,9 +468,10 @@ def _entry_dict(entry_dir: Path, current_rev: str, *, include_sub: bool) -> Dict
     name = entry_dir.name
     is_goal = slug.is_goal_entry(name)
     badge = goal_badge(entry_dir) if (is_goal and include_sub) else None
+    is_closed = slug.is_closed_entry(name)
     sub_arcs = (
         [
-            _entry_dict(sub, current_rev, include_sub=False)
+            _entry_dict(sub, current_rev, include_sub=False, parent_closed=is_closed)
             for sub in _stream_entries(entry_dir / paths.ARCS_DIRNAME)
         ]
         if (is_goal and include_sub)
@@ -396,9 +482,9 @@ def _entry_dict(entry_dir: Path, current_rev: str, *, include_sub: bool) -> Dict
         "status": _status(entry_dir),
         "goal": _goal_line(entry_dir),
         "is_goal": is_goal,
-        "is_closed": slug.is_closed_entry(name),
+        "is_closed": is_closed,
         "canon_rev_stamped": _field(entry_dir, "canon-rev"),
-        "drifted": _is_drifted(entry_dir, current_rev),
+        "drifted": _is_drifted(entry_dir, current_rev, parent_closed=parent_closed),
         "supersedes": _field(entry_dir, "supersedes"),
         "badge": {"closed": badge[0], "total": badge[1]} if badge else None,
         "sub_arcs": sub_arcs,
@@ -435,7 +521,7 @@ def project_status_dict(root: Path) -> Dict[str, object]:
             "canon_rev": current_rev,
             "unmerged_count": len(offenders),
             "unmerged_arcs": [o.name for o in offenders],
-            "drifted_entries": [d.name for d in drifted],
+            "drifted_entries": [drift_label(root, d) for d in drifted],
         },
     }
 

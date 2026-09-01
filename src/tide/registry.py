@@ -21,14 +21,24 @@ the CLI edge), so the whole module is unit-testable without a terminal.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 from . import io as _io
 
 REGISTRY_FILENAME = "terminals.json"
+
+# The session's OWN identity, straight out of its environment (cand 144). Orca exports
+# the pane's handle into every shell it opens; Claude Code exports the running session's
+# id into every process it spawns. So ANY tide command running inside a session — a hook,
+# an offload, a bare `tide status` — knows the exact ``(sid, handle)`` pair without
+# guessing and without asking orca. This is what makes a session started BY HAND
+# (`claude --resume` after a reboot) register itself just like a tide-spawned one.
+ENV_TERMINAL_HANDLE = "ORCA_TERMINAL_HANDLE"
+ENV_SESSION_ID = "CLAUDE_CODE_SESSION_ID"
 
 # orca create/list MUST run in the SAME environment or a created terminal is invisible to
 # a later list (the registry then reads it as dead — a known footgun). A minimal PATH that
@@ -69,6 +79,18 @@ def record(
     _io.atomic_write(registry_file(home), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def self_pair(env: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+    """``(sid, handle)`` of the session THIS process runs inside; ``("", "")`` if none.
+
+    Read from :data:`ENV_SESSION_ID` / :data:`ENV_TERMINAL_HANDLE` — an exact pairing,
+    not a guess. Outside a session terminal (the board's server, a plain shell) one or
+    both are absent and the caller simply does nothing.
+    """
+    e = os.environ if env is None else env
+    return ((e.get(ENV_SESSION_ID) or "").strip(),
+            (e.get(ENV_TERMINAL_HANDLE) or "").strip())
+
+
 def forget(home: Path, sid: str) -> None:
     """Drop *sid* from the registry (e.g. its session closed). Idempotent."""
     s = (sid or "").strip()
@@ -78,6 +100,51 @@ def forget(home: Path, sid: str) -> None:
         _io.atomic_write(
             registry_file(home), json.dumps(data, ensure_ascii=False, indent=2) + "\n"
         )
+
+
+def forget_handle(home: Path, handle: str) -> int:
+    """Drop EVERY entry pointing at *handle*; returns how many. Idempotent.
+
+    Called when a focus attempt just proved the handle dead: a corpse recorded under
+    two keys (a sid and a legacy arc path) would otherwise keep resolving from the
+    other one, and the caller would «фокусировать труп» forever (the ``pickup_stale``
+    trap, c636275). One dead terminal, one sweep.
+    """
+    h = (handle or "").strip()
+    if not h:
+        return 0
+    data = read(home)
+    kept = {k: e for k, e in data.items() if ((e or {}).get("handle") or "").strip() != h}
+    removed = len(data) - len(kept)
+    if removed:
+        _io.atomic_write(
+            registry_file(home), json.dumps(kept, ensure_ascii=False, indent=2) + "\n"
+        )
+    return removed
+
+
+def is_sid_key(key: str) -> bool:
+    """True when *key* is a session id, not a legacy ARC path (which contains ``/``)."""
+    return bool((key or "").strip()) and "/" not in key
+
+
+def migrate(home: Path) -> int:
+    """Bring a mixed-schema registry to the ONE sid-keyed schema; returns entries dropped.
+
+    The shared file still carries pre-cand-94 records keyed by ARC PATH. They cannot be
+    converted — an arc path carries no session id, and a thread routinely has several
+    sessions, which is precisely why arc-keying focused the wrong terminal and spawned
+    duplicates (cand 94). So they are DROPPED, not migrated, and the caller says the
+    number out loud rather than swallowing it. Idempotent: a clean registry returns 0.
+    """
+    data = read(home)
+    kept = {k: e for k, e in data.items() if is_sid_key(k)}
+    dropped = len(data) - len(kept)
+    if dropped:
+        _io.atomic_write(
+            registry_file(home), json.dumps(kept, ensure_ascii=False, indent=2) + "\n"
+        )
+    return dropped
 
 
 def orca_terminal_list() -> list:
@@ -118,17 +185,19 @@ def recorded_handle(home: Path, sid: str, *, arc: str = "") -> Optional[str]:
 
     ``orca terminal list`` hides background-adopted terminals, so absence-from-list
     is NOT death (cand 101): the only honest liveness probe is trying to focus the
-    handle, which is exactly what the return path does next. Schema-tolerant: falls
-    back to a legacy arc-keyed entry (the pre-cand-94 format still present in shared
-    registry files) so old records keep resolving.
+    handle, which is exactly what the return path does next.
+
+    Keyed by SID ONLY. The old arc-path fallback is gone (cand 144): an arc key cannot
+    tell a thread's several sessions apart, so it answered with *some* session's tab —
+    focusing the wrong one is worse than a duplicate. :func:`migrate` drops those
+    records. *arc* is accepted and ignored so older callers keep working.
     """
-    reg = read(home)
-    for key in ((sid or "").strip(), (arc or "").strip()):
-        if key and key in reg:
-            handle = ((reg[key] or {}).get("handle") or "").strip()
-            if handle:
-                return handle
-    return None
+    del arc  # back-compat: legacy arc-keyed lookup retired, see the docstring
+    key = (sid or "").strip()
+    if not key:
+        return None
+    handle = ((read(home).get(key) or {}).get("handle") or "").strip()
+    return handle or None
 
 
 def resolve(home: Path, sid: str, *, live_handles: Optional[Set[str]] = None) -> Optional[str]:

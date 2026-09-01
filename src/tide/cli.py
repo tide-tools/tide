@@ -1,7 +1,8 @@
 """tide — single binary, namespaced subcommands.
 
 This is the CLI root. It wires every subcommand group via a uniform
-``register(subparsers)`` / handler pattern (see README "## build conventions").
+``register(subparsers)`` / handler pattern (the module owns its parser + a thin
+handler; logic lives in plain argparse-free functions).
 
 SCAFFOLD STATE: the groups below are registered as STUBS. Each later build unit
 replaces its ``_register_*`` body with a call into the real module's
@@ -98,11 +99,25 @@ def _register_status(sub) -> None:
     p.set_defaults(func=cmd_status, _cmd="status")
 
 
+def _register_board(sub) -> None:
+    # Работа 51: доска в коробке — сервер проекции из пакета, localhost, порт флагом.
+    from .board_server import register as register_board
+
+    register_board(sub)
+
+
 def _register_strictness(sub) -> None:
     # U5: real per-project strict|loose dial (show/set in .tide/state/strictness).
     from .strictness import register as register_strictness
 
     register_strictness(sub)
+
+
+def _register_plugins(sub) -> None:
+    # Работа 48: граница кора и плагинов — каталог в коде, выключатель в доме.
+    from .plugins import register as register_plugins
+
+    register_plugins(sub)
 
 
 def _register_install_hooks(sub) -> None:
@@ -249,6 +264,26 @@ def _register_self_update(sub) -> None:
     register_self_update(sub)
 
 
+def _register_release(sub) -> None:
+    # 50-release: the other half of self-update — the path OUT of this checkout into
+    # a bottle someone else installs. Preflight → the same regression gate → git
+    # archive → gh release → bump the brew formula, as one plan whose --dry-run is
+    # the plan itself rather than a second implementation of it.
+    from .release.commands import register as register_release
+
+    register_release(sub)
+
+
+def _register_report(sub) -> None:
+    # 50-release: the way BACK. A person on a released tide hits a wall, types one
+    # command, and it reaches the maintainer readable — version, install shape,
+    # environment, their own words — with their projects' paths and contents left
+    # behind (see release_report.redact).
+    from .release_report import register as register_report
+
+    register_report(sub)
+
+
 def _register_doctor(sub) -> None:
     # 23-tide-doctor: on-demand health/diagnostic command (python/structure/canon/
     # hooks/install-marker/self-update channel). ON-DEMAND ONLY — never a hook, never
@@ -314,6 +349,25 @@ def _register_work(sub) -> None:
     register_work(sub)
 
 
+def _register_artifact(sub) -> None:
+    # шаг 4 работы 17 (tide-stack): «артефакт» — вещь, которую агент кладёт
+    # человеку на стол (сообщение, команда, файл) поверх
+    # .tide/arcs/artifacts/*/artifact.md (new→taken + журнал); забирает человек
+    # своим словом (--word), доска лишь показывает стол.
+    from .arc.artifact import register as register_artifact
+
+    register_artifact(sub)
+
+
+def _register_decision(sub) -> None:
+    # cand 128-B (cross-session-experience): the «решение» entity — a thread's
+    # conclusion-atoms (decision:canon :: commit:repo). add/list live over
+    # <thread>/decisions.md; settle raises a decision into the canon journal.
+    from .arc.decision import register as register_decision
+
+    register_decision(sub)
+
+
 def _register_plan(sub) -> None:
     # 19-tide-plan-board: the focus board (доска wake) bound to a goal-arc —
     # board.json in the arc workspace with ≤7 focus + ≤3 path + a distill axis.
@@ -326,9 +380,12 @@ def _register_plan(sub) -> None:
 def _register_handoffs(sub) -> None:
     # two-stage handoff queue: offer (stage 1) → confirmed pickup (stage 2, via the
     # UserPromptSubmit hook). `tide handoffs` lists what is hanging in the control-home.
+    # seed_draft.register_draft adds `draft` — the seven-block seed draft — composed
+    # here (edge) because the queue is domain and may not import the launcher.
     from .handoff_queue import register as register_handoffs
+    from .launcher.seed_draft import register_draft
 
-    register_handoffs(sub)
+    register_draft(register_handoffs(sub))
 
 
 def _register_offload(sub) -> None:
@@ -402,7 +459,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Human launcher surface
     _register_init(subparsers)
     _register_status(subparsers)
+    _register_board(subparsers)
     _register_strictness(subparsers)
+    _register_plugins(subparsers)
     _register_install_hooks(subparsers)
     _register_install_skills(subparsers)
     _register_roster(subparsers)
@@ -421,6 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     _register_verify(subparsers)
     _register_onboarding(subparsers)
     _register_self_update(subparsers)
+    _register_release(subparsers)
+    _register_report(subparsers)
 
     _register_version(subparsers)
     _register_help(subparsers)
@@ -430,6 +491,8 @@ def build_parser() -> argparse.ArgumentParser:
     _register_reconcile(subparsers)
     _register_candidate(subparsers)
     _register_work(subparsers)
+    _register_artifact(subparsers)
+    _register_decision(subparsers)
     _register_plan(subparsers)
     _register_handoffs(subparsers)
     _register_offload(subparsers)
@@ -443,10 +506,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _self_register() -> None:
+    """Bind this session to its terminal on ANY tide command (cand 144). Never fatal.
+
+    A one-line side effect on the way into every verb: if we are running inside a
+    session's pane, the ``(sid, handle)`` pair in the environment is recorded, so
+    «вернуться в сессию» resolves the exact tab instead of spawning a duplicate. It
+    lives HERE rather than only in the SessionStart hook because a session that is
+    already running — after a reboot, after a manual ``claude --resume`` — has no
+    SessionStart left to fire, and would otherwise stay invisible until it died.
+
+    Best-effort by construction: no session terminal, no control-home, a stale
+    ``$TIDE_HOME`` — all just mean «nothing to record», never a failed command.
+    """
+    try:
+        from . import paths, sessions
+
+        root = paths.find_tide_root()
+        sessions.self_register(paths.control_home(), arc=str(root or ""))
+    except Exception:  # noqa: BLE001 — the registry must never fail a tide command
+        pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``tide`` console_script."""
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    _self_register()
 
     func = getattr(args, "func", None)
     if func is None:

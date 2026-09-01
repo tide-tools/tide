@@ -521,6 +521,37 @@ def confirm_for_session(home: Path, session: str) -> Optional[Dict[str, object]]
     return None
 
 
+def confirm_for_session_dir(home: Path, session_dir: Path) -> Optional[Dict[str, object]]:
+    """Claim the offer reserved for the session living at *session_dir* (by seed path).
+
+    The sid-keyed twin above needs a caller who KNOWS its claude id — the hook has
+    it from stdin, a plain ``tide offload`` does not. Since cand 140 the passport is
+    unstamped until reception, so the pulse fallback can no longer read the sid off
+    the passport; it identifies the session by WHERE it lives instead. The offer's
+    ``seed`` points into ``<session>/input/``, exactly as the launcher resolves it,
+    and ``pickup-session`` carries the reserved sid — so this confirms with the sid
+    the launch actually pinned, never a guess. Same single flip point (I4).
+    """
+    try:
+        target = Path(session_dir).resolve()
+    except OSError:  # pragma: no cover — a resolvable path is the caller's job
+        return None
+    for r in list_offers(home, status=STATUS_OFFERED):
+        seed = r.get("seed")
+        sid = str(r.get("pickup_session") or "").strip()
+        if not seed or seed == "-" or not sid or sid == "-":
+            continue
+        try:
+            if Path(str(seed)).parent.parent.resolve() != target:
+                continue
+        except OSError:
+            continue
+        claimed = _mark_taken(r, session=sid)
+        _stamp_reception(claimed, session=sid)
+        return claimed
+    return None
+
+
 # --- render ----------------------------------------------------------------
 
 def render_list(home: Path) -> str:
@@ -624,8 +655,13 @@ def cmd_handoff_confirm(args) -> int:
     return 0
 
 
-def register(subparsers) -> None:
-    """Add the top-level ``handoffs`` command group (called by cli.py)."""
+def register(subparsers):
+    """Add the top-level ``handoffs`` command group; return its subparsers.
+
+    Returning the group lets the CLI edge hang launcher-owned verbs on it
+    (``draft`` — see ``cli._register_handoffs``) without this domain module
+    importing UP into ``launcher/`` (the layer rule).
+    """
     p = subparsers.add_parser("handoffs", help="two-stage handoff queue (offer/list/take)")
     hsub = p.add_subparsers(dest="handoffs_cmd")
 
@@ -656,3 +692,4 @@ def register(subparsers) -> None:
 
     # bare `tide handoffs` behaves like `tide handoffs list`
     p.set_defaults(func=_cmd_list, _cmd="handoffs")
+    return hsub

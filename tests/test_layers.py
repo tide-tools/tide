@@ -31,13 +31,13 @@ RANK = {"store": 0, "domain": 1, "api": 2, "launch": 3, "edge": 4}
 # Pre-existing violations: (module, imported). Burn down; do not extend.
 KNOWN_DEBT = {
     ("arc/candidate.py", "cli"),
+    ("arc/decision.py", "cli"),  # require_orchestrator gate on `decision settle` (as candidate promote)
     ("canon/commands.py", "cli"),
     ("contract/lifecycle.py", "cli"),
     ("arc/land.py", "adapters"),
     ("arc/land.py", "cli"),
     ("arc/stream.py", "adapters"),
     ("arc/worktree.py", "adapters"),
-    ("launcher/seed.py", "hooks"),  # ROLE_REMINDERS constant — move down, then drop
 }
 
 

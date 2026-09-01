@@ -310,13 +310,13 @@ def remove(root: Path, name: str) -> List[Dict[str, str]]:
     return kept
 
 
-def render_list(root: Path) -> str:
-    """One-line-per-project rendering, or a ``(no projects)`` note.
+def render_entries(entries: List[Dict[str, str]]) -> str:
+    """One-line-per-project rendering of *entries*, or a ``(no projects)`` note.
 
-    Local active entries render as ``name | path``; remote entries add a legacy
-    bare ``| env``; archived entries use the ``| ... status=archived`` tag form.
+    Pure (no disk): callers that show a SUBSET — e.g. the seed, which drops
+    archived projects so a fresh session is not handed dead paths — filter first
+    and render through here instead of copying the line format.
     """
-    entries = read_roster(root)
     if not entries:
         return "(no projects)"
 
@@ -328,6 +328,15 @@ def render_list(root: Path) -> str:
         else:
             lines.append("{0}{1}{2}".format(e["name"], SEP, e["path"]))
     return "\n".join(lines)
+
+
+def render_list(root: Path) -> str:
+    """One-line-per-project rendering of the WHOLE roster (archived included).
+
+    Local active entries render as ``name | path``; remote entries add a legacy
+    bare ``| env``; archived entries use the ``| ... status=archived`` tag form.
+    """
+    return render_entries(read_roster(root))
 
 
 # --- CLI wiring ------------------------------------------------------------

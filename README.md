@@ -1,93 +1,85 @@
 # tide
 
-**A simplified orchestration machine. Pure CLI + markdown — nothing else.**
+**Машина, которой ведут несколько проектов из одного места. CLI + markdown +
+доска на localhost.**
 
-One `tide` binary leads all your projects from a single control-home. No web
-surface, no daemon, no autonomy: it's **synchronous and human-driven**. You steer
-in plain words; an agent runs the commands. All state lives in plain markdown you
-can `cat`, `grep`, and `diff` — not in a chat or a database.
+Ты ведёшь несколько проектов разом. У каждого — свой контекст, свои
+недоделанные линии, и между сессиями всё это теряется. tide держит нить:
+всё состояние — обычный markdown в `.tide/` каждого проекта (его можно `cat`,
+`grep` и `diff`), команды — один бинарник `tide`, вид сверху — доска в браузере.
 
-→ **See the whole idea on one page: https://tide-tools.github.io/tide/**
+The whole idea on one page: https://tide-tools.github.io/tide/
 
----
+## Живая модель
 
-## Install
+- **Контрол-дом** — одна папка, из которой ты ведёшь всё: реестр проектов
+  (`roster.md`) плюс собственный `.tide/` (tide ведёт сам себя тем же способом).
+- **Проекты** живут где жили; tide кладёт слой `.tide/` поверх и вписывает их
+  в ростер (`tide adopt`).
+- **Нити** — работа идёт линиями, у нити есть цель и план; внутри нити —
+  **сессии**: одна села, поработала, передала следующей (handoff). Нить не
+  рвётся, даже когда чат кончился.
+- **Работы** — согласование человек↔агент на одной карточке: свободный текст,
+  чеклист, журнал. Агент предлагает пункты и чекает их только с пруфом;
+  «сделано» ставит только человек, словом.
+- **Доска** — `tide board`: страница на localhost со стримами дома и всех
+  проектов и карточками работ. Стол входящих (issues) и другие поверхности —
+  съёмные части, смотри `tide plugins`.
 
-Requires **Python ≥ 3.12** (the runtime is stdlib-only — no web deps).
+Агенту в сессии команды помнить не надо — ты говоришь словами, он ходит
+вербами `tide`. Полный список: `tide help`.
 
-**Homebrew** (recommended)
+## Установка
 
-```bash
-brew tap tide-tools/tide https://github.com/tide-tools/homebrew-tide
-brew install tide-tools/tide/tide
-tide --version
-```
-
-**From source**
+Нужен **Python ≥ 3.12**. Главная дверь — клон и одна команда:
 
 ```bash
 git clone https://github.com/tide-tools/tide && cd tide
-./install.sh        # puts tide on your PATH under a 3.12 interpreter
+./install.sh
 ```
 
-**pip**
+`install.sh` кладёт `tide` на PATH (через pipx, если он есть, иначе — свой
+venv + симлинк) и говорит следующий жест. Исходник при этом остаётся у тебя —
+это не побочный эффект, а суть: сломалось — чинится на месте (см. ниже).
+
+Дальше — [QUICKSTART.md](QUICKSTART.md): один проход от пустой папки до первой
+закрытой работы.
+
+Homebrew остаётся вторым каналом (`brew tap tide-tools/tide
+https://github.com/tide-tools/homebrew-tide && brew install tide-tools/tide/tide`),
+но несёт только бинарник — скиллы, хуки и доска едут в клоне.
+
+## Слой поверх, а не внутри
+
+tide-слой — внешний по отношению к твоему рабочему репозиторию. В живом
+репозитории tide ничего не коммитит: `.tide/` просто лежит рядом с кодом, и
+держать его в истории проекта или добавить `.tide/` в `.gitignore` — твой
+выбор. Пакет обезличен: скиллы говорят ролями, не именами, и никаких чужих
+путей в твой проект не приезжает.
+
+## Доска, в том числе с телефона
 
 ```bash
-python3.12 -m pip install "git+https://github.com/tide-tools/tide@v1.0.2"
+tide board --open
 ```
 
-Brew and pip installs **keep themselves current**: a session tells you when a
-newer release exists, and `tide self-update` reinstalls it only after a
-regression gate passes — never a downgrade, never interrupting running work, with
-a rollback if something slips.
+Сервер слушает только localhost; до телефона доску доносит `tailscale serve` —
+две команды, инструкция в [docs/board.md](docs/board.md). Там же — как
+поставить доску launchd-службой, чтобы жила сама.
 
----
+## Обновления и починка
 
-## What it's for
+- `tide self-update` — сам скажет, когда появился свежий релиз; на клоне это
+  `git pull` + переустановка, с гейтом и откатом.
+- Сломалось — исходник уже у тебя: правь, прогони `./install.sh` (переустановка
+  на месте), и отправь боль автору — `tide report "что случилось"` (уходит
+  gh-issue или файлом, домашние пути вычищаются).
 
-You lead several projects. Each needs context loaded, work scoped, and decisions
-recorded — and the thread is easy to lose between sessions. tide is the **one
-place you lead from**:
-
-- **Plain text is the database.** Everything is markdown under
-  `<project>/.tide/`. No server, no lock file — `git`, `grep`, `diff` just work.
-- **You steer; the agent runs the verbs.** You talk in plain words; the session
-  runs the CLI for you. You never memorize commands.
-- **Truth has one home.** Work happens in a bounded *arc*, bound to a *contract*
-  you sign, then folded into *canon* — the single place durable truth gathers.
-- **No autonomy, by design.** Synchronous, human-driven, least-privilege. No
-  background daemon quietly deciding things.
-- **Composable, not a platform.** tide doesn't host your projects; they live
-  wherever they live. It just holds the thread.
-
-tide dogfoods itself — it's led as a tide project, in its own `.tide/`.
-
----
-
-## Try it
+## Разработка
 
 ```bash
-mkdir ~/control && cd ~/control
-tide init --name control      # unfold a control-home
-tide onboarding               # a short guided first-project walkthrough — or skip it
+python3.12 -m pytest -q     # суита накопительная и держится зелёной
+packaging/docker/run.sh     # чистая машина: clone → install → доска, в докере
 ```
 
-Then just **talk**. Register a project, open a session over it, and say what you
-want — *"ship onboarding: a 3-step walkthrough, no console errors."* The session
-carves the arc, binds a contract you sign off on, dispatches the work, and folds
-the result into canon. You approve; the plumbing stays hidden.
-
-Want to watch the loop run on something real? `examples/tide-pool/` is a browser
-game built end-to-end through three arcs — see its
-[`SHOWCASE.md`](examples/tide-pool/SHOWCASE.md).
-
----
-
-## Learn more
-
-- **The pitch, in one page:** https://tide-tools.github.io/tide/
-- **Hands-on in 5 minutes:** [QUICKSTART.md](QUICKSTART.md)
-- **Every command:** `tide help`
-- **Develop:** `python3.12 -m pytest -q` (the suite is cumulative and stays green)
-
-Built like a small UNIX tool, on purpose. MIT licensed.
+Маленький UNIX-инструмент, сделан таким нарочно. MIT.
