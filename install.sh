@@ -70,9 +70,33 @@ install_via_pipx() {
 # --- install path B: venv + symlink -----------------------------------------
 install_via_venv() {
   say "no pipx → installing into a dedicated venv ($VENV_DIR)"
+
+  # Heal a half-built venv. A previous run can die mid-way (ensurepip failing
+  # on a broken local Python is the lived case) and leave a venv WITHOUT pip;
+  # every re-run would then hit "No module named pip" forever. A venv whose
+  # python can't run pip is scrap — say so in one line and rebuild it.
+  if [ -x "$VENV_DIR/bin/python" ] \
+      && ! "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    say "existing venv has no working pip (a previous install died half-way) → rebuilding it"
+    rm -rf "$VENV_DIR"
+  fi
+
   if [ ! -x "$VENV_DIR/bin/python" ]; then
     mkdir -p "$INSTALL_DIR"
-    "$PYTHON" -m venv "$VENV_DIR"
+    local venv_log="$INSTALL_DIR/venv-create.log"
+    if ! "$PYTHON" -m venv "$VENV_DIR" >"$venv_log" 2>&1; then
+      # Don't leave the half-built venv behind — the next run starts clean.
+      rm -rf "$VENV_DIR"
+      warn "your Python can't build a venv ($PYTHON — its ensurepip/venv machinery is broken)."
+      warn "fix: install python.org 3.12 or \`brew reinstall python@3.12\`, then re-run ./install.sh"
+      if [ -n "${TIDE_DEBUG:-}" ]; then
+        cat "$venv_log" >&2
+      else
+        warn "full error kept in $venv_log (or re-run with TIDE_DEBUG=1 to see it)"
+      fi
+      exit 1
+    fi
+    rm -f "$venv_log"
   fi
   # quiet, idempotent install/upgrade of THIS checkout into the venv
   "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
