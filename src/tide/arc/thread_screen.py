@@ -19,6 +19,7 @@ Alongside it lives the ONE check (release decision 28 — правило без 
 проверки не правило), ``tide thread --check``, over the three rules this build
 introduced:
 
+0. a thread that has done work says what must not be lost (``## главное``);
 1. a live promise has an owner — in force, not carried out, no work linked;
 2. a live session says in one line what it holds (``## summary``);
 3. a live record is filed where it says it is (its ``thread:`` names a real thread).
@@ -58,7 +59,7 @@ class ThreadError(stream.StreamError):
 class Finding(NamedTuple):
     """One line of the check: *where* it is, *what* is wrong, *how* to fix it."""
 
-    rule: str       # decision-owner | arc-summary | filing
+    rule: str       # thread-main | decision-owner | arc-summary | filing
     where: str      # the record, human-addressable
     what: str       # what is missing or wrong
     fix: str        # the exact gesture that closes it
@@ -204,6 +205,44 @@ def plan_state(root: Path, tdir: Path) -> Tuple[List[int], List[Tuple[int, str, 
         return [], []
 
 
+# The heading that opens a thread's plan. Russian, and it stays Russian: section
+# names are the FILE FORMAT here, like `## шаги` and `## журнал` — the English
+# default (decisions 17-18) governs what tide SAYS, not what it parses.
+MAIN_HEADING = "## главное"
+
+
+def thread_main(tdir: Path) -> str:
+    """The thread's ``## главное — читать первым`` block, verbatim — or ``""``.
+
+    Printed first and whole, never clipped: it is the one place a thread says
+    what must not be lost across a handoff, and a summary of the thing that
+    exists to stop loss would be its own kind of loss. Read by heading PREFIX,
+    so the tail of the heading is the author's to word.
+    """
+    plan = Path(tdir) / "plan.md"
+    if not plan.is_file():
+        return ""
+    try:
+        lines = plan.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+    out: List[str] = []
+    inside = False
+    for ln in lines:
+        if ln.startswith("## "):
+            if inside:
+                break
+            inside = ln.startswith(MAIN_HEADING)
+            continue
+        if inside:
+            out.append(ln.rstrip())
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
 def thread_final(tdir: Path) -> str:
     """The thread's ``final:`` line off ``plan.md`` — what "finished" means here.
 
@@ -292,8 +331,18 @@ def render(root: Path, ref: Optional[str] = None) -> str:
     name = slug.entry_slug(tdir.name) or tdir.name
     out: List[str] = ["{0} — thread {1}".format(name, tdir.name)]
 
+    # ГЛАВНОЕ ИДЁТ ПЕРВЫМ, до цели и плана (решение 33, слово владельца): у
+    # самого важного особое место и особая процедура чтения. Всё остальное на
+    # этом экране — состояние; это — то, что нельзя потерять на хендоффе.
+    main = thread_main(tdir)
+    if main:
+        out += ["", "главное — читать первым", main]
+    else:
+        out += ["", "главное · none (add '{0} — читать первым' to plan.md)".format(
+            MAIN_HEADING)]
+
     goal = thread_goal(tdir)
-    out.append("goal: {0}".format(goal or "— (not set)"))
+    out += ["", "goal: {0}".format(goal or "— (not set)")]
     final = thread_final(tdir)
     if final:
         out.append("final: {0}".format(_clip(final, 200)))
@@ -354,19 +403,46 @@ def render(root: Path, ref: Optional[str] = None) -> str:
     return "\n".join(out)
 
 
-def _decisions_block(root: Path, tdir: Path) -> List[str]:
-    """Decisions grouped by state — accepted-but-not-done first, because that hurts."""
+def decisions_state(root: Path, tdir: Path) -> Dict[str, object]:
+    """A thread's decisions bucketed on both axes — ONE computation, many views.
+
+    The terminal screen and the board's decisions tab are two renderings of this
+    dict and nothing else. Keeping the buckets here rather than in each renderer
+    is what stops the board quietly answering "carried out?" by a different rule
+    than the CLI does — the failure that would make the two surfaces disagree in
+    front of the person trying to trust either one.
+
+    Keys: ``all`` · ``live`` (in force) · ``done`` · ``rules`` (standing, not done)
+    · ``owing`` (in force, not done, not a rule — the painful list) · ``retired``
+    (superseded or dropped) · ``closes`` (how many settled an argument).
+    """
     try:
-        recs = decision.list_decisions(root, thread_ref=tdir.name)
+        recs = decision.list_decisions(Path(root), thread_ref=Path(tdir).name)
     except decision.DecisionError:
         recs = []
+    live = [d for d in recs if decision.in_force(d)]
+    return {
+        "all": recs,
+        "live": live,
+        "done": [d for d in live if decision.is_done(d)],
+        "rules": [d for d in live if decision.is_rule(d) and not decision.is_done(d)],
+        "owing": [d for d in live
+                  if not decision.is_done(d) and not decision.is_rule(d)],
+        "retired": [d for d in recs if not decision.in_force(d)],
+        "closes": sum(1 for d in recs
+                      if str(d.get("closes") or "").strip() not in ("", "—", "-")),
+    }
+
+
+def _decisions_block(root: Path, tdir: Path) -> List[str]:
+    """Decisions grouped by state — in force but not carried out first, that hurts."""
+    st = decisions_state(root, tdir)
+    recs = st["all"]
     if not recs:
         return ["decisions · none"]
-    live = [d for d in recs if decision.in_force(d)]
-    done = [d for d in live if decision.is_done(d)]
-    rules = [d for d in live if decision.is_rule(d) and not decision.is_done(d)]
-    owing = [d for d in live if not decision.is_done(d) and not decision.is_rule(d)]
-    retired = [d for d in recs if not decision.in_force(d)]
+    live = st["live"]
+    done, rules = st["done"], st["rules"]
+    owing, retired = st["owing"], st["retired"]
     out = ["decisions · {0} total: {1} in force ({2} carried out, {3} not, "
            "{4} standing rules){5}".format(
                len(recs), len(live), len(done), len(owing), len(rules),
@@ -397,7 +473,7 @@ def _decisions_block(root: Path, tdir: Path) -> List[str]:
     # What the thread already REJECTED lives in each record's `closes:` line — the
     # anti-re-litigation body. There are as many of those as there are decisions,
     # so the screen names the door instead of printing thirty-one of them.
-    closed_off = sum(1 for d in recs if str(d.get("closes") or "").strip() not in ("", "—", "-"))
+    closed_off = st["closes"]
     if closed_off:
         out.append("  already rejected — {0} settled arguments, don't re-open: "
                    "tide decision list --closes".format(closed_off))
@@ -507,6 +583,36 @@ def _check_decisions(root: Path, tdir: Path) -> List[Finding]:
     return out
 
 
+# How much work a thread must have done before it owes a `## главное`. Three
+# pulses, measured on the live tree: below that a session has barely opened its
+# mouth and the thread may not know its own главное yet. At three, the only
+# thread in 27 that fires is one with fourteen pulses of material and nothing
+# saying what matters in it — which is the finding, not noise.
+PRODUCTIVE_PULSES = 3
+
+
+def _check_main(tdir: Path) -> List[Finding]:
+    """Rule 4 — a thread that has DONE something says what must not be lost.
+
+    Gated twice on purpose. A thread with no ``plan.md`` is skipped: the section
+    lives in the plan, and demanding a plan is a different rule than demanding
+    its contents. A thread whose sessions have barely pulsed is skipped too —
+    the block is written once the thread knows its own shape, and nagging on
+    day one is how a check teaches people to ignore it.
+    """
+    if not (Path(tdir) / "plan.md").is_file() or thread_main(tdir):
+        return []
+    busiest = max([int(s["pulses"] or 0) for s in sessions(tdir)
+                   if not s["closed"]] or [0])
+    if busiest < PRODUCTIVE_PULSES:
+        return []
+    return [Finding(
+        "thread-main", "thread {0}".format(tdir.name),
+        "{0} pulses of work and no '{1}' block — the handoff has nothing to "
+        "carry across".format(busiest, MAIN_HEADING),
+        "add '{0} — читать первым' to {1}/plan.md".format(MAIN_HEADING, tdir.name))]
+
+
 def _check_sessions(tdir: Path) -> List[Finding]:
     """Rule 2 — a LIVE session says in one line what it holds.
 
@@ -578,6 +684,7 @@ def check(root: Path, tdirs: Optional[List[Path]] = None) -> List[Finding]:
     targets = tdirs if tdirs is not None else [resolve_thread(root)]
     out: List[Finding] = []
     for tdir in targets:
+        out += _check_main(tdir)
         out += _check_decisions(root, tdir)
         out += _check_sessions(tdir)
     return out + _check_filing(root)
@@ -590,10 +697,10 @@ def render_check(root: Path, ref: Optional[str] = None, every: bool = False) -> 
     found = check(root, targets)
     scope = "all open threads" if every else targets[0].name
     if not found:
-        return "tide: {0} — clean (owner · summary · filing)".format(scope)
+        return "tide: {0} — clean (главное · owner · summary · filing)".format(scope)
     out = ["tide: {0} — {1} finding{2}".format(scope, len(found),
                                                "" if len(found) == 1 else "s")]
-    for rule in ("decision-owner", "arc-summary", "filing"):
+    for rule in ("thread-main", "decision-owner", "arc-summary", "filing"):
         rows = [f for f in found if f.rule == rule]
         if not rows:
             continue

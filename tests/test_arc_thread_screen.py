@@ -346,3 +346,137 @@ def test_closes_listing_prints_what_each_decision_settled(tmp_project):
     out = decision.render_list(tmp_project, thread_ref=nit, closes=True)
     assert "closes: спор «а или б» — не перерешивать" in out
     assert "bare" not in out             # a record that settled nothing says nothing
+
+
+# --- the shared computation the board renders (work 64, point 7) --------------
+
+def test_decisions_state_buckets_both_axes_for_every_view(tmp_project):
+    """The board and the CLI render THIS dict — one computation, or they diverge."""
+    nit = _thread(tmp_project)
+    decision.add_decision(tmp_project, "обещание", thread_ref=nit, dslug="p")
+    decision.add_decision(tmp_project, "с работой", thread_ref=nit, dslug="owned")
+    decision.add_decision(tmp_project, "критерий", thread_ref=nit, dslug="r", rule=True)
+    decision.add_decision(tmp_project, "выполненное", thread_ref=nit, dslug="d",
+                          closes="спор — не перерешивать")
+    decision.add_decision(tmp_project, "снятое", thread_ref=nit, dslug="gone")
+    decision.accept(tmp_project, "owned", work="65", thread_ref=nit)
+    decision.mark_done(tmp_project, "d", "коммит abc", thread_ref=nit)
+    decision.drop(tmp_project, "gone", "вопрос отпал", thread_ref=nit)
+
+    st = ts.decisions_state(tmp_project, ts.resolve_thread(tmp_project, nit))
+    nums = lambda key: sorted(str(d["num"]) for d in st[key])
+    assert nums("owing") == ["01", "02"]      # the promises, owned or not
+    assert nums("rules") == ["03"]            # a rule is never "not carried out"
+    assert nums("done") == ["04"]
+    assert nums("retired") == ["05"]
+    assert len(st["live"]) == 4 and len(st["all"]) == 5
+    assert st["closes"] == 1
+
+
+def test_decisions_state_is_empty_not_broken_on_a_thread_with_no_log(tmp_project):
+    nit = _thread(tmp_project)
+    st = ts.decisions_state(tmp_project, ts.resolve_thread(tmp_project, nit))
+    assert st["all"] == [] and st["owing"] == [] and st["closes"] == 0
+
+
+def test_screen_and_state_agree_on_what_is_not_carried_out(tmp_project):
+    """The number on the board's tab and the CLI's line come from one place."""
+    nit = _thread(tmp_project)
+    for i in range(3):
+        decision.add_decision(tmp_project, "обещание {0}".format(i), thread_ref=nit)
+    decision.add_decision(tmp_project, "правило", thread_ref=nit, rule=True)
+    st = ts.decisions_state(tmp_project, ts.resolve_thread(tmp_project, nit))
+    assert len(st["owing"]) == 3
+    assert "4 in force (0 carried out, 3 not, 1 standing rules)" in ts.render(tmp_project, nit)
+
+
+# --- «главное» — read first, and it must survive a handoff (decision 33) ------
+
+MAIN_PLAN = """# план нити
+
+## главное — читать первым
+
+- Финал: свой человек ставит стек одной командой.
+- Потолок: один экран и одна проверка, не десять.
+
+## шаги
+
+- [>] 1. первый шаг | что делается | результат
+"""
+
+
+def _productive(proj, nit, pulses=ts.PRODUCTIVE_PULSES):
+    stream.new_session(proj, nit, "priemka")
+    for i in range(pulses):
+        offload.offload(proj, "priemka", note="пульс {0}".format(i))
+    return nit
+
+
+def test_main_block_is_printed_first_and_whole(tmp_project):
+    _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, "release")
+    (tdir / "plan.md").write_text(MAIN_PLAN, encoding="utf-8")
+    out = ts.render(tmp_project, "release")
+    head = out.splitlines()
+    assert head[2] == "главное — читать первым"       # before goal, before plan
+    assert "- Финал: свой человек ставит стек одной командой." in out
+    assert "- Потолок: один экран и одна проверка, не десять." in out
+    assert out.index("главное") < out.index("goal:") < out.index("plan ·")
+
+
+def test_main_block_stops_at_the_next_heading(tmp_project):
+    _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, "release")
+    (tdir / "plan.md").write_text(MAIN_PLAN, encoding="utf-8")
+    assert "первый шаг" not in ts.thread_main(tdir)   # шаги are not главное
+
+
+def test_screen_says_plainly_when_there_is_no_main_block(tmp_project):
+    nit = _thread(tmp_project)
+    assert "главное · none" in ts.render(tmp_project, nit)
+
+
+def test_check_asks_a_working_thread_for_its_main_block(tmp_project):
+    nit = _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, nit)
+    (tdir / "plan.md").write_text("# план\n\n## шаги\n\n- [ ] 1. шаг | … | …\n",
+                                  encoding="utf-8")
+    _productive(tmp_project, nit)
+    found = [f for f in ts.check(tmp_project, [tdir]) if f.rule == "thread-main"]
+    assert len(found) == 1
+    assert "nothing to carry across" in found[0].what
+    assert "plan.md" in found[0].fix
+
+
+def test_check_is_quiet_once_the_main_block_exists(tmp_project):
+    nit = _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, nit)
+    (tdir / "plan.md").write_text(MAIN_PLAN, encoding="utf-8")
+    _productive(tmp_project, nit)
+    assert [f for f in ts.check(tmp_project, [tdir]) if f.rule == "thread-main"] == []
+
+
+def test_check_spares_a_thread_that_has_barely_started(tmp_project):
+    """Nagging on day one is how a check teaches people to ignore it."""
+    nit = _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, nit)
+    (tdir / "plan.md").write_text("# план\n\n## шаги\n\n- [ ] 1. шаг | … | …\n",
+                                  encoding="utf-8")
+    _productive(tmp_project, nit, pulses=ts.PRODUCTIVE_PULSES - 1)
+    assert [f for f in ts.check(tmp_project, [tdir]) if f.rule == "thread-main"] == []
+
+
+def test_check_spares_a_thread_with_no_plan_at_all(tmp_project):
+    """The block lives in the plan; demanding a plan is a different rule."""
+    nit = _thread(tmp_project)
+    _productive(tmp_project, nit, pulses=ts.PRODUCTIVE_PULSES + 5)
+    assert [f for f in ts.check(tmp_project, [ts.resolve_thread(tmp_project, nit)])
+            if f.rule == "thread-main"] == []
+
+
+def test_main_heading_is_matched_by_prefix_so_the_tail_is_the_authors(tmp_project):
+    _thread(tmp_project)
+    tdir = ts.resolve_thread(tmp_project, "release")
+    (tdir / "plan.md").write_text("# план\n\n## главное\n\n- одна строка\n",
+                                  encoding="utf-8")
+    assert ts.thread_main(tdir) == "- одна строка"
