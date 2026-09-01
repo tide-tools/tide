@@ -1,58 +1,73 @@
-<!-- CONTRACT:start -->
-# tide
+# tide — репо движка. Ориентир для агента
 
-## Что это
-**tide = simplified orchestration machine** — standalone Python project + single
-`tide` binary. Pure CLI + markdown, synchronous, human-driven, **no autonomy**
-(no web, no Telegram, no daemon). `tide init` unfolds the machine in a dir → that
-dir is the control-home/roster from which the human leads all projects. tide
-**dogfoods itself** (led as a tide project under its own `.tide/`).
+Это исходник инструмента **tide**: один бинарник `tide`, CLI + markdown + доска
+на localhost, которым ведут несколько проектов из одного места. Публичная
+модель — [README.md](README.md) и [QUICKSTART.md](QUICKSTART.md); этот файл —
+про то, как **работать в этом репо**.
 
-The proven `arcs` + `canon` (two-n: **canon**) tools are pulled inside as
-internal modules of the one binary. Two deterministic roles: **orchestrator**
-(cross-project session, owns roster/contracts/canon-merge/promote) and
-**worker** (one arc, produces output + proposes a canon-delta). canon-merge is
-the single serialization point.
+## Главное правило: движок всегда импортируемый
 
-goal:    ship the tide CLI scaffold → working arc/canon/contract modules, greenfield
-stage:   0
+У своих tide стоит **editable** (`pip install -e .`): файлы на диске и есть
+боевой бинарник. Каждое сохранение файла мгновенно живое — его тут же исполняют
+CLI, хуки Claude и кнопки доски. Оплачено болью: импорт ещё не существующего
+модуля положил всё разом на живую.
 
-## Этапы
-- **Этап 0 (сейчас):** scaffold — package layout, argparse CLI root with stubbed
-  command groups, role gate (`TIDE_ROLE`), test harness (`tmp_project` fixture),
-  build conventions documented in README. Skeleton imports + suite green.
-- **Этап 1 (план):** build units U1–U13 in dependency order (core → canon →
-  arc → candidates → strictness/roster → contract → sync → board → init/wiring →
-  hooks → launcher/adapters → prompts/skill → e2e+dogfood). See README "build order".
+- Новый модуль — **сначала файл модуля, потом импорт** в существующем коде.
+  Никогда наоборот.
+- Между правками — смок: `tide --version` обязан отвечать. Упал импорт —
+  чинить немедленно, до любой следующей правки.
+- Рефакторинг с переносом — так, чтобы дерево было импортируемым после
+  **каждого** сохранения, не только после серии.
 
-## Контекст
-- **Runtime: stdlib only** (argparse, hashlib, pathlib, os, re, datetime). Test
-  dep: pytest only. No `click`, no web deps.
-- **Handler pattern:** each module exposes plain functions + `register(subparsers)`;
-  `cli.py` only wires groups, logic lives in argparse-free functions. See README
-  "## build conventions".
-- **State on disk:** per project `<project>/.tide/{canon,arcs,state}`;
-  control-home adds `roster.md`. Formats per `build-blueprint.md` tide_dir_format.
-- **Source of truth for the build:** the design + blueprint in focus arc 42
-  (`.arcs/arcs/42-@tide/arcs/01-design-and-plan/output/`).
-<!-- CONTRACT:end -->
+Побочная деталь editable: `tide --version` может показывать старые метаданные
+при живых новых файлах — файлы правильные, лечится переустановкой
+(`pip install -e .` тем же интерпретатором). Подробнее — docs/RELEASING.md.
 
-## tool ⊥ instance — the bright line
+## Тесты
 
-tide ships as a **package** (`pip install` / `uv build` → wheel+sdist), and the
-package is **`src/tide/` only**. The wheel contains nothing but the `tide/`
-Python package + metadata; the sdist adds `src/` + `tests/` + `README.md`. So:
+```bash
+python3.12 -m pytest -q      # ВЕСЬ прогон только так
+```
 
-- **Shipped (the tool):** everything under `src/tide/`. Must stay generic — no
-  absolute home paths (`/Users/…`, `/home/…`), no personal identity, no
-  instance-specific project names. Contract passports store the **portable
-  project name** (`Path(root).resolve().name`), never the absolute path.
-- **NOT shipped (this instance):** `.tide/` (our own dogfood work-stream),
-  `examples/` (dogfood run captures), `docs/`, `prompts/`, `skills/`, `rules/`,
-  this `CLAUDE.md`, `roster.md`. These are git-tracked dev history of *this*
-  instance — they do **not** travel with `pip install`. git-tracking ≠ shipping.
+Именно `python3.12` (на маке — `/opt/homebrew/bin/python3.12`): другие шимы
+`python3` могут быть без pytest. Суита накопительная и держится зелёной —
+после любой правки прогон обязан быть 100% зелёным, тесты не скипаются.
 
-A second person gets a clean generic tide via `pip install tide` + `tide init`;
-they inherit none of our content, paths, or PII. The enforcement gate is
-`tide verify --portable` — it scans the shipped package source + a fresh
-`tide init` skeleton for absolute home paths / instance tokens and fails loud.
+## Где что лежит
+
+- `src/tide/` — **весь пакет**; единственное, что уезжает в wheel. Runtime —
+  stdlib only (argparse, pathlib, …), тестовая зависимость — только pytest.
+- `skills/` — скиллы Claude, едут с клоном: handoff, offload, tide-flow,
+  tide-work. Ставятся в дом жестом `tide install-skills` — **симлинками**,
+  так что у своих правка скилла живая сразу, без переустановки.
+- `packaging/` — brew-формула (`tide.rb`) и докер чистой машины
+  (`docker/run.sh`: clone → install → доска в изоляции).
+- `docs/` — источник GitHub Pages (лендинг `index.html`, `board.md`,
+  `RELEASING.md`); черновики — в `docs/drafts/`, наружу не линкуются.
+- `tests/` — суита; `examples/`, `prompts/`, `rules/` — dev-история этого
+  инстанса, в пакет не едут.
+
+Паттерн кода: каждый модуль — чистые функции + `register(subparsers)`;
+`cli.py` только связывает группы, логика живёт argparse-free.
+
+## Плагины
+
+Кор и съёмные части: `tide plugins`. Реестр — файл `<control-home>/.tide/plugins`;
+**нет файла = включено всё** (старые дома ничего не теряют), свежий
+`tide init` пишет core-only. Скилл, объявивший `plugin:`, едет со своим
+плагином.
+
+## Пакет обезличен — личное слоем поверх
+
+Всё под `src/tide/` и `skills/` — generic: никаких абсолютных домашних путей,
+имён и инстанс-специфики; скиллы говорят **ролями** (человек, оркестратор,
+сессия), не именами. Личное (свой дом, свои проекты, своя доска) живёт слоем
+поверх у владельца и в репо не попадает. Ворота — `tide verify --portable`:
+скан пакета и свежего скелета `tide init`, падает громко.
+
+## Выкат
+
+Полный цикл релиза — от чистки истории до смока публичного clone — в
+[docs/RELEASING.md](docs/RELEASING.md). Коротко: публикуется только squash,
+перед любым пушем — проверка diff'а на личные маркеры, релиз режет
+`tide release --yes`.
