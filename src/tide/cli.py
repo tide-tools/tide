@@ -303,6 +303,22 @@ def _register_verify(sub) -> None:
     register_verify(sub)
 
 
+def _register_quickstart(sub) -> None:
+    # работа 59: the route out of "where is the instruction?" — ships in the
+    # package, so it answers with no clone and no network.
+    from .quickstart import register as register_quickstart
+
+    register_quickstart(sub)
+
+
+def _register_terminal_adapter(sub) -> None:
+    # работа 59 п.5: the adapter choice was made silently and could only be
+    # changed by hand-editing JSON — this says it out loud and writes the pin.
+    from .terminal_choice import register as register_terminal
+
+    register_terminal(sub)
+
+
 def _register_arc(sub) -> None:
     # U3: real arc-stream verbs (new/new-goal/open/resume/close/reopen/supersede).
     # 11-arc-worktree-isolation: worktree.register adds `work`; arc-land-strictness-
@@ -478,6 +494,8 @@ def build_parser() -> argparse.ArgumentParser:
     _register_readme(subparsers)
     _register_doctor(subparsers)
     _register_verify(subparsers)
+    _register_quickstart(subparsers)
+    _register_terminal_adapter(subparsers)
     _register_onboarding(subparsers)
     _register_self_update(subparsers)
     _register_release(subparsers)

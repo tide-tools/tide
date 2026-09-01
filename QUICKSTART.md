@@ -1,6 +1,10 @@
 # tide — the first hour
 
-*Русская версия: [QUICKSTART.ru.md](QUICKSTART.ru.md)*
+*Русская версия: [QUICKSTART.ru.md](QUICKSTART.ru.md) · as a page:
+[tide-tools.github.io/tide/quickstart](https://tide-tools.github.io/tide/quickstart.html)*
+
+Already installed and lost? `tide quickstart` prints this route in your terminal,
+`tide quickstart --open` opens the page.
 
 One pass: install → home → project → board → your first closed work.
 Every step says what you'll see. Needs Python ≥ 3.12; step 6 needs
@@ -82,8 +86,9 @@ tide adopt --goal "a small web app — trying tide"
 tide: adopted myapp at /Users/you/code/myapp
   ✓ git     git init
   ✓ tide    scaffolded .tide/ (canon seeded with the goal)
+  ✓ layer   .tide/ stays on this machine (.git/info/exclude, not .gitignore)
   ✓ readme  README.md generated from canon
-  ✓ commit  first commit (worktree-ready)
+  ✓ commit  empty first commit (worktree-ready; none of your files in it)
   · orca    orca CLI not on PATH — optional terminal manager, tide works without it
   ✓ roster  rostered → /Users/you/tide-home
 ready: tide menu → myapp
@@ -93,6 +98,13 @@ The project is born speaking: its README and canon carry your goal, not template
 filler. It's already in the home's roster. The `orca` line is about Orca, an
 optional terminal manager for macOS: if you don't have it the step is simply
 skipped and everything works anyway (to skip it entirely — `tide adopt --no-orca`).
+
+Adopting a project that **already has commits** looks the same minus two lines:
+no commit is written there, and your working tree is left exactly as it was. The
+`layer` line is why — `.tide/` is how you run the work, not part of the project,
+so it is excluded in `.git/info/exclude`, a file that never leaves this machine.
+Want it committed with the project (a team on one thread)? `tide layer shared`.
+Already committed it? `tide layer untrack`.
 
 ## 4. Open the board
 

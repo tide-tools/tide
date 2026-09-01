@@ -23,7 +23,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
-from . import io as _io, paths, plugins, roster
+from . import io as _io, paths, plugins, quickstart, roster
 from .arc.stream import StreamError
 from .canon import store
 from .strictness import DEFAULT as DEFAULT_STRICTNESS
@@ -265,6 +265,16 @@ def _cmd_init(args) -> int:
             "  ⚠ not a git repo with a commit — thread spawn (worktree) will FAIL "
             "here.\n    Fix now: `tide adopt {0}` or re-run with --git".format(root)
         )
+    # The inventory above says what EXISTS; on its own it left a person with no
+    # idea what to do with it (работа 59: "there is no instruction, no web page,
+    # where is it?"). End on the ROUTE — the next gesture, then where the whole
+    # map lives — in the shape install.sh already uses.
+    if not getattr(args, "project", False):
+        print()
+        print("next: point the shell at this home, then adopt something:")
+        print("      export TIDE_HOME={0}    # add to your shell profile".format(root))
+        print("      cd <your project> && tide adopt --goal \"what it is for\"")
+        print(quickstart.next_step_line("init"))
     return 0
 
 

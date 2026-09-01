@@ -1,6 +1,10 @@
 # tide — первый час
 
-*English version: [QUICKSTART.md](QUICKSTART.md)*
+*English version: [QUICKSTART.md](QUICKSTART.md) · страницей:
+[tide-tools.github.io/tide/quickstart.ru](https://tide-tools.github.io/tide/quickstart.ru.html)*
+
+Уже поставил и потерялся? `tide quickstart` печатает этот маршрут прямо в
+терминале, `tide quickstart --open` открывает страницу.
 
 Один проход: поставил → дом → проект → доска → первая закрытая работа.
 На каждом шаге написано, что ты увидишь. Нужен Python ≥ 3.12; для шага 6 —
@@ -82,8 +86,9 @@ tide adopt --goal "маленькое веб-приложение — проба
 tide: adopted myapp at /Users/ты/code/myapp
   ✓ git     git init
   ✓ tide    scaffolded .tide/ (canon seeded with the goal)
+  ✓ layer   .tide/ stays on this machine (.git/info/exclude, not .gitignore)
   ✓ readme  README.md generated from canon
-  ✓ commit  first commit (worktree-ready)
+  ✓ commit  empty first commit (worktree-ready; none of your files in it)
   · orca    orca CLI not on PATH — optional terminal manager, tide works without it
   ✓ roster  rostered → /Users/ты/tide-home
 ready: tide menu → myapp
@@ -93,6 +98,14 @@ ready: tide menu → myapp
 заглушки. В ростере дома он уже есть. Строка `orca` — про Orca, опциональный
 терминал-менеджер для мака: нет его — шаг просто пропускается, всё работает и
 так (не звать вовсе — `tide adopt --no-orca`).
+
+Если заводишь проект, **где уже есть коммиты**, вывод тот же минус две строки:
+ни одного коммита там не появится, а рабочее дерево останется ровно таким, каким
+tide его нашёл.
+Строка `layer` объясняет почему: `.tide/` — это как ты ведёшь работу, а не часть
+проекта, поэтому он исключается через `.git/info/exclude` — файл, который никуда
+с этой машины не уезжает. Нужен слой в репозитории (команда ведёт одну нить)?
+`tide layer shared`. Уже закоммитил? `tide layer untrack`.
 
 ## 4. Открыть доску
 

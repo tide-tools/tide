@@ -54,11 +54,19 @@ but it carries the binary only — skills, hooks and the board travel with the c
 
 ## A layer on top, not inside
 
-The tide layer is external to your working repository. tide commits nothing
-inside a live repo: `.tide/` simply sits next to the code, and whether you keep
-it in the project's history or add `.tide/` to `.gitignore` is your call. The
-package is impersonal: skills speak in roles, not names, and no one else's
-paths arrive in your project.
+The tide layer is external to your working repository. `.tide/` sits next to the
+code and stays out of the project's history: the exclusion goes into
+`.git/info/exclude`, a file git never commits, so your tooling does not ride
+into a colleague's pull request. Your `.gitignore` is not touched, and `tide
+adopt` makes no commit in a repo that already has one.
+
+Running one thread as a team? `tide layer shared` commits `.tide/` with the
+project. Committed it by accident already? `tide layer untrack` takes it out of
+the index and leaves every file on disk — and says out loud that it does not
+rewrite the commits that already carry it. `tide layer` says where you stand.
+
+The package is impersonal too: skills speak in roles, not names, and no one
+else's paths arrive in your project.
 
 ## The board, phone included
 

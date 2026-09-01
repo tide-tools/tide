@@ -33,7 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import __version__, fields, paths, plugins, roster as roster_mod
+from . import (__version__, fields, paths, plugins, quickstart,
+               roster as roster_mod)
 from .arc.stream import StreamError
 
 DEFAULT_PORT = 8765
@@ -235,6 +236,7 @@ def _cmd_board(args) -> int:
     url = "http://{0}:{1}/".format(shown_host, args.port)
     print("tide board — {0}".format(home))
     print("  → {0}   (Ctrl-C to stop)".format(url))
+    print("  " + quickstart.next_step_line("board"))
     if getattr(args, "open", False):
         try:
             import webbrowser

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tide — первый час</title>
+  <meta name="description" content="tide, первый час: установка, дом, проект, доска, первая закрытая работа. Один проход, на каждом шаге написано, что ты увидишь.">
+  <meta name="color-scheme" content="light dark">
+  <style>
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #111111;
+      font: 15px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
+    h1 { font-size: 24px; font-weight: 700; letter-spacing: .04em; margin: 0 0 12px; }
+    h2 { font-size: 15px; font-weight: 700; letter-spacing: .10em; margin: 48px 0 12px; }
+    p  { margin: 12px 0; }
+    ol { margin: 0; padding-left: 2em; }
+    li { margin: 6px 0; }
+    pre {
+      margin: 16px 0;
+      padding: 0;
+      font: inherit;
+      overflow-x: auto;
+    }
+    .cmt { opacity: .55; }
+    .saw { opacity: .55; margin: 12px 0 4px; }
+    a { color: inherit; }
+    hr { border: 0; border-top: 1px solid currentColor; opacity: .2; margin: 48px 0; }
+    footer { margin-top: 48px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111111; color: #e6e6e6; }
+    }
+  </style>
+</head>
+<body>
+<main>
+
+  <h1>ПЕРВЫЙ ЧАС</h1>
+  <p>Один проход: поставил → дом → проект → доска → первая закрытая работа.<br>
+  На каждом шаге написано, что ты увидишь.</p>
+  <p>Нужен Python ≥ 3.12; для последнего шага —
+  <a href="https://claude.com/claude-code">Claude Code</a> (сама механика tide
+  работает и без него). Команды показаны, чтобы ты понял цикл руками — в живой
+  работе их ходит агент, а ты говоришь словами.</p>
+  <p class="cmt">Уже поставил? <code>tide quickstart</code> печатает этот маршрут
+  прямо в терминале. English — <a href="quickstart.html">quickstart</a>.</p>
+
+  <h2>1 · ПОСТАВИТЬ</h2>
+  <pre>git clone https://github.com/tide-tools/tide &amp;&amp; cd tide
+./install.sh</pre>
+  <p class="saw">Увидишь <code>✓ tide &lt;версия&gt;</code> и следующий жест. Если PATH не
+  подхватился — скрипт печатает одну строку для профиля шелла, и это единственное,
+  что тут можно «настраивать».</p>
+
+  <h2>2 · ДОМ</h2>
+  <p>Дом (control-home) — одна папка, из которой ты ведёшь все проекты:</p>
+  <pre>mkdir ~/tide-home &amp;&amp; cd ~/tide-home
+tide init --git</pre>
+  <p class="saw">Увидишь список созданного — канон, ростер, плагины, README, git,
+  а также хуки и скиллы Claude, вставшие сами: агент, открытый в этом доме, с
+  первого дня умеет передать нить. Свежий дом получает только кор, съёмные части —
+  в <code>tide plugins</code>. В конце — следующий жест.</p>
+
+  <h2>3 · СКАЗАТЬ ШЕЛЛУ, ГДЕ ДОМ</h2>
+  <pre>export TIDE_HOME=~/tide-home    <span class="cmt"># добавь в профиль шелла</span></pre>
+  <p class="saw">Пропустишь — следующий шаг всё равно заведёт проект, но не впишет
+  его в ростер, и на доске он не появится. Это не ошибка, просто одна пропущенная
+  строка посреди успешного прогона:
+  <code>· roster  no control-home — set $TIDE_HOME</code>.</p>
+
+  <h2>4 · ПРОЕКТ</h2>
+  <p>Проект — любая папка с кодом, старая или новая:</p>
+  <pre>mkdir -p ~/code/myapp &amp;&amp; cd ~/code/myapp
+tide adopt --goal "маленькое веб-приложение — пробую tide"</pre>
+  <p class="saw">Увидишь шаги усыновления, потом — какой терминал будет открывать
+  твои сессии и чем это поменять, потом следующий жест. Проект рождается
+  говорящим: README и канон несут твою цель, а не шаблонную воду, и он уже в
+  ростере дома.</p>
+
+  <h2>5 · ДОСКА</h2>
+  <pre>tide board --open               <span class="cmt"># http://127.0.0.1:8765</span></pre>
+  <p class="saw">Увидишь поток дома, поток myapp и строку HEALTH у каждого. Страница
+  перечитывает <code>.tide/</code> каждые 30 секунд — всё, что ты делаешь дальше,
+  появляется там без перезапуска. Про телефон и службу —
+  <a href="https://github.com/tide-tools/tide/blob/main/docs/board.ru.md">docs/board.ru.md</a>.</p>
+
+  <h2>6 · ПЕРВАЯ РАБОТА</h2>
+  <p>Работа — карточка согласия: агент предлагает шаги, ты говоришь «да», агент
+  чекает пункты только с пруфом, закрываешь ты. Вербы работают из коробки; съёмная
+  часть добавляет скилл агенту и вкладку на доске:</p>
+  <pre>tide plugins on work            <span class="cmt"># один раз на дом</span>
+
+cd ~/code/myapp
+tide work add "приложение здоровается — проверить, что стартует"
+tide work propose 01 "запустить и увидеть ответ"          <span class="cmt"># жест агента</span>
+tide work agree 01 --word "да"                            <span class="cmt"># твоё слово</span>
+tide work take 01 --by "первая сессия"
+tide work check 01 1 --proof "запустил — отвечает"        <span class="cmt"># без пруфа не чекнется</span>
+tide work close 01 --word "принято"                       <span class="cmt"># done ставит только рука</span></pre>
+  <p class="saw">Увидишь короткий ответ после каждого жеста — что произошло и что
+  дальше — а на доске карточку, прошедшую open → taken → review → done.
+  <code>tide work show 01</code> печатает журнал: каждый жест строкой, с твоими
+  словами внутри.</p>
+
+  <h2>7 · СЕССИЯ</h2>
+  <pre>cd ~/tide-home
+tide menu</pre>
+  <p class="saw">Увидишь выбор проекта, потом нити, потом сессии внутри неё — в
+  каждом списке первой строкой <code>0) + new</code>. Откроется терминал, где Claude
+  уже в контексте: своя роль, канон проекта, живая нить, ростер. Дальше ты говоришь
+  словами («заведи работу…», «передай нить»), а вербы из шага 6 агент ходит сам.</p>
+
+  <hr>
+
+  <h2>ЕСЛИ ЗАСТРЯЛ</h2>
+  <pre>tide quickstart                 <span class="cmt"># этот маршрут — в терминале</span>
+tide quickstart --open          <span class="cmt"># эта страница — в браузере</span>
+tide help                       <span class="cmt"># все команды</span>
+tide doctor                     <span class="cmt"># а сломано ли что-то на самом деле</span>
+tide report "что случилось"     <span class="cmt"># боль уезжает автору</span></pre>
+
+  <footer>
+    <p><a href="./">tide</a> · <a href="quickstart.html">in English</a> ·
+    <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a></p>
+    <p class="cmt">MIT · Python ≥ 3.12 · для сессий нужен Claude Code</p>
+  </footer>
+
+</main>
+</body>
+</html>

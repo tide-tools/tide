@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tide — the first hour</title>
+  <meta name="description" content="tide, the first hour: install, a home, a project, the board, your first closed work. One pass, every step says what you'll see.">
+  <meta name="color-scheme" content="light dark">
+  <style>
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #111111;
+      font: 15px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
+    h1 { font-size: 24px; font-weight: 700; letter-spacing: .04em; margin: 0 0 12px; }
+    h2 { font-size: 15px; font-weight: 700; letter-spacing: .10em; margin: 48px 0 12px; }
+    p  { margin: 12px 0; }
+    ol { margin: 0; padding-left: 2em; }
+    li { margin: 6px 0; }
+    pre {
+      margin: 16px 0;
+      padding: 0;
+      font: inherit;
+      overflow-x: auto;
+    }
+    .cmt { opacity: .55; }
+    .saw { opacity: .55; margin: 12px 0 4px; }
+    a { color: inherit; }
+    hr { border: 0; border-top: 1px solid currentColor; opacity: .2; margin: 48px 0; }
+    footer { margin-top: 48px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111111; color: #e6e6e6; }
+    }
+  </style>
+</head>
+<body>
+<main>
+
+  <h1>THE FIRST HOUR</h1>
+  <p>One pass: install → home → project → board → your first closed work.<br>
+  Every step says what you'll see.</p>
+  <p>Needs Python ≥ 3.12; the last step needs
+  <a href="https://claude.com/claude-code">Claude Code</a> (tide's own machinery
+  works without it). The commands are spelled out so you feel the cycle by hand —
+  in real work an agent walks them and you speak in words.</p>
+  <p class="cmt">Already installed? <code>tide quickstart</code> prints this route
+  in your terminal. Русская версия — <a href="quickstart.ru.html">quickstart.ru</a>.</p>
+
+  <h2>1 · INSTALL</h2>
+  <pre>git clone https://github.com/tide-tools/tide &amp;&amp; cd tide
+./install.sh</pre>
+  <p class="saw">You'll see <code>✓ tide &lt;version&gt;</code> and the next gesture. If PATH
+  didn't pick it up, the script prints one line for your shell profile — the only
+  thing here you ever "configure".</p>
+
+  <h2>2 · A HOME</h2>
+  <p>The control-home is one folder you lead every project from:</p>
+  <pre>mkdir ~/tide-home &amp;&amp; cd ~/tide-home
+tide init --git</pre>
+  <p class="saw">You'll see what was created — canon, roster, plugins, README, git,
+  and Claude hooks and skills landing on their own, so an agent opened here knows
+  how to hand off a thread from day one. A fresh home gets the core only; removable
+  parts live in <code>tide plugins</code>. Then it tells you the next gesture.</p>
+
+  <h2>3 · TELL THE SHELL WHERE IT IS</h2>
+  <pre>export TIDE_HOME=~/tide-home    <span class="cmt"># put this in your shell profile</span></pre>
+  <p class="saw">Skip it and the next step still creates a project — but never writes
+  it into the roster, and it never shows up on the board. Not an error; one skipped
+  line in the middle of a successful run:
+  <code>· roster  no control-home — set $TIDE_HOME</code>.</p>
+
+  <h2>4 · A PROJECT</h2>
+  <p>Any folder with code, old or new:</p>
+  <pre>mkdir -p ~/code/myapp &amp;&amp; cd ~/code/myapp
+tide adopt --goal "a small web app — trying tide"</pre>
+  <p class="saw">You'll see the adoption steps, then which terminal will open your
+  sessions and how to change it, then the next gesture. The project is born
+  speaking: its README and canon carry your goal, not template filler, and it is
+  already in the home's roster.</p>
+
+  <h2>5 · THE BOARD</h2>
+  <pre>tide board --open               <span class="cmt"># http://127.0.0.1:8765</span></pre>
+  <p class="saw">You'll see the home's stream, myapp's stream, a HEALTH line on each.
+  The page re-reads <code>.tide/</code> every 30 seconds, so everything you do next
+  shows up without a restart. For your phone and as a service —
+  <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a>.</p>
+
+  <h2>6 · YOUR FIRST WORK</h2>
+  <p>A work is an agreement card: the agent proposes steps, you say yes, the agent
+  checks items only with proof, and you close it. The verbs work out of the box;
+  switching the removable part on adds the agent's skill and a board tab:</p>
+  <pre>tide plugins on work            <span class="cmt"># once per home</span>
+
+cd ~/code/myapp
+tide work add "the app says hello — check that it starts"
+tide work propose 01 "start the app and see it answer"   <span class="cmt"># the agent proposes</span>
+tide work agree 01 --word "yes"                          <span class="cmt"># your word</span>
+tide work take 01 --by "first session"
+tide work check 01 1 --proof "started it — it answers"   <span class="cmt"># no proof, no check</span>
+tide work close 01 --word "accepted"                     <span class="cmt"># done is yours alone</span></pre>
+  <p class="saw">You'll see a short answer after each gesture — what happened and the
+  next one — and on the board a card that went open → taken → review → done.
+  <code>tide work show 01</code> prints the journal: every gesture a line, with your
+  words in it.</p>
+
+  <h2>7 · A SESSION</h2>
+  <pre>cd ~/tide-home
+tide menu</pre>
+  <p class="saw">You'll see a project picker, then the thread, then the session inside
+  it — each list offers <code>0) + new</code> as its first row. A terminal opens with
+  Claude already in context: its role, the project's canon, the live thread, the
+  roster. From here you speak in words ("add a work: …", "hand off the thread") and
+  the agent walks the verbs from step 6 itself.</p>
+
+  <hr>
+
+  <h2>WHEN YOU'RE STUCK</h2>
+  <pre>tide quickstart                 <span class="cmt"># this route, in your terminal</span>
+tide quickstart --open          <span class="cmt"># this page, in your browser</span>
+tide help                       <span class="cmt"># every command</span>
+tide doctor                     <span class="cmt"># is anything actually broken?</span>
+tide report "what happened"     <span class="cmt"># the pain goes to the author</span></pre>
+
+  <footer>
+    <p><a href="./">tide</a> · <a href="quickstart.ru.html">по-русски</a> ·
+    <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a></p>
+    <p class="cmt">MIT · Python ≥ 3.12 · sessions need Claude Code</p>
+  </footer>
+
+</main>
+</body>
+</html>

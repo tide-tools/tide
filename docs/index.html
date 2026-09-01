@@ -60,7 +60,7 @@
     <li>FIX BUGS — the source is already yours; fix and reinstall in place</li>
     <li>REPORT — send the pain upstream in one command</li>
     <li>WORK IN THREADS — via CLI and the board: create, handoff, resume, close</li>
-    <li>UNDERSTAND HOW TO USE IT — the first hour, step by step, in <a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">QUICKSTART.md</a></li>
+    <li>UNDERSTAND HOW TO USE IT — <a href="quickstart.html">the first hour</a>, step by step</li>
   </ol>
 
   <h2>INSTALL</h2>
@@ -82,6 +82,10 @@ tide adopt --goal "a small web app — trying tide"
 tide board --open               <span class="cmt"># http://127.0.0.1:8765</span>
 tailscale serve --bg 8765       <span class="cmt"># the same board on your phone</span>
 
+<span class="cmt"># stuck? the route, in your terminal or your browser</span>
+tide quickstart
+tide quickstart --open
+
 <span class="cmt"># update · fix · report</span>
 tide self-update                <span class="cmt"># git pull + reinstall — gated, with rollback</span>
 ./install.sh                    <span class="cmt"># fixed the source? reinstall in place</span>
@@ -95,7 +99,7 @@ brew install tide-tools/tide/tide</pre>
   <hr>
 
   <footer>
-    <p><a href="https://github.com/tide-tools/tide/blob/main/QUICKSTART.md">QUICKSTART.md</a> · <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a> · <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a></p>
+    <p><a href="quickstart.html">the first hour</a> · <a href="quickstart.ru.html">по-русски</a> · <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a> · <a href="https://github.com/tide-tools/tide/blob/main/docs/board.md">docs/board.md</a></p>
     <p class="cmt">MIT · Python ≥ 3.12 · sessions need Claude Code</p>
   </footer>
 
