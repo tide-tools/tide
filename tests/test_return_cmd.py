@@ -155,7 +155,7 @@ def test_return_dry_run_predicts_respawn_for_a_dead_handle(tmp_path, monkeypatch
 
 
 def test_legacy_dissolved_stamp_no_longer_gates(tmp_path, monkeypatch):
-    # canon №1 simplified (Гриша 16.07): past sessions are open history — a legacy
+    # canon №1 simplified (16.07): past sessions are open history — a legacy
     # dissolved: stamp in an old passport does not block re-entry anymore
     from tide.arc import stream
 

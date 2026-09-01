@@ -40,14 +40,14 @@ def test_add_creates_passport_with_empty_checklist(in_project):
     а счётчик врал (0/6 вместо 0/5), и снять его было нечем.
     """
     rc = cli.main(["work", "add", "вылить рефералку",
-                   "--deadline", "2026-07-16", "--for", "mite"])
+                   "--deadline", "2026-07-16", "--for", "myapp"])
     assert rc == 0
     d = work.works_dir(in_project) / "01-vylit-referalku"
     assert d.is_dir()
     text = (d / "work.md").read_text(encoding="utf-8")
     assert "# вылить рефералку" in text
     assert "status: open" in text
-    assert "project: mite" in text
+    assert "project: myapp" in text
     assert "deadline: 2026-07-16" in text
     assert "## чеклист" in text
     assert "- [ ] вылить рефералку" not in text
@@ -766,15 +766,15 @@ def test_show_prints_the_fixes_section(in_project, capsys):
 
 def test_take_moves_open_to_taken_and_journals(in_project):
     cli.main(["work", "add", "вылить выплаты"])
-    rc = cli.main(["work", "take", "01", "--by", "mite-agent",
+    rc = cli.main(["work", "take", "01", "--by", "myapp-agent",
                    "--word", "возьми выплаты"])
     assert rc == 0
     text = _text(in_project)
     assert "status: taken" in text
-    assert "taken-by: mite-agent" in text
+    assert "taken-by: myapp-agent" in text
     assert "taken-at: " in text
     assert "## журнал" in text
-    assert "взята в работу (mite-agent) по слову: «возьми выплаты»" in text
+    assert "взята в работу (myapp-agent) по слову: «возьми выплаты»" in text
 
 
 def test_take_refuses_second_take_and_done(in_project, capsys):

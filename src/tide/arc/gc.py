@@ -1,6 +1,6 @@
 """tide.arc.gc — sweep abandoned template shells out of the stream (cand 04).
 
-The mite incident left seven untouched template arcs (болванки) posing as live
+The empty-arcs incident left seven untouched template arcs (болванки) posing as live
 work. ``tide arc gc`` finds entries that are BOTH:
 
 * **drafts** — open top-stream entries whose formulation is still template
@@ -45,7 +45,7 @@ def contentless(entry_dir: Path) -> bool:
     RECURSIVELY: a nested session that is itself an empty template shell does NOT count
     as content, so a thread whose ONLY sessions are empty shells is still contentless —
     the ghost-thread hole where gc read the shell's ``arc.md`` as "life" and let a dead
-    thread hang forever (cand 88; the mite ``22-@kickoff`` ghost needed ``rm -f``).
+    thread hang forever (cand 88; the ``22-@kickoff`` ghost needed ``rm -f``).
     """
     entry_dir = Path(entry_dir)
     passport = stream.passport_path(entry_dir)

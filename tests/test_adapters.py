@@ -42,13 +42,13 @@ def test_orca_uses_terminal_create_not_keystroke():
     the wrong window; the native CLI runs the command directly in the right tab.
     """
     argv = OrcaAdapter().build_command(
-        cwd="/Users/g/Documents/projects/mitehq",
+        cwd="/Users/you/projects/myapp",
         command=["claude", "--dangerously-skip-permissions", "@/tmp/seed.md"],
-        title="tide-mitehq",
+        title="tide-myapp",
     )
     assert argv[:3] == ["orca", "terminal", "create"]
     assert "--worktree" in argv
-    assert "path:/Users/g/Documents/projects/mitehq" in argv
+    assert "path:/Users/you/projects/myapp" in argv
     # the scoped command rides on --command as one shell-quoted string
     i = argv.index("--command")
     assert "claude --dangerously-skip-permissions @/tmp/seed.md" == argv[i + 1]

@@ -9,7 +9,7 @@ files, so a status move or a journal line can never be forgotten (the first live
 run proved they are: the agent checked an item and moved no status —
 cand 125-work-cli-verbs).
 
-The signed model lives with the instance (work-cycle.md, Гриша 16.07); the
+The signed model lives with the instance (work-cycle.md, 16.07); the
 machine here: **open → taken → review → done**.
 
 * ``plan``    — put the agreed-to-be plan as free text into ``## план``; the

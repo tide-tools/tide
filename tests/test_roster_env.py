@@ -47,8 +47,8 @@ def test_parse_line_three_field_strips_whitespace():
 
 def test_parse_line_path_with_spaces_no_env():
     """Paths with spaces parse correctly when there is no environment field."""
-    entry = roster._parse_line("demo | /Users/g/My Projects/demo")
-    assert entry == {"name": "demo", "path": "/Users/g/My Projects/demo"}
+    entry = roster._parse_line("demo | /Users/you/My Projects/demo")
+    assert entry == {"name": "demo", "path": "/Users/you/My Projects/demo"}
     assert "environment" not in entry
 
 
@@ -227,10 +227,10 @@ def test_three_field_round_trip_after_corruption_fix(tmp_control_home):
     Confirms the ``if '|' in path_part: return None`` guard does NOT affect
     legitimate 3-field lines whose path_part is pipe-free.
     """
-    roster.add(tmp_control_home, "block-builder", "/Users/g/projects/block-builder", env="box")
+    roster.add(tmp_control_home, "block-builder", "/Users/you/projects/block-builder", env="box")
     entries = roster.read_roster(tmp_control_home)
     assert entries == [
-        {"name": "block-builder", "path": "/Users/g/projects/block-builder", "environment": "box"}
+        {"name": "block-builder", "path": "/Users/you/projects/block-builder", "environment": "box"}
     ]
     # write → re-read is also identical
     entries2 = roster.read_roster(tmp_control_home)

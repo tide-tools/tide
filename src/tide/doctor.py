@@ -272,7 +272,7 @@ def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:
 def check_roster_worktrees(control_home: Optional[Path] = None) -> CheckResult:
     """Warn when an ACTIVE roster project is not worktree-ready (no git HEAD).
 
-    Cand 34: mitehq lay ``git init``-without-commit since birth — the mine went off
+    Cand 34: a real project lay ``git init``-without-commit since birth — the mine went
     at pickup time (the launch preflight says why, but only at the door). Cheap
     probe: ``git rev-parse --verify -q HEAD`` per roster path; a missing dir counts
     too. Archived rows are skipped (dead projects don't nag). Advisory — warn,

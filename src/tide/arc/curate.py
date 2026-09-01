@@ -153,7 +153,7 @@ def drop_thread(thread_dir: Path) -> Path:
     return dest
 
 
-def validate_step(thread_dir: Path, step: str, *, who: str = "Гриша (с доски)",
+def validate_step(thread_dir: Path, step: str, *, who: str = "human (from the board)",
                   now: Optional[datetime] = None) -> None:
     """✓ the human validates a step's gate in the thread's ``plan.md``.
 
@@ -246,5 +246,5 @@ def register_arc_verbs(arc_subparsers) -> None:
         "validate", help="✓ validate a plan step's gate by hand ([x] + гейт-пройден + promote next [>])")
     vp.add_argument("--dir", required=True, help="the thread's entry dir (board contract)")
     vp.add_argument("--step", required=True, help="the step number in plan.md")
-    vp.add_argument("--who", default="Гриша (с доски)", help="whose hand passed the gate")
+    vp.add_argument("--who", default="human (from the board)", help="whose hand passed the gate")
     vp.set_defaults(func=_cmd_validate, _cmd="arc validate")

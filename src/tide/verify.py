@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
+from . import paths
 from .arc.stream import StreamError
 
 HTTP_OK = 200
@@ -365,31 +366,100 @@ class PortableReport:
         return not self.leaks
 
 
+# The owner's personal forbidden literals — the file name under the CONTROL-HOME's
+# `.tide/`, sibling of `plugins` (same per-person state, same place).
+INSTANCE_TOKENS_FILE = "instance-tokens"
+
+
+def home_instance_tokens(home: Optional[Path] = None) -> List[str]:
+    """Personal literals to forbid, read from ``<control-home>/.tide/instance-tokens``.
+
+    ``Path.home()`` gives the gate the MACHINE identity (home path + username) for
+    free, but never the owner's HUMAN name — and a human name in shipped source is
+    the same leak. It cannot be hardcoded and it cannot live in the repo either
+    (docs/RELEASING.md: «список личных маркеров живёт у владельца, не в репо»), so
+    it lives in the control-home — the personal layer that never ships. One literal
+    per line; ``#`` comments and blank lines ignored.
+
+    No control-home (``$TIDE_HOME`` unset and no ``roster.md`` above cwd) or no
+    file → no tokens and NO error: the gate still runs on the auto-detected ones.
+    :func:`check_portable` says out loud how many personal tokens were armed, so a
+    run that forbids nothing is visible rather than a silent PASS.
+
+    THREE TRAPS, all of them the same shape — one spelling of a name does not
+    cover the others, and a gate that misses one reports a confident, honest zero:
+
+    1. DECLENSION — write STEMS, not nominatives. A Russian name inflects
+       (``-а`` → ``-е`` / ``-у`` / ``-ой``) and the scan is a substring match, so a
+       nominative token walks past every oblique-case mention — exactly the lines a
+       prompt or a greeting puts the name on. The stem catches all cases at once.
+    2. ALPHABET — list BOTH scripts. A Cyrillic stem says nothing about the Latin
+       transliteration of the same name (and vice versa): a sweep done in one
+       alphabet leaves the other untouched, in comments, signer fields and paths.
+       Add every transliteration actually used, given name and surname.
+    3. CASE is NOT a trap here, because :func:`scan_text` folds it — one entry
+       matches ``Name``, ``name`` and ``NAME``. Do not pad the list with variants.
+
+    The auto-detected tokens cover the MACHINE (home path, login) and nothing else.
+    A human name is never derivable from them: a login of ``jdoe`` says nothing
+    about ``Jane``. Everything human has to be listed here, by hand, in both scripts.
+    """
+    try:
+        root = Path(home) if home is not None else paths.control_home()
+    except (FileNotFoundError, OSError):
+        return []
+    f = paths.tide_dir(root) / INSTANCE_TOKENS_FILE
+    if not f.is_file():
+        return []
+    tokens = []
+    for raw in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            tokens.append(line)
+    return sorted(set(tokens))
+
+
 def default_instance_tokens() -> List[str]:
     """Instance-specific literals to forbid in shipped source, auto-detected.
 
     The most portable way to catch "this machine leaked in" without hardcoding a
     name is to forbid the *current* user's home path + username — if those appear
-    in shipped source it is, by definition, a leak. Callers extend this with
+    in shipped source it is, by definition, a leak. The owner's own list
+    (:func:`home_instance_tokens`) is folded in here, so the human name is armed
+    without anyone remembering a flag. Callers extend this with
     ``--instance-token`` (e.g. known instance project-names).
     """
     home = Path.home()
     tokens = {str(home), home.name}
+    tokens.update(home_instance_tokens())
     tokens.discard("")
     tokens.discard("/")
     return sorted(t for t in tokens if t)
 
 
-def scan_text(text: str, source: str, tokens: List[str]) -> List[PortableLeak]:
-    """Scan *text* line-by-line for absolute home paths + any *tokens*."""
+def scan_text(text: str, source: str, tokens: List[str], *,
+              abs_paths: bool = True) -> List[PortableLeak]:
+    """Scan *text* line-by-line for absolute home paths + any *tokens*.
+
+    ``abs_paths=False`` drops the path-shape rule and checks IDENTITY only — see
+    :func:`scan_showcase` for why prose needs that and code does not.
+
+    Token matching is CASE-INSENSITIVE. A name does not keep its capitalisation
+    across the places it leaks into: prose capitalises it, a signer field or a home
+    path lower-cases it, an env var shouts it. A case-sensitive token would have to
+    be listed three times over to be safe, which is the remember-a-variant failure
+    this gate exists to remove — one entry catches every casing instead.
+    """
     leaks: List[PortableLeak] = []
+    folded = [(tok, tok.lower()) for tok in tokens if tok]
     for i, raw in enumerate(text.splitlines(), 1):
-        for m in _ABS_HOME_RE.finditer(raw):
+        low = raw.lower()
+        for m in _ABS_HOME_RE.finditer(raw) if abs_paths else ():
             leaks.append(
                 PortableLeak(source, i, "abs-home-path", m.group(0), raw.strip()[:120])
             )
-        for tok in tokens:
-            if tok and tok in raw:
+        for tok, tok_low in folded:
+            if tok_low in low:
                 leaks.append(
                     PortableLeak(source, i, "instance-token", tok, raw.strip()[:120])
                 )
@@ -431,10 +501,87 @@ def scan_package_source(pkg_dir: Path, tokens: List[str]) -> List[PortableLeak]:
     return leaks
 
 
+def repo_root() -> Optional[Path]:
+    """The dev-tree root (``src/tide`` → ``src`` → repo), or None outside one.
+
+    A ``pip install``ed tide lives in ``site-packages`` with no repo above it; the
+    surfaces below simply do not exist there, and their scan is skipped (said out
+    loud, never faked into a pass).
+    """
+    candidate = package_source_dir().parent.parent
+    return candidate if (candidate / "pyproject.toml").is_file() else None
+
+
 def _pyproject_path() -> Optional[Path]:
     """Best-effort locate the dev-tree ``pyproject.toml`` (src/tide → src → repo)."""
-    candidate = package_source_dir().parent.parent / "pyproject.toml"
-    return candidate if candidate.is_file() else None
+    root = repo_root()
+    return (root / "pyproject.toml") if root else None
+
+
+# --- human-facing surfaces (published, but never in the wheel) ---------------
+#
+# What the wheel carries and what a READER receives are two different sets. The
+# gate above covers the wheel; these are the surfaces a person actually reads —
+# and `docs/` is the GitHub Pages source, republished on every release. They were
+# outside the gate entirely, which is not a theoretical hole: a real human name
+# was written into `docs/RELEASING.md` as an illustrative example and
+# `verify --portable` stayed GREEN, because the file ships to Pages and not to pip.
+#
+# `tests/` is in this set for the same reason and one more: it does not ride in the
+# wheel either, but it sits in the PUBLIC repository where anyone can read it —
+# and it is the least-watched surface in the tree, so a name parked in a fixture
+# survives every sweep of the "real" code. Four of the six leaks in the last
+# deanon round were there.
+SHOWCASE_DIRS = ("docs", "skills", "tests")
+SHOWCASE_GLOBS = ("README*.md", "QUICKSTART*.md")
+
+
+def showcase_files(root: Path) -> List[Path]:
+    """Every human-facing file under *root* the gate must read, sorted."""
+    root = Path(root)
+    found: List[Path] = []
+    for d in SHOWCASE_DIRS:
+        base = root / d
+        if base.is_dir():
+            found += [p for p in base.rglob("*")
+                      if p.is_file() and "__pycache__" not in p.parts]
+    for g in SHOWCASE_GLOBS:
+        found += [p for p in root.glob(g) if p.is_file()]
+    return sorted(set(found))
+
+
+def scan_showcase(root: Path, tokens: List[str]) -> List[PortableLeak]:
+    """Scan the human-facing surfaces of *root* for instance tokens.
+
+    IDENTITY ONLY — the ``/(Users|home)/…`` path-shape rule is deliberately NOT
+    applied here, and that is a scope decision rather than an exemption bought to
+    keep the tree green. In shipped CODE an absolute home path is by definition a
+    leak (the portable form is ``~/…``). In PROSE an example path is the whole
+    point: ``QUICKSTART`` and ``docs/board.md`` both spell out a home-rooted path
+    with a placeholder username, so a reader can see the shape of what they will
+    get. Flagging those would teach the next person to silence the gate — and this
+    docstring itself would trip the rule it describes.
+
+    Nothing real is lost by dropping the rule: the owner's ACTUAL home path is
+    already an auto-token (:func:`default_instance_tokens` forbids
+    ``str(Path.home())``), so a genuine path leak is still caught here — by name,
+    which is what a published page can actually expose.
+
+    The same holds for ``tests/``, where invented home paths are the FIXTURES:
+    a dozen made-up users across the suite are the very inputs the abs-path rule is
+    tested with. Scanning them for shape would fail the suite that proves the rule
+    works — and this docstring could not name one without tripping it either.
+    """
+    leaks: List[PortableLeak] = []
+    for f in showcase_files(root):
+        if not _is_text_file(f):
+            continue
+        rel = f.relative_to(root)
+        leaks.extend(scan_text(
+            f.read_text(encoding="utf-8", errors="replace"),
+            str(rel), tokens, abs_paths=False,
+        ))
+    return leaks
 
 
 def scan_init_skeleton(tokens: List[str]) -> List[PortableLeak]:
@@ -490,12 +637,22 @@ def check_portable(
     (3) a fresh ``tide init`` skeleton, for absolute home paths + instance tokens.
     """
     tokens: List[str] = list(instance_tokens or [])
+    personal = home_instance_tokens() if include_auto_tokens else []
     if include_auto_tokens:
         tokens.extend(default_instance_tokens())
     tokens = sorted(set(t for t in tokens if t))
 
     pkg = Path(pkg_dir) if pkg_dir else package_source_dir()
     report = PortableReport()
+    # Say what the gate is actually armed with. A PASS with no personal tokens is a
+    # WEAK pass (the human name was never looked for) — the reader must see that.
+    report.messages.append(
+        "personal tokens (<control-home>/.tide/{0}): {1}".format(
+            INSTANCE_TOKENS_FILE,
+            "{0} armed".format(len(personal)) if personal
+            else "NONE — human name NOT checked",
+        )
+    )
 
     pkg_leaks = scan_package_source(pkg, tokens)
     report.leaks.extend(pkg_leaks)
@@ -510,6 +667,20 @@ def check_portable(
         )
         report.leaks.extend(meta_leaks)
         report.messages.append("pyproject.toml: {0}".format(_verdict(meta_leaks)))
+
+    root = repo_root()
+    if root is None:
+        report.messages.append(
+            "human-facing surfaces: skipped (not a dev tree — no repo above the package)"
+        )
+    else:
+        show_leaks = scan_showcase(root, tokens)
+        report.leaks.extend(show_leaks)
+        report.messages.append(
+            "human-facing surfaces ({0}, {1}): {2}".format(
+                "/ ".join(SHOWCASE_DIRS), " ".join(SHOWCASE_GLOBS), _verdict(show_leaks)
+            )
+        )
 
     init_leaks = scan_init_skeleton(tokens)
     report.leaks.extend(init_leaks)

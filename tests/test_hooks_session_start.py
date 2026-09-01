@@ -444,12 +444,12 @@ def test_link_never_binds_a_pickup_target(tmp_project):
 
 
 def test_notes_index_lists_titles_not_bodies(tmp_project):
-    # Гриша 17.07: агент видит ИНДЕКС заметок (заголовок+теги), тела не грузятся
+    # 17.07: агент видит ИНДЕКС заметок (заголовок+теги), тела не грузятся
     d = tmp_project / ".tide" / "notes"
     d.mkdir(parents=True)
     (d / "01-zaglushka.md").write_text(
         "# Снять заглушку\n\ntags: деплой, прод\n\n"
-        "    curl -s https://mite.bot/api/maintenance-status\n",
+        "    curl -s https://example.com/api/maintenance-status\n",
         encoding="utf-8")
     out = session_start.render(tmp_project, "worker")
     assert "NOTES" in out

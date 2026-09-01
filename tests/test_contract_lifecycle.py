@@ -77,8 +77,8 @@ def test_sign_loose_defaults_to_orchestrator(tmp_project):
 def test_sign_explicit_signer_overrides(tmp_project):
     _arc(tmp_project)
     lifecycle.new(tmp_project, "fix-leak")
-    stamp = lifecycle.sign(tmp_project, "fix-leak", signer="grisha", date="2026-06-25")
-    assert stamp == "grisha @ 2026-06-25"
+    stamp = lifecycle.sign(tmp_project, "fix-leak", signer="ada", date="2026-06-25")
+    assert stamp == "ada @ 2026-06-25"
 
 
 def test_sign_refuses_non_draft(tmp_project):

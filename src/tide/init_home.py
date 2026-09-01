@@ -155,7 +155,7 @@ def _git_init(root: Path) -> bool:
 
     ``git init`` alone leaves a mine: the repo exists but ``git worktree add``
     (the thread-spawn path) refuses a HEAD-less repo — the project sits in the
-    picker and dies at pickup (mitehq, 2026-07-05). So init here means
+    picker and dies at pickup (a real project, 2026-07-05). So init here means
     worktree-ready: init when missing, then a birth commit when HEAD is absent.
     Best-effort as before: a missing/failing ``git`` is swallowed.
     """

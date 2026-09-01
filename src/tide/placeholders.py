@@ -170,7 +170,7 @@ def is_blind_goal(raw: Optional[str], entry_slug: str) -> bool:
     Three ways a goal reads blind (the START GATE, cand 81/87): it is *empty*, a
     leftover ``<…>`` scaffold placeholder, or just the entry's own slug/tag (an
     auto-goal like ``goal: handoff`` on thread ``01-@handoff`` — the exact "there's
-    no goal there" case Grisha flagged). The board, the handoff throughline and the
+    no goal there" case the human flagged). The board, the handoff throughline and
     offload nudge all treat these identically as "no goal", so the test lives here
     once instead of being re-derived at each call site.
     """

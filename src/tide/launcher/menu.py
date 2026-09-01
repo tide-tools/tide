@@ -942,7 +942,7 @@ def build_launch(
         resume_cmd += ["--resume", session_id]
         # Re-apply the project's scoped MCP profile on resume too — the same flags a
         # fresh launch gets. A bare --strict-mcp-config here would drop the project's
-        # --mcp-config (e.g. mitehq's linear-mite), so resumed sessions lost MCP.
+        # --mcp-config (e.g. a project's own Linear server), so resumed sessions lost MCP.
         resume_cmd += context.scoped_flags(context.load_profile(project))
         # The reopened conversation gets the same first turn as a fresh one (`tide
         # return --say`): claude takes a trailing positional prompt on --resume too.
@@ -1252,7 +1252,7 @@ def _spark_trigger(thread_slug: str, project_name: str) -> str:
         "Тебя подняли кнопкой ▶ с полки проекта {0} вести нить «{1}». "
         "НЕ отчитывайся о состоянии — первым же ходом выполни инструкцию системного "
         "промпта: закрой старт-гейт (живая цель + первый tide offload), построй план "
-        "по закону 47 и покажи Грише. Приём подтверждает сама сессия — разрешения на "
+        "по закону 47 и покажи человеку. Приём подтверждает сама сессия — разрешения на "
         "приём не спрашивай."
     ).format(project_name, thread_slug)
 

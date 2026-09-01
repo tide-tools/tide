@@ -292,7 +292,7 @@ def stamp_rev(entry_dir: Path, root: Path) -> str:
 
 
 # --- anti-runaway backpressure (gates: cand 04) ------------------------------
-# The mite incident: an automated loop created SEVEN empty arcs in two minutes —
+# The empty-arcs incident: an automated loop created SEVEN empty arcs in two minutes —
 # no human works at that rate. Every birth is stamped into ``.tide/state/births``;
 # when the window overflows, creation REFUSES with an escalation message instead
 # of silently flooding the tree. Env-tunable; a limit of 0 disables the gate.

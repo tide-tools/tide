@@ -32,7 +32,7 @@ def _two_generations(tmp_path, mode=hq.DEFAULT_MODE):
 
 
 def test_take_leaves_origin_unstamped(tmp_path):
-    # canon №1 simplified (Гриша 16.07): the current session is DERIVED from the
+    # canon №1 simplified (16.07): the current session is DERIVED from the
     # chain — taking an offer stamps NOTHING on the origin. The hook's hint stays
     # queue-derived (is_dissolved), the registry entry is KEPT for ⟳ focus.
     home, proj, origin, target, key = _two_generations(tmp_path)

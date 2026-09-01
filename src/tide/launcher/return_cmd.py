@@ -50,7 +50,7 @@ def run_return(
 ) -> dict:
     """Focus the session's terminal, or respawn ``--resume`` under the same sid.
 
-    NO dissolved-gate anymore (canon №1 simplified, Гриша 16.07): past sessions
+    NO dissolved-gate anymore (canon №1 simplified, 16.07): past sessions
     are open history — any of them may be re-entered with one click; the thread's
     current session is derived from the chain, so a look-back can't steal it.
     *force* is kept as an accepted no-op so older boards keep working.

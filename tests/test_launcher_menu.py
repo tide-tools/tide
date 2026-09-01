@@ -287,13 +287,13 @@ def test_never_engaged_session_launches_fresh(home_with_project):
 
 
 def test_resume_reapplies_scoped_mcp_config(home_with_project):
-    # Regression: a project with a scoped --mcp-config (e.g. mitehq's linear-mite)
+    # Regression: a project with a scoped --mcp-config (e.g. its own Linear server)
     # must keep that MCP on RESUME, not just on a fresh launch. A bare
     # --strict-mcp-config on resume used to silently drop the scoped servers.
     from tide import mcp
 
     home, proj = home_with_project
-    mcp.add_server(proj, "linear-mite", "https://mcp.linear.app/mcp", http=True)
+    mcp.add_server(proj, "linear-myapp", "https://mcp.linear.app/mcp", http=True)
     cmd = menu.build_launch(
         proj, control_home=home, dry_run=True, session_id="abc-123", resume=True
     )

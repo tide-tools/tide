@@ -13,9 +13,9 @@ def test_empty_roster_reads_as_empty(tmp_control_home):
 
 
 def test_add_round_trips_name_and_path(tmp_control_home):
-    roster.add(tmp_control_home, "focus", "/Users/g/projects/focus")
+    roster.add(tmp_control_home, "focus", "/Users/you/projects/focus")
     entries = roster.read_roster(tmp_control_home)
-    assert entries == [{"name": "focus", "path": "/Users/g/projects/focus"}]
+    assert entries == [{"name": "focus", "path": "/Users/you/projects/focus"}]
     # the header survives
     assert paths.roster_file(tmp_control_home).read_text(
         encoding="utf-8"
@@ -42,8 +42,8 @@ def test_add_existing_name_replaces_path_in_place(tmp_control_home):
 
 
 def test_path_with_spaces_round_trips(tmp_control_home):
-    roster.add(tmp_control_home, "demo", "/Users/g/My Projects/demo")
-    assert roster.read_roster(tmp_control_home)[0]["path"] == "/Users/g/My Projects/demo"
+    roster.add(tmp_control_home, "demo", "/Users/you/My Projects/demo")
+    assert roster.read_roster(tmp_control_home)[0]["path"] == "/Users/you/My Projects/demo"
 
 
 def test_remove_round_trips(tmp_control_home):

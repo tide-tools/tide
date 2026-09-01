@@ -114,12 +114,12 @@ def test_unfolded_home_is_resolvable_root(tmp_path: Path):
     assert paths.find_tide_root(nested) == tmp_path.resolve()
 
 
-# --- init must not plant the mitehq mine (git init without a commit) --------
+# --- init must not plant the headless-repo mine (git init without a commit) --
 
 def test_unfold_with_git_is_worktree_ready(tmp_path: Path):
     """--git means worktree-ready: repo WITH a birth commit, not a HEAD-less mine.
 
-    mitehq (2026-07-05): git init happened at birth, a commit never did — the
+    A real project (2026-07-05): git init happened at birth, a commit never did — the
     project sat in the picker and every thread spawn died at pickup.
     """
     init_home.unfold_control_home(tmp_path, name="home", git=True)

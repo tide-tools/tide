@@ -48,7 +48,7 @@ def _transfers_thread(rec: Dict[str, object]) -> bool:
     offer seeds a DIFFERENT thread and the origin keeps holding its own; same
     for an execution branch (the planning head stays). Live 16.07: taking a
     ``mode: new`` offer (124-work-start) dissolved the news thread's head —
-    Grisha lost the way back into a thread that was never given away.
+    the human lost the way back into a thread that was never given away.
     """
     return str(rec.get("mode") or DEFAULT_MODE).strip() == DEFAULT_MODE
 
@@ -305,7 +305,7 @@ def _mark_taken(rec: Dict[str, object], *, session: Optional[str]) -> Dict[str, 
     """Flip a record to taken, stamping who/when (mutates the file).
 
     THE single flip point (I4) — every taker comes through here. The origin is
-    deliberately NOT stamped (canon №1 simplified, Гриша 16.07): the thread's
+    deliberately NOT stamped (canon №1 simplified, 16.07): the thread's
     current session is DERIVED from the chain (the newest taken one), so a past
     session merely existing is history, not a state to bookkeep. The old
     ``dissolved:`` stamps lied both ways — a stray stamp killed a thread that was
@@ -434,7 +434,7 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
 
 def multiples(home: Path) -> List[Dict[str, object]]:
     """Taken offers whose ORIGIN session kept WORKING after the thread moved on —
-    the real 'Mickey 17'. Canon №1 simplified (Гриша 16.07): the current session
+    the real 'Mickey 17'. Canon №1 simplified (16.07): the current session
     is derived from the chain, nothing is stamped, and a past session merely
     EXISTING is open history — not a violation. A pair is flagged only when the
     origin's passport pulsed (``offloaded-at``) AFTER the take: it kept acting

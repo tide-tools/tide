@@ -164,7 +164,7 @@ def test_is_blind_goal_true_for_placeholder():
 
 
 def test_is_blind_goal_true_when_equals_slug():
-    # the exact "goal: handoff on thread 01-@handoff" case Grisha flagged
+    # the exact "goal: handoff on thread 01-@handoff" case the human flagged
     assert placeholders.is_blind_goal("handoff", "handoff") is True
     assert placeholders.is_blind_goal("Ship Handoff", "ship-handoff") is True
 

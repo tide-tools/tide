@@ -335,7 +335,7 @@ def render_line(health: HealthLine) -> str:
     rot tail is appended only when red, and only after the numbers, so a reader
     (or a naive splitter) still finds the four counts in the same place.
     """
-    # слова человеческие (Гриша, 11.07: «какие нахуй закрома» — жаргон запрещён)
+    # слова человеческие (11.07: «какие нахуй закрома» — жаргон запрещён)
     line = "{glyph} непрочитано {u} · правила {c} · передачи {o} · проекты {r}".format(
         glyph=_GLYPH[health.severity],
         u=health.unread,

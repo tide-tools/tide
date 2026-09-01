@@ -1,6 +1,6 @@
 """Gates against мусор (cand 04): draft classification, spawn backpressure, gc.
 
-The mite incident: a loop created seven empty template arcs in two minutes, then
+The empty-arcs incident: a loop created seven empty template arcs in two minutes, then
 "fixed" it with an eighth empty arc. Three gates close that hole:
 
 1. draft — an unfilled template shell classifies as ``draft`` (computed, never
@@ -183,7 +183,7 @@ def test_gc_apply_moves_to_trash_reversibly(tmp_project):
 def test_gc_sweeps_a_ghost_thread_whose_only_session_is_an_empty_shell(tmp_project):
     # cand 88: a thread with a placeholder goal whose ONLY session is a bare template
     # (no pulse, no claude-session, no content) is a GHOST — gc used to read the shell's
-    # arc.md as "life" and let it hang forever (mite 22-@kickoff needed rm -f).
+    # arc.md as "life" and let it hang forever (the 22-@kickoff ghost needed rm -f).
     t = stream.new_thread(tmp_project, "shell-thread")   # placeholder goal
     stream.new_session(tmp_project, "shell-thread", "run")
     assert t in gc.sweepable(tmp_project)
