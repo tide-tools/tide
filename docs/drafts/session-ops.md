@@ -1,3 +1,9 @@
+> **DRAFT / архив дизайна.** Захват дизайн-разговора; модель нитей и хендоффов
+> с тех пор въехала в код и разъехалась с этим текстом (в частности, здесь
+> «spark = новая нить», а живой верб `tide spark` открывает свежую сессию
+> в существующем треде; «новая нить из идеи» стала форком `/handoff new`).
+> Живую модель смотри в QUICKSTART.md и скиллах `skills/`.
+
 # Session operations — offload / handoff / spark
 
 > Naming: the dump op is **offload** (not "флот"); the new-work-line op is **spark**
