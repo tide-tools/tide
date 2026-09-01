@@ -28,6 +28,18 @@ htmlcov/
 
 # internal dogfood workspace — never publish
 .tide/
+# runtime launch registry: this repo is itself a control-home, so tide writes
+# its sid→terminal map here. Machine-local state with an absolute home path —
+# it must never be committed, and never ride into the release bundle.
+terminals.json
+
+# the project registry — terminals.json's twin, and the ONLY tracked file tide
+# wrote itself. Its whole content is `name | /absolute/path`, so one `tide adopt`
+# or `tide roster add` run in this checkout would commit a personal home path.
+# It was safe only by being empty, which is a state, not a defence. No template is
+# lost: `tide init` writes a fresh header-only roster into a real control-home
+# (init_home.py), and nothing in install.sh or the wheel reads this copy.
+roster.md
 
 # черновики — только на диске. Под docs/ они уезжали на Pages и отдавались
 # по прямым адресам, поэтому лежат в корне и не трекаются.

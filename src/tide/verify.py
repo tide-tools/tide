@@ -420,17 +420,28 @@ def home_instance_tokens(home: Optional[Path] = None) -> List[str]:
 
 
 def default_instance_tokens() -> List[str]:
-    """Instance-specific literals to forbid in shipped source, auto-detected.
+    """Instance-specific literals to forbid, auto-detected from the MACHINE.
 
-    The most portable way to catch "this machine leaked in" without hardcoding a
-    name is to forbid the *current* user's home path + username — if those appear
-    in shipped source it is, by definition, a leak. The owner's own list
-    (:func:`home_instance_tokens`) is folded in here, so the human name is armed
-    without anyone remembering a flag. Callers extend this with
-    ``--instance-token`` (e.g. known instance project-names).
+    Exactly ONE literal is safe to derive without asking: the home directory PATH.
+    It is unique by construction — a home path is a path, never a word, however
+    plain the login inside it — so it can be forbidden everywhere with no false
+    positives, and it is the actual leak
+    vector (an absolute home path baked into source). The owner's own list
+    (:func:`home_instance_tokens`) is folded in, so what needs judgement is armed
+    deliberately. Callers extend both with ``--instance-token``.
+
+    THE BARE LOGIN IS NOT AUTO-DERIVED, and that is the whole point of работа 57.
+    A login is a word as often as it is an identity, and the tool cannot tell
+    which: on this very package the login ``me`` matches 4003 lines, ``root``
+    1436, ``user`` 149, ``test`` 141 — while ``admin`` matches none. Arming it
+    turned the gate RED for anyone with an ordinary login, and a red gate makes
+    ``tide self-update`` REFUSE to install: the main update channel died because
+    of what someone was called. A login that really does identify its owner
+    belongs in the personal token file, written by the one person who can tell the
+    difference. :func:`check_portable` says out loud when it is not armed.
     """
     home = Path.home()
-    tokens = {str(home), machine_login_token()}
+    tokens = {str(home)}
     tokens.update(home_instance_tokens())
     tokens.discard("")
     tokens.discard("/")
@@ -438,10 +449,11 @@ def default_instance_tokens() -> List[str]:
 
 
 def machine_login_token() -> str:
-    """The current user's bare login name — an auto-token about the MACHINE.
+    """The current user's bare login name.
 
-    Split out of :func:`default_instance_tokens` because it is the one auto-token
-    that must not be aimed at prose: see :func:`check_portable`.
+    NOT a token (see :func:`default_instance_tokens`) — used only to tell the
+    reader whether their login is armed, so its absence is visible rather than
+    silent.
     """
     try:
         return Path.home().name
@@ -530,6 +542,41 @@ def _pyproject_path() -> Optional[Path]:
     return (root / "pyproject.toml") if root else None
 
 
+def scan_self_written_registry(root: Path) -> List[PortableLeak]:
+    """Flag the engine's OWN registry in the dev checkout carrying real entries.
+
+    A different shape of leak from the ones above, so it gets its own check: not
+    a literal someone typed, but a file tide WRITES ABOUT ITSELF. This repo is a
+    control-home (``roster.md`` is what makes a directory one), so a single
+    ``tide adopt`` or ``tide roster add`` run inside the checkout appends a
+    ``name | <absolute path>`` line to it. It was safe only by being empty —
+    a state, not a defence, and its twin ``terminals.json`` already leaked here
+    once for exactly this reason.
+
+    Both ends are closed: the file is git-ignored so it cannot be committed, and
+    this check refuses to let it hold entries even so, because "remember the
+    roster must stay empty" is precisely the kind of guard a person forgets. An
+    absent or header-only roster is clean; ANY entry is a leak whatever the path,
+    since a registry of someone's projects is instance content by definition.
+    """
+    from . import roster as _roster
+
+    root = Path(root)
+    f = paths.roster_file(root)
+    if not f.is_file():
+        return []
+    leaks: List[PortableLeak] = []
+    lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+    for entry in _roster.read_roster(root):
+        n = next((i for i, ln in enumerate(lines, 1)
+                  if entry["path"] in ln and entry["name"] in ln), 0)
+        leaks.append(PortableLeak(
+            paths.ROSTER_FILE, n, "self-written-registry",
+            entry["name"],
+            "{0} | {1}".format(entry["name"], entry["path"])[:120]))
+    return leaks
+
+
 # --- human-facing surfaces (published, but never in the wheel) ---------------
 #
 # What the wheel carries and what a READER receives are two different sets. The
@@ -578,10 +625,6 @@ def scan_showcase(root: Path, tokens: List[str]) -> List[PortableLeak]:
     already an auto-token (:func:`default_instance_tokens` forbids
     ``str(Path.home())``), so a genuine path leak is still caught here — by name,
     which is what a published page can actually expose.
-
-    For the same reason the caller (:func:`check_portable`) does not aim the bare
-    LOGIN auto-token at these files — in prose an ordinary-word login is a word,
-    not a person. The home path and the owner's own list still apply here.
 
     The same holds for ``tests/``, where invented home paths are the FIXTURES:
     a dozen made-up users across the suite are the very inputs the abs-path rule is
@@ -669,6 +712,15 @@ def check_portable(
             else "NONE — human name NOT checked",
         )
     )
+    # The login is deliberately not auto-armed (a login is as often a word as an
+    # identity). Say so, so "not checked" is a fact the reader sees rather than an
+    # assumption they make — the same rule as the line above.
+    login = machine_login_token()
+    if login and not any(t.lower() == login.lower() for t in tokens):
+        report.messages.append(
+            "machine login ({0!r}): not a token — add it to that file if it "
+            "identifies you".format(login)
+        )
 
     pkg_leaks = scan_package_source(pkg, tokens)
     report.leaks.extend(pkg_leaks)
@@ -690,29 +742,20 @@ def check_portable(
             "human-facing surfaces: skipped (not a dev tree — no repo above the package)"
         )
     else:
-        # The bare login is a MACHINE token and, very often, an ordinary English
-        # word. In shipped CODE that is still a leak by definition. In PROSE and
-        # FIXTURES it is vocabulary: for the plainest such logins this tree holds
-        # hundreds to thousands of innocent matches across docs/ and tests/, so
-        # aiming the login there finds the dictionary, not a person. Paid for on
-        # the clean machine, whose login is exactly such a word: the gate went red
-        # on a signer fixture that happened to spell it — and a red gate makes
-        # `tide self-update` REFUSE, so every person with an ordinary login would
-        # have lost their updates. Prose therefore keeps the home PATH (a hard
-        # identity, still an auto-token) and the owner's own list, and drops the
-        # bare login — unless the owner listed it themselves, which is a
-        # deliberate "this word IS me" and stays armed.
-        listed = {t.lower() for t in (instance_tokens or [])} | {t.lower() for t in personal}
-        login = machine_login_token().lower()
-        surface_tokens = [t for t in tokens
-                          if not login or t.lower() != login or t.lower() in listed]
-        show_leaks = scan_showcase(root, surface_tokens)
+        show_leaks = scan_showcase(root, tokens)
         report.leaks.extend(show_leaks)
         report.messages.append(
             "human-facing surfaces ({0}, {1}): {2}".format(
                 "/ ".join(SHOWCASE_DIRS), " ".join(SHOWCASE_GLOBS), _verdict(show_leaks)
             )
         )
+
+        reg_leaks = scan_self_written_registry(root)
+        report.leaks.extend(reg_leaks)
+        report.messages.append(
+            "{0} (the engine's own registry): {1}".format(
+                paths.ROSTER_FILE,
+                "empty" if not reg_leaks else _verdict(reg_leaks)))
 
     init_leaks = scan_init_skeleton(tokens)
     report.leaks.extend(init_leaks)

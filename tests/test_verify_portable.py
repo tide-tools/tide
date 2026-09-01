@@ -265,80 +265,140 @@ def test_scan_showcase_keeps_invented_fixture_paths_in_tests(tmp_path):
     assert verify.scan_showcase(tmp_path, ["Stem"]) == []
 
 
-def test_prose_is_not_scanned_for_the_bare_login(tmp_path, monkeypatch):
-    # A login is a MACHINE token and usually an ordinary word (demo, user, test).
-    # Aimed at prose and fixtures it finds the dictionary, not a person: the
-    # clean-machine check runs as `tester` and went red on a signer fixture spelled
-    # `tester`. A red gate makes `tide self-update` REFUSE, so this cost every user
-    # with a common login their updates. The package scan below still catches it.
-    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+def test_an_ordinary_word_login_never_reddens_the_gate(tmp_path, monkeypatch):
+    # работа 57. A login is a word as often as an identity, and the tool cannot
+    # tell which: on the real package the login `me` matches 4003 lines, `root`
+    # 1436, `user` 149. Auto-arming it turned the gate RED for those people — and a
+    # red gate makes `tide self-update` REFUSE to install, so the main update
+    # channel died because of what someone was called. It is no longer derived at
+    # all: not in shipped code, not in prose, not in fixtures.
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "user")
     monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
-    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
     root = tmp_path / "repo"
     root.mkdir()
     _showcase_tree(root)
     (root / "tests" / "test_thing.py").write_text(
-        'curate.validate_step(t, "1", who="tester")\n', encoding="utf-8")
+        'ROLE = "user"  # an ordinary word\n', encoding="utf-8")
+    (root / "docs" / "RELEASING.md").write_text("the user runs it\n", encoding="utf-8")
     monkeypatch.setattr(verify, "repo_root", lambda: root)
     pkg = root / "src" / "tide"
-    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    (pkg / "ok.py").write_text('MSG = "no such user"\n', encoding="utf-8")
     report = verify.check_portable(pkg_dir=pkg)
     assert report.ok, report.messages
 
 
-def test_a_login_the_owner_listed_himself_still_guards_prose(tmp_path, monkeypatch):
+def test_the_home_path_still_catches_the_real_leak(tmp_path, monkeypatch):
+    # What replaces the login: the home PATH, which is unique by construction —
+    # a path, never a word, however plain the login inside it. It is an auto-token
+    # AND matches the abs-home rule, so a baked-in home path is caught twice over.
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
+    monkeypatch.setattr(verify, "repo_root", lambda: None)
+    home = str(Path.home())
+    pkg = tmp_path / "tide"
+    pkg.mkdir()
+    (pkg / "boom.py").write_text('CACHE = "{0}/x"\n'.format(home), encoding="utf-8")
+    report = verify.check_portable(pkg_dir=pkg)
+    assert not report.ok
+    assert {lk.kind for lk in report.leaks} == {"instance-token", "abs-home-path"}
+
+
+def test_a_login_the_owner_listed_himself_is_armed_everywhere(tmp_path, monkeypatch):
     # Dropping the login is about a word that merely happens to be a login — not an
-    # exemption. An owner who lists it says "this word IS me", and it stays armed.
+    # exemption. An owner who lists it says "this word IS me", and it guards both
+    # shipped code and prose, exactly like any other personal token.
     monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
     monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: ["tester"])
-    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
     root = tmp_path / "repo"
     root.mkdir()
     _showcase_tree(root)
     (root / "docs" / "RELEASING.md").write_text("ask tester first\n", encoding="utf-8")
     monkeypatch.setattr(verify, "repo_root", lambda: root)
     pkg = root / "src" / "tide"
-    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    (pkg / "boom.py").write_text('OWNER = "tester"\n', encoding="utf-8")
     report = verify.check_portable(pkg_dir=pkg)
     assert not report.ok
-    assert any(lk.source == "docs/RELEASING.md" for lk in report.leaks)
+    assert {lk.source for lk in report.leaks} == {"tide/boom.py", "docs/RELEASING.md"}
 
 
-def test_the_login_still_guards_shipped_code(tmp_path, monkeypatch):
-    # The narrowing is scoped to prose: in shipped source a username can only be a
-    # leak, and that rule is untouched.
-    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+def test_report_says_the_login_is_not_a_token(tmp_path, monkeypatch):
+    # Not armed must READ as not armed — the same no-silent-green rule as the
+    # personal-tokens line above it.
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "user")
     monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
-    monkeypatch.setattr(verify, "default_instance_tokens", lambda: ["tester"])
     monkeypatch.setattr(verify, "repo_root", lambda: None)
     pkg = tmp_path / "tide"
     pkg.mkdir()
-    (pkg / "boom.py").write_text('PATH = "/somewhere/tester/cache"\n', encoding="utf-8")
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
     report = verify.check_portable(pkg_dir=pkg)
-    assert not report.ok
-    assert any(lk.detail == "tester" for lk in report.leaks)
+    assert any("machine login" in m and "not a token" in m for m in report.messages)
 
 
-# --- the traps: one spelling never covers the others -----------------------
+def test_report_stays_quiet_when_the_login_is_listed(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify, "machine_login_token", lambda: "tester")
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: ["tester"])
+    monkeypatch.setattr(verify, "repo_root", lambda: None)
+    pkg = tmp_path / "tide"
+    pkg.mkdir()
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    report = verify.check_portable(pkg_dir=pkg)
+    assert not any("machine login" in m for m in report.messages)
 
-def test_tokens_match_case_insensitively():
-    # A name is capitalised in prose, lower-cased in a signer field or a path, and
-    # shouted in an env var. One entry must catch all three, or the list rots into
-    # variants nobody remembers to add.
-    for line in ("prose says Stem", 'signer="stem"', "STEM=1"):
-        leaks = verify.scan_text(line, "f.py", ["Stem"])
-        assert len(leaks) == 1, line
-        assert leaks[0].detail == "Stem"
+
+# --- the engine's own registry --------------------------------------------
+
+def test_roster_with_entries_is_a_leak(tmp_path):
+    """работа 57 п.8 — roster.md is the one tracked file tide wrote about ITSELF.
+
+    This repo is a control-home (roster.md is what makes a directory one), so one
+    `tide adopt` inside the checkout appends `name | <absolute path>`. It was safe
+    only by being empty — a state, not a defence; its twin terminals.json already
+    leaked here once the same way.
+    """
+    (tmp_path / "roster.md").write_text(
+        "# tide roster\nmine | /Users/someone/code/mine\n", encoding="utf-8")
+    leaks = verify.scan_self_written_registry(tmp_path)
+    assert [(lk.source, lk.kind, lk.detail) for lk in leaks] == [
+        ("roster.md", "self-written-registry", "mine")]
 
 
-def test_a_latin_token_does_not_cover_a_cyrillic_one():
-    # THE ALPHABET TRAP, as a test: a sweep done in one script leaves the other
-    # untouched and the gate reports an honest, confident zero.
-    assert verify.scan_text("покажи Стему", "f.py", ["Stem"]) == []
-    assert verify.scan_text("show Stem", "f.py", ["Стем"]) == []
-    both = ["Stem", "Стем"]
-    assert len(verify.scan_text("покажи Стему", "f.py", both)) == 1
-    assert len(verify.scan_text("show Stem", "f.py", both)) == 1
+def test_roster_entry_without_any_personal_token_is_still_a_leak(tmp_path):
+    # Why this needs its own check rather than riding on the token scan: a
+    # registry of someone's projects is instance content whatever the paths say.
+    (tmp_path / "roster.md").write_text(
+        "# tide roster\nthing | /opt/work/thing\n", encoding="utf-8")
+    assert len(verify.scan_self_written_registry(tmp_path)) == 1
+    assert verify.scan_text("thing | /opt/work/thing", "roster.md",
+                            verify.default_instance_tokens()) == []
+
+
+def test_a_remote_roster_entry_is_caught_too(tmp_path):
+    # name | path | environment — the three-field form.
+    (tmp_path / "roster.md").write_text(
+        "# tide roster\nserver | /srv/app | box\n", encoding="utf-8")
+    assert len(verify.scan_self_written_registry(tmp_path)) == 1
+
+
+def test_an_empty_or_absent_roster_is_clean(tmp_path):
+    assert verify.scan_self_written_registry(tmp_path) == []          # absent
+    (tmp_path / "roster.md").write_text("# tide roster\n", encoding="utf-8")
+    assert verify.scan_self_written_registry(tmp_path) == []          # header only
+
+
+def test_check_portable_reports_the_registry(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _showcase_tree(root)
+    monkeypatch.setattr(verify, "repo_root", lambda: root)
+    monkeypatch.setattr(verify, "home_instance_tokens", lambda *a, **k: [])
+    pkg = root / "src" / "tide"
+    (pkg / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    clean = verify.check_portable(pkg_dir=pkg)
+    assert clean.ok and any("roster.md" in m and "empty" in m for m in clean.messages)
+    (root / "roster.md").write_text(
+        "# tide roster\nmine | /Users/someone/code\n", encoding="utf-8")
+    dirty = verify.check_portable(pkg_dir=pkg)
+    assert not dirty.ok
+    assert any(lk.kind == "self-written-registry" for lk in dirty.leaks)
 
 
 # --- check_portable orchestration ------------------------------------------
