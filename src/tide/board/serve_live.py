@@ -24,23 +24,26 @@ RENDER = HERE / "live_projection.py"
 # в пакет и соседом кода стал site-packages. Адрес поэтому импортируется ниже
 # вместе с домом, а не считается тут второй раз: разъедься эти два ответа,
 # сервер отдавал бы файл, которого рендер не пишет.
-# press — проект-дом разборов и talks (решение 17.07): выехал из tide-stack,
-# доска лишь проецирует его; путь переопределяется env NEWS_ROOT.
 import os as _os
-NEWS_ROOT = Path(_os.environ.get(
-    "NEWS_ROOT", str(Path.home() / "Documents" / "projects" / "press")))
 
-# ДОМ — один с рендером. Берём его оттуда, а не заводим вторую копию правила:
-# разъедься они, кнопка правила бы файл в одном доме, а доска показывала другой.
+# ДОМ, ПАПКА РАЗБОРОВ И НАСТРОЙКИ — одни с рендером. Берём их оттуда, а не
+# заводим вторую копию правила: разъедься они, кнопка правила бы файл в одном
+# доме, а доска показывала другой.
 # Импорт мягкий нарочно: рендер могли только что сломать правкой, а сервер обязан
 # подняться и отдавать последний удачный билд (урок 12.08 — сутки старой доски).
 sys.path.insert(0, str(HERE))
 try:
-    from live_projection import HOME as CONTROL_HOME, OUT, works_sources
+    from live_projection import (HOME as CONTROL_HOME, NEWS_DIR as NEWS_ROOT,
+                                 OUT, _conf, works_sources)
 except Exception as _exc:  # noqa: BLE001 — сервер важнее причины
     CONTROL_HOME = Path(_os.environ.get("TIDE_HOME")
-                        or Path.home() / "Documents" / "tide-home")
+                        or Path.home() / "tide-home")
+    NEWS_ROOT = CONTROL_HOME / ".tide" / "news"
     OUT = HERE / "build" / "board.html"
+
+    def _conf(key, default=""):
+        """Запасной ответ: только окружение — файла настроек без рендера нет."""
+        return (_os.environ.get(key) or "").strip() or default
 
     def works_sources():
         """Запасной ответ: только общая папка рядом с кодом — как было всегда."""
@@ -247,11 +250,11 @@ class Handler(BaseHTTPRequestHandler):
         живости — cand 101, respawn `claude --resume` под тем же sid со scoped-MCP)
         живёт в tide; доски-копия `_reg_*`/`_orca_create` умерла против этой двери.
 
-        Гейт каталога — по РЕЕСТРУ (roster.md), как у ▶ spark и /take. Раньше тут
-        стоял префикс ~/Documents/projects/, а проекты живут и вне него (music →
-        ~/Documents/music, tide-home → ~/Documents/tide-home): их ⟳ молча отвечал
-        400, человек видел «жму — ничего не происходит» (24.08). Реестр гейт только
-        РАСШИРЯЕТ — старый префикс остался запасным, чтобы пропавший roster.md не
+        Гейт каталога — по РЕЕСТРУ (roster.md), как у ▶ spark и /take. Раньше
+        тут стоял префикс одной папки, а проекты живут и вне неё — такой проект
+        молча получал 400, и человек видел «жму, и ничего не происходит»
+        (24.08). Реестр гейт только РАСШИРЯЕТ — старый префикс остался
+        запасным, чтобы пропавший roster.md не
         закрыл дверь всем.
         """
         import json as _json
@@ -823,17 +826,25 @@ class Handler(BaseHTTPRequestHandler):
         import urllib.request as _ur
         news = NEWS_ROOT
         inbox = news / "inbox.urls"
-        try:
-            br = subprocess.run(
-                ["security", "find-generic-password", "-s",
-                 "news-inboxbot-bearer", "-w"],
-                capture_output=True, text=True, timeout=10).stdout.strip()
-            req = _ur.Request(
-                "https://inboxbot-production.up.railway.app/queue",
-                headers={"Authorization": "Bearer " + br})
-            items = _json.load(_ur.urlopen(req, timeout=8)) if br else []
-        except Exception:
-            items = []
+        # Адрес инбокс-бота — приватный деплой конкретного человека, а не часть
+        # стека: живёт в `TIDE_INBOX_URL` (окружение или instance.env). Не
+        # назван — запрос НЕ СТРОИТСЯ вовсе: ходить некуда, и молчаливый стук в
+        # чужой хост из коробки был бы хуже пустой очереди.
+        # Токен лежит в связке ключей, и ИМЯ записи — тоже частность установки
+        # (`TIDE_INBOX_TOKEN_KEY`), а не константа стека. Нет адреса или нет
+        # имени ключа — очередь просто пуста.
+        url = _conf("TIDE_INBOX_URL")
+        key = _conf("TIDE_INBOX_TOKEN_KEY")
+        items = []
+        if url and key:
+            try:
+                br = subprocess.run(
+                    ["security", "find-generic-password", "-s", key, "-w"],
+                    capture_output=True, text=True, timeout=10).stdout.strip()
+                req = _ur.Request(url, headers={"Authorization": "Bearer " + br})
+                items = _json.load(_ur.urlopen(req, timeout=8)) if br else []
+            except Exception:
+                items = []
         known = (inbox.read_text(encoding="utf-8").splitlines()
                  if inbox.exists() else [])
         added = 0

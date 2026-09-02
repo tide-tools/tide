@@ -18,6 +18,44 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+def _instance():
+    """Личные значения ЭТОЙ установки — слоем поверх обезличенного кода.
+
+    Файл `instance.env` рядом с кодом доски, строки вида `КЛЮЧ=значение`.
+    В пакете его НЕТ и быть не должно: там все ключи пустые, и доска ведёт себя
+    ровно как у нового человека. У владельца он лежит в верфи и не
+    версионируется — это и есть «пакет обезличен, личное слоем поверх».
+
+    Зачем файл, а не только окружение. Доску поднимает служба launchd, у
+    которой окружения почти нет, а дом ей нужно знать ДО того, как она найдёт
+    контрол-хоум. Прописать это в plist — значит трогать работающую службу и
+    просить перезапуск; файл рядом с кодом даёт то же самое и ничего не трогает.
+    Окружение при этом СИЛЬНЕЕ файла: переменную можно перебить на один запуск.
+    """
+    out = {}
+    try:
+        f = Path(__file__).resolve().parent / "instance.env"
+        if not f.is_file():
+            return out
+        for raw in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            key, sep, val = line.partition("=")
+            if sep and key.strip():
+                out[key.strip()] = val.strip()
+    except OSError:
+        return {}
+    return out
+
+
+_INSTANCE = _instance()
+
+
+def _conf(key, default=""):
+    """Значение настройки: окружение, потом `instance.env`, потом умолчание."""
+    v = (os.environ.get(key) or "").strip()
+    return v or _INSTANCE.get(key, "").strip() or default
+
+
 def _control_home():
     """Дом, из которого доска читает ростер, хендоффы и избранное.
 
@@ -27,15 +65,11 @@ def _control_home():
     `_plugins_off` ниже: `import tide` стоит ~0.25 с на каждый рендер, а доска
     обязана открыться и в питоне, который tide не видит.
 
-    ПОСЛЕДНЕЙ стоит ветка на `~/Documents/tide-home`, и это не личная
-    константа, забытая в общем коде, а переходник ровно на одну машину:
-    доску владельца поднимает служба launchd, у которой в plist нет `TIDE_HOME`,
-    а подъём от файла доски упирается в `~/Documents`, где ростера нет. Путь
-    берётся ТОЛЬКО если там правда лежит `roster.md`, поэтому у любого другого
-    человека этой ветки просто нет. Умрёт вместе с переводом службы на
-    `tide board` — тогда дом приедет из окружения, как у всех.
+    Последним — `~/tide-home`: ровно то место, которое называет человеку
+    QUICKSTART («export TIDE_HOME=~/tide-home»). Если у кого-то дом лежит иначе
+    и переменной нет, его адрес живёт в `instance.env`, а не в этом коде.
     """
-    env = (os.environ.get("TIDE_HOME") or "").strip()
+    env = _conf("TIDE_HOME")
     if env:
         p = Path(env).expanduser()
         if p.is_dir():
@@ -43,7 +77,7 @@ def _control_home():
     for c in Path(__file__).resolve().parents:
         if (c / "roster.md").is_file():
             return c
-    return Path.home() / "Documents" / "tide-home"
+    return Path.home() / "tide-home"
 
 
 HOME = _control_home()
@@ -5592,12 +5626,14 @@ SKILLS_CSS = """
 # строки `source:`/`date:`), очередь на разбор = news/inbox.urls (пишет
 # форма через serve_live /news-add). Вода — эта проекция; конвейер
 # ссылка → транскрипт → статья приедет следующим шагом нити.
-# press — отдельный проект (решение 17.07): разборы + talks выехали из
-# tide-stack в свой дом; доска их лишь проецирует. Путь переопределяется
-# env NEWS_ROOT (на случай переезда проекта).
-NEWS_DIR = Path(os.environ.get(
-    "NEWS_ROOT", str(Path.home() / "Documents" / "projects" / "press")))
-NEWS_SITE_URL = "https://tide-news.vercel.app"  # витрина базы (шаг 7 нити 17)
+# Дом разборов — ОТДЕЛЬНЫЙ проект (решение 17.07): доска его лишь проецирует.
+# Чей он и где лежит — свойство установки, а не кода: `NEWS_ROOT` из окружения
+# или `instance.env`. Не сказано — папка в своём доме: её может не быть, и это
+# нормально, вкладка просто пуста.
+NEWS_DIR = Path(_conf("NEWS_ROOT") or (HOME / ".tide" / "news"))
+# Витрина базы (шаг 7 нити 17) — чужой публичный адрес, у каждого свой.
+# Пусто — кнопки «сайт ↗» нет вовсе, а не ссылки в никуда.
+NEWS_SITE_URL = _conf("TIDE_NEWS_SITE_URL")
 
 def _news_favs():
     """Избранное — слаги в news/favorites.txt (пишет ★ через /news-fav)."""
@@ -5709,8 +5745,10 @@ def _news_panel():
         '<input class="nurl" id="nurl" type="url" spellcheck="false" '
         'placeholder="youtube или github — вкинуть ссылку">'
         '<button class="nbtn" id="nadd">в очередь</button>'
-        '<a class="nsite" href="{0}/" title="открыть сайт новостей">'
-        'сайт ↗</a></div>'.format(esc(NEWS_SITE_URL)),
+        # витрины может не быть — тогда и кнопки нет, а не ссылка в никуда
+        + ('<a class="nsite" href="{0}/" title="открыть сайт новостей">'
+           'сайт ↗</a>'.format(esc(NEWS_SITE_URL)) if NEWS_SITE_URL else "")
+        + '</div>',
     ]
     if qn:
         act = ('<span class="nqst">⏳ разбирается…</span>' if st else
