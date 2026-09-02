@@ -162,12 +162,22 @@ tide offload &lt;arc&gt; ...           <span class="cmt"># first pulse — the g
   the sessions rebuilt the picture from the thread's plan, decisions and journals,
   and nothing was lost.</p>
 
-  <h2>THE BOARD</h2>
+  <h2>SURFACES</h2>
+  <p>One structure, two views. The files under <code>.tide/</code> are the
+  truth; the agent and you look at them through different glasses.</p>
+  <p>FOR THE AGENT — arcs and acts. It moves by folders: the thread, a session's
+  passport, a work's card; and by lines inside them: pulses, checks, dispatches.
+  It reads with <code>tide thread</code> and <code>tide work show</code>, writes
+  only through the CLI, and never opens the board.</p>
+  <p>FOR YOU — the board, through the prism of threads:</p>
   <pre>tide board --open               <span class="cmt"># http://127.0.0.1:8765</span></pre>
-  <p>One page: the inbox table — only what waits for your hand — then threads
-  with their sessions, works, decisions. Your gestures are few: yes to a plan,
-  done on a work, a decision. Everything else the agent does, and you see it
-  there.</p>
+  <p>Pick a thread and you see its sessions newest first, the lead marked; open
+  a session and you see its passport — cursor, acts; the handoff seed hangs on
+  the thread where it was left; a past session reopens from its card, and a
+  terminal comes back into that context. Works, decisions and the inbox table —
+  only what waits for your hand — sit on the same page.</p>
+  <p class="cmt">Nothing on the board is typed into it. Every card is a file the
+  agent wrote through a verb; the board re-reads <code>.tide/</code> and draws.</p>
 
   <hr>
 
