@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tide — how it works together</title>
+  <meta name="description" content="tide, how it works together: a thread keeps the perspective, a session writes acts, the thread is read back. One page, one picture.">
+  <meta name="color-scheme" content="light dark">
+  <style>
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #111111;
+      font: 15px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
+    h1 { font-size: 24px; font-weight: 700; letter-spacing: .04em; margin: 0 0 12px; }
+    h2 { font-size: 15px; font-weight: 700; letter-spacing: .10em; margin: 48px 0 12px; }
+    p  { margin: 12px 0; }
+    ol { margin: 0; padding-left: 2em; }
+    li { margin: 6px 0; }
+    pre {
+      margin: 16px 0;
+      padding: 0;
+      font: inherit;
+      overflow-x: auto;
+    }
+    .cmt { opacity: .55; }
+    .saw { opacity: .55; margin: 12px 0 4px; }
+    a { color: inherit; }
+    hr { border: 0; border-top: 1px solid currentColor; opacity: .2; margin: 48px 0; }
+    footer { margin-top: 48px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111111; color: #e6e6e6; }
+    }
+  </style>
+</head>
+<body>
+<main>
+
+  <h1>HOW IT WORKS TOGETHER</h1>
+  <p>Three things, three lifetimes. A THREAD lives for months — it is the
+  perspective: the goal, what must not be forgotten, the decisions, the works.
+  A SESSION lives for hours — one agent in one terminal, and the list of what it
+  did. An ACT lives for a moment — one line: what was done, with proof.</p>
+  <p>The agent writes acts. The thread is read back from them. You change the
+  thread by hand — a yes, a done, a decision. That is the whole machine; the rest
+  of this page is where each piece lives and which command touches it.</p>
+  <p class="cmt">Русская версия — <a href="how-it-works.ru.html">как всё работает вместе</a>.</p>
+
+  <h2>ONE PICTURE</h2>
+  <pre>   YOU  ── terminal: "look at this", "hand off" ──▶  SESSION
+    ▲     board: inbox · threads · works · decisions    │
+    │                                                   │  acts, through the tide CLI
+    │   your word: yes · done · a decision              ▼
+    └───────────────────────────────────────────────  THREAD
+                                    goal · main · decisions · works · sessions</pre>
+  <p class="cmt">Hard rules sit on the CLI as hooks; soft rules sit in the prompt
+  and stay short.</p>
+
+  <h2>THE THREAD</h2>
+  <p>A thread is a folder: <code>.tide/arcs/NN-@name/</code>. Inside —
+  <code>plan.md</code> with the goal and a MAIN section that is printed before
+  anything else, <code>decisions.md</code>, and <code>arcs/</code> with one
+  passport per session. Works live next to it in <code>.tide/arcs/works/</code>.</p>
+  <pre>tide thread                     <span class="cmt"># the whole thread on one screen</span>
+tide thread --check             <span class="cmt"># what burns: promises without a work, silent arcs</span></pre>
+  <p class="saw">You'll see MAIN first, then the plan and its open steps, decisions in
+  force and which work carries each, where the lead session stands, works in
+  flight, what waits for your hand, and the sessions newest first.</p>
+
+  <h2>THE SESSION</h2>
+  <p>Each session has a passport, <code>arcs/NN-slug/arc.md</code>: its role, a
+  cursor, and pulse lines. The newest accepted session leads the thread; earlier
+  ones stay as open history you can return to. A pulse is ten seconds and not a
+  report:</p>
+  <pre>tide offload &lt;arc&gt; --cursor "what I'm doing now" --next "step · step" "what I did"</pre>
+  <p class="cmt">Without pulses the board is blind — a hook nudges a session that
+  has gone quiet.</p>
+
+  <h2>THE ACT</h2>
+  <p>Today an act takes three shapes, and each is one line with a time stamp in a
+  journal: a pulse, a checked item, a dispatch.</p>
+  <pre>tide offload &lt;arc&gt; "found the answer — it's in workspace/notes.md"
+tide work check 12 3 --proof "started it — it answers"    <span class="cmt"># no proof, no check</span>
+tide work dispatch 12 --to "builder"                       <span class="cmt"># a worker was sent</span></pre>
+  <p class="cmt"><code>tide work show 12</code> prints a work's journal: every
+  gesture a line, your words in it.</p>
+
+  <h2>A TICK</h2>
+  <p>The agent's loop is two steps: read, then act.</p>
+  <pre>tide thread                                  <span class="cmt"># where am I</span>
+<span class="cmt">...one thing gets done...</span>
+tide work check 12 3 --proof "..."           <span class="cmt"># or a pulse</span></pre>
+  <p>Nothing is kept in the conversation that the next session would need — if it
+  matters, it is an act.</p>
+
+  <h2>HOW THE AGENT THINKS</h2>
+  <p>A session is Claude Code with tide around it. In order, from waking to
+  handoff:</p>
+  <ol>
+    <li>WAKES BY SPARK — <code>tide menu</code> or <code>tide go</code> opens a
+    terminal with Claude Code already in context; a handoff seed, if one hangs on
+    the thread, is the first thing it reads. The start hook prints the status:
+    threads, candidates, what is unread.</li>
+    <li>GETS ITS PROMPT IN LAYERS — Claude Code's own, then the role (head or
+    worker), the project's canon from <code>.claude/rules/</code>, the thread's
+    plan with MAIN first, and the seed. These are the soft rules; they are kept
+    short on purpose.</li>
+    <li>READS ONE SCREEN — <code>tide thread</code>. Then <code>tide work show</code>
+    for the one work it is about to touch, not for all of them.</li>
+    <li>TALKS, THEN ACTS THROUGH THE CLI — your words come in the terminal; every
+    change the agent makes to the thread goes out as a command: a pulse, a check
+    with proof, a dispatch, a candidate, a decision. A call is visible, and a hook
+    can sit on it.</li>
+    <li>USES ITS OTHER HANDS — skills and MCP servers (a browser, a tracker, a
+    calendar) are Claude Code's own; tide does not wrap them. What came out of
+    them lands in the thread as an act or a file.</li>
+    <li>OFFLOADS BY RHYTHM — a pulse at each turn or decision; a hook nudges after
+    fifteen quiet minutes.</li>
+    <li>SENDS WORKERS — with full hands, into the thread's workspace; the dispatch
+    is a line in the work's journal, the result is a file.</li>
+    <li>HANDS OFF — <code>tide handoff</code> distils the session into a seed; the
+    next session takes it and pulses. Or no seed at all: with acts written, the
+    thread is enough.</li>
+  </ol>
+  <pre>tide thread                                  <span class="cmt"># one screen</span>
+tide offload &lt;arc&gt; --cursor "..." --next "..."   <span class="cmt"># a pulse, by rhythm</span>
+tide work check 12 3 --proof "..."           <span class="cmt"># an act, through the CLI</span>
+tide handoff                                 <span class="cmt"># a seed for the next one</span></pre>
+  <p class="cmt">Nothing here is a feature the agent must remember. The head cannot
+  edit files, a check refuses without proof, silence gets a nudge — the rails are
+  hooks, so the prompt stays about the work.</p>
+
+  <h2>HEAD AND WORKERS</h2>
+  <p>The session you talk to is the head. It reads, talks and runs tide; a role
+  gate stops it from editing files itself. It sends workers with full hands, and
+  each dispatch is a line in the work's journal. A worker writes its findings as a
+  file into the thread's workspace; the head checks the item with that path as
+  proof — "done" is the file, not the report about it.</p>
+
+  <h2>GATES</h2>
+  <p>Hard rules are hooks on the CLI, not sentences in a prompt:</p>
+  <ol>
+    <li>a check needs proof — the verb refuses without one</li>
+    <li>done is your hand alone — <code>tide work close --word "…"</code>, or the button on the live board</li>
+    <li>the head may not edit files — it dispatches</li>
+    <li>a silent session is nudged to pulse</li>
+  </ol>
+  <p>Soft rules — the canon, the role, the thread — ride in the system prompt and
+  are kept short, so the agent stays in the work rather than in the rulebook.</p>
+
+  <h2>HANDOFF</h2>
+  <p>A handoff distils the session into a seed and hangs it on the thread;
+  nobody's terminal opens on its own. The next session takes it in three
+  gestures:</p>
+  <pre>tide handoff                    <span class="cmt"># from the old session: seed on the thread</span>
+tide handoffs take              <span class="cmt"># from the new one: accept</span>
+tide offload &lt;arc&gt; ...           <span class="cmt"># first pulse — the gate is closed</span></pre>
+  <p>The seed is the entrance. The memory is the thread. One work was carried
+  through five handoffs in a test; on two of the seams there was no seed at all —
+  the sessions rebuilt the picture from the thread's plan, decisions and journals,
+  and nothing was lost.</p>
+
+  <h2>THE BOARD</h2>
+  <pre>tide board --open               <span class="cmt"># http://127.0.0.1:8765</span></pre>
+  <p>One page: the inbox table — only what waits for your hand — then threads
+  with their sessions, works, decisions. Your gestures are few: yes to a plan,
+  done on a work, a decision. Everything else the agent does, and you see it
+  there.</p>
+
+  <hr>
+
+  <footer>
+    <p><a href="./">tide</a> · <a href="quickstart.html">the first hour</a> ·
+    <a href="how-it-works.ru.html">по-русски</a> ·
+    <a href="https://github.com/tide-tools/tide">github.com/tide-tools/tide</a></p>
+    <p class="cmt">MIT · Python ≥ 3.12 · sessions need Claude Code</p>
+  </footer>
+
+</main>
+</body>
+</html>
