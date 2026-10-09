@@ -143,8 +143,9 @@ def test_pulses_not_clipped_while_the_journal_fits(live):
     seed = ah.build_auto_seed(live["sess"])
     pulses = _pulse_lines(live["sess"])
     assert sum(len(p) > 160 for p in pulses) >= 5
-    for ln in pulses:
-        assert ln in seed.splitlines(), ln[:60]
+    have = seed.splitlines()
+    for ln in pulses:  # курсор старше ПЕРЕДАЧИ помечен (F34), но не срезан
+        assert ln in have or "{0} {1}".format(ln, seed_draft.BEFORE_PASS) in have, ln[:60]
     assert "сжато строк" not in seed
 
 

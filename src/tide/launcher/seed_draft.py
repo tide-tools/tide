@@ -356,13 +356,29 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
         lines.append(work_line(rec))
     pulse = live_lines(context)
     start = max(0, len(pulse) - tail) if tail > 0 else 0
+    passed = last_pass_index(pulse)
     for i in reversed(range(start, len(pulse))):
         ln = pulse[i]
         ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
         if clip and len(ln) > clip and not is_protected_pulse(pulse, i):
             ln = ln[: clip - 1].rstrip() + "…"
+        if passed is not None and i < passed:
+            ln += " " + BEFORE_PASS  # F34: старше ПЕРЕДАЧИ — не спорит с ней молча
         lines.append(ln)
     return lines
+
+
+# Пометка пульса «где мы», записанного раньше ПЕРЕДАЧИ (SOC-101 F34): «остаток F23,
+# F27» в 08:22 рядом с «А–Г сданы» в ПЕРЕДАЧЕ 08:26 читался как противоречие.
+BEFORE_PASS = "(до ПЕРЕДАЧИ)"
+
+
+def last_pass_index(pulse: Sequence[str]) -> Optional[int]:
+    """Индекс последнего пульса «ПЕРЕДАЧА» среди *pulse*; нет — None."""
+    for i in reversed(range(len(pulse))):
+        if _PASS_RE.match(pulse[i].strip()):
+            return i
+    return None
 
 
 # Метка «ПЕРЕДАЧА» — начало ноты пульса (после штампа), а не слово в тексте:

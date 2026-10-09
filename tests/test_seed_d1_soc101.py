@@ -100,3 +100,17 @@ def test_report_a_minute_before_handover_reaches_the_seed(tmp_path, msk, monkeyp
     (sess / "arc.md").write_text("# s\n\nclaude-session: {0}\n".format(sid), encoding="utf-8")
     out = seed_draft.session_incoming(sess, CTX)
     assert out == ["- поручено мне — от tide-stack-12 в 08:25: Пакет Г СДАН: 230b37b … 29cfac7"]
+
+
+# --- F34: пульсы курсора старше ПЕРЕДАЧИ помечены ---------------------------------
+
+def test_cursor_pulses_older_than_handover_are_marked():
+    lines = seed_draft.block_cursor(["передаю нить"], CTX + ["- 2026-10-09T08:27:00 — шлю номер"])
+    assert lines[0] == "передаю нить"
+    assert lines[1] == "- 2026-10-09T08:27:00 — шлю номер"
+    assert lines[2].startswith("- 2026-10-09T08:26:26 — ПЕРЕДАЧА.")
+    assert not lines[2].endswith(seed_draft.BEFORE_PASS)
+    assert lines[3] == "- 2026-10-09T08:22:00 — остаток F23/F16, F27 у handoffs · 03 (до ПЕРЕДАЧИ)"
+    assert lines[4].endswith("сдала промер (до ПЕРЕДАЧИ)")
+    # без ПЕРЕДАЧИ — без пометок
+    assert not any(seed_draft.BEFORE_PASS in ln for ln in seed_draft.block_cursor([], CTX[:2]))
