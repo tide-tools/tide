@@ -167,3 +167,49 @@ def test_hook_crash_is_signalled_not_raised(world, monkeypatch, capsys):
     monkeypatch.setattr(dialog, "log_human", boom)
     _prompt(monkeypatch, "привет")
     assert "хук упал (RuntimeError: сломалось)" in capsys.readouterr().err
+
+
+# --- доставка AO посреди реплики ------------------------------------------------
+
+def test_ao_session_delivery_cut_out_and_glued():
+    prompt = ('если подня<ao-session-delivery id="session-send:3011"> [from app-development-1]'
+              ' Сессия снова моя.\n1) techlead </ao-session-delivery>л')
+    assert dialog.human_text(prompt) == ("ao", "если поднял")
+    # две вставки и пробелы вокруг — слова склеены как набраны
+    assert dialog.human_text("раз <system-reminder>x</system-reminder>два"
+                             "<task-notification>y</task-notification> три") \
+        == ("ao", "раз два три")
+    # незакрытая — конца не видно, слово человека до неё
+    assert dialog.human_text("если подня<ao-session-delivery id=\"s\"> [from x] обрыв") \
+        == ("ao", "если подня")
+    assert dialog.human_text('<ao-session-delivery id="s"> [from x] текст </ao-session-delivery>') \
+        is None
+
+
+# --- посев: журнал пульта + dialog.md нити ----------------------------------------
+
+def test_tail_merges_pult_log_and_thread_dialog(world, monkeypatch):
+    log = world["tmp"] / "pult" / "dialog.jsonl"
+    log.parent.mkdir()
+    rows = [
+        {"ts": "2026-10-09T05:00:00+00:00", "dir": "in", "kind": "tg", "text": "тут?"},
+        {"ts": "2026-10-09T05:00:30+00:00", "dir": "out", "kind": "reply", "text": "да"},
+        {"ts": "2026-10-09T05:10:00+00:00", "dir": "in", "kind": "linear", "text": "ок"},
+    ]
+    log.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                   encoding="utf-8")
+    monkeypatch.setenv(dialog.LOG_ENV, str(log))
+    local = lambda utc: datetime.fromisoformat(utc).astimezone().replace(tzinfo=None)  # noqa: E731
+    dialog.append(world["thread"], dialog.HUMAN, "tg", "тут?",
+                  local("2026-10-09T05:00:02+00:00"))            # тот же [tg] — дубль
+    dialog.append(world["thread"], dialog.HUMAN, "ao", "из сессии AO",
+                  local("2026-10-09T05:05:00+00:00"))
+    lines = dialog.tail(world["thread"])
+    assert [ln.split(" · ", 3)[3] for ln in lines] == ["тут?", "да", "из сессии AO", "ок"]
+    assert dialog.tail(world["thread"], n=2)[-1].endswith(" · linear · ок")
+
+
+def test_tail_thread_dialog_alone(world):
+    dialog.append(world["thread"], dialog.HUMAN, "ao", "x" * 900, NOW)
+    [line] = dialog.tail(world["thread"])
+    assert line.split(" · ", 3)[3] == "x" * (dialog.CLIP - 1) + "…"
