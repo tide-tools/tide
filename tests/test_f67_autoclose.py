@@ -159,7 +159,7 @@ def test_autoclose_waits_quiet(pair, tmp_path):
 
 def test_autoclose_skips_terminated_and_same_ao(pair, tmp_path, monkeypatch):
     tr = _transcript(tmp_path)
-    assert "уже закрыта" in _v(pair, tr, alive=False)["why"]
+    assert "уже вышла (AO: terminated)" in _v(pair, tr, alive=False)["why"]
     from tide.arc import holder
     monkeypatch.setattr(holder, "ao_handle_for", lambda home, sid: "same-1")
     from tide.hooks import handed_off
@@ -394,3 +394,65 @@ def test_sendmessage_after_final_revives_worker(tmp_path):
             "type": "tool_use", "id": "s1", "name": "SendMessage",
             "input": {"to": "a320", "message": "ещё прогон"}}]))
     assert ac.interim_workers(tr) == ["a320 «возобновлён письмом после итога»"]
+
+
+# --- SOC-143: конечный статус AO = старая уже вышла, kill не нужен ---------------------
+
+@pytest.mark.parametrize("old_state,word", [
+    ({"status": "exited", "isTerminated": False, "activity": "exited"}, "exited"),
+    ({"status": "idle", "isTerminated": False, "activity": {"state": "exited"}}, "exited"),
+    ({"status": "terminated", "isTerminated": True}, "terminated"),
+    ({"status": "killed"}, "killed"),
+    ({"status": "merged", "isTerminated": True}, "merged"),
+])
+def test_old_already_exited_no_kill(pair, tmp_path, old_state, word):
+    kills = []
+    res = ac.sweep(pair, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=lambda h: old_state if h == "old-7" else {"status": "idle"},
+                   kill=kills.append, alert=lambda *a: None, say=lambda *a: True)
+    assert not kills and res[0]["close"] is False
+    assert "уже вышла (AO: {0})".format(word) in res[0]["why"]
+    log = (paths.state_dir(pair) / ac.LOG).read_text(encoding="utf-8")
+    assert "300-30-handoffs · уже вышла · old-7" in log and "закрываю" not in log
+
+
+def test_dry_run_exited_writes_no_log(pair, tmp_path):
+    res = ac.sweep(pair, dry_run=True, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=lambda h: {"status": "exited"} if h == "old-7" else {})
+    assert "уже вышла" in res[0]["why"]
+    assert not (paths.state_dir(pair) / ac.LOG).exists()
+
+
+def test_failed_kill_says_why_and_rechecks(pair, tmp_path):
+    seen = {"n": 0}
+
+    def session_of(h):
+        if h != "old-7":
+            return {"status": "idle"}
+        seen["n"] += 1  # до kill жива, после — уже вышла
+        return {"status": "idle"} if seen["n"] == 1 else {"status": "exited"}
+
+    res = ac.sweep(pair, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=session_of, alert=lambda *a: None, say=lambda *a: True,
+                   kill=lambda h: (False, "ao session: session not running"))
+    v = res[0]
+    assert v["closed"] is False and v["gone"] == "exited"
+    out = ac.render(v, dry_run=False)
+    assert "kill: ao session: session not running" in out and "уже вышла (AO: exited)" in out
+    log = (paths.state_dir(pair) / ac.LOG).read_text(encoding="utf-8")
+    assert "НЕ ВЫШЛО · причина: ao session: session not running" in log
+    assert "старая уже вышла (AO: exited)" in log
+    # неудачный kill не запирает пару; следующий проход видит «уже вышла», без kill
+    again = ac.sweep(pair, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                     session_of=lambda h: {"status": "exited"} if h == "old-7" else {},
+                     kill=lambda h: pytest.fail("kill по вышедшей"))
+    assert "уже вышла" in again[0]["why"]
+
+
+def test_kill_error_carries_ao_words(monkeypatch):
+    from tide.adapters import ao
+
+    def boom(args, timeout=60):
+        raise ao.AoError("ao session kill: no such session (exit 2)")
+    monkeypatch.setattr(ao, "_call", boom)
+    assert ac._kill("x") == (False, "ao session kill: no such session (exit 2)")

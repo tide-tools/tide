@@ -55,6 +55,24 @@ THROTTLE_SEC = 120
 ROUTE_MANAGER = "manager"
 
 
+# Конечные статусы AO (``status``/``activity.state``): сессия уже вышла — kill не нужен.
+FINAL_STATUSES = ("exited", "terminated", "killed", "done", "completed", "merged",
+                  "cleanup", "errored", "failed", "stopped", "dead")
+
+
+def ended(s: Optional[dict]) -> str:
+    """Конечный статус AO-сессии *s* (``"exited"`` …) или ``""``, если жива."""
+    if not s:
+        return ""
+    act = s.get("activity")
+    act = act.get("state") if isinstance(act, dict) else act
+    for v in (s.get("status"), act):
+        v = str(v or "").strip().lower()
+        if v in FINAL_STATUSES:
+            return v
+    return "terminated" if s.get("isTerminated") else ""
+
+
 def enabled(env: Optional[Dict[str, str]] = None) -> bool:
     e = os.environ if env is None else env
     return (e.get(ENV) or "").strip().lower() in ("1", "on", "yes", "true")
@@ -69,7 +87,9 @@ def _closed_before(home: Path, offer: str) -> bool:
         lines = _log_path(home).read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
-    return any(" · {0} · закрываю".format(offer) in ln for ln in lines)
+    # закрытой считаем только пару с удачным kill: не вышедший kill не запирает пару
+    return any(" · {0} · kill ".format(offer) in ln and ln.rstrip().endswith(" · ok")
+               for ln in lines)
 
 
 def journal(home: Path, *parts: str) -> Optional[str]:
@@ -283,10 +303,12 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     s = session_of(old_ao)
     if not s:
         return no("AO не знает {0} — уже закрыта или AO недоступен".format(old_ao))
-    if s.get("isTerminated"):
-        return no("{0} уже закрыта".format(old_ao))
+    gone = ended(s)
+    if gone:
+        out["gone"] = gone
+        return no("старая {0} уже вышла (AO: {1}) — kill не нужен".format(old_ao, gone))
     n = session_of(new_ao)
-    if not n or n.get("isTerminated"):
+    if not n or ended(n):
         return no("новая {0} не жива (AO: {1}) — старую не закрываю".format(
             new_ao, "закрыта" if n else "не знает"))
     if transcript_of is None:
@@ -371,18 +393,22 @@ def _alert_manager(text: str, source: str) -> None:
         _ah.tell_manager(text)
 
 
-def _kill(handle: str) -> bool:
+def _kill(handle: str):
+    """``ao session kill`` → ``(ok, причина)``; причина — слова ao (stderr/код)."""
     from ..adapters import ao
     try:
         ao._call(["session", "kill", handle], timeout=60)
-    except Exception:  # noqa: BLE001
-        return False
-    return True
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc) or type(exc).__name__
+    return True, ""
 
 
 def close(home: Path, v: Dict[str, object], *, say=None, alert=None, kill=None,
-          now: Optional[datetime] = None) -> bool:
-    """Журнал → менеджер → последнее слово новой → ``ao session kill``."""
+          now: Optional[datetime] = None,
+          session_of: Optional[Callable[[str], Optional[dict]]] = None) -> bool:
+    """Журнал → менеджер → последнее слово новой → ``ao session kill``.
+    Kill не вышел — причина в журнал и в *v* (``kill_error``), статус старой
+    спрашиваем заново: уже вышла — так и пишем (``gone``)."""
     at = (now or datetime.now()).strftime("%H:%M")
     journal(home, str(v["offer"]), "закрываю", str(v["old_ao"]), "→ " + str(v["new_ao"]),
             str(v["why"]))
@@ -398,9 +424,26 @@ def close(home: Path, v: Dict[str, object], *, say=None, alert=None, kill=None,
         say(str(v["new_ao"]), new_text(v, at))
     except Exception:  # noqa: BLE001
         pass
-    ok = (kill or _kill)(str(v["old_ao"]))
-    journal(home, str(v["offer"]), "kill " + str(v["old_ao"]), "ok" if ok else "НЕ ВЫШЛО")
-    return ok
+    res = (kill or _kill)(str(v["old_ao"]))
+    ok, why = (res if isinstance(res, tuple) else (bool(res), ""))
+    if ok:
+        journal(home, str(v["offer"]), "kill " + str(v["old_ao"]), "ok")
+        return True
+    v["kill_error"] = why or "ao не сказал причину"
+    gone = ""
+    try:
+        if session_of is None:
+            from ..adapters.ao import AoAdapter
+            session_of = AoAdapter().session
+        gone = ended(session_of(str(v["old_ao"])))
+    except Exception:  # noqa: BLE001
+        gone = ""
+    if gone:
+        v["gone"] = gone
+    journal(home, str(v["offer"]), "kill " + str(v["old_ao"]), "НЕ ВЫШЛО",
+            "причина: " + str(v["kill_error"]),
+            "старая уже вышла (AO: {0})".format(gone) if gone else "старая всё ещё жива")
+    return False
 
 
 def sweep(home: Path, *, dry_run: bool = False, skip: Iterable[str] = (),
@@ -418,12 +461,23 @@ def sweep(home: Path, *, dry_run: bool = False, skip: Iterable[str] = (),
             continue  # у сессии важна последняя отдача
         seen.add(sid)
         v = verdict(home, rec, now=now, **kw)
+        if v.get("gone") and not dry_run and not _gone_logged(home, str(v["offer"])):
+            journal(home, str(v["offer"]), "уже вышла", str(v["old_ao"]),
+                    "AO: " + str(v["gone"]), "без kill")
         if v["close"] and sid in skip:
             v["close"], v["why"] = False, "это мой собственный ход — закрою со стороны"
         if v["close"] and not dry_run:
-            v["closed"] = close(home, v, now=now, **act)
+            v["closed"] = close(home, v, now=now, session_of=kw.get("session_of"), **act)
         out.append(v)
     return out
+
+
+def _gone_logged(home: Path, offer: str) -> bool:
+    try:
+        lines = _log_path(home).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    return any(" · {0} · уже вышла".format(offer) in ln for ln in lines)
 
 
 def _throttled(home: Path) -> bool:
@@ -461,8 +515,13 @@ def render(v: Dict[str, object], *, dry_run: bool) -> str:
             "закрыла" if v.get("closed") else "пыталась закрыть (kill не вышел)")
     else:
         head = "не закрываю"
-    return "{0} {1}: старая {2} → новая {3}\n  почему: {4}".format(
+    text = "{0} {1}: старая {2} → новая {3}\n  почему: {4}".format(
         v["offer"], head, v["old"], v["new"], v["why"])
+    if v.get("close") and not dry_run and not v.get("closed"):
+        text += "\n  kill: {0}".format(v.get("kill_error") or "?")
+        text += ("\n  старая уже вышла (AO: {0})".format(v["gone"]) if v.get("gone")
+                 else "\n  старая всё ещё жива по AO")
+    return text
 
 
 def cmd_autoclose(args) -> int:
@@ -500,5 +559,5 @@ def register_autoclose(hsub) -> None:
     ap.set_defaults(func=cmd_autoclose, _cmd="handoffs autoclose")
 
 
-__all__ = ["ENV", "LOG", "candidates", "interim_workers", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
+__all__ = ["ENV", "LOG", "candidates", "ended", "interim_workers", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
            "register_autoclose", "render", "sweep", "unforwarded_results", "verdict"]
