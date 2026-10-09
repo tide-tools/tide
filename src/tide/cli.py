@@ -476,9 +476,14 @@ def _register_handoffs(sub) -> None:
 def _register_offload(sub) -> None:
     # cand 40: по-ходовая выгрузка — одна быстрая команда (строка в ## context +
     # --cursor + штамп offloaded-at); её энфорсер — Stop-хук offload-nudge.
+    # launcher.reception.wrap_offload: первый настоящий пульс принявшей сессии —
+    # одно сообщение Грише о приёме (SOC-101, tg 3119); offload — домен, launcher
+    # не видит, поэтому компонуется здесь.
+    from .launcher.reception import wrap_offload
     from .offload import register as register_offload
 
     register_offload(sub)
+    wrap_offload(sub)
 
 
 def _register_lookback(sub) -> None:

@@ -471,6 +471,8 @@ def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None,
             pass
     if out.get("action") == NOT_ALIVE:
         _tell_origin(Path(home), key, NOT_ALIVE_LINE)
+        from . import reception  # Грише одно сообщение: не поднялась
+        reception.announce_not_alive(Path(home), key)
     return out
 
 
