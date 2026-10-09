@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tide import cli, fields, handoff_queue as hq, harness, registry, roster, sessions
+from tide import cli, fields, handoff_contract, handoff_queue as hq, harness, registry, \
+    roster, sessions
 from tide.adapters.base import SpawnResult, TerminalAdapter
 from tide.arc import artifact, dialog, holder, stream
 from tide.hooks import context_watch as cw, session_start
@@ -184,7 +185,7 @@ def test_watch_ladder_one_ping_per_threshold(world, monkeypatch):
     # 200k — мягкий пинг, один; в лог пульта (route=log)
     r1 = cw.watch_reason(world["proj"], _payload(world, 200_000))
     assert r1 and "tide offload seam/s1" in r1 and cw.AUTO_CMD in r1
-    assert "ближайшей точке" in r1
+    assert "передача нити начинается сейчас" in r1
     assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("200 ")
     (a1,) = _alerts(sink)
     assert a1["TIDE_ALERT_ROUTE"] == "log"
@@ -342,12 +343,16 @@ def test_auto_seed_from_the_arc(world, monkeypatch):
     assert "работа 07 · 2. второй пункт" in seed
     assert "последняя реплика Гриши" in seed
     assert "<!--" not in seed
-    for block in ("## финал", "## курсор", "## дальше", "## решения", "## карта входа"):
-        assert block in seed
-    # нет журнала — посев без хвоста, не падение
+    # все блоки контракта, по порядку, каждый своим заголовком
+    heads = [ln[3:] for ln in seed.splitlines() if ln.startswith("## ")]
+    assert heads == list(handoff_contract.NAMES)
+    inflight = seed.partition("## в работе прямо сейчас\n\n")[2].partition("\n## ")[0]
+    assert "работа 07 · 2. второй пункт" in inflight
+    # нет журнала — посев без хвоста, не падение: блок на месте, с причиной
     monkeypatch.delenv(dialog.LOG_ENV)
     bare = ah.build_auto_seed(world["sess"])
-    assert "## хвост диалога" in bare and "последняя реплика Гриши" not in bare
+    replies = bare.partition("## неотвеченные реплики Гриши\n\n")[2].partition("\n## ")[0]
+    assert replies.startswith("— ") and "последняя реплика Гриши" not in bare
 
 
 def test_auto_dry_run_writes_nothing(world, monkeypatch, capsys):

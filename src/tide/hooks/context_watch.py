@@ -5,7 +5,9 @@
 (решение 09.10, заменила 300/500), на КАЖДОМ пороге ровно один пинг — блок одной
 остановки с текстом, а не блок каждой остановки:
 
-* ``SOFT`` (200 000) — мягко: «на ближайшей точке шага tide offload и
+* ``SOFT`` (200 000) — порог передачи контракта сида
+  (:data:`tide.handoff_contract.HANDOFF_TOKENS`): передача начинается здесь, не
+  позже — «новое не начинай, доведи текущее действие, tide offload и
   ``tide handoff continue --auto``»;
 * ``HARD`` (300 000) — жёстко: «доведи текущий шаг, новую работу не бери, хендофф
   сейчас»;
@@ -34,9 +36,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .. import fields, offload, paths, slug
+from .. import fields, handoff_contract, offload, paths, slug
 
-SOFT_TOKENS = 200_000
+# Мягкий порог = порог передачи контракта сида: передача начинается здесь, не позже.
+SOFT_TOKENS = handoff_contract.HANDOFF_TOKENS
 HARD_TOKENS = 300_000
 ALARM_TOKENS = 500_000
 SOFT_ENV = "TIDE_CTX_SOFT"
@@ -90,8 +93,8 @@ def _offload_cmd(entry: Path) -> str:
 
 def soft_text(entry: Path, tokens: int, soft: int, hard: int) -> str:
     return (
-        "tide: контекст сессии {0} токенов (порог {1}) — пора готовить передачу нити. "
-        "На ближайшей точке шага:\n"
+        "tide: контекст сессии {0} токенов (порог передачи {1}) — передача нити "
+        "начинается сейчас, не позже. Новое не начинай, доведи текущее действие и:\n"
         "  1. {2}\n"
         "  2. {3}\n"
         "Новая сессия поднимется сама и продолжит с курсора. На {4} — хендофф "
@@ -117,7 +120,7 @@ def alarm_text(entry: Path, tokens: int, alarm: int) -> str:
 
 def _short(entry: Path, tokens: int, level: str) -> str:
     """Кратко для лога пульта (route=log): что сессия услышала."""
-    what = {"soft": "мягкий пинг: на ближайшей точке шага offload и хендофф",
+    what = {"soft": "порог передачи: доведи текущее действие, offload и хендофф",
             "hard": "жёсткий пинг: доведи шаг, хендофф сейчас"}[level]
     return "сессия {0} на {1} тыс. токенов — {2}".format(
         slug.entry_slug(entry.name), _kn(tokens), what)

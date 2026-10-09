@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .. import acts, fields, offload, paths, slug
-from ..arc import artifact as _artifact, dialog as _dialog, stream as _stream, work as _work
+from ..arc import artifact as _artifact, work as _work
 from ..arc.stream import StreamError
 
 # Сколько автопередач подряд без продвижения терпим (развилка Г-1).
@@ -55,7 +55,7 @@ HANDED_OFF_FIELD = "handed-off"        # эта сессия уже переда
 ALERT_CMD_ENV = "TIDE_ALERT_CMD"
 ROUTE_HUMAN = "human"  # «нить встала» — Грише; лестница контекста шлёт log/manager
 
-DIALOG_TAIL = 12
+DIALOG_TAIL = 12  # = seed_draft.DIALOG_TAIL (хвост диалога в сиде)
 
 # Отметки причины «не поднимаем».
 STOP_QUESTION = "question"
@@ -213,54 +213,38 @@ def decide_for(session_entry: Path) -> Decision:
 
 # --- посев -------------------------------------------------------------------
 
-def where_we_are(thread_dir: Path) -> List[str]:
-    """``## where we are`` паспорта нити дословно — без пустых заглушек слоёв.
-
-    Слой, где осталась только заглушка, уходит целиком: подзаголовок без тела
-    читался бы как «тут пусто», а это не так — тут просто ещё не писали."""
-    from . import seed_draft
-
-    body = seed_draft.section_body(
-        seed_draft.sections(seed_draft._read(_stream.passport_path(Path(thread_dir)))), "where we are")
-    out: List[str] = []
-    head: Optional[str] = None
-    for ln in body:
-        if ln.startswith("### "):
-            head = ln.rstrip()
-            continue
-        if not ln.strip() or ln.strip().startswith("<"):
-            continue
-        if head is not None:
-            out.append(head)
-            head = None
-        out.append(ln.rstrip())
-    return out
-
-
 def build_auto_seed(session_entry: Path) -> str:
     """Посев автохендоффа из арки — без пересказа чата.
 
-    Семь блоков контракта сида (тот же сборщик, что у ``tide handoffs draft``) +
-    «где мы» нити и итог прошлой сессии дословно (F2) + сжатый журнал пульса,
-    старше хвоста курсора, не больше :data:`seed_draft.JOURNAL_SHARE` тела (F5) +
-    открытые пункты работ нити + хвост диалога ЭТОЙ нити (F6). Опыт и карта входа
-    наследуются из входного сида (F3, F4); подсказки куратора вырезаны.
+    Все блоки контракта сида (:mod:`tide.handoff_contract`) — тот же сборщик, что у
+    ``tide handoffs draft``: ожидание Гриши и «где мы» — слои нити дословно (F1/F2)
+    плюс курсор и итог прошлой сессии; опыт и карта входа наследуются из входного
+    сида (F3, F4); открытые пункты работ нити — «в работе прямо сейчас»; хвост
+    диалога ЭТОЙ нити — «неотвеченные реплики» (F6); сырой журнал пульса — не
+    больше :data:`seed_draft.JOURNAL_SHARE` тела (F5). Подсказки куратора вырезаны.
     """
-    from . import seed_draft
+    from . import seed_draft as sd
 
     session_entry = Path(session_entry)
     root = _project_root(session_entry)
     thread = thread_of(session_entry)
-    passport = seed_draft.sections(seed_draft._read(session_entry / "arc.md"))
-    context = seed_draft.section_body(passport, "context")
-    clip = seed_draft.JOURNAL_CLIP  # хвост пульса в курсоре — тоже сырой журнал (F5)
-    bodies = seed_draft.draft_bodies(root, session_entry, pulse_clip=clip)
-    bodies["опыт"] = [ln for ln in bodies.get("опыт", []) if "<!--" not in ln]
-    bodies["карта входа"] = [ln for ln in bodies.get("карта входа", []) if "<!--" not in ln]
-    bodies["карта входа"].append(
-        "- автохендофф: читай паспорт прошлой сессии {0}/arc.md, plan.md нити и "
-        "хвост диалога ниже".format(session_entry.name))
-    nxt = [ln.lstrip("- ").strip() for ln in bodies.get("дальше", []) if ln.strip()]
+    passport = sd.sections(sd._read(session_entry / "arc.md"))
+    context = sd.section_body(passport, "context")
+
+    def bodies_at(clip: int) -> Dict[str, List[str]]:
+        out = sd.draft_bodies(root, session_entry, pulse_clip=clip)
+        out = {k: [ln for ln in v if "<!--" not in ln] for k, v in out.items()}
+        out[sd.ENTRY_MAP].append(
+            "- автохендофф: читай паспорт прошлой сессии {0}/arc.md, plan.md нити и "
+            "«неотвеченные реплики Гриши» ниже".format(session_entry.name))
+        if not out.get(sd.INFLIGHT):
+            out[sd.INFLIGHT] = ["{0} автохендофф: на диске в полёте ничего — воркеров и "
+                                "сабагентов сессия не перечислила".format(sd.EMPTY)]
+        return out
+
+    clip = sd.JOURNAL_CLIP  # хвост пульса в «где мы» — тоже сырой журнал (F5)
+    bodies = bodies_at(clip)
+    nxt = [ln.lstrip("- ").strip() for ln in bodies.get(sd.NEXT, []) if ln.strip()]
     header = [
         "# автохендофф — {0} · нить {1}".format(session_entry.name, thread.name),
         "",
@@ -269,44 +253,13 @@ def build_auto_seed(session_entry: Path) -> str:
     if nxt:
         # _pickup_goal берёт цель новой сессии отсюда
         header.append("следующий шаг: {0}".format(nxt[0]))
-    text = seed_draft.render_draft(bodies, header="\n".join(header))
-    extra: List[str] = ["## где мы — нить", ""]
-    extra += where_we_are(thread) or [seed_draft.EMPTY]
-    extra += ["", "## итог прошлой сессии", ""]
-    extra += seed_draft.prose_lines(seed_draft.section_body(passport, "summary")) \
-        or [seed_draft.EMPTY]
-    extra += ["", "## открытые пункты работ", ""]
-    extra += open_items(root, thread) or [seed_draft.EMPTY]
-    extra += ["", "## хвост диалога", ""]
-    extra += _dialog.tail(thread, DIALOG_TAIL) or [seed_draft.EMPTY]
-    # Сырой журнал (хвост пульса в курсоре + старший журнал) — не больше JOURNAL_SHARE
-    # тела: J ≤ (share·R − T) / (1 − share), R — тело без журнала, T — хвост в курсоре.
-    body_len = len(text) + sum(len(ln) + 1 for ln in extra)
-    if seed_draft.raw_pulse_chars(context, clip=clip) > seed_draft.JOURNAL_SHARE * body_len / 2:
-        clip = seed_draft.JOURNAL_GIST  # хвост съел бы бюджет старшего журнала — короче
-        bodies["курсор"] = seed_draft.draft_bodies(
-            root, session_entry, pulse_clip=clip)["курсор"]
-        text = seed_draft.render_draft(bodies, header="\n".join(header))
-    return _finish(text, extra, context, session_entry,
-                   seed_draft.raw_pulse_chars(context, clip=clip))
-
-
-def _finish(text: str, extra: List[str], context: List[str], session_entry: Path,
-            tail: int) -> str:
-    """Тело + журнал старше курсора в бюджете доли + ссылки на задачи Linear."""
-    from . import seed_draft
-
-    share = seed_draft.JOURNAL_SHARE
-    body = text.rstrip() + "\n\n" + "\n".join(extra) + "\n"
-    journal = seed_draft.block_journal(
-        context, budget=max(0, int((share * len(body) - tail) / (1 - share))),
-        source="{0} (## context)".format(session_entry / "arc.md"))
-    if journal:
-        body += "\n## журнал сессии — старше курсора\n\n" + "\n".join(journal) + "\n"
-    links = seed_draft.block_links(body)
-    if links:
-        body += "\n## задачи Linear\n\n" + "\n".join(links) + "\n"
-    return body
+    head = "\n".join(header)
+    body_len = len(sd.render_draft(bodies, header=head))
+    if sd.raw_pulse_chars(context, clip=clip) > sd.JOURNAL_SHARE * body_len / 2:
+        clip = sd.JOURNAL_GIST  # хвост съел бы бюджет старшего журнала — короче
+        bodies[sd.WHERE] = bodies_at(clip)[sd.WHERE]
+    return sd.seal(bodies, context=context, header=head, clip=clip,
+                   source="{0} (## context)".format(session_entry / "arc.md"))
 
 
 # --- сигнал ------------------------------------------------------------------

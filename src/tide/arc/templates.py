@@ -16,6 +16,8 @@ stamp is added on open by :mod:`tide.arc.stream`, not baked into the template.
 
 from __future__ import annotations
 
+from .. import handoff_contract as _contract
+
 
 def arc_md(name: str) -> str:
     """Seed text for a standalone arc's ``arc.md`` passport.
@@ -39,12 +41,10 @@ def arc_md(name: str) -> str:
 
 # The three layers every next session must get (SOC-101 F1, continuity-audit): what
 # Grisha expects, where the thread stands, what it learnt. Sub-heads under
-# ``## where we are`` — the auto-seed carries this section into the seed verbatim.
-WHERE_LAYERS = (
-    ("ожидание Гриши", "<что Гриша ждёт от нити — его словами, с датой>"),
-    ("где мы", "<сделано · идёт · ждёт Гришу — по строке на каждое>"),
-    ("опыт", "<грабли, петли, «отвергнуто» — копится от сессии к сессии>"),
-)
+# ``## where we are``, named exactly as the seed blocks they feed — names and
+# placeholders live in :mod:`tide.handoff_contract` (THREAD_LAYERS), the one source.
+WHERE_LAYERS = tuple(
+    (_contract.name(key), placeholder) for key, placeholder in _contract.THREAD_LAYERS)
 
 
 def where_we_are_scaffold() -> str:

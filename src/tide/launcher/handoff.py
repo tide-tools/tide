@@ -301,12 +301,19 @@ def _pickup_goal(thread_entry: Path, distil: str) -> Optional[str]:
     actual job), else fall back to the thread goal. Best-effort ⇒ None keeps the old
     placeholder rather than breaking the handoff.
     """
-    for line in (distil or "").splitlines():
+    lines = (distil or "").splitlines()
+    for i, line in enumerate(lines):
         low = line.lower()
         if "следующий шаг" in low or "next step" in low:
-            g = line.split(":", 1)[1] if ":" in line else line
+            if line.lstrip().startswith("#"):
+                # блок контракта «## следующий шаг» — цель в его первой живой строке
+                body = next((ln for ln in lines[i + 1:] if ln.strip()), "")
+                hole = body.strip(" -\t").startswith(("#", "—"))  # пустой блок
+                g = "" if hole else body
+            else:
+                g = line.split(":", 1)[1] if ":" in line else line
             g = g.strip().strip("*#-— ").strip()
-            if g:
+            if g and not g.startswith("<"):
                 return g[:120]
     try:
         from .. import fields

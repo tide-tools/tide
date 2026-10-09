@@ -17,7 +17,10 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "tide"
 STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
          # stdlib-only reader of claude transcripts (imports nothing from tide):
          # sessions filters the SDK host's side chats through it
-         "context_fill"}
+         "context_fill",
+         # pure data of the seed contract (imports nothing): engine, board and
+         # skill all read the seed blocks from it
+         "handoff_contract"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tide import offload
+from tide import handoff_contract, offload
 from tide.arc import candidate, decision, stream
 from tide.launcher import seed_draft
 
@@ -192,16 +192,17 @@ def test_block_entry_map_is_a_scaffold_the_agent_fills():
 
 # --- сборка (чистое) ---------------------------------------------------------
 
-def test_render_draft_keeps_contract_order_and_all_seven_blocks():
-    out = seed_draft.render_draft({"финал": ["нить: X"]})
+def test_render_draft_keeps_contract_order_and_all_blocks():
+    out = seed_draft.render_draft({seed_draft.EXPECTATION: ["нить: X"]})
     heads = [ln[3:] for ln in out.splitlines() if ln.startswith("## ")]
-    assert heads == list(seed_draft.BLOCKS)
+    assert heads == list(seed_draft.BLOCKS) == list(handoff_contract.NAMES)
+    assert len(heads) == 12
 
 
-def test_render_draft_fills_an_empty_block_with_a_visible_hole():
-    out = seed_draft.render_draft({"финал": ["нить: X"]})
-    body = out.partition("## курсор")[2]
-    assert body.strip().startswith(seed_draft.EMPTY)
+def test_render_draft_fills_an_empty_block_with_a_visible_hole_and_why():
+    out = seed_draft.render_draft({seed_draft.EXPECTATION: ["нить: X"]})
+    body = out.partition("## где мы\n")[2].partition("\n## ")[0].strip()
+    assert body == "— " + handoff_contract.block("where").empty
 
 
 # --- сборка с диска ----------------------------------------------------------
@@ -257,20 +258,25 @@ def test_build_draft_carries_the_threads_live_works(tmp_project, session):
     work.set_thread(tmp_project, "02", "99-@chuzhaya")
     offload.write_pulse(session, cursor="стою тут")
 
-    cursor = seed_draft.build_draft(tmp_project, session) \
-        .partition("## курсор")[2].partition("\n## ")[0]
-    assert "- работа 01 Кандидаты на доске — review, ждёт закрытия словом" in cursor
-    assert "Работа чужой нити" not in cursor
+    out = seed_draft.build_draft(tmp_project, session)
+    where = out.partition("## где мы\n")[2].partition("\n## ")[0]
+    assert "- работа 01 Кандидаты на доске — review, ждёт закрытия словом" in where
+    assert "Работа чужой нити" not in out
+    # работа на проверке — и в «ждёт Гришу», с жестом-рекомендацией
+    awaiting = out.partition("## ждёт Гришу\n")[2].partition("\n## ")[0]
+    assert "- работа 01 Кандидаты на доске на проверке — предлагаю:" in awaiting
 
 
 def test_build_draft_on_a_bare_session_is_holes_not_invention(tmp_project):
     stream.new_thread(tmp_project, "pusto")
     bare = stream.new_session(tmp_project, "pusto", "start")
     out = seed_draft.build_draft(tmp_project, bare)
-    # ни одной выдуманной строки: блоки без источника — с «—»
-    for block in ("финал", "курсор", "дальше", "решения", "окружение"):
-        body = out.partition("## {0}".format(block))[2].partition("\n## ")[0]
-        assert body.strip() == seed_draft.EMPTY
+    # ни одной выдуманной строки: блоки без источника — «— <почему пусто>»
+    for key in ("expectation", "where", "next", "decisions", "environment", "linear",
+                "unanswered", "journal"):
+        b = handoff_contract.block(key)
+        body = out.partition("## {0}\n".format(b.name))[2].partition("\n## ")[0]
+        assert body.strip() == handoff_contract.empty_line(b), key
 
 
 def test_build_draft_ignores_a_foreign_sessions_candidates(tmp_project, session):
@@ -282,7 +288,8 @@ def test_build_draft_ignores_a_foreign_sessions_candidates(tmp_project, session)
 def test_build_draft_without_input_seed_leaves_environment_empty(tmp_project, session):
     offload.write_pulse(session, cursor="стою тут")
     out = seed_draft.build_draft(tmp_project, session)
-    assert out.partition("## окружение")[2].strip() == seed_draft.EMPTY
+    body = out.partition("## окружение\n")[2].partition("\n## ")[0].strip()
+    assert body == handoff_contract.empty_line(handoff_contract.block("environment"))
 
 
 # --- резолв сессии + запись --------------------------------------------------

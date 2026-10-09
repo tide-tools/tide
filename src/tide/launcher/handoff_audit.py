@@ -5,9 +5,9 @@
 понимание новой сессии (SOC-101 п.2). Аудит кладёт их рядом с сидом оффера и по
 каждому разделу говорит, что дошло, что дошло сжатым и чего в сиде нет.
 
-Разделы — одна константа :data:`AUDIT_SECTIONS` (её потом заменит единый контракт
-сида). Источник берётся на момент оффера: пульс и реплики позже ``created:`` сид
-нести не мог и в счёт не идут. Сверка текстовая и грубая — ключ строки (начало
+Разделы — :data:`AUDIT_SECTIONS` из единого контракта сида
+(:mod:`tide.handoff_contract`). Источник берётся на момент оффера: пульс и реплики
+позже ``created:`` сид нести не мог и в счёт не идут. Сверка текстовая и грубая — ключ строки (начало
 без штампа времени) ищется в сиде; это сигнал куда смотреть, а не приговор.
 
 Чистые функции (``audit_section``, ``render``) — без диска; :func:`audit` читает
@@ -22,24 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .. import fields, handoff_queue as hq, offload, paths, resolve
+from .. import fields, handoff_contract as contract, handoff_queue as hq, offload, \
+    paths, resolve
 from ..arc import dialog as _dialog
 from . import seed_draft
 
-# Что сверяем: ключ (для --json/доски) → подпись по-человечески. ОДНО место;
-# единый контракт сида заменит этот список целиком.
-AUDIT_SECTIONS = (
-    ("cursor", "курсор"),
-    ("context", "context-строки"),
-    ("next", "дальше"),
-    ("decisions", "решения"),
-    ("experience", "опыт"),
-    ("expectation", "ожидание Гриши / где мы"),
-    ("dialog", "хвост диалога"),
-    ("understood", "понятая цель"),
-)
+# Что сверяем: ключ (для --json/доски) → подпись по-человечески. Живёт в
+# контракте сида (tide.handoff_contract) — подпись называет блок, куда источник
+# должен был дойти.
+AUDIT_SECTIONS = contract.AUDIT_SECTIONS
 
-DIALOG_TAIL = 12   # как у автосида (autohandoff.DIALOG_TAIL)
+DIALOG_TAIL = seed_draft.DIALOG_TAIL  # как у сида
 KEY_CHARS = 60     # ключ строки — столько знаков её начала
 GIST_CHARS = 40    # ключ сжатой строки (pulse_gist) — короче
 SHOW_MISSING = 5   # в человеческом выводе — столько пропусков на раздел
@@ -133,7 +126,7 @@ def audit_decisions(records: Sequence[Dict[str, object]], seed_text: str,
 
     live = [r for r in records
             if decision.normalize_status(str(r.get("status") or "")) == decision.ACCEPTED]
-    block = "\n".join(seed_draft.section_body(seed_draft.sections(seed_text), "решения"))
+    block = "\n".join(contract.find_body(seed_draft.sections(seed_text), "decisions"))
     # У решений нет даты, но номер — хронология: номер старше последнего в блоке
     # сида — вероятно, принято ПОСЛЕ оффера; в пропуски не считаем, называем
     # отдельно («after»). Дыра ВНУТРИ ряда сида — настоящий пропуск.
@@ -196,18 +189,7 @@ def _layers(thread_dir: Path) -> Dict[str, List[str]]:
     """``## where we are`` нити по слоям ``###`` → живые строки (без заглушек)."""
     from ..arc import stream as _stream
 
-    body = seed_draft.section_body(
-        seed_draft.sections(seed_draft._read(_stream.passport_path(thread_dir))),
-        "where we are")
-    out: Dict[str, List[str]] = {}
-    head = ""
-    for ln in body:
-        if ln.startswith("### "):
-            head = ln[4:].strip().lower()
-            continue
-        if ln.strip() and not ln.strip().startswith("<"):
-            out.setdefault(head, []).append(ln.rstrip())
-    return out
+    return seed_draft.layers(seed_draft._read(_stream.passport_path(thread_dir)))
 
 
 def _prior_session(session_dir: Path, rec: Dict[str, object]) -> Optional[Path]:
@@ -267,14 +249,13 @@ def audit(home: Path, key: str) -> Dict[str, object]:
     layers = _layers(thread_dir)
     prior_seed = seed_draft._read(prior / "input" / seed_draft.INPUT_SEED_NAME) if prior else ""
     inherited = [ln for ln in seed_draft.live_lines(
-        seed_draft.section_body(seed_draft.sections(prior_seed), "опыт"))
-        if "<!--" not in ln and ln.strip(" -") != seed_draft.EMPTY]
-    def layer(prefix: str) -> List[str]:  # «### где мы — 9 окт …» → по началу
-        return [ln for head, body in layers.items() if head.startswith(prefix)
-                for ln in body]
+        contract.find_body(seed_draft.sections(prior_seed), "experience"))
+        if "<!--" not in ln and not seed_draft.is_hole(ln)]
+    def layer(key: str) -> List[str]:  # «### где мы — 9 окт …» → по началу
+        return seed_draft.layer(layers, key)
 
-    experience = list(dict.fromkeys(layer("опыт") + inherited))
-    expectation = layer("ожидание гриши") + layer("где мы")
+    experience = list(dict.fromkeys(layer("experience") + inherited))
+    expectation = layer("expectation") + layer("where")
 
     root = paths.find_tide_root(thread_dir)
     try:

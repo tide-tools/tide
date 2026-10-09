@@ -8,11 +8,12 @@
 «опыте» и «карте входа».
 
 Поэтому механическую половину берёт движок: ``draft`` компонует ЧЕРНОВИК по
-контракту семи блоков (решение 05 нити edinyy-sloy, подпись 30.07) — финал ·
-курсор · дальше · решения · опыт · карта входа · окружение — и кладёт его в
+контракту сида — двенадцать блоков из :mod:`tide.handoff_contract` (SOC-101; до
+него — семь, решение 05 нити edinyy-sloy) — и кладёт его в
 ``<сессия>/workspace/seed-draft.md`` + печатает в stdout. Уставший агент
-КУРИРУЕТ: режет лишнее, пишет «карту входа» (единственный блок, где нужна
-голова держащего контекст) и сверяет дифф окружения.
+КУРИРУЕТ: режет лишнее, пишет «карту входа», «в работе прямо сейчас» и
+рекомендации к «ждёт Гришу» (там нужна голова держащего контекст) и сверяет
+дифф окружения.
 
 Черновик — НЕ сид: он ничего не вешает и не отправляет. Очередь офферов,
 статусы и `input/` целевой сессии эта команда не трогает — финальный сид туда
@@ -31,21 +32,39 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .. import fields, io as _io, offload, paths, placeholders, resolve, slug
-from ..arc import stream as _stream, work as _work
+from .. import fields, handoff_contract as contract, io as _io, offload, paths, \
+    placeholders, resolve, slug
+from ..arc import dialog as _dialog, stream as _stream, work as _work
 from ..arc.stream import StreamError
 
 DRAFT_FILENAME = "seed-draft.md"
 WORKSPACE_DIRNAME = "workspace"
 INPUT_SEED_NAME = "handoff-seed.md"
 
-# Контракт семи блоков — имена и ПОРЯДОК ровно как в скилле handoff (шаг 3) и в
-# SEED_CONTRACT доски: она мерит сид по этим подписям, поэтому имя блока здесь —
+# Контракт сида — имена и ПОРЯДОК блоков живут в tide.handoff_contract (одно место
+# на движок, доску и скилл): доска мерит сид по этим подписям, поэтому имя блока —
 # не стиль, а интерфейс.
-BLOCKS = ("финал", "курсор", "дальше", "решения", "опыт", "карта входа", "окружение")
+BLOCKS = contract.NAMES
 
-# Пустой источник → видимая дыра, а не выдуманный абзац (контракт, подпись 30.07).
-EMPTY = "—"
+# Имена блоков, которыми оперирует сборка (ключ → заголовок).
+EXPECTATION = contract.name("expectation")
+WHERE = contract.name("where")
+EXPERIENCE = contract.name("experience")
+DECISIONS = contract.name("decisions")
+LINEAR = contract.name("linear")
+AWAITING = contract.name("awaiting")
+NEXT = contract.name("next")
+INFLIGHT = contract.name("inflight")
+UNANSWERED = contract.name("unanswered")
+ENTRY_MAP = contract.name("entry_map")
+ENVIRONMENT = contract.name("environment")
+JOURNAL = contract.name("journal")
+
+# Пустой источник → видимая дыра, а не выдуманный абзац: «— <почему пусто>».
+EMPTY = contract.EMPTY
+
+# Сколько последних реплик диалога нити класть в «неотвеченные реплики Гриши».
+DIALOG_TAIL = 12
 
 # Сколько последних пульс-строк ``## context`` тащить в курсор: хвост, а не вся
 # память сессии — сид приземляет на следующий шаг, полную запись держит арка.
@@ -61,7 +80,7 @@ _KEEP = "\x00"
 
 # Сырой журнал пульса в сиде — не больше этой доли тела (SOC-101 F5): старое сжато
 # до строки, но не тонет — счёт и путь к полной записи в паспорте.
-JOURNAL_SHARE = 0.3
+JOURNAL_SHARE = contract.JOURNAL_SHARE
 JOURNAL_CLIP = 160
 JOURNAL_GIST = 72
 
@@ -118,6 +137,34 @@ def live_lines(body: Sequence[str]) -> List[str]:
         ln.rstrip() for ln in body
         if ln.strip() and not ln.strip().startswith("<")
     ]
+
+
+def is_hole(line: str) -> bool:
+    """Строка пустого блока (``—`` или ``— <почему пусто>``) — не содержимое."""
+    return line.strip(" -\t").startswith(EMPTY) or not line.strip(" -\t")
+
+
+def layers(text: str) -> Dict[str, List[str]]:
+    """``## where we are`` паспорта нити по слоям ``###`` → живые строки.
+
+    Ключ — подзаголовок в нижнем регистре; заглушки ``<…>`` вырезаны, слой из
+    одной заглушки в словарь не попадает (он не «пуст», в нём просто не писали)."""
+    out: Dict[str, List[str]] = {}
+    head = ""
+    for ln in section_body(sections(text), "where we are"):
+        if ln.startswith("### "):
+            head = ln[4:].strip().lower()
+            continue
+        if ln.strip() and not ln.strip().startswith("<"):
+            out.setdefault(head, []).append(ln.rstrip())
+    return out
+
+
+def layer(lays: Dict[str, List[str]], key: str) -> List[str]:
+    """Строки слоя нити, названного блоком контракта *key* (по началу подзаголовка:
+    «### где мы — 9 окт …» тоже «где мы»)."""
+    want = contract.name(key).lower()
+    return [ln for head, body in lays.items() if head.startswith(want) for ln in body]
 
 
 def prose_lines(body: Sequence[str]) -> List[str]:
@@ -245,6 +292,19 @@ def block_links(text: str, prefixes: Sequence[str] = ("SOC",)) -> List[str]:
     return ["- {0} — {1}".format(k, tmpl.format(key=k)) for k in seen]
 
 
+def block_awaiting(questions: Sequence[str],
+                   works: Sequence[Dict[str, object]] = ()) -> List[str]:
+    """Ждёт Гришу: вопросы к нему без ответа и работы на проверке — списком, у
+    каждого пункта «предлагаю …» (контракт). Рекомендацию по сути машина не знает —
+    она называет жест; курирующий меняет его на своё мнение."""
+    out = ["- вопрос {0} — предлагаю: ответь на доске".format(q) for q in questions]
+    for rec in sorted(works, key=_work_order, reverse=True):
+        if str(rec.get("status") or "").strip() == "review":
+            out.append("- работа {0} {1} на проверке — предлагаю: проверь и закрой "
+                       "словом".format(rec.get("num"), rec.get("title")))
+    return out
+
+
 def block_next(nxt: Sequence[str]) -> List[str]:
     """Дальше: ``## next`` паспорта, разбитый по « · » в пункты списка.
 
@@ -328,8 +388,8 @@ def block_experience(candidate_nums: Sequence[str],
     сутью, а не голым номером: сид читают без контекста (SOC-74). Грабли, петли и
     «отвергнуто» этой сессии пишет курирующий — подсказка, а не выдуманный текст.
     """
-    out: List[str] = [ln for ln in live_lines(inherited)
-                      if "<!--" not in ln and ln.strip(" -") != EMPTY]
+    out: List[str] = list(dict.fromkeys(
+        ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)))
     gists = candidate_gists or {}
     if candidate_nums and gists:
         for num in sorted(set(candidate_nums), key=lambda n: (int(n), n)):
@@ -353,7 +413,7 @@ def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
     передаём дальше (SOC-101 F4), куратор правит дифф.
     """
     kept = [ln for ln in live_lines(inherited)
-            if "<!--" not in ln and ln.strip(" -") != EMPTY]
+            if "<!--" not in ln and not is_hole(ln)]
     return kept + [
         "- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
         "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)
@@ -428,24 +488,45 @@ def draft_header(session_name: str, thread_name: str) -> str:
         "# черновик сида — {0} · нить {1}\n"
         "\n"
         "Собрал харнес (`tide handoffs draft`) из накопленного на диске. Это ЧЕРНОВИК:\n"
-        "куратор режет лишнее, пишет «карту входа», сверяет дифф «окружения»."
+        "куратор режет лишнее, пишет «карту входа» и «в работе прямо сейчас», сверяет\n"
+        "дифф «окружения»."
     ).format(session_name, thread_name)
 
 
 def render_draft(bodies: Dict[str, List[str]], *, header: str = "") -> str:
-    """Собрать черновик: семь блоков контракта, в контрактном порядке.
+    """Собрать сид: все блоки контракта (:mod:`tide.handoff_contract`), по порядку.
 
     ОДНО место, где живут порядок блоков и правило пустоты: блок без источника
-    печатается с ``—``. Секцию не выкидываем никогда — доска мерит СОСТАВ, и
-    видимая дыра честнее выдуманного абзаца.
+    печатается ``— <почему пусто>``. Секцию не выкидываем никогда — доска мерит
+    СОСТАВ, и видимая дыра честнее выдуманного абзаца.
     """
     lines: List[str] = []
     if header:
         lines += [header, ""]
-    for name in BLOCKS:
-        body = [ln for ln in bodies.get(name, []) if ln.strip()] or [EMPTY]
-        lines += ["## {0}".format(name), "", *body, ""]
+    for b in contract.BLOCKS:
+        body = [ln for ln in bodies.get(b.name, []) if ln.strip()] \
+            or [contract.empty_line(b)]
+        lines += ["## {0}".format(b.name), "", *body, ""]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = "",
+         source: str = "", clip: int = 0) -> str:
+    """Дописать вычисляемые блоки и отрендерить: сырой журнал и задачи Linear.
+
+    Сырой журнал (хвост пульса в «где мы» + пульс старше него) — не больше
+    :data:`JOURNAL_SHARE` тела: J ≤ (share·R − T) / (1 − share), R — тело без
+    журнала, T — хвост пульса в «где мы». Задачи Linear — каждая упомянутая в
+    сиде, со ссылкой."""
+    out = dict(bodies)
+    out[JOURNAL], out[LINEAR] = [], []
+    share = JOURNAL_SHARE
+    rest = len(render_draft(out, header=header))
+    tail = raw_pulse_chars(context, clip=clip)
+    out[JOURNAL] = block_journal(
+        context, budget=max(0, int((share * rest - tail) / (1 - share))), source=source)
+    out[LINEAR] = block_links(render_draft(out, header=header))
+    return render_draft(out, header=header)
 
 
 # --- чтение диска -----------------------------------------------------------
@@ -569,11 +650,16 @@ def predecessor_thread(root: Path, thread_entry: Path) -> Optional[Path]:
 
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
-    """Тела семи блоков для *session_entry* с диска — общее у черновика и автохендоффа."""
+    """Тела блоков контракта для *session_entry* с диска — общее у черновика и
+    автохендоффа. «Сырой журнал» и «задачи Linear» считает :func:`seal`."""
+    from . import autohandoff as _auto  # lazy: autohandoff зовёт этот модуль
+
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
     passport = sections(_read(session_entry / "arc.md"))
     seed_in = sections(_read(session_entry / "input" / INPUT_SEED_NAME))
+    lays = layers(_read(_stream.passport_path(thread_entry)))
+    works = _thread_works(root, thread_entry)
 
     nums = _session_candidate_nums(root, session_entry, thread_entry)
     closed = _closed_works(root)
@@ -584,19 +670,36 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         if inherited:
             decisions += ["- из нити-предшественницы {0}:".format(pred.name)]
             decisions += ["  " + ln for ln in inherited]
+    summary = prose_lines(section_body(passport, "summary"))
+    where = layer(lays, "where") + block_cursor(
+        section_body(passport, "cursor"), section_body(passport, "context"),
+        works=works, clip=pulse_clip)
+    if summary:
+        where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
     return {
-        "финал": block_final(_goal_of(thread_entry), _goal_of(session_entry)),
-        "курсор": block_cursor(section_body(passport, "cursor"),
-                               section_body(passport, "context"),
-                               works=_thread_works(root, thread_entry),
-                               clip=pulse_clip),
-        "дальше": block_next(section_body(passport, "next")),
-        "решения": decisions,
-        "опыт": block_experience(nums, section_body(seed_in, "опыт"),
-                                 _candidate_gists(root, nums)),
-        "карта входа": block_entry_map(section_body(seed_in, "карта входа")),
-        "окружение": block_environment(section_body(seed_in, "окружение")),
+        EXPECTATION: layer(lays, "expectation") + block_final(
+            _goal_of(thread_entry), _goal_of(session_entry)),
+        WHERE: where,
+        EXPERIENCE: block_experience(
+            nums, contract.find_body(seed_in, "experience") + layer(lays, "experience"),
+            _candidate_gists(root, nums)),
+        DECISIONS: decisions,
+        AWAITING: block_awaiting(_auto.open_questions(root, thread_entry), works),
+        NEXT: block_next(section_body(passport, "next")),
+        INFLIGHT: _auto.open_items(root, thread_entry),
+        UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
+        ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map")),
+        ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
     }
+
+
+# Подсказки куратору в черновике (автосид их вырезает): блоки, которые пишет голова.
+DRAFT_HINTS = {
+    AWAITING: "- {0}  <!-- курируй: что Грише решить или нажать — и «предлагаю …» "
+              "по каждому пункту -->".format(EMPTY),
+    INFLIGHT: "- {0}  <!-- пишет агент: воркеры, сабагенты, запросы без ответа — кто "
+              "доведёт и куда придёт результат; нет — «ничего не в полёте» -->".format(EMPTY),
+}
 
 
 def build_draft(root: Path, session_entry: Path) -> str:
@@ -604,8 +707,12 @@ def build_draft(root: Path, session_entry: Path) -> str:
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
     bodies = draft_bodies(root, session_entry)
-    return render_draft(
-        bodies, header=draft_header(session_entry.name, thread_entry.name))
+    for name, hint in DRAFT_HINTS.items():
+        bodies[name] = list(bodies.get(name) or []) + [hint]
+    context = section_body(sections(_read(session_entry / "arc.md")), "context")
+    return seal(bodies, context=context,
+                header=draft_header(session_entry.name, thread_entry.name),
+                source="{0} (## context)".format(session_entry / "arc.md"))
 
 
 # --- резолв сессии + запись -------------------------------------------------
@@ -677,8 +784,8 @@ def register_draft(hsub) -> None:
     """Повесить ``draft`` на группу ``handoffs`` (зовётся из handoff_queue.register)."""
     dp = hsub.add_parser(
         "draft",
-        help="draft a handoff seed on the seven-block contract — from the "
-             "pulse, the decisions and the candidates",
+        help="draft a handoff seed on the seed contract (tide.handoff_contract) — "
+             "from the pulse, the decisions and the candidates",
     )
     dp.add_argument(
         "session", nargs="?",

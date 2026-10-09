@@ -72,17 +72,27 @@ def test_f2_auto_seed_carries_where_we_are_and_summary_verbatim(scene):
     pp.write_text(text[:start] + "Сделал фильтр; не сделал посев.\n\n" + text[end:],
                   encoding="utf-8")
     seed = ah.build_auto_seed(scene["sess"])
-    where = seed.partition("## где мы — нить\n")[2].partition("\n## ")[0]
-    assert "### ожидание Гриши\nчтобы хендофф не ломался (09.10)" in where
+    # ожидание и «где мы» — собственные блоки сида, не подзаголовки (контракт SOC-101)
+    expect = _block(seed, "ожидание Гриши")
+    assert expect.splitlines()[0] == "чтобы хендофф не ломался (09.10)"
+    where = _block(seed, "где мы")
+    assert where.splitlines()[0] == "- сделано: журнал слов"
     assert "- ждёт Гришу: подпись F1" in where
-    assert "### опыт" not in where  # только заглушка — слой не печатаем
-    assert "Сделал фильтр; не сделал посев." in seed.partition("## итог прошлой сессии")[2]
+    assert "###" not in seed and "<грабли>" not in seed  # заглушка слоя — не содержимое
+    assert "- итог сессии: Сделал фильтр; не сделал посев." in where
 
 
 def test_f2_fresh_summary_placeholder_is_not_content(scene):
     seed = ah.build_auto_seed(scene["sess"])
-    body = seed.partition("## итог прошлой сессии\n\n")[2].partition("\n\n")[0]
-    assert body == seed_draft.EMPTY
+    assert "итог сессии" not in seed and "<a few plain" not in seed
+    # слой нити пуст → блок не выкинут, а пуст с причиной
+    assert _block(seed, "ожидание Гриши").startswith("— ") or \
+        _block(seed, "ожидание Гриши").startswith("нить: ")
+
+
+def _block(seed: str, name: str) -> str:
+    """Тело блока ``## <name>`` сида (без пустой строки после заголовка)."""
+    return seed.partition("## {0}\n\n".format(name))[2].partition("\n## ")[0].strip()
 
 
 # --- F3/F4: опыт и карта входа наследуются ---------------------------------------
@@ -106,8 +116,8 @@ def test_f3_f4_experience_and_entry_map_inherited_from_the_input_seed(scene):
 
 def _raw_share(seed: str) -> float:
     """Доля сырого журнала в сиде: строки пульса в курсоре + секция журнала."""
-    cur = seed.partition("## курсор\n")[2].partition("\n## ")[0]
-    journal = seed.partition("## журнал сессии — старше курсора\n")[2].partition("\n## ")[0]
+    cur = seed.partition("## где мы\n")[2].partition("\n## ")[0]
+    journal = seed.partition("## сырой журнал\n")[2].partition("\n## ")[0]
     raw = sum(len(ln) + 1 for ln in cur.splitlines() if ln.startswith("- 20")) + len(journal)
     return raw / len(seed)
 
@@ -120,7 +130,7 @@ def test_f5_older_pulse_survives_within_the_share(scene):
         offload.write_pulse(scene["sess"], note="шаг {0:02d}: ".format(i) + "детали " * 30)
     seed = ah.build_auto_seed(scene["sess"])
     assert _raw_share(seed) <= 0.30
-    journal = seed.partition("## журнал сессии — старше курсора\n\n")[2].partition("\n## ")[0]
+    journal = _block(seed, "сырой журнал")
     assert "шаг 30" in journal                       # самое свежее из старого — дошло сжатым
     reached = sum(1 for i in range(36) if "шаг {0:02d}".format(i) in seed)
     assert reached > 5
@@ -268,7 +278,7 @@ def test_linear_issues_in_the_seed_get_links_once(scene, monkeypatch):
     offload.write_pulse(scene["sess"], note="SOC-62 сдан; жду SOC-101 и SOC-62 ещё раз",
                         cursor="приёмка SOC-101")
     seed = ah.build_auto_seed(scene["sess"])
-    links = seed.partition("## задачи Linear\n\n")[2].splitlines()
+    links = _block(seed, "задачи Linear").splitlines()
     assert links == ["- SOC-62 — https://linear.app/socaseinpoint/issue/SOC-62",
                      "- SOC-101 — https://linear.app/socaseinpoint/issue/SOC-101"]
     monkeypatch.setenv(seed_draft.LINEAR_URL_ENV, "https://l.example/i/{key}")

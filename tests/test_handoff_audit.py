@@ -167,7 +167,7 @@ def test_cli_human_and_json(tmp_control_home, monkeypatch, capsys):
     monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
     assert cli.main(["handoffs", "audit", "main"]) == 0
     out = capsys.readouterr().out
-    assert "≈ context-строки — 1/3, сжато 1" in out
+    assert "≈ сырой журнал: context-строки — 1/3, сжато 1" in out
     assert "нет: показать Грише" in out
     assert "ещё 1 новее сида" in out
     assert cli.main(["handoffs", "audit", "main", "--json"]) == 0
