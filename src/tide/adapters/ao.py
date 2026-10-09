@@ -522,6 +522,17 @@ class AoAdapter(TerminalAdapter):
         bring_app_up()
         return True
 
+    def rename(self, handle: str, name: str) -> bool:
+        """``ao session rename <id> <name>`` — True when AO took the new name."""
+        h, n = (handle or "").strip(), " ".join((name or "").split())[:NAME_LIMIT]
+        if not h or not n or not ao_available():
+            return False
+        try:
+            _call(["session", "rename", h, n], timeout=20)
+        except (AoError, subprocess.SubprocessError, OSError):
+            return False
+        return True
+
     def say(self, handle: str, text: str) -> bool:
         """``ao send --session <id> --message <text>``."""
         h = (handle or "").strip()

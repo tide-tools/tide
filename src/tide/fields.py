@@ -74,6 +74,12 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "status",
         "supersedes",
         "title",        # session human title (set on handoff/offload)
+        # Auto-handoff (SOC-39): the context watch and `tide handoff continue --auto`.
+        "auto-chain",     # auto handoffs in a row without progress that led to this session
+        "ctx-nudge",      # the context watch already asked this session to hand over
+        "dialog-log",     # thread: path to the external dialog log the auto-seed tails
+        "handed-off",     # this session already handed its thread over (the watch stands down)
+        "progress-mark",  # checked work items + acts of the thread when this session was born
         # Contract deliverable fields.
         "accepted",
         # Worktree adapter fields.

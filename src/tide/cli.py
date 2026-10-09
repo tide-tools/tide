@@ -400,6 +400,43 @@ def _register_thread(sub) -> None:
     from .arc.thread_screen import register as register_thread
 
     register_thread(sub)
+    _register_thread_holder(sub)
+
+
+def _register_thread_holder(sub) -> None:
+    # SOC-39: `tide thread holder <нить> [--json]` — which session holds the thread
+    # and in which AO session it lives (the pult's address). Composed here: the AO
+    # liveness probe is an adapter, the thread screen is domain.
+    p = sub.choices.get("thread")
+    if p is None:
+        return
+    p.add_argument("target", nargs="?",
+                   help="with `holder`: the thread whose holder to show")
+    p.add_argument("--json", action="store_true", dest="as_json",
+                   help="with `holder`: machine-readable output")
+    screen = p.get_default("func")
+
+    def _dispatch(args) -> int:
+        if getattr(args, "ref", None) != "holder":
+            return screen(args)
+        import json as _json
+
+        from . import paths as _paths
+        from .adapters.ao import AoAdapter
+        from .arc import holder as _holder
+
+        target = getattr(args, "target", None)
+        if not target:
+            raise _holder.HolderError("thread holder: назови нить — tide thread holder <нить>")
+        rec = _holder.holder(_paths.require_tide_root(), target,
+                             alive=AoAdapter().alive)
+        if getattr(args, "as_json", False):
+            print(_json.dumps(rec, ensure_ascii=False))
+        else:
+            print(_holder.render(rec))
+        return 0
+
+    p.set_defaults(func=_dispatch)
 
 
 def _register_plan(sub) -> None:

@@ -372,14 +372,14 @@ def _session_candidate_nums(root: Path, session_entry: Path,
     return out
 
 
-def build_draft(root: Path, session_entry: Path) -> str:
-    """Собрать текст черновика для *session_entry* из того, что лежит на диске."""
+def draft_bodies(root: Path, session_entry: Path) -> Dict[str, List[str]]:
+    """Тела семи блоков для *session_entry* с диска — общее у черновика и автохендоффа."""
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
     passport = sections(_read(session_entry / "arc.md"))
     seed_in = sections(_read(session_entry / "input" / INPUT_SEED_NAME))
 
-    bodies = {
+    return {
         "финал": block_final(_goal_of(thread_entry), _goal_of(session_entry)),
         "курсор": block_cursor(section_body(passport, "cursor"),
                                section_body(passport, "context"),
@@ -391,6 +391,13 @@ def build_draft(root: Path, session_entry: Path) -> str:
         "карта входа": block_entry_map(),
         "окружение": block_environment(section_body(seed_in, "окружение")),
     }
+
+
+def build_draft(root: Path, session_entry: Path) -> str:
+    """Собрать текст черновика для *session_entry* из того, что лежит на диске."""
+    session_entry = Path(session_entry)
+    thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
+    bodies = draft_bodies(root, session_entry)
     return render_draft(
         bodies, header=draft_header(session_entry.name, thread_entry.name))
 

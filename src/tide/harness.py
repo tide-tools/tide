@@ -47,6 +47,7 @@ ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
 HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
+CONTEXT_WATCH_CMD = "tide hook context-watch"
 SESSION_END_CMD = "tide hook session-end"
 
 
@@ -187,6 +188,21 @@ def merge_stop_nudge(hooks: dict) -> bool:
     return True
 
 
+def merge_stop_context_watch(hooks: dict) -> bool:
+    """Append the Stop context-watch entry to *hooks*; return whether it changed.
+
+    The auto-handoff watch (SOC-39): past the context thresholds it blocks the
+    stop with ``tide handoff continue --auto``. Its own group beside offload-nudge (each
+    hook stays independently removable). Nothing goes on SubagentStop —
+    subagents never hand off. No-op (False) when already wired.
+    """
+    groups = hooks.setdefault(STOP_EVENT, [])
+    if _command_present(groups, CONTEXT_WATCH_CMD):
+        return False
+    groups.append({HOOKS_KEY: [_hook_block(CONTEXT_WATCH_CMD)]})
+    return True
+
+
 def merge_hooks(data: dict) -> List[str]:
     """Merge both tide hook entries into a settings *data* dict; return notes.
 
@@ -213,6 +229,8 @@ def merge_hooks(data: dict) -> List[str]:
         notes.append("{0} → {1}".format(USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD))
     if merge_stop_nudge(hooks):
         notes.append("{0} → {1}".format(STOP_EVENT, OFFLOAD_NUDGE_CMD))
+    if merge_stop_context_watch(hooks):
+        notes.append("{0} → {1}".format(STOP_EVENT, CONTEXT_WATCH_CMD))
     if merge_session_end(hooks):
         notes.append("{0} → {1}".format(SESSION_END_EVENT, SESSION_END_CMD))
     return notes

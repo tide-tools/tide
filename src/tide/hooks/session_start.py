@@ -539,6 +539,10 @@ def cmd_session_start(args) -> int:
             _ao_learn_real_sid(root, session)
         except Exception:  # noqa: BLE001 — a hook must never break a session
             pass
+        try:
+            _ao_name_by_title(root, session)
+        except Exception:  # noqa: BLE001 — a hook must never break a session
+            pass
     print(render(root, _current_role(), update_note=_update_note(), session=session))
     return 0
 
@@ -559,6 +563,36 @@ def _ao_learn_real_sid(root: Path, session: str) -> None:
     home = paths.control_home()
     _sessions.remember_ao_sid(home, ao, session)
     _sessions.ao_relink(home, ao, session, project_root=root)
+
+
+def _ao_name_by_title(root: Path, session: str, adapter=None) -> Optional[str]:
+    """Inside AO: give the session the thread's name from its passport ``title:``.
+
+    Sessions tide raises are named «проект — нить · NN» at spawn; the FIRST one,
+    opened by hand in AO, is called ``management-1``/``ao-1`` — the sidebar then
+    can't tell threads apart. When this AO session's passport has a title and AO
+    shows another name, rename it. Returns the new name, or None (nothing to do).
+    """
+    from .. import offload as _offload, sessions as _sessions
+    from ..arc import stream as _stream
+
+    ao = _sessions.ao_session_env()
+    if not ao:
+        return None
+    entry = _offload.find_session_by_claude_id(root, session)
+    if entry is None:
+        return None
+    title = ((fields.read_field(entry / "arc.md", "title") or "").strip()
+             or (_stream.thread_session_title(entry) or "").strip())
+    if not title or title.startswith("<"):
+        return None
+    if adapter is None:
+        from ..adapters.ao import AoAdapter
+        adapter = AoAdapter()
+    rec = adapter.session(ao)
+    if not rec or (rec.get("displayName") or "").strip() == title:
+        return None
+    return title if adapter.rename(ao, title) else None
 
 
 def _hook_session() -> Optional[str]:

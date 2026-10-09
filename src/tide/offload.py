@@ -46,8 +46,8 @@ class OffloadError(StreamError):
     """A user-facing offload error (no such session, nothing to write)."""
 
 
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+def _now_iso(now: Optional[datetime] = None) -> str:
+    return (now or datetime.now()).isoformat(timespec="seconds")
 
 
 # --- session resolution ------------------------------------------------------
@@ -125,7 +125,8 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
 
 
 def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
-                next_steps: str = "", summary: str = "") -> Path:
+                next_steps: str = "", summary: str = "",
+                now: Optional[datetime] = None) -> Path:
     """Write a pulse to a KNOWN session dir — the resolution-free core of :func:`offload`.
 
     Callers that already hold the exact session dir MUST use this, not ``offload(root,
@@ -135,12 +136,15 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
     pickup's "нить принята" onto an OLDER sibling — the reception seam looked half-open
     on the real session (caught by a live 6-hop dogfood, cand 78). Taking the exact dir
     removes the ambiguity entirely.
+
+    *now* фиксирует метку времени (:mod:`tide.acts` пишет акты через этот же
+    вход и должен уметь ставить своё время в тестах); по умолчанию — сейчас.
     """
     passport = entry / "arc.md"
     text = passport.read_text(encoding="utf-8")
 
     if (note or "").strip():
-        line = "- {0} — {1}".format(_now_iso(), " ".join(note.split()))
+        line = "- {0} — {1}".format(_now_iso(now), " ".join(note.split()))
         if CONTEXT_SECTION in text:
             head, _sep, tail = text.partition(CONTEXT_SECTION)
             rest = tail.split("\n## ", 1)  # don't swallow a section that follows
@@ -162,7 +166,7 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
         _replace_section(passport, NEXT_SECTION, " ".join(next_steps.split()))
     if (summary or "").strip():
         _replace_section(passport, SUMMARY_SECTION, " ".join(summary.split()))
-    fields.set_field(passport, OFFLOADED_FIELD, _now_iso())
+    fields.set_field(passport, OFFLOADED_FIELD, _now_iso(now))
     return passport
 
 

@@ -431,6 +431,7 @@ def run_handoff(
     date: Optional[str] = None,
     spawn: bool = False,
     adapter_name: Optional[str] = None,
+    born_fields: Optional[dict] = None,
 ) -> HandoffResult:
     """Run a handoff: distil → workspace, remind candidates, hang the offer, raise it.
 
@@ -441,7 +442,9 @@ def run_handoff(
     right away through the ▶ door (:func:`spawn_offer`, adapter *adapter_name* or
     the resolved pin). Without *spawn* (the library default — the CLI turns it on)
     the offer just hangs for ▶. ``close`` just distils and never spawns.
-    ``dry_run`` distils but leaves the queue untouched.
+    ``dry_run`` distils but leaves the queue untouched. *born_fields* are stamped
+    on the pickup session's passport at birth (the auto-handoff passes its chain
+    counter and progress mark this way).
     """
     root = Path(root)
     if mode not in FORK_MODES:
@@ -514,6 +517,8 @@ def run_handoff(
                 session_born, project=_roster_project_name(home, owner_root))
             if title:
                 _fields.set_field(session_born / "arc.md", "title", title)
+            for key, value in (born_fields or {}).items():
+                _fields.set_field(session_born / "arc.md", key, str(value))
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             seed_text = text
@@ -597,8 +602,51 @@ def _spawn_wanted(args) -> bool:
     return env in ("", "0", "false", "no", "off")
 
 
+def cmd_handoff_auto(args) -> int:
+    """``tide handoff continue --auto`` — the seed from the arc, not from the chat.
+
+    The positional may name the fork (``continue``/``new``) instead of an arc: with
+    ``--auto`` the thread is the caller's own (``$CLAUDE_CODE_SESSION_ID`` →
+    its session arc, or ``--session``). Spawns unless the stop condition holds
+    (a question to the human waits / the chain stalled) — then the offer just
+    hangs and the human gets a signal.
+    """
+    from . import autohandoff
+
+    root = paths.require_tide_root()
+    mode = getattr(args, "mode", None) or FORK_CONTINUE
+    session_ref = getattr(args, "session", None)
+    if args.arc in (FORK_CONTINUE, FORK_NEW):
+        mode = args.arc
+    elif args.arc == FORK_CLOSE:
+        raise HandoffError("handoff --auto: close не передаёт нить — зови без --auto")
+    elif not session_ref:
+        session_ref = args.arc  # an explicit session arc
+    res = autohandoff.run_auto(
+        root, mode=mode, session_ref=session_ref,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        spawn=_spawn_wanted(args), adapter_name=getattr(args, "adapter", None))
+    if res.handoff is None:
+        print(autohandoff.render_dry_run(res))
+        return 0
+    result = res.handoff
+    d = res.decision
+    print("tide: handoff --auto [{0}] → {1}".format(result.mode, result.summary_path))
+    for note in result.notes:
+        print("  {0}".format(note))
+    if not d.spawn:
+        print("tide: новую сессию НЕ поднимаю — {0}. Гриша получил сигнал; "
+              "остановись и жди его слова.".format(d.detail))
+        return 0
+    if result.handed_over:
+        print("tide: {0}".format(handed_over_line(result.spawn)))
+    return 0
+
+
 def cmd_handoff(args) -> int:
     """``tide handoff <arc>`` — distil, remind, hang the offer, raise the fresh session."""
+    if getattr(args, "auto", False):
+        return cmd_handoff_auto(args)
     root = paths.require_tide_root()
     summary = _read_summary_arg(args)
     result = run_handoff(
@@ -670,7 +718,8 @@ def register(subparsers) -> None:
         help="warm-handoff: distil chat → arc workspace, hang an offer and raise "
              "the fresh session",
     )
-    p.add_argument("arc", help="the open arc to anchor the handoff on")
+    p.add_argument("arc", help="the open arc to anchor the handoff on (with --auto: "
+                               "the fork word continue|new, or a session arc)")
     p.add_argument(
         "--mode",
         choices=FORK_MODES,
@@ -697,6 +746,14 @@ def register(subparsers) -> None:
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="distil only — leave the offer queue untouched",
+        help="distil only — leave the offer queue untouched (with --auto: write "
+             "nothing at all, print the decision and the seed)",
     )
+    p.add_argument("--auto", action="store_true",
+                   help="auto-handoff: the seed from the arc (passport, decisions, open "
+                        "work items, dialog tail), not from the chat; the fresh session "
+                        "is raised unless a question waits or the chain stalled")
+    p.add_argument("--session", default=None,
+                   help="with --auto: the session arc to hand over (default: the "
+                        "caller's own, via $CLAUDE_CODE_SESSION_ID)")
     p.set_defaults(func=cmd_handoff, _cmd="handoff")

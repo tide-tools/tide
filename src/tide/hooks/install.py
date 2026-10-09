@@ -15,6 +15,7 @@ from __future__ import annotations
 # launcher may ensure it on spawn without importing an edge module upward.
 from ..harness import (  # noqa: F401 — public re-exports
     CLAUDE_DIRNAME,
+    CONTEXT_WATCH_CMD,
     EDIT_GATE_CMD,
     EDIT_MATCHER,
     HANDOFF_CONFIRM_CMD,
@@ -40,6 +41,7 @@ from ..harness import (  # noqa: F401 — public re-exports
     merge_role_gate,
     merge_session_end,
     merge_session_start,
+    merge_stop_context_watch,
     merge_stop_nudge,
     merge_user_prompt,
     settings_path,
@@ -115,6 +117,14 @@ def register_hook_group(subparsers) -> None:
     )
     from ..offload import cmd_offload_nudge  # lazy: keep hook wiring import-light
     on.set_defaults(func=cmd_offload_nudge, _cmd="hook offload-nudge")
+
+    cw = hsub.add_parser(
+        "context-watch",
+        help="Stop: past the context thresholds block with "
+             "`tide handoff continue --auto`",
+    )
+    from .context_watch import cmd_context_watch  # lazy: keep hook wiring import-light
+    cw.set_defaults(func=cmd_context_watch, _cmd="hook context-watch")
 
     se = hsub.add_parser(
         "session-end",
