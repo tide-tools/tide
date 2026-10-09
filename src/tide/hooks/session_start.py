@@ -535,8 +535,30 @@ def cmd_session_start(args) -> int:
             )
         except Exception:  # noqa: BLE001 — the sweeper is best-effort by design
             pass
+        try:
+            _ao_learn_real_sid(root, session)
+        except Exception:  # noqa: BLE001 — a hook must never break a session
+            pass
     print(render(root, _current_role(), update_note=_update_note(), session=session))
     return 0
+
+
+def _ao_learn_real_sid(root: Path, session: str) -> None:
+    """Inside Agent Orchestrator: remember claude's REAL id and fix tide's records.
+
+    AO mints claude's id itself, so the id tide pre-picked at launch is answered by
+    no chat. This payload's ``session_id`` is the real one: stash it per AO session
+    (``handoff-confirm`` reads it on the first prompt) and swap any pre-pick already
+    recorded against this AO session. No ``$AO_SESSION_ID`` → nothing happens.
+    """
+    from .. import sessions as _sessions
+
+    ao = _sessions.ao_session_env()
+    if not ao:
+        return
+    home = paths.control_home()
+    _sessions.remember_ao_sid(home, ao, session)
+    _sessions.ao_relink(home, ao, session, project_root=root)
 
 
 def _hook_session() -> Optional[str]:

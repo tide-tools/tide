@@ -504,20 +504,24 @@ def reserve(home: Path, key: str, *, session: str) -> Dict[str, object]:
     return _parse(rec["path"])
 
 
-def confirm_for_session(home: Path, session: str) -> Optional[Dict[str, object]]:
+def confirm_for_session(home: Path, session: str, *,
+                        as_session: Optional[str] = None) -> Optional[Dict[str, object]]:
     """Claim the offered handoff RESERVED for *session* (the confirm hook's core).
 
     Matches strictly on ``pickup-session`` — only the session that was actually
     launched from the offer confirms it. Returns the claimed record, or None when
     nothing is reserved for this session (so the hook is a silent no-op in any
-    ordinary session — no more project-wide vacuuming).
+    ordinary session — no more project-wide vacuuming). *as_session* is the id to
+    STAMP when it differs from the reserved one — inside Agent Orchestrator the
+    reservation holds tide's pre-pick while claude runs under AO's own id.
     """
     if not session:
         return None
+    stamp = as_session or session
     for r in list_offers(home, status=STATUS_OFFERED):
         if r["pickup_session"] == session:
-            claimed = _mark_taken(r, session=session)
-            _stamp_reception(claimed, session=session)  # atomic here too (cand 77)
+            claimed = _mark_taken(r, session=stamp)
+            _stamp_reception(claimed, session=stamp)  # atomic here too (cand 77)
             return claimed
     return None
 
@@ -654,9 +658,16 @@ def cmd_handoff_confirm(args) -> int:
     matching reservation) is a silent no-op — so ordinary sessions never vacuum
     pending offers. Fully defensive: any error prints nothing and exits 0 (a hook
     must never break a session); re-firing on later messages is a harmless no-op.
+
+    Inside Agent Orchestrator (``$AO_SESSION_ID``) claude runs under AO's id, not the
+    one tide reserved: the offer is still matched by tide's id (echoed, or mapped
+    through the registry), but STAMPED with claude's real id (process env, else the
+    SessionStart stash) — then :func:`tide.sessions.ao_relink` swaps any leftover
+    pre-pick for it. Runs on every prompt, so a late registry write is caught too.
     """
     try:
-        if paths.find_tide_root() is None:
+        root = paths.find_tide_root()
+        if root is None:
             return 0
         try:
             payload = json.loads(sys.stdin.read() or "{}")
@@ -664,11 +675,20 @@ def cmd_handoff_confirm(args) -> int:
         except (ValueError, OSError):
             session = None
         home = paths.control_home()
+        from . import sessions as _sessions  # lazy: sideways, keeps the queue light
+        ao = _sessions.ao_session_env()
+        real = _sessions.ao_real_sid(home, ao) if ao else None
+        candidates = _session_candidates(home, session)
+        if real and real not in candidates:
+            candidates.insert(1 if session else 0, real)
         claimed = None
-        for sid in _session_candidates(home, session):
-            claimed = confirm_for_session(home, sid)
+        for sid in candidates:
+            claimed = confirm_for_session(home, sid, as_session=real)
             if claimed:
                 break
+        if ao and real:
+            _sessions.ao_relink(home, ao, real, project_root=root,
+                                also=[session] if session else [])
         if claimed:
             print("tide: handoff {0} confirmed — picked up here".format(claimed["name"]))
     except Exception as exc:  # noqa: BLE001  a hook must never raise

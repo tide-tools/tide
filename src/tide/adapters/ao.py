@@ -15,7 +15,10 @@ TRANSLATES the launcher's argv instead of carrying it verbatim:
 * ``--session-id <sid>`` — AO cannot pin claude's id. The first turn asks the
   session to confirm the handoff under tide's sid (``tide hook handoff-confirm``
   with that id on stdin); the hook also maps ``$AO_SESSION_ID`` back to tide's sid
-  through the registry, so the echo is a safety net, not the only path.
+  through the registry, so the echo is a safety net, not the only path. tide's sid
+  is only a pre-pick here: claude's real id is learned after start (SessionStart
+  payload / ``$CLAUDE_CODE_SESSION_ID``) and swapped into every record by
+  :func:`tide.sessions.ao_relink`.
 * ``env TIDE_ROLE=<role>`` — AO has no per-session env, only per-project env
   (``ao project set-config --env``), resolved at spawn. The role is written there
   right before the spawn (and named in the first turn).

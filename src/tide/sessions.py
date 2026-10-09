@@ -5,14 +5,21 @@ Today: :func:`reconcile_registry`, the SessionStart sweeper. The launcher record
 can exist — a bare ``claude`` run by hand, a spawn whose registry write failed, a
 registry file lost — so "return to this session" keeps working on ALL paths of
 ascent (principle №1), not only the launched ones.
+
+And :func:`ao_relink`: inside the desktop Agent Orchestrator claude's id is minted by
+AO, not by tide — the real id is learned after start and replaces tide's pre-pick.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import re
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
-from . import registry
+from . import io as _io, paths, registry
 
 
 def reconcile_registry(
@@ -95,3 +102,214 @@ def self_register(
         return None
     registry.record(control_home, sid, handle, arc)
     return handle
+
+
+# --- Agent Orchestrator: learn claude's REAL id after start -------------------
+# The launcher mints a claude id before every spawn and records it everywhere (passport
+# ``claude-session:``, handoff ``pickup-session``/``taken-by``, the registry). AO cannot
+# be handed that id — it starts ``claude --session-id=<its own uuid>``. So under AO the
+# minted id is a PRE-PICK no chat answers to, and everything keyed on the claude id
+# (pulse, Stop nudges, multiples, ⟳) points at nothing. The real id only exists inside
+# the session: the SessionStart payload carries it (stashed here per AO session), and
+# ``$CLAUDE_CODE_SESSION_ID`` carries it to every process the session runs. Once it is
+# known, :func:`ao_relink` swaps the pre-pick for it in every record. The same holds
+# for a RE-ENTRY: the launcher pins the session's old (real) id, AO again starts a new
+# chat — so the passport follows the new chat there too (live 09.10, 02-ao).
+
+AO_STASH_FILENAME = "ao-sessions.json"
+
+
+def ao_session_env(env: Optional[Dict[str, str]] = None) -> str:
+    """The AO session id this process runs inside (``$AO_SESSION_ID``), or ``""``."""
+    e = os.environ if env is None else env
+    return (e.get(registry.ENV_AO_SESSION) or "").strip()
+
+
+def _ao_stash_file(control_home: Path) -> Path:
+    return Path(control_home) / AO_STASH_FILENAME
+
+
+def _read_ao_stash(control_home: Path) -> Dict[str, Dict[str, str]]:
+    try:
+        data = json.loads(_ao_stash_file(control_home).read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def remember_ao_sid(control_home: Path, ao_id: str, sid: str) -> bool:
+    """Stash ``ao_id → real claude sid`` (SessionStart's payload). True when written."""
+    a, s = (ao_id or "").strip(), (sid or "").strip()
+    if not a or not s:
+        return False
+    data = _read_ao_stash(control_home)
+    if (data.get(a) or {}).get("sid") == s:
+        return False
+    data[a] = {"sid": s, "ts": datetime.now().isoformat(timespec="seconds")}
+    _io.atomic_write(_ao_stash_file(control_home),
+                     json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return True
+
+
+def ao_real_sid(control_home: Path, ao_id: str,
+                env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """claude's real id for AO session *ao_id*: the process env first, then the stash.
+
+    None when neither knows it — the caller must then NOT relink (a hook payload alone
+    may be the echoed pre-pick, and relinking onto it would bury the real id)."""
+    e = os.environ if env is None else env
+    live = (e.get(registry.ENV_SESSION_ID) or "").strip()
+    if live:
+        return live
+    stashed = ((_read_ao_stash(control_home).get((ao_id or "").strip()) or {})
+               .get("sid") or "").strip()
+    return stashed or None
+
+
+def _chat_dirs(sid: str, env: Optional[Dict[str, str]] = None) -> Set[str]:
+    """Names of the claude project dirs holding a chat under *sid* (``projects/*/<sid>.jsonl``).
+
+    Empty = no chat anywhere: a pure pre-pick nobody ever answered to."""
+    e = os.environ if env is None else env
+    base = Path(e.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    try:
+        return {p.parent.name for p in base.glob("*/{0}.jsonl".format(sid))}
+    except OSError:
+        return set()
+
+
+def _claude_dir_name(path: Path) -> str:
+    """claude's project-dir name for a cwd: every non-alphanumeric char becomes ``-``."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def _ao_chat_dirs(ao_id: str) -> Set[str]:
+    """claude project-dir names of AO session *ao_id*'s own worktree(s).
+
+    AO runs a session in ``$AO_DATA_DIR/worktrees/<project>/<ao_id>``; a chat stored
+    under that dir ran IN this AO session. Empty when the worktree can't be found."""
+    try:
+        root = paths.ao_worktrees_root()
+        found = [p for p in root.glob("*/{0}".format(ao_id)) if p.is_dir()]
+    except OSError:
+        return set()
+    out: Set[str] = set()
+    for p in found:
+        out.add(_claude_dir_name(p))
+        try:
+            out.add(_claude_dir_name(p.resolve()))
+        except OSError:
+            pass
+    return out
+
+
+def _passport_of(arc: str) -> Optional[Path]:
+    p = Path(arc or "")
+    if not str(arc or "").strip():
+        return None
+    pp = p if p.name.endswith(".md") else p / "arc.md"
+    return pp if pp.is_file() else None
+
+
+def ao_relink(
+    control_home: Path,
+    ao_id: str,
+    real: str,
+    *,
+    project_root: Optional[Path] = None,
+    also: Iterable[str] = (),
+    env: Optional[Dict[str, str]] = None,
+) -> List[str]:
+    """Swap the stale claude ids tide recorded for AO session *ao_id* to the *real* one.
+
+    Candidates are the registry sids on this AO handle (plus any in *also*, e.g. the id
+    echoed to ``handoff-confirm``) that differ from *real*. Each is one of three:
+
+    * **pre-pick** — no claude chat on disk at all: tide minted it at launch and no chat
+      ever answered. Rewritten everywhere: handoff ``pickup-session``/``taken-by``/
+      ``from-session``, the passport's ``claude-session:``, the registry key.
+    * **continuation** — a REGISTRY sid whose chat lives elsewhere (another AO worktree,
+      the main tree): the launcher re-entered that session in this AO session, and AO,
+      unable to resume it, started a new chat. The session now lives in the new chat:
+      the passport's ``claude-session:`` moves to *real* and its ``ended:`` stamp (the
+      old chat's) is dropped. Handoff records are history and stay as they are.
+    * **ran here** — its chat lives in THIS AO session's own worktree (a reused AO id,
+      an earlier chat of this session) or the worktree can't be located: never touched.
+
+    Passports found: the registry arc, the handoff seed's session, and — with
+    *project_root* — any session pinning the stale id. Idempotent; silent no-op when
+    nothing matches. Returns the ids rewritten (pre-picks first).
+    """
+    from . import fields, handoff_queue  # lazy: keep sessions light for the hooks
+
+    a, r = (ao_id or "").strip(), (real or "").strip()
+    if not a or not r:
+        return []
+    reg = registry.read(control_home)
+    on_handle = [s.strip() for s, e in reg.items()
+                 if registry.is_sid_key(s) and ((e or {}).get("handle") or "").strip() == a]
+    here: Optional[Set[str]] = None  # this AO session's chat dirs, looked up on demand
+    pre: List[str] = []
+    cont: List[str] = []
+    for s in on_handle + [x.strip() for x in also if x]:
+        if not s or s == r or s in pre or s in cont:
+            continue
+        dirs = _chat_dirs(s, env)
+        if not dirs:
+            pre.append(s)
+            continue
+        if s not in on_handle:
+            continue  # an echoed id with a real chat: not ours to move
+        if here is None:
+            here = _ao_chat_dirs(a)
+        if here and not (dirs & here):
+            cont.append(s)
+    if not pre and not cont:
+        return []
+
+    offers = handoff_queue.list_offers(control_home) if pre else []
+    arc_for_real = ""
+    for p in pre + cont:
+        passports = []
+        entry_arc = str((reg.get(p) or {}).get("arc") or "")
+        if _passport_of(entry_arc) is not None:
+            passports.append(_passport_of(entry_arc))
+            arc_for_real = arc_for_real or entry_arc
+        for rec in (offers if p in pre else []):
+            hit = False
+            for key, field in (("pickup_session", "pickup-session"),
+                               ("taken_by", "taken-by"), ("from_session", "from-session")):
+                if str(rec.get(key) or "").strip() == p:
+                    handoff_queue._set_field(Path(rec["path"]), field, r)
+                    hit = True
+            seed = str(rec.get("seed") or "")
+            if hit and seed and seed != "-":
+                pp = Path(seed).parent.parent / "arc.md"
+                if pp.is_file():
+                    passports.append(pp)
+        if project_root is not None:
+            from .offload import find_session_by_claude_id
+            found = find_session_by_claude_id(Path(project_root), p)
+            if found is not None:
+                passports.append(found if found.name.endswith(".md") else found / "arc.md")
+        for pp in passports:
+            if (fields.read_field(pp, "claude-session") or "").strip() == p:
+                fields.set_field(pp, "claude-session", r)
+                # the new chat is alive: an ``ended:`` stamp belongs to the old one
+                fields.remove_field(pp, "ended")
+
+    # registry: drop the stale ids, keep ONE entry for the real id on this handle —
+    # with the most specific arc (a session dir beats the project root the sweeper wrote)
+    stale = pre + cont
+    data = registry.read(control_home)
+    old_arcs = [str((data.get(p) or {}).get("arc") or "") for p in stale]
+    for p in stale:
+        data.pop(p, None)
+    cur = data.get(r) or {}
+    arc = (arc_for_real or str(cur.get("arc") or "")
+           or next((x for x in old_arcs if x), ""))
+    data[r] = {"handle": a, "arc": arc,
+               "ts": datetime.now().isoformat(timespec="seconds")}
+    _io.atomic_write(registry.registry_file(control_home),
+                     json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return stale
