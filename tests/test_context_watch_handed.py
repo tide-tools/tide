@@ -46,3 +46,27 @@ def test_told_even_below_the_threshold(world):
 
 def test_not_handed_over_keeps_the_ladder(world):
     assert cw.AUTO_CMD in cw.watch_reason(world["proj"], _payload(world, 210_000))
+
+
+def test_a_later_take_outweighs_an_old_giveaway(world):
+    # live 09.10: the same claude id gave thread A away long ago (154-hod) and later
+    # TOOK this thread (228-30-handoffs) — it holds a thread, nothing was handed over
+    other = stream.new_thread(world["proj"], "other")
+    old = stream.new_session(world["proj"], "other", "old")
+    (old / "input").mkdir(exist_ok=True)
+    (old / "input" / "handoff-seed.md").write_text("# seed\n", encoding="utf-8")
+    gave = hq.offer(world["home"], "other", arc="{0}/{1}".format(other.name, old.name),
+                    project="proj", seed=str(old / "input" / "handoff-seed.md"),
+                    from_session=SID)
+    hq.take(world["home"], gave.stem, session="someone-else")
+    fields.set_field(gave, "taken-at", "2026-08-03T12:26:15")
+    mine = stream.new_session(world["proj"], "seam", "seam-2")
+    (mine / "input").mkdir(exist_ok=True)
+    (mine / "input" / "handoff-seed.md").write_text("# seed\n", encoding="utf-8")
+    got = hq.offer(world["home"], "seam", arc="seam/seam-2", project="proj",
+                   seed=str(mine / "input" / "handoff-seed.md"), from_session="prev")
+    hq.take(world["home"], got.stem, session=SID)
+    assert hq.is_dissolved(world["home"], SID) is None
+    reason = cw.watch_reason(world["proj"], _payload(world, 210_000))
+    assert reason is None or "нить передана" not in reason
+    assert not (fields.read_field(world["sess"] / "arc.md", cw.HANDED_TOLD_FIELD) or "")

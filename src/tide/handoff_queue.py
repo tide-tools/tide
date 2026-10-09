@@ -549,8 +549,18 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
     to do. This never mutates the queue, so it cannot break an in-flight handoff."""
     if not session:
         return None
-    for r in list_offers(home, status=STATUS_TAKEN):
+    taken = list_offers(home, status=STATUS_TAKEN)
+    # SOC-101 F21: the same claude id can give a thread away and LATER take another
+    # (an AO session reused / a chat resumed into a new thread). The newest event
+    # wins: a take after the giveaway means the session holds a thread again — the
+    # old giveaway is history (live 09.10: 154-hod of 08-03 «dissolved» the holder
+    # of 228-30-handoffs, taken 10-09).
+    took = max((str(r.get("taken_at") or "") for r in taken
+                if r.get("taken_by") == session), default="")
+    for r in taken:
         if r.get("from_session") == session and _transfers_thread(r):
+            if took and took > str(r.get("taken_at") or ""):
+                continue
             return r
     return None
 
