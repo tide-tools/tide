@@ -79,7 +79,9 @@ def test_one_message_on_reception_and_none_on_repeat(seam, sent):
     msg = sent[0]["text"]
     assert sent[0]["route"] == "human"
     assert msg.splitlines()[0] == "proj — seam · 02 приняла у · 01"
-    assert "Взято: живой шов передачи" in msg  # цель старт-гейта принявшей
+    # F35: «Взято» — слова первого пульса принявшей, не goal паспорта (эхо сида)
+    assert "Взято: пишу пробу живости" in msg
+    assert "живой шов передачи" not in msg
     assert "Потеряно: " in msg
     assert "воркер пакета Б" not in msg and "input/" not in msg  # не хвост сида
     rec = hq.list_offers(seam["home"])[0]

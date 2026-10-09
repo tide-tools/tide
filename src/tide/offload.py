@@ -415,15 +415,36 @@ def _confirm_pending_pickup(passport: Path) -> Optional[str]:
         return None
 
 
-def _note_first_pulse(passport: Path, *, note: str, cursor: str) -> None:
+def _note_first_pulse(passport: Path, *, note: str, cursor: str):
     """The receiver's first real pulse → its handoff offer (SOC-101 п.2: what the
-    accepting session understood, for ``tide handoffs audit``). Never breaks a pulse."""
+    accepting session understood, for ``tide handoffs audit``). → the offer record
+    when THIS pulse stamped the first one, else None. Never breaks a pulse."""
     try:
         from . import handoff_queue
-        handoff_queue.note_first_pulse(paths.control_home(), Path(passport).parent,
-                                       note=note, cursor=cursor)
+        return handoff_queue.note_first_pulse(paths.control_home(), Path(passport).parent,
+                                              note=note, cursor=cursor)
     except Exception:  # noqa: BLE001
-        pass
+        return None
+
+
+def _retell_warning(rec, passport: Path, blob: str) -> Optional[str]:
+    """Старт-гейт приёма (SOC-101 F35): первый пульс принявшей без пересказа §4.2 —
+    подсказка со списком недостающего. Не блок: пульс уже записан."""
+    if not rec:
+        return None
+    try:
+        from . import handoff_queue
+        said = " ".join((blob, str(rec.get("understood_goal") or ""),
+                         str(rec.get("first_pulse") or "")))
+        gaps = handoff_queue.retell_gaps(said)
+        if not gaps:
+            return None
+        entry = Path(passport).parent
+        ref = "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name),
+                               slug.entry_slug(entry.name))
+        return handoff_queue.retell_hint(gaps, ref)
+    except Exception:  # noqa: BLE001 — подсказка не смеет уронить пульс
+        return None
 
 
 def _main_gate(root: Path, ref: str):
@@ -460,7 +481,10 @@ def _cmd_offload(args) -> int:
     if confirmed:
         print("tide: handoff {0} confirmed by this pulse (the first-prompt flip "
               "was still pending)".format(confirmed))
-    _note_first_pulse(passport, note=note, cursor=cursor)
+    first = _note_first_pulse(passport, note=note, cursor=cursor)
+    retell = _retell_warning(first, passport, " ".join((note, cursor, next_steps)))
+    if retell:
+        print(retell, file=sys.stderr)
     warn = _closure_word_warning(passport, " ".join((note, cursor, next_steps)))
     if warn:
         print(warn, file=sys.stderr)

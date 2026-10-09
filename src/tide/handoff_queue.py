@@ -42,9 +42,9 @@ DEFAULT_MODE = "continue"
 
 # What the receiving session understood (SOC-101 п.2), stamped on the OFFER record
 # so the audit (`tide handoffs audit`) reads seed, origin and reception in one place:
-# the session passport's goal at reception (or at its first pulse, when the goal
-# was still blind) and the first REAL pulse it wrote (not the mechanical
-# «нить принята» one).
+# the session's OWN words from its first REAL pulse (not the mechanical «нить
+# принята» one) — SOC-101 F35: the passport's goal at reception is the seed's
+# next[0] (the autohandoff writes it), an echo, not what the session understood.
 UNDERSTOOD_GOAL = "understood-goal"
 FIRST_PULSE = "first-pulse"
 FIRST_PULSE_AT = "first-pulse-at"
@@ -361,7 +361,8 @@ def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
     passport = session_dir / "arc.md"
     if not passport.is_file():
         return
-    _note_goal(rec, passport)
+    # понятую цель здесь НЕ ставим (F35): паспорт несёт next[0] сида — это эхо;
+    # её слова придут первым настоящим пульсом (:func:`note_first_pulse`)
     from . import fields  # lazy: keep the queue importable standalone
     if session and session != "-":
         try:
@@ -435,29 +436,22 @@ def _one_line(text: str) -> str:
     return line if len(line) <= _UNDERSTOOD_MAX else line[:_UNDERSTOOD_MAX - 1] + "…"
 
 
-def _note_goal(rec: Dict[str, object], passport: Path) -> bool:
-    """Stamp the session passport's goal as ``understood-goal`` on *rec* once —
-    only a REAL goal (a blind/placeholder one waits for the first pulse)."""
-    if str(rec.get("understood_goal") or "-") != "-":
-        return False
-    try:
-        from . import fields, placeholders
-        from . import slug as _slug
-        raw = (fields.read_field(passport, "goal") or "").strip()
-        if placeholders.is_blind_goal(raw, _slug.entry_slug(passport.parent.name)):
-            return False
-        _set_field(Path(str(rec["path"])), UNDERSTOOD_GOAL, _one_line(raw))
-        rec["understood_goal"] = _one_line(raw)
-        return True
-    except Exception:  # noqa: BLE001 — reception must never break on this
-        return False
+def _strip_auto(text: str) -> str:
+    """Строка журнала без механической приставки пульса-без-ноты («курсор → …»)."""
+    for pre in ("курсор → ", "дальше → "):
+        if text.startswith(pre):
+            return text[len(pre):]
+    return text
 
 
 def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
                      cursor: str = "") -> Optional[Dict[str, object]]:
     """The session at *session_dir* wrote a pulse: if it is the receiver of a TAKEN
-    offer, stamp its first pulse (and the goal, if reception found none) on the
-    offer. Later pulses change nothing. → the updated record, or None."""
+    offer, stamp its first REAL pulse on the offer — ``first-pulse:`` (its cursor,
+    what it is doing) and ``understood-goal:`` (its note, what it understood; the
+    cursor when there is no note). Both are the session's own words (F35), never
+    the seeded passport goal. Later pulses change nothing. → the updated record,
+    or None."""
     try:
         target = Path(session_dir).resolve()
     except OSError:  # pragma: no cover
@@ -472,7 +466,8 @@ def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
                 continue
         except OSError:
             continue
-        changed = _note_goal(r, target / "arc.md")
+        changed = False
+        understood = _one_line(note) or _one_line(cursor)
         if str(r.get("first_pulse") or "-") == "-":
             # самый первый настоящий пульс после приёма — с диска, не «этот»:
             # пульсы до появления этой механики тоже считаются (SOC-101)
@@ -481,15 +476,49 @@ def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
                 text, at = found
                 # это и есть текущий пульс — тогда его курсор (он точнее ноты)
                 current = text == _one_line(note) or (words and text.endswith(words))
-                words = words if current else text
+                if not current:
+                    words, understood = text, _strip_auto(text)
             else:
                 at = _now()
             if words:
                 _set_field(r["path"], FIRST_PULSE, words)
                 _set_field(r["path"], FIRST_PULSE_AT, at)
                 changed = True
+        if str(r.get("understood_goal") or "-") == "-" and understood and changed:
+            _set_field(r["path"], UNDERSTOOD_GOAL, understood)
         return _parse(r["path"]) if changed else None
     return None
+
+
+# Старт-гейт приёма (контракт приёмки §4.2, SOC-101 F35): первый пульс принявшей
+# сессии — пересказ своими словами. «Где мы» несёт сам курсор; остальные три
+# пункта ищутся по меткам или ключевым словам. Правило мягкое — подсказка, не блок.
+RETELL_ITEMS = (
+    ("ожидание Гриши", "Ожидание",
+     re.compile(r"ожидани|гриш\w*\s+(?:жд|хоч)|(?:жд\w*|хочет)\s+гриша\b")),
+    ("что ждёт Гришу", "Ждёт Гришу",
+     re.compile(r"жд\w*\s+гриш[уи]\b|ждет\s+от\s+гриш|на\s+гриш|за\s+гриш|у\s+гриши")),
+    ("запреты", "Нельзя",
+     re.compile(r"нельзя|запрет|не\s+трога|не\s+дублир|не\s+лез|без\s+пуш|сдава|сдаю|куда\s+сда")),
+)
+
+
+def retell_gaps(text: str) -> List[str]:
+    """Какие пункты пересказа (§4.2) первый пульс не назвал — пусто, если все."""
+    low = " ".join((text or "").lower().replace("ё", "е").split())
+    return [name for name, _label, rx in RETELL_ITEMS if not rx.search(low)]
+
+
+def retell_hint(gaps: List[str], ref: str) -> str:
+    """Подсказка старт-гейта: чего не хватило и как сказать следующим пульсом."""
+    labels = " · ".join("{0}: …".format(label) for name, label, _rx in RETELL_ITEMS
+                        if name in gaps)
+    return ("tide: ⚠ старт-гейт приёма: первый пульс не пересказал нить своими словами — "
+            "нет: {0}.\n"
+            "  Скажи следующим пульсом (контракт приёмки §4.2): "
+            "tide offload {1} \"{2}\"\n"
+            "  В сиде этого нет — так и напиши («в сиде нет ожидания Гриши»), "
+            "не додумывай.".format(", ".join(gaps), ref, labels))
 
 
 def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:
@@ -895,6 +924,9 @@ def cmd_handoff_confirm(args) -> int:
             session = payload.get("session_id") or payload.get("session")
         except (ValueError, OSError):
             session = None
+        # руками из сессии (промпт AO: `tide hook handoff-confirm </dev/null`) —
+        # пустой stdin: id этой сессии из окружения, а не вписанный в промпт (F35)
+        session = session or (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
         home = paths.control_home()
         from . import sessions as _sessions  # lazy: sideways, keeps the queue light
         if session and _sessions.is_side_sid(session):

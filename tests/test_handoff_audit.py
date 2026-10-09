@@ -158,8 +158,10 @@ def test_audit_names_what_the_seed_lacks(tmp_control_home):
     fields.set_field(sess / "arc.md", "goal", "собрать аудит сида")
     hq.take(tmp_control_home, "main", session="sid-x")
     und = _by_key(ha.audit(tmp_control_home, "main"))["understood"]
-    assert und["status"] == ha.PARTIAL and und["goal"] == "собрать аудит сида"
-    assert und["missing"] == ["первого пульса принявшей сессии нет"]
+    # F35: goal паспорта — эхо сида; пока сессия не сказала своё, цели нет
+    assert und["status"] == ha.MISSING and und["goal"] is None
+    assert und["missing"] == ["цель принявшей сессии не записана",
+                              "первого пульса принявшей сессии нет"]
 
 
 def test_cli_human_and_json(tmp_control_home, monkeypatch, capsys):
