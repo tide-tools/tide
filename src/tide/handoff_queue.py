@@ -499,8 +499,11 @@ def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
 RETELL_ITEMS = (
     ("ожидание Гриши", "Ожидание",
      re.compile(r"ожидани|гриш\w*\s+(?:жд|хоч)|(?:жд\w*|хочет)\s+гриша\b")),
+    # F67: «Ждёт его решения: …», «ждёт Гришиного решения», «ждёт решения Гриши»
     ("что ждёт Гришу", "Ждёт Гришу",
-     re.compile(r"жд\w*\s+гриш[уи]\b|ждет\s+от\s+гриш|на\s+гриш|за\s+гриш|у\s+гриши")),
+     re.compile(r"жд\w*\s+гриш[уи]\b|ждет\s+от\s+гриш|на\s+гриш|за\s+гриш|у\s+гриши"
+                r"|жд\w*\s+(?:его|гришин\w*)\s+(?:решени|ответ|слов|вердикт|да\b)"
+                r"|жд\w*\s+(?:решени|ответ|слов|вердикт)\w*\s+(?:от\s+)?гриш")),
     ("запреты", "Нельзя",
      re.compile(r"нельзя|запрет|не\s+трога|не\s+дублир|не\s+лез|без\s+пуш|сдава|сдаю|куда\s+сда")),
 )
@@ -512,16 +515,81 @@ def retell_gaps(text: str) -> List[str]:
     return [name for name, _label, rx in RETELL_ITEMS if not rx.search(low)]
 
 
-def retell_hint(gaps: List[str], ref: str) -> str:
-    """Подсказка старт-гейта: чего не хватило и как сказать следующим пульсом."""
+# Где пункт пересказа лежит в сиде (F67): блок «## …» по префиксу заголовка;
+# у запретов своего блока нет — ищем слова по всему сиду.
+RETELL_SEED_BLOCKS = {
+    "ожидание Гриши": ("ожидание гриши",),
+    "что ждёт Гришу": ("ждёт гришу", "ждет гришу"),
+}
+_SEED_HOLE = re.compile(r"^(?:—|-|нет\b|ничего\b|пусто\b)", re.I)
+
+
+def _seed_block_lines(text: str, heads) -> Optional[List[str]]:
+    """Строки блока сида с заголовком из *heads* (None — такого блока нет)."""
+    found, cur = None, None
+    for line in (text or "").splitlines():
+        m = re.match(r"^##\s+(.*?)\s*$", line)
+        if m:
+            cur = m.group(1).strip().lower()
+            if any(cur.startswith(h) for h in heads) and found is None:
+                found = []
+            elif found is not None and cur is not None:
+                break
+            continue
+        if found is not None:
+            body = line.strip()
+            if body and not body.startswith("<"):
+                found.append(body.lstrip("-* ").strip())
+    return found
+
+
+def seed_has(seed_text: str, name: str) -> Optional[bool]:
+    """Есть ли пункт пересказа *name* в сиде: True — блок с содержимым, False —
+    блок пуст или только «— / нет», None — сида нет (не знаем)."""
+    if seed_text is None:
+        return None
+    heads = RETELL_SEED_BLOCKS.get(name)
+    if heads is None:  # запреты: отдельного блока нет — по словам во всём сиде
+        rx = dict((n, r) for n, _l, r in RETELL_ITEMS)[name]
+        return bool(rx.search(" ".join(seed_text.lower().replace("ё", "е").split())))
+    lines = _seed_block_lines(seed_text, heads)
+    if not lines:
+        return False
+    return any(not _SEED_HOLE.match(ln) for ln in lines)
+
+
+def retell_hint(gaps: List[str], ref: str, seed: Optional[object] = None) -> str:
+    """Подсказка старт-гейта: чего не хватило и как сказать следующим пульсом.
+
+    *seed* — путь к сиду оффера: «в сиде нет — так и напиши» советуем только про
+    пункты, которых в сиде действительно нет (F67); что в сиде есть — «возьми из
+    блока сида». Сида нет — оба совета общей фразой."""
     labels = " · ".join("{0}: …".format(label) for name, label, _rx in RETELL_ITEMS
                         if name in gaps)
+    text = None
+    if seed and str(seed) != "-":
+        try:
+            text = Path(str(seed)).read_text(encoding="utf-8")
+        except OSError:
+            text = None
+    has = {g: seed_has(text, g) for g in gaps}
+    present = [g for g in gaps if has[g]]
+    absent = [g for g in gaps if has[g] is False]
+    tips = []
+    if present:
+        tips.append("  В сиде это есть ({0}) — перескажи оттуда своими словами.".format(
+            ", ".join(present)))
+    if absent:
+        tips.append("  В сиде нет: {0} — так и напиши («в сиде нет …»), "
+                    "не додумывай.".format(", ".join(absent)))
+    if text is None:
+        tips.append("  Возьми из сида; чего в сиде нет — так и напиши («в сиде нет "
+                    "ожидания Гриши»), не додумывай.")
     return ("tide: ⚠ старт-гейт приёма: первый пульс не пересказал нить своими словами — "
             "нет: {0}.\n"
             "  Скажи следующим пульсом (контракт приёмки §4.2): "
-            "tide offload {1} \"{2}\"\n"
-            "  В сиде этого нет — так и напиши («в сиде нет ожидания Гриши»), "
-            "не додумывай.".format(", ".join(gaps), ref, labels))
+            "tide offload {1} \"{2}\"\n".format(", ".join(gaps), ref, labels)
+            + "\n".join(tips))
 
 
 def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:

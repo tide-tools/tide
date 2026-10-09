@@ -442,7 +442,7 @@ def _retell_warning(rec, passport: Path, blob: str) -> Optional[str]:
         entry = Path(passport).parent
         ref = "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name),
                                slug.entry_slug(entry.name))
-        return handoff_queue.retell_hint(gaps, ref)
+        return handoff_queue.retell_hint(gaps, ref, rec.get("seed"))  # F67
     except Exception:  # noqa: BLE001 — подсказка не смеет уронить пульс
         return None
 
