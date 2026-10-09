@@ -687,7 +687,15 @@ def cmd_handoff_confirm(args) -> int:
     through the registry), but STAMPED with claude's real id (process env, else the
     SessionStart stash) — then :func:`tide.sessions.ao_relink` swaps any leftover
     pre-pick for it. Runs on every prompt, so a late registry write is caught too.
+
+    Then the human's words of this prompt go to the thread's ``dialog.md``
+    (:func:`_log_prompt`) — after the relink, so a just-learnt real id still finds
+    the thread, and outside the confirm's ``try``, so a confirm error loses no word.
     """
+    root = None
+    payload: Dict = {}
+    session = None
+    real = None
     try:
         root = paths.find_tide_root()
         if root is None:
@@ -718,7 +726,39 @@ def cmd_handoff_confirm(args) -> int:
             print("tide: handoff {0} confirmed — picked up here".format(claimed["name"]))
     except Exception as exc:  # noqa: BLE001  a hook must never raise
         print("tide: [handoff-confirm] skipped: {0}".format(exc), file=sys.stderr)
+    if root is not None:
+        _log_prompt(root, [session, real], payload)
     return 0
+
+
+def _log_prompt(root: Path, sids: List[Optional[str]], payload: object) -> None:
+    """The human's words of this prompt → the thread's ``dialog.md`` (decision 13).
+
+    The thread is the one whose session pins any of *sids* (the hook's id, then
+    claude's real id under AO). A side chat of the SDK host, or a plain chat outside
+    AO with no session pin, is nobody's thread — skipped; an AO session that maps to
+    no thread is a loss. Losses are signalled by :func:`tide.arc.dialog.log_human`, never raised.
+    """
+    from . import offload as _offload, sessions as _sessions
+    from .arc import dialog as _dialog
+    try:
+        if not isinstance(payload, dict) or not str(payload.get("prompt") or "").strip():
+            return
+        ids = [s for s in dict.fromkeys(sids) if s]
+        if ids and all(_sessions.is_side_sid(s) for s in ids):
+            return
+        thread = None
+        for sid in ids:
+            entry = _offload.find_session_by_claude_id(Path(root), sid)
+            if entry is not None:
+                thread = entry.parent.parent
+                break
+        if thread is None and not _sessions.ao_session_env():
+            return  # a plain chat in a tide project: no thread was promised
+        _dialog.log_human(root, thread, str(payload["prompt"]),
+                          origin=payload.get("origin"), source=",".join(ids))
+    except Exception as exc:  # noqa: BLE001  a hook must never raise — but must not be silent
+        _dialog.report_failure(root, "хук упал ({0}: {1})".format(type(exc).__name__, exc))
 
 
 def register(subparsers):

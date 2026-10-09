@@ -139,12 +139,13 @@ def test_dialog_tail_absent_is_empty_not_error(world, monkeypatch):
     assert dialog.tail(world["thread"]) == []
 
 
-def test_hooks_write_no_dialog_file(world, monkeypatch):
+def test_hooks_write_only_the_threads_dialog_md(world, monkeypatch):
+    """Слова человека — в dialog.md нити (tests/test_dialog_log.py); сторож — никуда."""
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
         {"session_id": SID, "prompt": "[tg] двигай дальше"})))
     hq.cmd_handoff_confirm(None)
     cw.watch_reason(world["proj"], _payload(world, 100_000))
-    assert not list(world["proj"].rglob("dialog.md"))
+    assert list(world["proj"].rglob("dialog.md")) == [world["thread"] / "dialog.md"]
 
 
 # --- сторож контекста ------------------------------------------------------------
