@@ -113,6 +113,13 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     monkeypatch.delenv("AO_DATA_DIR", raising=False)
     monkeypatch.delenv("TIDE_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("TIDE_ADAPTER", raising=False)
+    # No test may reach the REAL desktop AO (install-hooks now checks the AO
+    # project config, SOC-101): a missing binary = "AO not installed". The
+    # fake_ao fixture sets its own TIDE_AO_BIN after this one.
+    monkeypatch.setenv("TIDE_AO_BIN", str(tmp_path / "no-real-ao"))
+    # The live pult's shared dialog journal (AO project env) flips dialog.tail
+    # into "shared journal" filtering — a test reads only its own journals.
+    monkeypatch.delenv("TIDE_DIALOG_LOG", raising=False)
     # `tide handoff` raises the fresh session itself (decision 07): a test reaching
     # the CLI must never open a real terminal / AO session. Tests of the auto-spawn
     # delenv this and inject a fake adapter.

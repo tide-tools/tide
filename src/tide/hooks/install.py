@@ -65,7 +65,24 @@ def _cmd_install_hooks(args) -> int:
             print("  + {0}".format(note))
     else:
         print("  (already wired — nothing to change)")
+    _ensure_ao(root)
     return 0
+
+
+def _ensure_ao(root) -> None:
+    """Main tree registered in AO → make its AO sessions get the hooks too
+    (``tide ao ensure`` for this project). Best-effort: never fails install-hooks."""
+    try:
+        from ..adapters import ao
+
+        res = ao.ensure_hooks_for_tree(root)
+    except Exception as exc:  # noqa: BLE001 — AO trouble must not fail the hooks
+        print("  ! AO config not checked: {0}".format(exc))
+        return
+    if res is not None and (res.changed or res.notes):
+        print("  + AO {0}: {1}".format(res.pid, "; ".join(res.added) or "checked"))
+        for note in res.notes:
+            print("  ! {0}".format(note))
 
 
 def _cmd_install_worktree() -> int:

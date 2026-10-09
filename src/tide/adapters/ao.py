@@ -39,7 +39,8 @@ env ``TIDE_HOME`` (control-home) / ``TIDE_PROJECT_ROOT`` (main tree) / ``TIDE_RO
 symlinks for UNTRACKED ``.claude`` / ``.tide`` (hooks + rules reach the worktree);
 a TRACKED ``.claude`` can't be linked, so a ``postCreate`` step
 (``tide install-hooks --worktree``) merges tide's hooks into the worktree's own copy
-before the agent starts;
+before the agent starts (merged on tide's spawn AND by ``tide ao ensure`` /
+``tide install-hooks`` for projects whose sessions are started from the AO app);
 ``defaultBranch`` when the repo has no remote HEAD.
 
 The worktree carries the COMMITTED copy of the repo — including a committed
@@ -362,17 +363,11 @@ def _untracked_present(tree: Path, rel: str) -> bool:
     return not (_git(str(tree), "ls-files", "--", rel) or "")
 
 
-def desired_config(current: dict, *, tree: Path, control_home: Optional[str],
-                   role: Optional[str], skip_permissions: bool) -> dict:
-    """*current* project config with tide's needs merged in (pure apart from git)."""
+def hooks_config(current: dict, *, tree: Path) -> dict:
+    """*current* with only what makes tide's hooks reach a session worktree merged
+    in: symlinks for UNTRACKED ``.claude`` / ``.tide``, else (tracked ``.claude``)
+    the ``postCreate`` step. Everything else in the config is left as is."""
     cfg = json.loads(json.dumps(current or {}))
-    env = dict(cfg.get("env") or {})
-    env[PROJECT_ROOT_ENV] = str(tree)
-    if control_home:
-        env["TIDE_HOME"] = str(control_home)
-    if role:
-        env["TIDE_ROLE"] = role
-    cfg["env"] = env
     links = list(cfg.get("symlinks") or [])
     for rel in (".claude", ".tide"):
         if rel not in links and _untracked_present(tree, rel):
@@ -384,6 +379,21 @@ def desired_config(current: dict, *, tree: Path, control_home: Optional[str],
         hooks = list(cfg.get("postCreate") or [])
         if cmd and not any(POST_CREATE_MARK in str(c) for c in hooks):
             cfg["postCreate"] = hooks + [cmd]
+    return cfg
+
+
+def desired_config(current: dict, *, tree: Path, control_home: Optional[str],
+                   role: Optional[str], skip_permissions: bool) -> dict:
+    """*current* project config with tide's needs merged in (pure apart from git)."""
+    cfg = json.loads(json.dumps(current or {}))
+    env = dict(cfg.get("env") or {})
+    env[PROJECT_ROOT_ENV] = str(tree)
+    if control_home:
+        env["TIDE_HOME"] = str(control_home)
+    if role:
+        env["TIDE_ROLE"] = role
+    cfg["env"] = env
+    cfg = hooks_config(cfg, tree=tree)
     if skip_permissions:
         ac = dict(cfg.get("agentConfig") or {})
         ac["permissions"] = BYPASS
@@ -416,9 +426,86 @@ def ensure_project(tree: Path, *, control_home: Optional[str], role: Optional[st
     want = desired_config(current, tree=tree, control_home=control_home, role=role,
                           skip_permissions=skip_permissions)
     if want != current:
-        _call(["project", "set-config", pid, "--config-json",
-               json.dumps(want, ensure_ascii=False)])
+        notes.extend(write_config(pid, want))
     return pid, notes
+
+
+def write_config(pid: str, want: dict) -> List[str]:
+    """Write the WHOLE merged *want* and read it back.
+
+    ``ao project set-config`` REPLACES the config (its help says so for the field
+    flags like ``--post-create`` as much as for ``--config-json``), so the only
+    safe write is read → merge → write the whole object. A key AO did not keep
+    comes back as a note."""
+    _call(["project", "set-config", pid, "--config-json",
+           json.dumps(want, ensure_ascii=False)])
+    try:
+        got = (_json(["project", "get", pid, "--json"]).get("project") or {}).get(
+            "config") or {}
+    except AoError as exc:
+        return ["{0}: written, read-back failed ({1})".format(pid, exc)]
+    lost = sorted(k for k in want if got.get(k) != want[k])
+    return ["{0}: AO did not keep {1}".format(pid, ", ".join(lost))] if lost else []
+
+
+def list_projects() -> List[dict]:
+    """Every registered AO project in the ``project get`` shape (path + config)."""
+    out: List[dict] = []
+    for p in _json(["project", "ls", "--json"]).get("projects") or []:
+        pid = (p or {}).get("id")
+        if not pid:
+            continue
+        try:
+            full = _json(["project", "get", pid, "--json"]).get("project") or {}
+        except AoError:
+            continue
+        full.setdefault("id", pid)
+        out.append(full)
+    return out
+
+
+@dataclass
+class EnsureResult:
+    """What :func:`ensure_hooks` found / did for one AO project."""
+
+    pid: str
+    path: str
+    changed: bool = False
+    added: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+
+def ensure_hooks(proj: dict, *, dry_run: bool = False) -> EnsureResult:
+    """Make sure AO sessions of the registered *proj* get tide's hooks — whoever
+    starts them (tide or AO directly). Only symlinks / ``postCreate`` are merged;
+    env, agentConfig and the rest are carried over untouched."""
+    pid = proj.get("id") or "?"
+    res = EnsureResult(pid=pid, path=str(proj.get("path") or ""))
+    tree = Path(res.path)
+    if not res.path or not tree.is_dir():
+        res.notes.append("path {0!r} not on disk — skipped".format(res.path))
+        return res
+    current = proj.get("config") or {}
+    want = hooks_config(current, tree=tree)
+    if want == current:
+        return res
+    for key in ("symlinks", "postCreate"):
+        for item in want.get(key) or []:
+            if item not in (current.get(key) or []):
+                res.added.append("{0} += {1}".format(key, item))
+    res.changed = True
+    if not dry_run:
+        res.notes.extend(write_config(pid, want))
+    return res
+
+
+def ensure_hooks_for_tree(tree: Path, *, dry_run: bool = False) -> Optional[EnsureResult]:
+    """:func:`ensure_hooks` for the AO project registered at *tree*; None when AO
+    is not installed or the tree is not an AO project (nothing to do)."""
+    if not ao_available():
+        return None
+    proj = find_project(tree)
+    return ensure_hooks(proj, dry_run=dry_run) if proj else None
 
 
 def _control_home() -> Optional[str]:

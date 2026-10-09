@@ -319,6 +319,13 @@ def _register_quickstart(sub) -> None:
     register_quickstart(sub)
 
 
+def _register_ao(sub) -> None:
+    # SOC-101 п.1: tide's hooks reach AO sessions started straight from the app.
+    from .adapters.ao_cmd import register as register_ao
+
+    register_ao(sub)
+
+
 def _register_terminal_adapter(sub) -> None:
     # работа 59 п.5: the adapter choice was made silently and could only be
     # changed by hand-editing JSON — this says it out loud and writes the pin.
@@ -557,6 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_verify(subparsers)
     _register_quickstart(subparsers)
     _register_terminal_adapter(subparsers)
+    _register_ao(subparsers)
     _register_onboarding(subparsers)
     _register_self_update(subparsers)
     _register_release(subparsers)

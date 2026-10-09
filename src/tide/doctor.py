@@ -349,17 +349,43 @@ AO_WORKTREE_HOOKS = (install.SESSION_START_CMD, install.HANDOFF_CONFIRM_CMD,
                      install.CONTEXT_WATCH_CMD)
 
 
-def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None) -> CheckResult:
+def ao_projects_without_hooks() -> List[str]:
+    """AO projects with a ``.tide`` whose config would NOT bring tide's hooks into
+    a fresh session worktree (no ``postCreate`` / ``.claude`` symlink) — the cause
+    behind a hook-less worktree; the cure is ``tide ao ensure`` (SOC-101 п.1).
+    Best-effort: no AO / any AO error → [] (doctor reports, never fails on it)."""
+    try:
+        from .adapters import ao
+
+        if not ao.ao_available():
+            return []
+        return [p["id"] for p in ao.list_projects()
+                if p.get("path") and (Path(p["path"]) / ".tide").is_dir()
+                and ao.ensure_hooks(p, dry_run=True).changed]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
+                            unwired: Optional[List[str]] = None) -> CheckResult:
     """Warn when a live AO session worktree of a tide project lacks tide's hooks.
 
     New raises get them from the AO ``postCreate`` step (``tide install-hooks
     --worktree``); worktrees cut before it — or by hand in AO — may still miss them.
     Live = the worktree dir exists (AO removes it with the session). A tide project =
     the worktree carries ``.tide``. Lists ``<project>/<session> (нет: …)``; the fix is
-    ``tide install-hooks --worktree`` inside it, or the next raise.
+    ``tide install-hooks --worktree`` inside it, or the next raise. *unwired* (default:
+    asked from AO) — tide projects whose AO config lacks the ``postCreate`` step, so
+    every NEXT session comes hook-less too: named with the cure ``tide ao ensure``.
     """
+    if unwired is None:
+        unwired = ao_projects_without_hooks()
+    cure = ("; AO-проекты без postCreate (новые сессии тоже придут без хуков): {0} — "
+            "`tide ao ensure --all`".format(", ".join(unwired)) if unwired else "")
     root = Path(worktrees_root) if worktrees_root is not None else paths.ao_worktrees_root()
     if not root.is_dir():
+        if unwired:
+            return CheckResult("ao-worktrees", STATUS_WARN, cure.lstrip("; "))
         return CheckResult("ao-worktrees", STATUS_OK, "AO worktrees: none here")
     bad: List[str] = []
     seen = 0
@@ -384,7 +410,9 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None) -> CheckResul
         return CheckResult(
             "ao-worktrees", STATUS_WARN,
             "без хуков tide: {0} — доедут при следующем подъёме или "
-            "`tide install-hooks --worktree` в каталоге".format("; ".join(bad)))
+            "`tide install-hooks --worktree` в каталоге{1}".format("; ".join(bad), cure))
+    if unwired:
+        return CheckResult("ao-worktrees", STATUS_WARN, cure.lstrip("; "))
     return CheckResult("ao-worktrees", STATUS_OK,
                        "хуки tide во всех {0} AO-worktree tide-проектов".format(seen))
 
