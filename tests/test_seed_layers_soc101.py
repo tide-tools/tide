@@ -250,3 +250,36 @@ def test_pass_label_is_the_start_of_the_note_not_a_word_in_it():
              "- 2026-10-09T07:30:18 — ПЕРЕДАЧА. всё", "- 2026-10-09T07:31:00 — последний"]
     assert not seed_draft.is_protected_pulse(pulse, 0)
     assert seed_draft.is_protected_pulse(pulse, 1) and seed_draft.is_protected_pulse(pulse, 2)
+
+
+# --- п.6 · указатель на топик (SOC-105) -------------------------------------------
+
+def _topic(root: Path, name: str, body: str) -> Path:
+    d = root / ".tide" / "topics" / name
+    d.mkdir(parents=True)
+    (d / "topic.md").write_text("# {0}\n\n{1}".format(name, body), encoding="utf-8")
+    return d / "topic.md"
+
+
+def test_topic_pointer_by_home_line_with_linear_parent_as_written(live):
+    tname = live["thread"].name
+    f = _topic(live["root"], "02-peredacha-raboty",
+               "kind: topic\nдом:        tide-stack, нить {0} (main · 03)\n"
+               "linear:     SOC-117 https://l.example/SOC-117 (родитель топика)\n".format(tname))
+    _topic(live["root"], "01-chuzhoy", "threads: 26-@release\nlinear: SOC-1 Done\n")
+    entry = _block(ah.build_auto_seed(live["sess"]), "карта входа").splitlines()
+    assert [ln for ln in entry if ln.startswith("- топик:")][0] == "- топик: {0} · Linear-родитель SOC-117 — статус в topic.md не " \
+                       "записан".format(f.resolve())
+    assert sum(ln.startswith("- топик:") for ln in entry) == 1
+
+
+def test_topic_pointer_by_threads_field_and_status(live):
+    f = _topic(live["root"], "03-t", "threads: 26-@release, {0}\nlinear: SOC-9 In Review\n"
+               .format(live["thread"].name))
+    assert seed_draft.topic_pointer(live["root"], live["thread"]) == \
+        "- топик: {0} · Linear-родитель SOC-9 — In Review".format(f.resolve())
+
+
+def test_no_topic_says_what_was_checked(live):
+    line = seed_draft.topic_pointer(live["root"], live["thread"])
+    assert line.startswith("- топик: нить не связана ни с одним топиком (проверено: /")

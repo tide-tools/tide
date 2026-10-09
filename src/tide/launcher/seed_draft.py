@@ -528,7 +528,8 @@ def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
     передаём дальше (SOC-101 F4), куратор правит дифф.
     """
     kept = [ln for ln in live_lines(inherited)
-            if "<!--" not in ln and not is_hole(ln)]
+            if "<!--" not in ln and not is_hole(ln)
+            and not ln.lstrip("- ").startswith("топик:")]  # указатель считается заново
     return kept + [
         "- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
         "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)
@@ -815,6 +816,73 @@ def block_main(thread_entry: Path, inherited: Sequence[str] = (),
     return []
 
 
+TOPICS_DIRNAME = "topics"
+TOPIC_FILE = "topic.md"
+# Как нить связана с топиком (SOC-105): поле ``topic:`` в goal-файле/plan.md нити —
+# сильнее всего; иначе топик сам называет нить — ``threads:``, ``дом:``,
+# ``нити и работы:`` в topic.md.
+_TOPIC_THREAD_KEYS = ("threads", "дом", "нити и работы", "нить", "нити")
+LINEAR_STATUSES = ("In Review", "In Progress", "Done", "Todo", "Backlog", "Canceled",
+                   "Cancelled", "Duplicate", "Triage")
+_STATUS_RE = re.compile(r"\b({0})\b".format("|".join(LINEAR_STATUSES)), re.IGNORECASE)
+
+
+def _topic_field(text: str, key: str) -> str:
+    m = re.search(r"(?mi)^{0}:[ \t]*(.*)$".format(re.escape(key)), text)
+    return m.group(1).strip() if m else ""
+
+
+def thread_topics(root: Path, thread_entry: Path) -> List[Path]:
+    """topic.md топиков, к которым относится нить (по полям, без догадок по тексту)."""
+    tdir = paths.tide_dir(Path(root)) / TOPICS_DIRNAME
+    if not tdir.is_dir():
+        return []
+    name = Path(thread_entry).name
+    tslug = slug.entry_slug(name)
+    own = [(fields.read_field(_stream.passport_path(thread_entry), "topic") or "").strip(),
+           (fields.read_field(Path(thread_entry) / "plan.md", "topic") or "").strip()]
+    out: List[Path] = []
+    for d in sorted(p for p in tdir.iterdir() if p.is_dir()):
+        f = d / TOPIC_FILE
+        if not f.is_file():
+            continue
+        if any(v and (v == d.name or slug.entry_slug(v) == slug.entry_slug(d.name))
+               for v in own):
+            out.append(f)
+            continue
+        text = _read(f)
+        for key in _TOPIC_THREAD_KEYS:
+            val = _topic_field(text, key)
+            if re.search(r"(?<![\w@-]){0}(?![\w-])".format(re.escape(name)), val) or \
+                    (key == "threads" and tslug in re.split(r"[\s,·]+", val)):
+                out.append(f)
+                break
+    return out
+
+
+def topic_pointer(root: Path, thread_entry: Path) -> str:
+    """Одна строка сида: абсолютный путь topic.md нити + статус Linear-родителя
+    из поля ``linear:`` — только то, что записано; в Linear не ходим (SOC-105)."""
+    found = thread_topics(root, thread_entry)
+    if not found:
+        return ("- топик: нить не связана ни с одним топиком (проверено: {0}/*/{1} — "
+                "threads:/дом:, поле topic: нити)".format(
+                    paths.tide_dir(Path(root)) / TOPICS_DIRNAME, TOPIC_FILE))
+    parts = []
+    for f in found:
+        lin = _topic_field(_read(f), "linear")
+        if lin:
+            key = _ISSUE_RE.search(lin)
+            st = _STATUS_RE.search(lin)
+            parent = "Linear-родитель {0} — {1}".format(
+                key.group(1) if key else lin,
+                st.group(1) if st else "статус в topic.md не записан")
+        else:
+            parent = "Linear-родитель не записан (поля linear: нет)"
+        parts.append("{0} · {1}".format(f.resolve(), parent))
+    return "- топик: " + " · ".join(parts)
+
+
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
     """Тела блоков контракта для *session_entry* с диска — общее у черновика и
@@ -864,7 +932,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         INFLIGHT: _merge_lines(labels.get("inflight", []),
                                _auto.open_items(root, thread_entry)),
         UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
-        ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map")),
+        ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"))
+        + [topic_pointer(root, thread_entry)],
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
     }
 
