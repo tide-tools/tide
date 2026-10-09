@@ -402,6 +402,46 @@ def block_tails(context: Sequence[str], labeled: Sequence[str] = ()) -> List[str
     return fold_lines(out)
 
 
+# «в работе прямо сейчас» → хвост (F56): незакрытое поручение и живой воркер — тоже
+# хвост; «— нет» в хвостах при четырёх поручениях в работе — ложь сида.
+_ORDER_RE = re.compile(r"^-\s*поручено мне — от (.+?) в (\d\d:\d\d): (.*)$")
+_WORKER_RE = re.compile(r"^-\s*воркер «(.*?)» — жив")
+# Шапка адресации в начале поручения («[board · 03 → ck]», «management-16 →
+# context-keeper · 03:») съедает короткую суть — срезаем.
+_ADDRESS_HEAD = re.compile(r"^(?:\[[^\]]{0,60}\]\s*|[^:.«]{0,60}?→[^:.«]{0,40}?[:.]\s+)")
+TAIL_GIST = 70
+
+
+def tails_from_inflight(inflight: Sequence[str]) -> List[str]:
+    """Строки «в работе» (:func:`incoming_orders`, :func:`background_workers`) →
+    по строке хвоста: от кого, что коротко, «см. в работе». Прочее — мимо."""
+    out: List[str] = []
+    for ln in inflight:
+        ln = ln.strip()
+        m = _ORDER_RE.match(ln)
+        if m:
+            out.append("- поручение от {0} ({1}) не закрыто: {2} — см. «{3}»".format(
+                m.group(1), m.group(2),
+                clip_words(_ADDRESS_HEAD.sub("", m.group(3)) or m.group(3), TAIL_GIST),
+                INFLIGHT))
+            continue
+        m = _WORKER_RE.match(ln)
+        if m:
+            out.append("- воркер «{0}» жив в старой сессии — см. «{1}»".format(
+                m.group(1), INFLIGHT))
+    return out
+
+
+def merge_tails(tails: Sequence[str], inflight: Sequence[str]) -> List[str]:
+    """Хвосты сверены с «в работе» (F56): прочерк «— нет» уходит, если там есть
+    незакрытые поручения или живые воркеры; названные хвосты — сверху."""
+    extra = tails_from_inflight(inflight)
+    if not extra:
+        return list(tails)
+    named = [] if tails and tails[0].strip() == contract.TAILS_NONE else list(tails)
+    return named + extra
+
+
 def block_final(thread_goal: str, session_goal: str) -> List[str]:
     """Финал: цель нити + цель этой сессии, 1–2 строки.
 
@@ -2146,6 +2186,11 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         works=works, clip=pulse_clip)
     if summary:
         where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
+    inflight = _merge_lines(labels.get("inflight", []),
+                            session_workers(session_entry),
+                            session_incoming(session_entry,
+                                             section_body(passport, "context")),
+                            _auto.open_items(root, thread_entry))
     return {
         MAIN: (block_main(thread_entry, contract.find_body(seed_in, "main"), pred)
                or [contract.empty_line(contract.block("main"))]) + [manager_line()],
@@ -2156,7 +2201,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                 context, section_body(
                     sections(_read(_stream.passport_path(thread_entry))), "context")))[:5]),
         WHERE: where,
-        TAILS: block_tails(context, labels.get(TAILS_KEY, [])),
+        TAILS: merge_tails(block_tails(context, labels.get(TAILS_KEY, [])), inflight),
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
         # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.
         EXPERIENCE: block_experience(
@@ -2170,11 +2215,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             block_awaiting(_auto.open_questions(root, thread_entry), works),
             next_for_grisha(block_next(section_body(passport, "next")))),
         NEXT: block_next(section_body(passport, "next")),
-        INFLIGHT: _merge_lines(labels.get("inflight", []),
-                               session_workers(session_entry),
-                               session_incoming(session_entry,
-                                                section_body(passport, "context")),
-                               _auto.open_items(root, thread_entry)),
+        INFLIGHT: inflight,
         UNANSWERED: block_unanswered(thread_entry),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"),
                                    labels.get("entry_map", []),
