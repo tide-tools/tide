@@ -33,9 +33,14 @@ def test_merge_hooks_into_empty_writes_both_entries():
         g for g in pre if g.get("matcher") == install.ROLE_GATE_MATCHER
     )
     assert role_gate_group["hooks"][0]["command"] == install.ROLE_GATE_CMD
-    # Seven notes: SessionStart + edit-gate + role-gate + handoff-confirm + Stop offload-nudge
-    # + Stop context-watch + SessionEnd.
-    assert len(notes) == 7
+    # PreToolUse also carries the ask-gate group (SOC-108).
+    ask_gate_group = next(
+        g for g in pre if g.get("matcher") == install.ASK_GATE_MATCHER
+    )
+    assert ask_gate_group["hooks"][0]["command"] == install.ASK_GATE_CMD
+    # Eight notes: SessionStart + edit-gate + role-gate + ask-gate + handoff-confirm
+    # + Stop offload-nudge + Stop context-watch + SessionEnd.
+    assert len(notes) == 8
     # UserPromptSubmit carries the handoff-confirm command.
     up_cmd = hooks[install.USER_PROMPT_EVENT][0]["hooks"][0]["command"]
     assert up_cmd == install.HANDOFF_CONFIRM_CMD
@@ -48,8 +53,8 @@ def test_merge_hooks_is_idempotent():
     assert notes == []
     # No duplicate groups.
     assert len(data["hooks"]["SessionStart"]) == 1
-    # Two PreToolUse groups: edit-gate + role-gate (not duplicated).
-    assert len(data["hooks"]["PreToolUse"]) == 2
+    # Three PreToolUse groups: edit-gate + role-gate + ask-gate (not duplicated).
+    assert len(data["hooks"]["PreToolUse"]) == 3
 
 
 def test_merge_preserves_existing_hooks_and_keys():
@@ -75,7 +80,17 @@ def test_merge_preserves_existing_hooks_and_keys():
     assert "rtk wrap" in commands
     assert install.EDIT_GATE_CMD in commands
     assert install.ROLE_GATE_CMD in commands
-    assert len(pre) == 3
+    assert install.ASK_GATE_CMD in commands
+    assert len(pre) == 4
+
+
+def test_merge_ask_gate_is_idempotent():
+    hooks: dict = {}
+    assert install.merge_ask_gate(hooks) is True
+    assert install.merge_ask_gate(hooks) is False
+    pre = hooks[install.PRE_TOOL_USE_EVENT]
+    assert pre == [{"matcher": "AskUserQuestion",
+                    "hooks": [{"type": "command", "command": "tide hook ask-gate"}]}]
 
 
 def test_merge_rejects_non_object_hooks():
@@ -93,8 +108,8 @@ def test_install_hooks_writes_valid_settings_file(tmp_project):
     assert "SessionStart" in parsed["hooks"]
     assert "PreToolUse" in parsed["hooks"]
     assert "UserPromptSubmit" in parsed["hooks"]
-    # Four entries: SessionStart + edit-gate + role-gate + handoff-confirm.
-    assert len(notes) == 7
+    # Eight entries (see test_merge_hooks_into_empty_writes_both_entries).
+    assert len(notes) == 8
 
 
 def test_install_hooks_rerun_idempotent(tmp_project):
@@ -104,8 +119,8 @@ def test_install_hooks_rerun_idempotent(tmp_project):
     parsed = json.loads(
         (tmp_project / ".claude" / "settings.json").read_text(encoding="utf-8")
     )
-    # Two PreToolUse groups: edit-gate + role-gate.
-    assert len(parsed["hooks"]["PreToolUse"]) == 2
+    # Three PreToolUse groups: edit-gate + role-gate + ask-gate.
+    assert len(parsed["hooks"]["PreToolUse"]) == 3
 
 
 def test_install_hooks_rejects_corrupt_settings(tmp_project):

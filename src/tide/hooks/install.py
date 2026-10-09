@@ -14,6 +14,8 @@ from __future__ import annotations
 # Re-exports: the wiring machinery moved down to tide.harness (domain) so the
 # launcher may ensure it on spawn without importing an edge module upward.
 from ..harness import (  # noqa: F401 — public re-exports
+    ASK_GATE_CMD,
+    ASK_GATE_MATCHER,
     CLAUDE_DIRNAME,
     CONTEXT_WATCH_CMD,
     EDIT_GATE_CMD,
@@ -37,6 +39,7 @@ from ..harness import (  # noqa: F401 — public re-exports
     _load,
     install_hooks,
     install_hooks_in_worktree,
+    merge_ask_gate,
     merge_hooks,
     merge_pre_tool_use,
     merge_role_gate,
@@ -149,6 +152,14 @@ def register_hook_group(subparsers) -> None:
         help="same, reading the command from PATH (safest — the shell never sees it)",
     )
     rg.set_defaults(func=role_gate.cmd_role_gate, _cmd="hook role-gate")
+
+    ag = hsub.add_parser(
+        "ask-gate",
+        help="PreToolUse: in an AO session with no human in the window, "
+             "AskUserQuestion goes to the manager, not a dialog",
+    )
+    from .ask_gate import cmd_ask_gate  # lazy: keep hook wiring import-light
+    ag.set_defaults(func=cmd_ask_gate, _cmd="hook ask-gate")
 
     hc = hsub.add_parser(
         "handoff-confirm",

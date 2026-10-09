@@ -220,7 +220,7 @@ def test_f9_doctor_lists_ao_worktrees_without_tide_hooks(tmp_path):
     }}))
     res = doctor.check_ao_worktree_hooks(root)
     assert res.status == doctor.STATUS_WARN
-    assert "music/music-4 (нет: handoff-confirm, context-watch)" in res.detail
+    assert "music/music-4 (нет: handoff-confirm, context-watch, ask-gate)" in res.detail
     assert "music-8" not in res.detail and "other" not in res.detail
     install.install_hooks(bad)
     assert doctor.check_ao_worktree_hooks(root).status == doctor.STATUS_OK

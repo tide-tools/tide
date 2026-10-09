@@ -46,6 +46,8 @@ EDIT_GATE_CMD = "tide hook edit-gate"
 EDIT_MATCHER = "Edit|Write|MultiEdit"
 ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
+ASK_GATE_CMD = "tide hook ask-gate"
+ASK_GATE_MATCHER = "AskUserQuestion"
 HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
 CONTEXT_WATCH_CMD = "tide hook context-watch"
@@ -147,6 +149,22 @@ def merge_role_gate(hooks: dict) -> bool:
     return True
 
 
+def merge_ask_gate(hooks: dict) -> bool:
+    """Append the PreToolUse ask-gate entry to *hooks*; return whether it changed.
+
+    SOC-108: in an AO session with no human in the window ``AskUserQuestion``
+    silently wedges the session — the gate turns the question into a message to
+    the manager. Matcher-scoped to ``AskUserQuestion``. No-op when already wired.
+    """
+    groups = hooks.setdefault(PRE_TOOL_USE_EVENT, [])
+    if _command_present(groups, ASK_GATE_CMD):
+        return False
+    groups.append(
+        {"matcher": ASK_GATE_MATCHER, HOOKS_KEY: [_hook_block(ASK_GATE_CMD)]}
+    )
+    return True
+
+
 def merge_user_prompt(hooks: dict) -> bool:
     """Append the UserPromptSubmit handoff-confirm entry to *hooks*; return changed.
 
@@ -225,6 +243,10 @@ def merge_hooks(data: dict) -> List[str]:
     if merge_role_gate(hooks):
         notes.append(
             "{0} [{1}] → {2}".format(PRE_TOOL_USE_EVENT, ROLE_GATE_MATCHER, ROLE_GATE_CMD)
+        )
+    if merge_ask_gate(hooks):
+        notes.append(
+            "{0} [{1}] → {2}".format(PRE_TOOL_USE_EVENT, ASK_GATE_MATCHER, ASK_GATE_CMD)
         )
     if merge_user_prompt(hooks):
         notes.append("{0} → {1}".format(USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD))

@@ -344,9 +344,10 @@ def check_roster_worktrees(control_home: Optional[Path] = None) -> CheckResult:
 
 
 # tide's hooks an AO session cannot live without (SOC-98/SOC-101 F9): the board's
-# binding, the handoff flip + words of the owner, the context ladder.
+# binding, the handoff flip + words of the owner, the context ladder, and the
+# ask-gate (SOC-108: a dialog with nobody in the window wedges the session).
 AO_WORKTREE_HOOKS = (install.SESSION_START_CMD, install.HANDOFF_CONFIRM_CMD,
-                     install.CONTEXT_WATCH_CMD)
+                     install.CONTEXT_WATCH_CMD, install.ASK_GATE_CMD)
 
 
 def ao_projects_without_hooks() -> List[str]:

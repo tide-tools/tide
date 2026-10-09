@@ -11,6 +11,9 @@ Modules (U10):
   role_gate.py      — `tide hook role-gate` (PreToolUse): forbid the orchestrator
                       (HEAD) from doing worker-work (Write/Edit/NotebookEdit and
                       mutating Bash); pure no-op for workers and unset role.
+  ask_gate.py       — `tide hook ask-gate` (PreToolUse, AskUserQuestion): in an AO
+                      session with no live human reply for 10 min, deny the dialog
+                      and send the question to the manager (SOC-108).
 
 ``cli.py`` wires the human ``install-hooks`` command and the internal ``hook``
 dispatch group via :func:`tide.hooks.install.register` /
