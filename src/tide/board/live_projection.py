@@ -1008,17 +1008,20 @@ def _offer_staleness(text):
 # («## где мы (минимум для шага)», «## Состояние машины — ПРОЧТИ ПЕРВЫМ»), а
 # старый сид не должен читаться как пустой. Матчим ПОДСТРОКОЙ по нормализованному
 # заголовку (без хвоста в скобках) — заголовки живые, точной строки в каноне нет.
-SEED_PROSE, SEED_LIST = "проза", "список"
-SEED_CONTRACT = (
-    ("финал", SEED_PROSE, ("финал", "от а к б", "что выкачено", "итог")),
-    ("курсор", SEED_PROSE, ("курсор", "где мы", "состояние")),
-    ("дальше", SEED_LIST, ("дальше", "следующий шаг")),
-    ("решения", SEED_LIST, ("решения",)),
-    ("опыт", SEED_LIST, ("опыт", "отвергнуто", "петли", "грабли")),
-    ("карта", SEED_LIST, ("карта входа", "карта", "reading-path")),
-    ("окружение", SEED_PROSE, ("окружение", "среда", "как работать",
-                               "как просил")),
-)
+try:
+    from tide.handoff_contract import SEED_CONTRACT, PROSE as SEED_PROSE, LIST as SEED_LIST
+except Exception:
+    SEED_PROSE, SEED_LIST = "проза", "список"
+    SEED_CONTRACT = (
+        ("финал", SEED_PROSE, ("финал", "от а к б", "что выкачено", "итог")),
+        ("курсор", SEED_PROSE, ("курсор", "где мы", "состояние")),
+        ("дальше", SEED_LIST, ("дальше", "следующий шаг")),
+        ("решения", SEED_LIST, ("решения",)),
+        ("опыт", SEED_LIST, ("опыт", "отвергнуто", "петли", "грабли")),
+        ("карта", SEED_LIST, ("карта входа", "карта", "reading-path")),
+        ("окружение", SEED_PROSE, ("окружение", "среда", "как работать",
+                                   "как просил")),
+    )
 _SEED_CACHE = {}
 
 
@@ -1074,7 +1077,7 @@ def _seed_measure(path):
                 used.add(name)
                 matched += 1
                 break
-        items = [ln for ln in (body or []) if ln.strip()]
+        items = [ln for ln in (body or []) if ln.strip() and not ln.strip(" -").startswith("—")]
         if not items:
             marks.append((label, "○", True))
             continue
@@ -1098,7 +1101,7 @@ def _seed_title(rec):
         return ""
     if not m["matched"]:
         return "сид свободной формы — контрактных блоков не найдено"
-    return "сид {0}/7 · ".format(m["filled"]) + " · ".join(
+    return "сид {0}/{1} · ".format(m["filled"], len(SEED_CONTRACT)) + " · ".join(
         "{0} {1}".format(lb, sg) for lb, sg, _ in m["marks"])
 
 
@@ -1565,7 +1568,7 @@ def _card(t, wait, label=None, badge="", show_proj=False, note="", offer=None,
         # полная строка мер в title. Сид свободной формы счёта НЕ получает: он не
         # дырявый, он просто до контракта — пугать нулём нечестно (решение 05)
         sm = _seed_measure((offer or {}).get("seed"))
-        score = ('<span class="seedn">сид {0}/7</span>'.format(sm["filled"])
+        score = ('<span class="seedn">сид {0}/{1}</span>'.format(sm["filled"], len(SEED_CONTRACT))
                  if sm and sm["matched"] else "")
         meta = '<span class="pjmeta hot" title="{0}">⌛ передача {1}</span>'.format(
             esc(_seed_title(offer)), score)
