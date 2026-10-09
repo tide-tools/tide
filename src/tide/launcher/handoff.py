@@ -515,12 +515,25 @@ def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None,
             handoff_queue.unreserve(Path(home), key)
         except Exception:  # noqa: BLE001  best-effort — the offer itself is intact
             pass
+    from . import reception_watch
+
     if out.get("action") == NOT_ALIVE:
-        raise_log.log(Path(home), key, raise_log.AUTO, "не ожила: {0}".format(
-            out.get("detail") or "сигнала нет"))
-        _tell_origin(Path(home), key, NOT_ALIVE_LINE)
-        from . import reception  # Грише одно сообщение: не поднялась
-        reception.announce_not_alive(Path(home), key)
+        # резерв уже снят выше; строка «не ожила», пульс старой, менеджеру, Грише.
+        # Старая сессия здесь же, в разговоре, — ao send ей не нужен (SOC-143)
+        reception_watch.signal_failed(Path(home), key, detail=str(
+            out.get("detail") or "сигнала нет"), handle=str(out.get("handle") or ""),
+            raised_by=raise_log.AUTO, tell_origin_ao=False)
+    elif out.get("ok") and out.get("action") == "spawned":
+        # первый сигнал есть — но приёма ещё нет: сторож дождётся taken-at (SOC-143)
+        try:
+            rec = handoff_queue._resolve(Path(home), key)
+            sid = str(rec.get("pickup_session") or "")
+            adapter = pickup.get_adapter(adapter_name or out.get("adapter") or None)
+            reception_watch.schedule(Path(home), key, str(out.get("handle") or ""),
+                                     adapter=adapter, sid="" if sid == "-" else sid,
+                                     raised_by=raise_log.AUTO, skip_alive=True)
+        except Exception:  # noqa: BLE001 — сторож не смеет сорвать хендофф
+            pass
     return out
 
 

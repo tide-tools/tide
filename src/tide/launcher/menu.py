@@ -890,7 +890,28 @@ def launch_handoff(
                               handle=str(res.ref or "") if res.ok else "",
                               adapter=getattr(adapter, "name", ""), ok=bool(res.ok),
                               detail=res.detail or "", via=via)
+    if res.ok and not dry_run and raised_by != _raise_log.AUTO:
+        # SOC-143: поднятая новая может умереть, не сказав hello (288-04-designer) —
+        # сторож ждёт приёма и, не дождавшись, говорит передающей и менеджеру.
+        # Автохендофф ждёт первый сигнал сам и заводит сторож после (spawn_offer).
+        _watch_reception(control_home, record, adapter, str(res.ref or ""), raised_by)
     return res
+
+
+def _watch_reception(control_home: Path, record: dict, adapter, handle: str,
+                     raised_by: str) -> Optional[int]:
+    """Завести сторож приёма (:mod:`tide.launcher.reception_watch`); никогда не падает."""
+    try:
+        from .. import handoff_queue as _hq
+        from . import reception_watch
+
+        key = str(record["name"])
+        sid = str(_hq._resolve(control_home, key).get("pickup_session") or "")
+        return reception_watch.schedule(control_home, key, handle, adapter=adapter,
+                                        sid="" if sid == "-" else sid,
+                                        raised_by=raised_by)
+    except Exception:  # noqa: BLE001 — сторож не смеет сорвать подъём
+        return None
 
 
 def _name_with_ao_id(session_dir: Path, title: str, adapter, handle) -> Optional[str]:

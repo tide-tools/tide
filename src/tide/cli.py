@@ -513,6 +513,9 @@ def _register_handoffs(sub) -> None:
     register_audit(hsub)  # SOC-101 п.3: what a seed lacks, section by section
     register_offer_spawn(hsub)
     register_autoraise(hsub)  # скрытая: автоподъём вставшей нити (signal_stall)
+    from .launcher.reception_watch import register as register_reception_watch
+
+    register_reception_watch(hsub)  # скрытая: сторож приёма поднятой новой (SOC-143)
     from .hooks.handed_off import register_two_heads
 
     register_two_heads(hsub)  # SOC-101 F49: multiples шлёт тревогу «две головы»

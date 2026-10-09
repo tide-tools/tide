@@ -132,6 +132,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # A stalled auto-handoff schedules a DETACHED `tide handoffs autoraise` (it
     # would outlive the test, then raise a session and message people): off.
     monkeypatch.setenv("TIDE_AUTORAISE_AFTER", "off")
+    # Every real raise schedules a DETACHED `tide handoffs watch-reception` (SOC-143):
+    # it would outlive the test, probe AO and message the manager — off.
+    monkeypatch.setenv("TIDE_RECEPTION_WATCH", "off")
     monkeypatch.setenv("TIDE_GLOBAL_SETTINGS", str(tmp_path / "global-claude-settings.json"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # `tide init` delivers the skills as part of the install (work 49) — point the
