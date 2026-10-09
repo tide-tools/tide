@@ -73,7 +73,9 @@ def _deny(payload):
 def test_deny_in_ao_without_live_human(ao, proj, tmp_path):
     reason = _deny(_payload(proj, _transcript(tmp_path, SPAWN)))
     assert reason is not None
-    assert reason.startswith("Вопрос не диалогом: это сессия под AO")
+    assert reason.startswith(
+        "Это не поломка: вопрос по правилу идёт менеджеру текстом. "
+        "Вопрос не диалогом: это сессия под AO")
     assert "за последние 10 мин" in reason
     assert ask_gate.MANAGER_FALLBACK in reason
 
@@ -210,7 +212,8 @@ def test_cli_deny_prints_pretooluse_json(ao, monkeypatch, capsys, proj, tmp_path
     spec = json.loads(out)["hookSpecificOutput"]
     assert spec["hookEventName"] == "PreToolUse"
     assert spec["permissionDecision"] == "deny"
-    assert spec["permissionDecisionReason"].startswith("Вопрос не диалогом")
+    assert spec["permissionDecisionReason"].startswith(
+        "Это не поломка: вопрос по правилу идёт менеджеру текстом.")
 
 
 @pytest.mark.parametrize("stdin", ["", "{ not json", "[1, 2]", '"str"'])
