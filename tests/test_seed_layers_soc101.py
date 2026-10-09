@@ -166,3 +166,57 @@ def test_pass_pulse_is_kept_whole_even_when_older_and_over_budget():
     tail = seed_draft.block_cursor([], ctx, clip=72)
     assert tail[0] == ctx[-1]                 # последний пульс — целиком при любом clip
     assert all(len(ln) <= 72 for ln in tail[1:])
+
+
+# --- п.4 · F17: уведомления харнесса — не реплики Гриши ---------------------------
+
+# Живая строка из dialog.md нити 31-@main (и сида continuity-audit · 02, S:59).
+LIVE_NOTICE = ("- 2026-10-09T05:51:19 · Гриша · ao · Your claude.ai usage limit has reset. "
+               "Continue the task you were working on when the limit was reached; do not "
+               "repeat work that is already complete.")
+
+
+@pytest.mark.parametrize("prompt", [
+    "Your claude.ai usage limit has reset. Continue the task you were working on.",
+    "usage limit has reset — continue",
+    "[Cross-session idle notice] tide-stack-10 is idle",
+    "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event",
+    "<task-notification><task-id>b1</task-id></task-notification>",
+    "<ao-session-delivery from=\"x\">[from management-13] сделай</ao-session-delivery>",
+    "<cross-session-message from-name=\"board\">готово</cross-session-message>",
+])
+def test_harness_notices_are_not_written_as_human(prompt, tmp_path):
+    assert dialog.human_text(prompt) is None
+    thread = tmp_path / "t"
+    thread.mkdir()
+    assert dialog.log_human(tmp_path, thread, prompt) is None
+    assert not dialog.dialog_path(thread).exists()
+
+
+def test_human_words_before_a_notice_survive():
+    assert dialog.human_text("поправь сид [SYSTEM NOTIFICATION - NOT USER INPUT] x") == \
+        ("ao", "поправь сид")
+    assert dialog.human_text("лимит снова кончился, жди") == ("ao", "лимит снова кончился, жди")
+
+
+def test_live_notice_already_in_dialog_md_is_dropped_on_assembly(live):
+    dialog.dialog_path(live["thread"]).write_text(
+        dialog.HEADER + LIVE_NOTICE + "\n- 2026-10-09T06:00:00 · Гриша · ao · где сид?\n",
+        encoding="utf-8")
+    assert dialog.tail(live["thread"]) == ["- 2026-10-09T06:00:00 · Гриша · ao · где сид?"]
+    seed = ah.build_auto_seed(live["sess"])
+    assert "usage limit" not in seed
+
+
+def test_pult_log_notice_rows_are_dropped(live, tmp_path, monkeypatch):
+    import json
+
+    log = tmp_path / "own.jsonl"
+    log.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in (
+        {"ts": "2026-10-09T05:00:00", "dir": "in", "kind": "ao",
+         "text": "[Cross-session idle notice] board is idle"},
+        {"ts": "2026-10-09T05:01:00", "dir": "in", "kind": "tg", "text": "привет"},
+    )) + "\n", encoding="utf-8")
+    from tide import fields
+    fields.set_field(stream.passport_path(live["thread"]), dialog.LOG_FIELD, str(log))
+    assert [ln.rsplit(" · ", 1)[1] for ln in dialog.tail(live["thread"])] == ["привет"]
