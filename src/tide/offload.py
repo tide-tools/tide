@@ -325,6 +325,17 @@ def _confirm_pending_pickup(passport: Path) -> Optional[str]:
         return None
 
 
+def _note_first_pulse(passport: Path, *, note: str, cursor: str) -> None:
+    """The receiver's first real pulse → its handoff offer (SOC-101 п.2: what the
+    accepting session understood, for ``tide handoffs audit``). Never breaks a pulse."""
+    try:
+        from . import handoff_queue
+        handoff_queue.note_first_pulse(paths.control_home(), Path(passport).parent,
+                                       note=note, cursor=cursor)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _cmd_offload(args) -> int:
     root = paths.require_tide_root()
     note = " ".join(getattr(args, "note", []) or [])
@@ -338,6 +349,7 @@ def _cmd_offload(args) -> int:
     if confirmed:
         print("tide: handoff {0} confirmed by this pulse (the first-prompt flip "
               "was still pending)".format(confirmed))
+    _note_first_pulse(passport, note=note, cursor=cursor)
     warn = _closure_word_warning(passport, " ".join((note, cursor, next_steps)))
     if warn:
         print(warn, file=sys.stderr)

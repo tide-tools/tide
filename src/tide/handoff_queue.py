@@ -40,6 +40,16 @@ STATUS_TAKEN = "taken"
 STATUS_DROPPED = "dropped"  # soft-archived: dismissed without pickup (record kept)
 DEFAULT_MODE = "continue"
 
+# What the receiving session understood (SOC-101 п.2), stamped on the OFFER record
+# so the audit (`tide handoffs audit`) reads seed, origin and reception in one place:
+# the session passport's goal at reception (or at its first pulse, when the goal
+# was still blind) and the first REAL pulse it wrote (not the mechanical
+# «нить принята» one).
+UNDERSTOOD_GOAL = "understood-goal"
+FIRST_PULSE = "first-pulse"
+FIRST_PULSE_AT = "first-pulse-at"
+_UNDERSTOOD_MAX = 400
+
 
 def _transfers_thread(rec: Dict[str, object]) -> bool:
     """Whether taking *rec* hands the ORIGIN's own thread to the successor.
@@ -81,7 +91,9 @@ def _set_field(path: Path, key: str, value: str) -> None:
             lines[i] = "{0} {1}".format(prefix, value)
             break
     else:
-        last = max((i for i, ln in enumerate(lines)
+        head = next((i for i, ln in enumerate(lines) if ln.startswith("## ")),
+                    len(lines))  # the header only — a `key:` line in the note is text
+        last = max((i for i, ln in enumerate(lines[:head])
                     if re.match(r"^[a-z-]+:", ln)), default=None)
         if last is not None:
             lines.insert(last + 1, "{0} {1}".format(prefix, value))
@@ -147,6 +159,9 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
         "reserved_at": _get(text, "reserved-at"),
         "taken_by": _get(text, "taken-by"),
         "taken_at": _get(text, "taken-at"),
+        "understood_goal": _get(text, UNDERSTOOD_GOAL),
+        "first_pulse": _get(text, FIRST_PULSE),
+        "first_pulse_at": _get(text, FIRST_PULSE_AT),
     }
     rec["pickup_stale"] = _reserve_is_stale(rec)
     return rec
@@ -346,6 +361,7 @@ def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
     passport = session_dir / "arc.md"
     if not passport.is_file():
         return
+    _note_goal(rec, passport)
     from . import fields  # lazy: keep the queue importable standalone
     if session and session != "-":
         try:
@@ -368,6 +384,57 @@ def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
         )
     except Exception:  # noqa: BLE001  a stray pulse must never break a pickup
         pass
+
+
+def _one_line(text: str) -> str:
+    line = " ".join((text or "").split())
+    return line if len(line) <= _UNDERSTOOD_MAX else line[:_UNDERSTOOD_MAX - 1] + "…"
+
+
+def _note_goal(rec: Dict[str, object], passport: Path) -> bool:
+    """Stamp the session passport's goal as ``understood-goal`` on *rec* once —
+    only a REAL goal (a blind/placeholder one waits for the first pulse)."""
+    if str(rec.get("understood_goal") or "-") != "-":
+        return False
+    try:
+        from . import fields, placeholders
+        from . import slug as _slug
+        raw = (fields.read_field(passport, "goal") or "").strip()
+        if placeholders.is_blind_goal(raw, _slug.entry_slug(passport.parent.name)):
+            return False
+        _set_field(Path(str(rec["path"])), UNDERSTOOD_GOAL, _one_line(raw))
+        rec["understood_goal"] = _one_line(raw)
+        return True
+    except Exception:  # noqa: BLE001 — reception must never break on this
+        return False
+
+
+def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
+                     cursor: str = "") -> Optional[Dict[str, object]]:
+    """The session at *session_dir* wrote a pulse: if it is the receiver of a TAKEN
+    offer, stamp its first pulse (and the goal, if reception found none) on the
+    offer. Later pulses change nothing. → the updated record, or None."""
+    try:
+        target = Path(session_dir).resolve()
+    except OSError:  # pragma: no cover
+        return None
+    words = _one_line(cursor) or _one_line(note)
+    for r in list_offers(home, status=STATUS_TAKEN):
+        seed = r.get("seed")
+        if not seed or seed == "-":
+            continue
+        try:
+            if Path(str(seed)).parent.parent.resolve() != target:
+                continue
+        except OSError:
+            continue
+        changed = _note_goal(r, target / "arc.md")
+        if words and str(r.get("first_pulse") or "-") == "-":
+            _set_field(r["path"], FIRST_PULSE, words)
+            _set_field(r["path"], FIRST_PULSE_AT, _now())
+            changed = True
+        return _parse(r["path"]) if changed else None
+    return None
 
 
 def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:
