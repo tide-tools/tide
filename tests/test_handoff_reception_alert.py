@@ -155,3 +155,31 @@ def test_not_alive_sends_one_message(world, monkeypatch, sent):
     msg = sent[0]["text"]
     assert msg.endswith("не поднялась, нить остаётся у proj — seam · 01")
     assert msg.startswith("proj — seam · ")
+
+
+# --- выключатель $TIDE_ACCEPT_NOTIFY (all | fail | off) ------------------------------
+
+def test_notify_fail_skips_the_reception_message(seam, sent, monkeypatch):
+    monkeypatch.setenv(reception.NOTIFY_ENV, "fail")
+    assert _pulse() == 0
+    assert sent == []
+    rec = hq.list_offers(seam["home"])[0]
+    assert hq._get(rec["path"].read_text(encoding="utf-8"), reception.ANNOUNCED).endswith("off")
+    assert _pulse("дальше") == 0
+    assert sent == []
+
+
+def test_notify_fail_still_reports_not_alive_and_off_silences_it(seam, sent, monkeypatch):
+    monkeypatch.setenv(reception.NOTIFY_ENV, "fail")
+    assert reception.announce_not_alive(seam["home"], seam["key"]) == "sent"
+    assert len(sent) == 1 and "не поднялась" in sent[0]["text"]
+    monkeypatch.setenv(reception.NOTIFY_ENV, "off")
+    assert reception.announce_not_alive(seam["home"], seam["key"]) == "off"
+    assert len(sent) == 1
+
+
+def test_notify_default_and_garbage_mean_all(monkeypatch):
+    monkeypatch.delenv(reception.NOTIFY_ENV, raising=False)
+    assert reception.notify_mode() == "all"
+    monkeypatch.setenv(reception.NOTIFY_ENV, "loud")
+    assert reception.notify_mode() == "all"

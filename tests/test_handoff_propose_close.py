@@ -67,3 +67,10 @@ def test_no_manager_address_sends_nothing(seam, sent, ao):
 def test_not_taken_offer_proposes_nothing(seam, ao, manager):
     assert reception.propose_close(seam["home"], seam["key"]) is None
     assert ao.said == []
+
+
+def test_close_proposal_ignores_the_notify_switch(seam, sent, ao, manager, monkeypatch):
+    monkeypatch.setenv(reception.NOTIFY_ENV, "off")
+    assert _pulse() == 0
+    assert sent == []                      # Грише — ничего
+    assert len(ao.said) == 1               # менеджеру — всё равно

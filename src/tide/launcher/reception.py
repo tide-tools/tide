@@ -11,6 +11,10 @@
 команды — тихо пропускаем и пишем строку в ``.tide/state/alerts.log``
 control-home. Метка ``announced:`` в оффере — второй раз не шлём.
 
+Выключатель ``$TIDE_ACCEPT_NOTIFY``: ``all`` (по умолчанию) — оба сообщения,
+``fail`` — только «не поднялась», ``off`` — ни одного (строка в журнале есть
+всегда). Предложение закрыть старую менеджеру от него не зависит.
+
 Сам модуль никогда не падает: сообщение — уведомление, не шаг передачи.
 """
 
@@ -28,6 +32,16 @@ ANNOUNCED = "announced"          # метка в оффере: «<штамп> ·
 ALERT_LOG = "alerts.log"
 FIELD_MAX = 200                  # примерно столько знаков на поле сообщения
 ROUTE_HUMAN = "human"
+
+# Выключатель сообщений Грише (tg 3119): all — о приёме и о неудаче, fail — только
+# «не поднялась», off — ничего. Предложение закрыть менеджеру — всегда.
+NOTIFY_ENV = "TIDE_ACCEPT_NOTIFY"
+NOTIFY_ALL, NOTIFY_FAIL, NOTIFY_OFF = "all", "fail", "off"
+
+
+def notify_mode() -> str:
+    raw = (os.environ.get(NOTIFY_ENV) or "").strip().lower()
+    return raw if raw in (NOTIFY_ALL, NOTIFY_FAIL, NOTIFY_OFF) else NOTIFY_ALL
 
 
 # --- текст (чистое) ------------------------------------------------------------
@@ -171,7 +185,12 @@ def announce_reception(home: Path, key: str) -> Optional[str]:
             return None
         stamp = datetime.now().isoformat(timespec="seconds")
         hq._set_field(Path(str(rec["path"])), ANNOUNCED, stamp)  # метка ДО отправки
-        outcome = send(home, compose_reception(home, rec), source=_source(rec))
+        text = compose_reception(home, rec)
+        if notify_mode() != NOTIFY_ALL:
+            _log(home, "не отправлено (${0}={1}): {2}".format(NOTIFY_ENV, notify_mode(), text))
+            outcome = "off"
+        else:
+            outcome = send(home, text, source=_source(rec))
         hq._set_field(Path(str(rec["path"])), ANNOUNCED, "{0} · {1}".format(stamp, outcome))
         return outcome
     except Exception:  # noqa: BLE001 — сообщение не смеет сорвать пульс
@@ -183,7 +202,11 @@ def announce_not_alive(home: Path, key: str) -> Optional[str]:
     try:
         rec = hq._resolve(Path(home), key)
         new, old = titles(home, rec)
-        return send(home, not_alive_text(new, old), source=_source(rec))
+        text = not_alive_text(new, old)
+        if notify_mode() == NOTIFY_OFF:
+            _log(home, "не отправлено (${0}=off): {1}".format(NOTIFY_ENV, text))
+            return "off"
+        return send(home, text, source=_source(rec))
     except Exception:  # noqa: BLE001
         return None
 
