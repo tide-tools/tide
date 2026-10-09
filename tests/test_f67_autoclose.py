@@ -240,3 +240,94 @@ def test_cli_autoclose_registered():
         pytest.skip("нет build_parser")
     args = p.parse_args(["handoffs", "autoclose", "--dry-run"])
     assert args.dry_run and args.func is ac.cmd_autoclose
+
+
+# --- SOC-143: одна пара по --offer и новая = принявшая оффер ------------------------
+
+def test_offer_matches_number_and_name():
+    assert ac.offer_matches(REC, "300") and ac.offer_matches(REC, "300-30-handoffs")
+    assert not ac.offer_matches(REC, "30") and not ac.offer_matches(REC, "299")
+    assert not ac.offer_matches(REC, "")
+
+
+def test_sweep_offer_only_that_pair(pair, tmp_path, monkeypatch):
+    other = dict(REC, name="291-01-main", from_session="other-sid", taken_by="o-new")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(REC), other])
+    tr = _transcript(tmp_path)
+    kw = dict(dry_run=True, now=NOW, session_of=lambda h: {"isTerminated": False},
+              transcript_of=lambda sid: tr)
+    assert [v["offer"] for v in ac.sweep(pair, offer="300", **kw)] == ["300-30-handoffs"]
+    assert ac.sweep(pair, offer="999", **kw) == []
+
+
+def test_cli_live_without_env_and_offer_closes_nothing(pair, monkeypatch, capsys):
+    import argparse
+    monkeypatch.delenv(ac.ENV, raising=False)
+    got = {}
+    monkeypatch.setattr(ac, "sweep", lambda home, dry_run=False, offer=None: got.update(
+        dry=dry_run, offer=offer) or [])
+    ac.cmd_autoclose(argparse.Namespace(dry_run=False, offer=None))
+    assert got == {"dry": True, "offer": None} and "выключено" in capsys.readouterr().out
+    ac.cmd_autoclose(argparse.Namespace(dry_run=False, offer="299"))
+    assert got == {"dry": False, "offer": "299"}
+    ac.cmd_autoclose(argparse.Namespace(dry_run=True, offer="299"))
+    assert got == {"dry": True, "offer": "299"}
+
+
+def test_new_is_offer_taker_not_thread_head(pair, tmp_path, monkeypatch):
+    """Старая пара 292: голова нити уже дальше (06), новая пары — принявшая (05)."""
+    from tide.hooks import handed_off
+    monkeypatch.setattr(handed_off, "successor",
+                        lambda home, rec: {"ao_session": "head-11", "title": "06"})
+    v = _v(pair, _transcript(tmp_path))
+    assert v["new_ao"] == "new-9" and "new-9" in v["new"] and "head-11" not in v["new"]
+    assert v["close"] is True, v["why"]
+
+
+def test_dead_taker_blocks_close_even_if_head_alive(pair, tmp_path, monkeypatch):
+    from tide.hooks import handed_off
+    monkeypatch.setattr(handed_off, "successor",
+                        lambda home, rec: {"ao_session": "head-11", "title": "06"})
+    v = ac.verdict(pair, REC, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=lambda h: {"isTerminated": h == "new-9"})
+    assert v["close"] is False and "новая new-9 не жива" in v["why"]
+
+
+def test_unknown_taker_blocks_close(pair, tmp_path, monkeypatch):
+    from tide.arc import holder
+    monkeypatch.setattr(holder, "ao_handle_for", lambda home, sid: {
+        "old-sid": "old-7"}.get(sid, ""))
+    v = _v(pair, _transcript(tmp_path))
+    assert v["close"] is False and "принявшей оффер неизвестна" in v["why"]
+
+
+def test_forward_to_thread_head_counts(tmp_path):
+    t0 = NOW - timedelta(minutes=30)
+    rows = [_row("user", t0, "<task-notification><summary>итог</summary></task-notification>"),
+            _row("assistant", t0 + timedelta(minutes=1), [{
+                "type": "tool_use", "id": "x", "name": "Bash",
+                "input": {"command": "ao send --session head-11 итог"}}])]
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    since = t0 - timedelta(minutes=1)
+    assert ac.unforwarded_results(p, since, ["new-9", "head-11"]) == []
+    assert ac.unforwarded_results(p, since, "new-9") != []
+
+
+@pytest.mark.parametrize("new_state,why", [
+    (None, "новая new-9 не жива (AO: не знает)"),               # AO-сессии нет / exited
+    ({"isTerminated": True}, "новая new-9 не жива (AO: закрыта)"),
+])
+def test_dead_new_never_closes_old(pair, tmp_path, new_state, why):
+    kills = []
+    res = ac.sweep(pair, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=lambda h: new_state if h == "new-9" else {"isTerminated": False},
+                   kill=kills.append, alert=lambda *a: None, say=lambda *a: True)
+    assert not kills and res[0]["close"] is False and why in res[0]["why"]
+
+
+def test_not_taken_new_never_closes_old(pair, tmp_path):
+    rec = dict(REC, taken_at="-")
+    v = ac.verdict(pair, rec, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=lambda h: {"isTerminated": False})
+    assert v["close"] is False and "нет taken-at" in v["why"]

@@ -11,6 +11,7 @@
   (:func:`tide.handoff_queue.is_dissolved` — та же сессия позже не взяла другую нить);
 * принят не раньше :data:`LOOKBACK_HOURS` часов назад (старые пары не трогаем);
 * у старой и новой разные AO-сессии, AO-сессия старой известна и не закрыта;
+* новая — принявшая этот оффер (``taken-by``), её AO-сессия известна и жива;
 * в транскрипте старой нет живых фоновых воркеров — тот же признак, что у блока
   сида «в работе прямо сейчас» (:func:`tide.launcher.seed_draft.background_workers`);
 * каждый итог воркера, пришедший старой после передачи (``<task-notification>``),
@@ -23,8 +24,10 @@
 whois) и последнее сообщение новой «старая закрыта в ЧЧ:ММ». Одна пара — одно
 закрытие (ключ оффера в журнале).
 
-Включатель — ``$TIDE_AUTOCLOSE_OLD=1``. Пруф без действий —
-``tide handoffs autoclose --dry-run``: кого закрыл бы и почему / почему нет.
+Включатель — ``$TIDE_AUTOCLOSE_OLD=1`` (все пары) или ``tide handoffs autoclose
+--offer <id>`` (одна пара, SOC-143). Пруф без действий —
+``tide handoffs autoclose --dry-run [--offer <id>]``: кого закрыл бы и почему / почему нет.
+Новая пары — принявшая этот оффер (``taken-by`` → AO-id), не нынешняя голова нити.
 Срабатывает на хуке ``handoff-confirm`` (UserPromptSubmit) любой сессии, кроме
 самой старой (её закрывают со стороны, не изнутри её же хода), не чаще раза в
 :data:`THROTTLE_SEC` секунд. Никогда не падает.
@@ -102,11 +105,14 @@ def _at(row: dict) -> Optional[datetime]:
     return dialog._stamp(str(row.get("timestamp") or ""))
 
 
-def unforwarded_results(transcript: Path, since: datetime, new_ao: str) -> List[str]:
+def unforwarded_results(transcript: Path, since: datetime, new_ao) -> List[str]:
     """Итоги воркеров, пришедшие старой после *since* и не пересланные новой:
-    после ``<task-notification>`` нет хода старой (tool_use), где назван *new_ao*.
-    → ``["ЧЧ:ММ «summary»", …]``."""
+    после ``<task-notification>`` нет хода старой (tool_use), где назван *new_ao*
+    (строка или список AO-id — подходит любой). → ``["ЧЧ:ММ «summary»", …]``."""
     import re
+
+    targets = [new_ao] if isinstance(new_ao, str) else list(new_ao or ())
+    targets = [t for t in targets if t]
 
     notif = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
     summ = re.compile(r"<summary>(.*?)</summary>", re.S)
@@ -114,11 +120,13 @@ def unforwarded_results(transcript: Path, since: datetime, new_ao: str) -> List[
     for row in _rows(transcript):
         at = _at(row)
         if row.get("type") == "assistant":
-            if not pending or not new_ao:
+            if not pending or not targets:
                 continue
             for b in (row.get("message") or {}).get("content") or []:
-                if (isinstance(b, dict) and b.get("type") == "tool_use"
-                        and new_ao in json.dumps(b.get("input") or {}, ensure_ascii=False)):
+                if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                    continue
+                said = json.dumps(b.get("input") or {}, ensure_ascii=False)
+                if any(t in said for t in targets):
                     pending = []
                     break
             continue
@@ -182,13 +190,16 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     offer = str(rec.get("name") or "?")
     old_sid = str(rec.get("from_session") or "")
     old_ao = holder.ao_handle_for(home, old_sid) if old_sid else ""
-    try:
+    # Новая пары — та, что приняла ЭТОТ оффер (taken-by → AO-id), а не нынешняя
+    # голова нити по whois: у старых пар голова уже дальше по цепочке (SOC-143).
+    new_sid = str(rec.get("taken_by") or "")
+    new_ao = holder.ao_handle_for(home, new_sid) if new_sid else ""
+    try:  # нынешняя голова — пересылка итогов ей тоже считается
         from .handed_off import successor
-        new_ao = successor(home, rec).get("ao_session", "")
+        head_ao = successor(home, rec).get("ao_session", "")
     except Exception:  # noqa: BLE001
-        new_ao = ""
-    if not new_ao or new_ao == old_ao:
-        new_ao = holder.ao_handle_for(home, str(rec.get("taken_by") or "")) or new_ao
+        head_ao = ""
+    forward_to = [a for a in (new_ao, head_ao) if a and a != old_ao]
     try:
         from ..launcher import reception
         new_t, old_t = reception.titles(home, rec)
@@ -216,7 +227,7 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     if not old_ao:
         return no("AO-сессия старой неизвестна — закрыть нечем")
     if not new_ao:
-        return no("AO-сессия новой неизвестна — некому сообщить, не закрываю")
+        return no("AO-сессия принявшей оффер неизвестна — некому сообщить, не закрываю")
     if old_ao == new_ao:
         return no("старая и новая в одной AO-сессии {0} — закрыть нельзя".format(old_ao))
     if session_of is None:
@@ -227,6 +238,10 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
         return no("AO не знает {0} — уже закрыта или AO недоступен".format(old_ao))
     if s.get("isTerminated"):
         return no("{0} уже закрыта".format(old_ao))
+    n = session_of(new_ao)
+    if not n or n.get("isTerminated"):
+        return no("новая {0} не жива (AO: {1}) — старую не закрываю".format(
+            new_ao, "закрыта" if n else "не знает"))
     if transcript_of is None:
         from ..launcher.seed_draft import transcript_path
         transcript_of = transcript_path
@@ -242,7 +257,7 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
             len(live), "; ".join(ln.lstrip("- ").split(" — ", 1)[0] for ln in live[:3])))
     raised = _parse_iso(rec.get("raised_at"))
     since = min(t for t in (taken, raised) if t is not None)
-    left = unforwarded_results(tr, since, new_ao)
+    left = unforwarded_results(tr, since, forward_to)
     if left:
         return no("итоги воркеров не пересланы новой: {0} — жду".format(", ".join(left[:3])))
     queued = _pending_for(home, offer)
@@ -258,13 +273,24 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     return out
 
 
-def candidates(home: Path, *, now: Optional[datetime] = None) -> List[Dict[str, object]]:
-    """Принятые офферы ``continue`` за :data:`LOOKBACK_HOURS` ч — свежие сверху."""
+def offer_matches(rec: Dict[str, object], offer: str) -> bool:
+    """*offer* — полное имя («299-30-handoffs») или номер («299»)."""
+    name = str(rec.get("name") or "")
+    want = str(offer or "").strip()
+    return bool(want) and (name == want or name.split("-", 1)[0] == want)
+
+
+def candidates(home: Path, *, now: Optional[datetime] = None,
+               offer: Optional[str] = None) -> List[Dict[str, object]]:
+    """Принятые офферы ``continue`` за :data:`LOOKBACK_HOURS` ч — свежие сверху;
+    *offer* — только этот оффер."""
     from .. import handoff_queue as hq
 
     now = now or datetime.now()
     out = []
     for r in hq.list_offers(Path(home), status=hq.STATUS_TAKEN):
+        if offer and not offer_matches(r, offer):
+            continue
         if not hq._transfers_thread(r):
             continue
         t = _parse_iso(r.get("taken_at"))
@@ -327,14 +353,15 @@ def close(home: Path, v: Dict[str, object], *, say=None, alert=None, kill=None,
 
 
 def sweep(home: Path, *, dry_run: bool = False, skip: Iterable[str] = (),
-          now: Optional[datetime] = None, **kw) -> List[Dict[str, object]]:
+          now: Optional[datetime] = None, offer: Optional[str] = None,
+          **kw) -> List[Dict[str, object]]:
     """Пройти свежие пары; не *dry_run* — закрыть тех, кого можно. *skip* — claude-id
-    сессий, которых не закрываем (та, в чьём хуке идём)."""
+    сессий, которых не закрываем (та, в чьём хуке идём); *offer* — только эта пара."""
     skip = {s for s in skip if s}
     act = {k: kw.pop(k) for k in ("say", "alert", "kill") if k in kw}
     out = []
     seen = set()
-    for rec in candidates(home, now=now):
+    for rec in candidates(home, now=now, offer=offer):
         sid = str(rec.get("from_session") or "")
         if sid in seen:
             continue  # у сессии важна последняя отдача
@@ -388,15 +415,24 @@ def render(v: Dict[str, object], *, dry_run: bool) -> str:
 
 
 def cmd_autoclose(args) -> int:
-    """``tide handoffs autoclose [--dry-run]``."""
+    """``tide handoffs autoclose [--dry-run] [--offer <id>]``.
+
+    Без ``--offer`` живой запуск закрывает только при ``$TIDE_AUTOCLOSE_OLD=1``;
+    ``--offer`` — явный включатель на одну пару (остальные не трогаются)."""
     home = paths.control_home()
     dry = bool(getattr(args, "dry_run", False))
-    if not dry and not enabled():
-        print("tide: автозакрытие выключено (${0}=1 — включить); смотри --dry-run".format(ENV))
+    offer = (getattr(args, "offer", None) or "").strip() or None
+    if not dry and not offer and not enabled():
+        print("tide: автозакрытие выключено (${0}=1 — включить, или --offer <id> — "
+              "на одну пару); смотри --dry-run".format(ENV))
         dry = True
-    res = sweep(home, dry_run=dry)
+    res = sweep(home, dry_run=dry, offer=offer)
     if not res:
-        print("tide: свежих принятых пар нет (за {0} ч)".format(LOOKBACK_HOURS))
+        if offer:
+            print("tide: оффер {0} — не среди свежих принятых continue-пар (за {1} ч)".format(
+                offer, LOOKBACK_HOURS))
+        else:
+            print("tide: свежих принятых пар нет (за {0} ч)".format(LOOKBACK_HOURS))
     for v in res:
         print(render(v, dry_run=dry))
     return 0
@@ -407,8 +443,11 @@ def register_autoclose(hsub) -> None:
                          "it has no live workers (TIDE_AUTOCLOSE_OLD=1; --dry-run shows)")
     ap.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="only print whom it would close and why / why not")
+    ap.add_argument("--offer", default=None, metavar="ID",
+                    help="only this offer (299 or 299-30-handoffs); without --dry-run "
+                         "closes this one pair even when TIDE_AUTOCLOSE_OLD is off")
     ap.set_defaults(func=cmd_autoclose, _cmd="handoffs autoclose")
 
 
-__all__ = ["ENV", "LOG", "candidates", "close", "cmd_autoclose", "enabled", "on_prompt",
+__all__ = ["ENV", "LOG", "candidates", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
            "register_autoclose", "render", "sweep", "unforwarded_results", "verdict"]
