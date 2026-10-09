@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -231,6 +232,104 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
     return done
 
 
+# --- F66: свежесть слоёв против ПЕРЕДАЧИ ---------------------------------------
+
+_STAMP_RE = re.compile(r"^\s*[-*]\s*(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})\s+—")
+_PULSE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s+—\s+(.*)$")
+
+
+def _layer_lines(goal: Path, want: str) -> List[str]:
+    try:
+        lines = goal.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    start, end = _where_span(lines)
+    out: List[str] = []
+    head = ""
+    for ln in (lines[start:end] if start >= 0 else []):
+        if ln.startswith("### "):
+            head = ln[4:].strip().lower()
+        elif head.startswith(want) and ln.strip() and not ln.strip().startswith("<"):
+            out.append(ln)
+    return out
+
+
+def _mtime(path: Path) -> Optional[datetime]:
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _pulses(thread_dir: Path):
+    """``(время, нота)`` пульсов всех сессий нити (``arcs/*/arc.md`` → ``## context``)."""
+    for arc in sorted((Path(thread_dir) / "arcs").glob("*/arc.md")):
+        try:
+            text = arc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        section = ""
+        for ln in text.splitlines():
+            if ln.startswith("## "):
+                section = ln.strip().lower()
+                continue
+            m = _PULSE_RE.match(ln.strip()) if section == "## context" else None
+            if m:
+                try:
+                    yield datetime.fromisoformat(m.group(1)), m.group(2)
+                except ValueError:
+                    continue
+
+
+def freshness(thread_dir: Path) -> Dict[str, object]:
+    """Свежесть слоя ожидания и «главного» против пульсов нити (SOC-101 F66).
+
+    * ``expect`` — ``empty`` | ``stale`` (слой правлен раньше самого свежего пульса
+      с меткой «Ожидание Гриши:») | ``fresh``; время слоя — новейший штамп
+      ``ДД.ММ ЧЧ:ММ`` его строк, нет штампов — дата правки goal-файла;
+    * ``main`` — ``empty`` | ``stale`` (plan.md правлен раньше последней ПЕРЕДАЧИ)
+      | ``fresh``;
+    * ``expect_at`` / ``expect_pulse_at`` / ``main_at`` / ``pass_at`` — времена."""
+    thread_dir = Path(thread_dir)
+    goal = _stream.passport_path(thread_dir)
+    expect_pulse = pass_at = None
+    for at, note in _pulses(thread_dir):
+        if "expectation" in contract.pulse_labels(note):
+            expect_pulse = max(expect_pulse or at, at)
+        if contract.is_pass_note(note):
+            pass_at = max(pass_at or at, at)
+    lines = _layer_lines(goal, contract.name("expectation").lower())
+    expect_at = None
+    year = (expect_pulse or datetime.now()).year
+    for ln in lines:
+        m = _STAMP_RE.match(ln)
+        if m:
+            try:
+                at = datetime(year, int(m.group(2)), int(m.group(1)),
+                              int(m.group(3)), int(m.group(4)))
+            except ValueError:
+                continue
+            expect_at = max(expect_at or at, at)
+    if lines and expect_at is None:
+        expect_at = _mtime(goal)
+    if not lines:
+        expect = "empty"
+    elif expect_pulse and (expect_at is None or expect_at < expect_pulse.replace(
+            second=0, microsecond=0)):
+        expect = "stale"
+    else:
+        expect = "fresh"
+    main_at = _mtime(thread_dir / _plan_main.PLAN_FILE)
+    if not _plan_main.live_lines(thread_dir):
+        main = "empty"
+    elif pass_at and (main_at is None or main_at < pass_at):
+        main = "stale"
+    else:
+        main = "fresh"
+    return {"expect": expect, "expect_at": expect_at, "expect_pulse_at": expect_pulse,
+            "main": main, "main_at": main_at, "pass_at": pass_at}
+
+
 def cmd_layer(args) -> int:
     """``tide thread layer <нить> --expect "…" --where "…" --exp "…" --main "…"``."""
     target = (getattr(args, "target", None) or "").strip()
@@ -322,5 +421,5 @@ def cmd_layers(args) -> int:
 
 
 __all__ = ["LAYER_FLAGS", "LayersError", "cmd_layer", "cmd_layers", "empty_layers",
-           "exit_warning", "layer_cmd", "main_cmd", "seed_skeleton", "split_main",
+           "exit_warning", "freshness", "layer_cmd", "main_cmd", "seed_skeleton", "split_main",
            "thread_entry", "write_layers", "write_main"]

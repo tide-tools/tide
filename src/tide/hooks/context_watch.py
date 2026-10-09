@@ -93,25 +93,62 @@ def _offload_cmd(entry: Path) -> str:
             "\"<что сделал>\"".format(_ref(entry)))
 
 
-def _layer_cmd(entry: Path) -> str:
-    """Шаг слоёв нити (SOC-101 F53): голове писать файлы нельзя, CLI — можно."""
+def _hm(at) -> str:
+    return at.strftime("%d.%m %H:%M") if at else "?"
+
+
+def layers_step(entry: Path) -> str:
+    """Шаг 2 передачи — слои нити и «главное» одной командой ``tide thread layer``.
+
+    SOC-101 F66: слой ожидания просим не только «если пуст» — и тогда, когда он
+    правлен раньше пульса с «Ожидание Гриши:» (непустой старый слой вытесняет
+    свежую цитату ПЕРЕДАЧИ в сиде). Пульс ПЕРЕДАЧА пишется шагом 1, поэтому правило
+    названо и словами: та же цитата — в ``--expect``. F61: ``--main`` — если
+    «главное» пусто или старше ПЕРЕДАЧИ. F65: ``--where`` заменяет «где мы»."""
     from ..arc import thread_layers
 
-    return thread_layers.layer_cmd(slug.entry_slug(entry.parent.parent.name))
+    thread = entry.parent.parent
+    name = slug.entry_slug(thread.name)
+    try:
+        fr = thread_layers.freshness(thread)
+    except Exception:  # noqa: BLE001 — шаблон не смеет упасть
+        fr = {"expect": "?", "main": "?"}
+    cmd = thread_layers.layer_cmd(name)
+    main_cmd = thread_layers.main_cmd(name)
+    main_arg = main_cmd[main_cmd.index(" --main "):]
+    why = []
+    if fr["expect"] == "empty":
+        why.append("ожидание Гриши пусто — впиши")
+    elif fr["expect"] == "stale":
+        why.append("ожидание Гриши правлено {0}, а пульс с «Ожидание Гриши:» — {1}: "
+                   "слой старый, он вытеснит свежую цитату — перепиши --expect".format(
+                       _hm(fr.get("expect_at")), _hm(fr.get("expect_pulse_at"))))
+    else:
+        why.append("--expect — если ожидание в ПЕРЕДАЧЕ (шаг 1) новее слоя: та же цитата")
+    if fr["main"] in ("empty", "stale"):
+        cmd += main_arg
+        why.append("«главное» нити {0} — --main обязателен".format(
+            "пусто" if fr["main"] == "empty" else "правлено {0}, раньше ПЕРЕДАЧИ {1}".format(
+                _hm(fr.get("main_at")), _hm(fr.get("pass_at")))))
+    else:
+        why.append("«главное» свежее — если оно старше этой ПЕРЕДАЧИ, добавь" + main_arg)
+    why.append("--where заменяет «где мы» целиком (прежнее уйдёт в журнал слоёв)")
+    return ("  2. слои нити (ожидание Гриши словами Гриши с датой · где мы · опыт) и "
+            "«главное»:\n     {0}\n{1}").format(
+                cmd, "\n".join("     · " + w for w in why))
 
 
 def handoff_steps(entry: Path) -> str:
-    """Три шага передачи (SOC-101 F44): пульс ПЕРЕДАЧА со всеми метками, слои нити,
-    автопередача. Без ПЕРЕДАЧИ сид собирается без карты, ожидания Гриши, «ждёт
-    Гришу», «в полёте» и хвостов — поэтому шаблон готовый, а не «<что сделал>»."""
+    """Три шага передачи (SOC-101 F44): пульс ПЕРЕДАЧА со всеми метками, слои нити
+    и «главное» (:func:`layers_step`), автопередача. Без ПЕРЕДАЧИ сид собирается без
+    карты, ожидания Гриши, «ждёт Гришу», «в полёте» и хвостов — поэтому шаблон
+    готовый, а не «<что сделал>»."""
     from ..launcher import autohandoff
 
     return ("  1. пульс ПЕРЕДАЧА — заполни каждую метку (нечего — «нет»):\n"
             "     {0}\n"
-            "  2. слои нити (ожидание Гриши словами Гриши с датой · где мы · опыт), если "
-            "пусты:\n"
-            "     {1}\n"
-            "  3. {2}").format(autohandoff.pass_template(entry), _layer_cmd(entry),
+            "{1}\n"
+            "  3. {2}").format(autohandoff.pass_template(entry), layers_step(entry),
                               AUTO_CMD)
 
 
