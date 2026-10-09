@@ -284,13 +284,53 @@ def handed_over_reason(entry: Path, session: str, *,
     if (now - told_at).total_seconds() < _remind_min() * 60:
         return ""
     fields.set_field(pp, HANDED_TOLD_FIELD, stamp)
+    # SOC-143 F76: «две головы» — только по признаку F49 (пульс старой после
+    # приёма или поручение новой + правки/сабагенты старой), а не потому, что
+    # старая «ещё работает»: пересылка итога своего воркера — её законная работа.
+    got = _two_heads_evidence(rec)
+    if not got:
+        return _forward_nudge(rec, session, new_title)
     try:
         from . import handed_off
-        handed_off.two_heads_alarm(paths.control_home(), rec,
-                                   evidence="старая работает после приёма (Stop-хук)")
+        handed_off.two_heads_alarm(
+            paths.control_home(), dict(rec, **got),
+            evidence="{0} (Stop-хук)".format(got.get("evidence") or "старая работает"))
     except Exception:  # noqa: BLE001
         pass
     return handed_remind_text(new_title)
+
+
+def _two_heads_evidence(rec: dict) -> Optional[dict]:
+    """Признак F49 у пары *rec* (:func:`tide.handoff_queue.pair_evidence`) или None."""
+    try:
+        from .. import handoff_queue as hq
+        return hq.pair_evidence(paths.control_home(), rec)
+    except Exception:  # noqa: BLE001 — не доказано — не упрекаем
+        return None
+
+
+def handed_forward_text(new_title: str, left: List[str]) -> str:
+    return ("tide: итог воркера ещё не переслан {0}: {1}. Перешли его ей — и всё, "
+            "новое не начинай.".format(new_title, "; ".join(left[:3])))
+
+
+def _forward_nudge(rec: dict, session: str, new_title: str) -> str:
+    """Старая без признака двух голов: молчим, если итоги воркеров пересланы новой
+    (:func:`tide.arc.workers.unforwarded_results`); иначе — коротко «перешли»."""
+    try:
+        from .. import handoff_queue as hq
+        from ..arc.workers import parse_iso, unforwarded_results
+        since = parse_iso(rec.get("taken_at"))
+        new_ao = hq._new_ao_of(paths.control_home(), rec)
+        if since is None or not new_ao:
+            return ""
+        for tr in hq._transcripts(session):
+            left = unforwarded_results(tr, since, new_ao)
+            if left:
+                return handed_forward_text(new_title, left)
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def fill_tokens(payload: dict, session: str) -> Optional[int]:

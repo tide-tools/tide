@@ -356,6 +356,10 @@ def test_old_stop_hook_reminds_role_again_after_interval(world, monkeypatch):
     sent = []
     monkeypatch.setattr(_ho, "two_heads_alarm",
                         lambda home, rec, **kw: sent.append(kw) or ["x"])
+    # F76: упрёк — только при признаке F49 (правки/сабагенты старой после поручения)
+    monkeypatch.setattr(_hq, "pair_evidence", lambda home, rec, **kw: {
+        "evidence": "поручение новой proj-7 в 14:30, после него 2 правок/сабагентов",
+        "active_at": "2026-10-09T14:35:00"})
     assert "нить передана" in cw.handed_over_reason(world["sess"], SID, now=t0)
     assert cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=5)) == ""
     again = cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=16))
@@ -363,6 +367,48 @@ def test_old_stop_hook_reminds_role_again_after_interval(world, monkeypatch):
     assert "только довести своего воркера и переслать итог новой" in again
     assert sent and "Stop-хук" in sent[0]["evidence"]
     assert cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=20)) == ""
+
+
+def _notif(at_local, summary):
+    return {"type": "user", "timestamp": _utc(at_local), "message": {
+        "role": "user", "content": "<task-notification><task-id>a1</task-id><status>"
+        "completed</status><summary>{0}</summary></task-notification>".format(summary)}}
+
+
+def _ao_send(at_local, to, text):
+    return {"type": "assistant", "timestamp": _utc(at_local), "message": {
+        "role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "input": {
+            "command": "ao send {0} '{1}'".format(to, text)}}]}}
+
+
+def test_f76_old_forwarding_worker_result_is_not_scolded(world, monkeypatch, tmp_path):
+    """T29 22:39:23Z: старая после приёма получила итог воркера и переслала его новой
+    (`ao send`) — Stop-хук упрекнул «Две головы на нити нельзя». Признака F49 нет —
+    хук молчит; итог не переслан — коротко «перешли»."""
+    from tests.test_context_watch_handed import _hand_over
+
+    _hand_over(world)
+    cfg = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    monkeypatch.setattr("tide.arc.holder.ao_handle_for",
+                        lambda h, sid: {"new-sid": "proj-7"}.get(sid, ""))
+    sent = []
+    monkeypatch.setattr(_ho, "two_heads_alarm",
+                        lambda home, rec, **kw: sent.append(kw) or ["x"])
+    rec = _hq.is_dissolved(world["home"], SID)
+    t0 = datetime.fromisoformat(str(rec["taken_at"]))
+    at = lambda m: (t0 + timedelta(minutes=m)).isoformat(timespec="seconds")  # noqa: E731
+    tx = cfg / "projects" / "-x" / "{0}.jsonl".format(SID)
+    rows = [_letter(at(1), "proj-7", "приняла нить, пересылай итоги сюда"),
+            _notif(at(10), "воркер сдал: pytest 412 passed")]
+    _tx(tx, rows)
+    assert "нить передана" in cw.handed_over_reason(world["sess"], SID, now=t0)
+    nudge = cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=16))
+    assert "Две головы" not in nudge
+    assert "итог воркера ещё не переслан" in nudge and "412 passed" in nudge
+    _tx(tx, rows + [_ao_send(at(11), "proj-7", "итог воркера: 412 passed")])
+    assert cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=32)) == ""
+    assert sent == []  # и тревоги «две головы» нет
 
 
 def test_history_pairs_are_listed_but_not_alarmed():
