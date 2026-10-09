@@ -240,3 +240,81 @@ def test_note_first_pulse_stamps_earliest_pulse_from_disk(tmp_control_home):
     rec = hq.note_first_pulse(tmp_control_home, sess, note="текущий пульс")
     assert rec["first_pulse"] == "ранний пульс"
     assert rec["first_pulse_at"] == "2099-01-01T00:00:01"
+
+
+# --- ручной сид пересказом (SOC-101 п.1б) ------------------------------------
+# Живая пара nochnaya-smena: 03-@main/01-session → 02-release (оффер 231,
+# 09.10). Сид написан руками своими заголовками (финал/курсор/дальше/…) и
+# пересказывает пульс; аудит видел в нём «missing» везде.
+
+from pathlib import Path  # noqa: E402
+
+FIX = Path(__file__).resolve().parent / "fixtures" / "handoff_audit"
+
+
+def _hand_world(tmp_control_home):
+    from tide import roster
+    from tide.arc import stream
+    from tide.init_home import scaffold_project
+
+    proj = tmp_control_home / "ns"
+    proj.mkdir()
+    scaffold_project(proj, name="ns")
+    roster.add(tmp_control_home, "ns", str(proj))
+    thread = stream.new_thread(proj, "main", goal="выпуск v0.13.8")
+    prior = stream.new_session(proj, "main", "session")
+    (prior / "arc.md").write_text(
+        (FIX / "nochnaya-smena-1-arc.md").read_text(encoding="utf-8"), encoding="utf-8")
+    sess = stream.new_session(proj, "main", "release", from_ref=prior.name)
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text((FIX / "nochnaya-smena-2-seed.md").read_text(encoding="utf-8"),
+                    encoding="utf-8")
+    path = hq.offer(tmp_control_home, "release", project="ns", seed=str(seed),
+                    arc="{0}/{1}".format(thread.name, sess.name))
+    hq._set_field(path, "created", "2026-10-09T04:48:20")
+    return sess
+
+
+def test_hand_written_seed_is_not_missing(tmp_control_home):
+    _hand_world(tmp_control_home)
+    s = _by_key(ha.audit(tmp_control_home, "release"))
+    ctx = s["context"]
+    assert ctx["status"] == ha.PARTIAL and ctx["retold"] >= 4 and not ctx["missing"]
+    nxt = s["next"]
+    assert nxt["status"] == ha.OK and nxt["present"] + nxt["retold"] == 3
+    # «Оба воркера сдали; делаю хендофф» — в сиде «Воркеров в полёте нет»:
+    # похоже, но не наверняка — «не распознан», а не «нет»
+    cur = s["cursor"]
+    assert cur["status"] == ha.UNSURE and not cur["missing"] and cur["unsure"]
+    assert all(x["status"] != ha.MISSING for x in s.values())
+
+
+def test_hand_seed_render_says_retold_and_unrecognized(tmp_control_home, monkeypatch,
+                                                       capsys):
+    _hand_world(tmp_control_home)
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
+    assert cli.main(["handoffs", "audit", "release"]) == 0
+    out = capsys.readouterr().out
+    assert "пересказом" in out and "не распознано: Оба воркера сдали" in out
+    assert "✗" not in out
+
+
+def test_content_match_keeps_a_foreign_seed_missing():
+    """Пересказ узнаётся по содержанию, но чужой сид на том же источнике — нет."""
+    prior = (FIX / "nochnaya-smena-1-arc.md").read_text(encoding="utf-8")
+    line = [ln for ln in prior.splitlines() if "ВОРКЕР A" in ln][0]
+    own = (FIX / "nochnaya-smena-2-seed.md").read_text(encoding="utf-8")
+    assert ha.coverage(line, ha.tokens(own)) >= ha.RETOLD
+    foreign = SEED  # сид tide из этого же файла — про другое
+    assert ha.audit_section("context", "t", [line], foreign)["status"] == ha.MISSING
+
+
+def test_contract_synonyms_cover_hand_headings():
+    from tide import handoff_contract as hc
+
+    heads = ["финал", "курсор", "дальше", "решения", "опыт", "карта входа", "окружение"]
+    assert set(hc.missing(heads)) == {
+        "задачи Linear", "ждёт Гришу", "в работе прямо сейчас",
+        "неотвеченные реплики Гриши", "сырой журнал"}
+    assert hc.find_body({"что дальше": ["- x"]}, "next") == ["- x"]
+    assert hc.find_body({"уроки": ["- y"]}, "experience") == ["- y"]

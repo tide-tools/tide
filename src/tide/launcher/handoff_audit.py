@@ -38,7 +38,24 @@ GIST_CHARS = 40    # ключ сжатой строки (pulse_gist) — кор�
 SHOW_MISSING = 5   # в человеческом выводе — столько пропусков на раздел
 
 OK, PARTIAL, MISSING, EMPTY = "ok", "partial", "missing", "n/a"
-_GLYPH = {OK: "✓", PARTIAL: "≈", MISSING: "✗", EMPTY: "·"}
+# «не распознан»: сид написан пересказом, и строка источника похожа на него лишь
+# отчасти — аудит не уверен ни в «дошло», ни в «нет» (SOC-101: ручной сид
+# nochnaya-smena · 02 весь горел «missing», хотя всё в нём было).
+UNSURE = "unrecognized"
+_GLYPH = {OK: "✓", PARTIAL: "≈", MISSING: "✗", EMPTY: "·", UNSURE: "?"}
+
+# Сверка по содержанию: доля значимых слов строки источника, найденных в сиде.
+# Не ниже RETOLD — строка дошла пересказом; ниже UNSURE_FLOOR — её нет; между —
+# не распознана. Пороги сняты с живых пар: пересказ ручного сида 0.61–1.0,
+# чужой сид на том же источнике — не выше 0.31.
+RETOLD = 0.6
+UNSURE_FLOOR = 0.35
+MIN_TOKENS = 3     # строка короче — по содержанию «дошла» только целиком (1.0)
+_TOKEN = re.compile(r"[a-zа-я0-9][a-zа-я0-9_./#-]*[a-zа-я0-9]")
+_CYR = re.compile(r"[а-я]+")
+_STOP = frozenset(
+    "это этот эта эти того тоже чтобы если нужно после перед через только когда "
+    "потом сейчас него неё нему было были будет есть with from that this".split())
 
 _STAMP = re.compile(r"^\s*-?\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:[+-]\d{2}:?\d{2}|Z)?)\s*[—·-]?\s*")
 _WS = re.compile(r"\s+")
@@ -85,11 +102,56 @@ def before(lines: Sequence[str], cutoff: Optional[datetime]) -> List[str]:
     return out
 
 
+def tokens(text: str) -> set:
+    """Значимые слова строки для сверки по содержанию: без штампа времени, от
+    четырёх знаков, русские — по первым пяти буквам (падежи и времена не мешают),
+    коды (``3d67a1b``, ``SOC-97``, пути) — целиком."""
+    raw = _STAMP.sub("", (text or "").strip().lstrip("-").strip())
+    out = set()
+    for w in _TOKEN.findall(norm(raw)):
+        if len(w) < 4 or w in _STOP:
+            continue
+        out.add(w[:5] if _CYR.fullmatch(w) else w)
+    return out
+
+
+def coverage(line: str, hay_tokens: set) -> float:
+    """Доля значимых слов *line*, найденных среди *hay_tokens* (0..1)."""
+    t = tokens(line)
+    if not t:
+        return 0.0
+    return len(t & hay_tokens) / len(t)
+
+
+def _by_content(line: str, hay_tokens: set) -> str:
+    """Сверка по содержанию: ``retold`` / ``unsure`` / ``missing``."""
+    score = coverage(line, hay_tokens)
+    if len(tokens(line)) < MIN_TOKENS:
+        return "retold" if score >= 1.0 else ("unsure" if score > 0 else "missing")
+    if score >= RETOLD:
+        return "retold"
+    return "unsure" if score >= UNSURE_FLOOR else "missing"
+
+
+def _status(items: int, present: int, compressed: int, retold: int,
+            unsure: Sequence[str], missing: Sequence[str]) -> str:
+    if not items:
+        return EMPTY
+    if not missing and not unsure and not compressed:
+        return OK          # целиком или пересказом — всё дошло
+    if present or compressed or retold:
+        return PARTIAL
+    # ничего не нашлось: есть явные пропуски — «нет»; одни сомнения — «не распознан»
+    return MISSING if missing else UNSURE
+
+
 def audit_section(key: str, title: str, source: Sequence[str], seed_text: str,
                   *, gist: bool = False) -> Dict[str, object]:
-    """Сколько строк *source* дошло до сида: целиком / сжатыми (*gist*) / нет."""
+    """Сколько строк *source* дошло до сида: целиком / сжатыми (*gist*) /
+    пересказом (по содержанию) / не распознано / нет."""
     hay = norm(seed_text)
-    present, compressed, missing = 0, 0, []
+    hay_tokens = set().union(*(tokens(ln) for ln in (seed_text or "").splitlines()))
+    present, compressed, retold, unsure, missing = 0, 0, 0, [], []
     items = [ln for ln in source if line_key(ln)]
     for ln in items:
         if line_key(ln) in hay:
@@ -101,17 +163,17 @@ def audit_section(key: str, title: str, source: Sequence[str], seed_text: str,
             if gkey and gkey in hay:
                 compressed += 1
                 continue
-        missing.append(ln.strip())
-    if not items:
-        status = EMPTY
-    elif not missing and not compressed:
-        status = OK
-    elif present or compressed:
-        status = PARTIAL
-    else:
-        status = MISSING
-    return {"key": key, "title": title, "status": status, "total": len(items),
-            "present": present, "compressed": compressed, "missing": missing}
+        verdict = _by_content(ln, hay_tokens)
+        if verdict == "retold":
+            retold += 1
+        elif verdict == "unsure":
+            unsure.append(ln.strip())
+        else:
+            missing.append(ln.strip())
+    return {"key": key, "title": title,
+            "status": _status(len(items), present, compressed, retold, unsure, missing),
+            "total": len(items), "present": present, "compressed": compressed,
+            "retold": retold, "unsure": unsure, "missing": missing}
 
 
 def _decision_line(rec: Dict[str, object]) -> str:
@@ -135,19 +197,22 @@ def audit_decisions(records: Sequence[Dict[str, object]], seed_text: str,
              and int(str(r.get("num"))) > max(nums)]
     live = [r for r in live if r not in later]
     res = audit_section("decisions", title, [_decision_line(r) for r in live], seed_text)
-    missing = []
+    missing, unsure = [], []
     for r in live:
-        line = _decision_line(r)
-        if line.strip() not in res["missing"]:
+        line = _decision_line(r).strip()
+        if line not in res["missing"] and line not in res["unsure"]:
             continue
         if re.search(r"(?m)^\s*-\s*{0}\b".format(re.escape(str(r.get("num")))), block):
             res["present"] = int(res["present"]) + 1
+        elif line in res["unsure"]:
+            unsure.append(line)
         else:
-            missing.append(line.strip())
-    res["missing"] = missing
+            missing.append(line)
+    res["missing"], res["unsure"] = missing, unsure
     res["after"] = len(later)
     if live:
-        res["status"] = OK if not missing else (PARTIAL if res["present"] else MISSING)
+        res["status"] = _status(len(live), int(res["present"]), 0, int(res["retold"]),
+                                unsure, missing)
     return res
 
 
@@ -321,9 +386,15 @@ def render(report: Dict[str, object]) -> str:
         count = "{0}/{1}".format(s["present"], s["total"]) if s["total"] else "источник пуст"
         if s["compressed"]:
             count += ", сжато {0}".format(s["compressed"])
+        if s.get("retold"):
+            count += ", пересказом {0}".format(s["retold"])
+        if s.get("unsure"):
+            count += ", не распознано {0}".format(len(s["unsure"]))
         if s.get("after"):
             count += ", ещё {0} новее сида (вероятно, после оффера)".format(s["after"])
         lines.append("{0} {1} — {2}".format(_GLYPH[s["status"]], s["title"], count))
+        for m in list(s.get("unsure") or [])[:SHOW_MISSING]:
+            lines.append("    не распознано: {0}".format(m if len(m) <= 140 else m[:139] + "…"))
         miss = list(s["missing"])
         for m in miss[:SHOW_MISSING]:
             lines.append("    нет: {0}".format(m if len(m) <= 140 else m[:139] + "…"))
