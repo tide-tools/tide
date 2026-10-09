@@ -861,7 +861,7 @@ def launch_handoff(
     # never eats the offer). Registry recorded by the launcher.
     from .launch import launch_session  # lazy: sibling module
 
-    return launch_session(
+    res = launch_session(
         control_home,
         project=project,
         session_dir=session_dir,
@@ -874,6 +874,31 @@ def launch_handoff(
         skip_permissions=skip_permissions,
         dry_run=dry_run,
     )
+    if res.ok and not dry_run and title:
+        _name_with_ao_id(session_dir, title, adapter, res.ref)
+    return res
+
+
+def _name_with_ao_id(session_dir: Path, title: str, adapter, handle) -> Optional[str]:
+    """SOC-72 на пути хендоффа: «проект — нить · NN · <AO-id>» — в паспорт и в имя
+    AO-сессии, как на ручном пути (SessionStart там находит сессию по claude-id;
+    здесь паспорт до приёма пуст, поэтому имя ставит сам подъём, AO-id уже известен).
+    Только AO; best-effort — подъём не падает из-за имени. → новое имя или None."""
+    h = str(handle or "").strip()
+    if getattr(adapter, "name", "") != "ao" or not h:
+        return None
+    full = stream.with_ao_id(title, h)
+    try:
+        fields.set_field(session_dir / "arc.md", "title", full)
+    except OSError:
+        pass
+    rename = getattr(adapter, "rename", None)
+    try:
+        if callable(rename):
+            rename(h, full)
+    except Exception:  # noqa: BLE001
+        pass
+    return full
 
 
 def _record_launch(control_home: Path, session_id: Optional[str], handle, arc) -> None:

@@ -300,7 +300,8 @@ def test_raised_session_is_named_thread_and_number(world, monkeypatch):
     rec = _offer(world["home"])
     session_dir = Path(rec["seed"]).parent.parent
     want = "proj — seam · {0}".format(session_dir.name.split("-", 1)[0])
-    assert fields.read_field(session_dir / "arc.md", "title") == want
+    # SOC-72: after the spawn the AO id joins the name — «… · NN · <AO-id>»
+    assert fields.read_field(session_dir / "arc.md", "title") == want + " · " + AO_NEW
     assert adapter.spawned["title"] == want            # → `ao spawn --name`
     # the fresh session is told the title is already set — keep it
     assert "«{0}» уже стоит".format(want) in adapter.spawned["command"][-1]
@@ -321,7 +322,7 @@ def test_skill_path_offer_renames_a_hand_titled_session(world, monkeypatch):
                      "--arc", "{0}/{1}".format(thread.name, sess.name),
                      "--seed", str(seed)]) == 0
     assert adapter.spawned["title"] == "proj — seam · 02"
-    assert fields.read_field(sess / "arc.md", "title") == "proj — seam · 02"
+    assert fields.read_field(sess / "arc.md", "title") == "proj — seam · 02 · " + AO_NEW
 
 
 def test_raised_session_name_uses_the_roster_name(world, monkeypatch):
@@ -336,4 +337,4 @@ def test_raised_session_name_uses_the_roster_name(world, monkeypatch):
     session_dir = Path(rec["seed"]).parent.parent
     want = "waifus — seam · {0}".format(session_dir.name.split("-", 1)[0])
     assert adapter.spawned["title"] == want
-    assert fields.read_field(session_dir / "arc.md", "title") == want
+    assert fields.read_field(session_dir / "arc.md", "title") == want + " · " + AO_NEW
