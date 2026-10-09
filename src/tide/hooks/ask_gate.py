@@ -48,10 +48,11 @@ AO_SESSION_ENV = "AO_SESSION_ID"
 # env или параметр.
 MANAGER_FILE = Path.home() / ".tide" / "manager.json"
 MANAGER_FILE_ENV = "TIDE_MANAGER_FILE"
-# Менеджер переехал в главную нить «main»; ao-control — запасной, если main-сессии нет.
+# Адрес не нашёлся ни в manager.json, ни по цепочке хендоффов — без констант
+# (SOC-101 C14: «management-7» / «ao-control · NN» устаревают на первом хендоффе).
 MANAGER_FALLBACK = (
-    "ListAgents → сессия «management — main · NN» с наибольшим NN; "
-    "если такой нет — «management — ao-control · NN» с наибольшим NN"
+    "сессия, что сейчас ведёт главную нить менеджера — её AO-id и имя печатает "
+    "`tide whois manager`"
 )
 
 BLOCKED_ASKS_FILE = "blocked-asks.jsonl"
@@ -84,18 +85,23 @@ DENY_TEMPLATE = (
 # --- адрес менеджера -----------------------------------------------------------
 
 def manager_address(path: Optional[Path] = None) -> str:
-    """``<uds_name> (ao_session <ao_session>)`` из manager.json, иначе запасной текст."""
+    """Адрес менеджера для SendMessage.
+
+    ``uds_name`` в manager.json — как есть (``<uds_name> (ao_session <id>)``);
+    иначе резолвер :func:`tide.whois.manager`: ``title``/``ao_session`` файла, без
+    них — новейшая принятая сессия нити менеджера. Ничего — запасной текст."""
     try:
         if path is None:
             env = (os.environ.get(MANAGER_FILE_ENV) or "").strip()
             path = Path(env).expanduser() if env else MANAGER_FILE
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        uds = str(data.get("uds_name") or "").strip() if isinstance(data, dict) else ""
-        if not uds:
-            return MANAGER_FALLBACK
-        ao = str(data.get("ao_session") or "").strip()
-        return "{0} (ao_session {1})".format(uds, ao) if ao else uds
-    except Exception:  # noqa: BLE001 — нет файла / битый → запасной адрес
+        from .. import whois
+        data = whois.read_manager_file(path)
+        uds = data.get("uds_name", "")
+        if uds:
+            ao = data.get("ao_session", "")
+            return "{0} (ao_session {1})".format(uds, ao) if ao else uds
+        return whois.address(whois.manager(path=path)) or MANAGER_FALLBACK
+    except Exception:  # noqa: BLE001 — нет адреса → запасной текст
         return MANAGER_FALLBACK
 
 

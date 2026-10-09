@@ -486,6 +486,14 @@ def _register_offload(sub) -> None:
     wrap_offload(sub)
 
 
+def _register_whois(sub) -> None:
+    # SOC-101 F19/F20: `tide whois manager|<нить>` — текущий AO-id и title адресата
+    # (manager.json, без него — новейшая принятая сессия цепочки) для скриптов.
+    from .whois import register as register_whois
+
+    register_whois(sub)
+
+
 def _register_lookback(sub) -> None:
     # отлив (cand 10): the reading watermark — refs/lookback/<reader>/<scope>,
     # status/mark/log. ON-DEMAND ONLY (no daemon, no hook, no LLM): the routine's
@@ -591,6 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_plan(subparsers)
     _register_handoffs(subparsers)
     _register_offload(subparsers)
+    _register_whois(subparsers)
     _register_lookback(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)

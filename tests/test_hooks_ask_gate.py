@@ -179,7 +179,14 @@ def test_manager_address_from_file(ao, monkeypatch, proj, tmp_path):
     assert "SendMessage: management-9-b5 (ao_session ao-control-7)." in reason
 
 
-def test_manager_address_fallback(tmp_path):
+@pytest.fixture
+def no_chain(monkeypatch):
+    from tide import whois
+    monkeypatch.setattr(whois, "_home", lambda: None)
+    monkeypatch.setattr(whois.paths, "find_tide_root", lambda *a, **k: None)
+
+
+def test_manager_address_fallback(tmp_path, no_chain):
     assert ask_gate.manager_address(tmp_path / "missing.json") == ask_gate.MANAGER_FALLBACK
     broken = tmp_path / "broken.json"
     broken.write_text("{ not json", encoding="utf-8")
@@ -189,12 +196,19 @@ def test_manager_address_fallback(tmp_path):
     assert ask_gate.manager_address(empty) == ask_gate.MANAGER_FALLBACK
 
 
-def test_manager_fallback_main_first_ao_control_reserve(tmp_path):
+def test_manager_fallback_has_no_constant_addresses(tmp_path, no_chain):
+    # SOC-101 C14: константы устаревают на первом хендоффе — только резолвер
     addr = ask_gate.manager_address(tmp_path / "missing.json")
-    main = "«management — main · NN»"
-    reserve = "«management — ao-control · NN»"
-    assert main in addr and reserve in addr
-    assert addr.index(main) < addr.index(reserve)
+    assert "management-" not in addr and "ao-control" not in addr
+    assert "tide whois manager" in addr
+
+
+def test_manager_address_from_new_format(tmp_path):
+    mf = tmp_path / "manager.json"
+    mf.write_text(json.dumps({"ao_session": "management-14", "thread": "main",
+                              "title": "management — main · 04"}), encoding="utf-8")
+    assert ask_gate.manager_address(mf) == \
+        "management — main · 04 (ao_session management-14)"
 
 
 # --- CLI-обёртка ---------------------------------------------------------------
