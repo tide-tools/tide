@@ -1478,38 +1478,140 @@ def _user_text(row: dict) -> str:
     return ""
 
 
-def incoming_orders(transcript: Optional[Path], since) -> List[str]:
-    """Входящие сообщения других сессий в транскрипте после *since* (местное
-    время) → ``- поручено мне — от <X> в ЧЧ:ММ: <первые ~200 знаков>``.
+# Ответ отправителю закрывает входящее, только если он — итог (SOC-101 F29, разборы
+# SOC-127): «получен», «принял, пришлю к 15:15», «спасибо, переслала» — не закрывают.
+_RESULT_RE = re.compile(
+    r"итог\s*:|сдан|сдала|сдаю|готово|вердикт|коммит|pytest|passed|output/|"
+    r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+_PROMISE_RE = re.compile(
+    r"пришлю|пришлём|срок|\bк\s+\d{1,2}:\d{2}|позже|возьм|взял|беру|жду|приступ",
+    re.IGNORECASE)
+_AO_SEND_RE = re.compile(r"\bao\s+send\b[^\n]*?--session[ =]+[\"']?([\w.-]+)")
+_UDS_SUFFIX = re.compile(r"^(.+-\d+)-[0-9a-f]{2}$")
+_SPEAKER_RE = re.compile(r"^\[?\s*(?:[^\]→]*?—\s*)?([^\[\]()→,:]{3,40}?)\s*(?:\(|→|,)")
+_CARRY_WORD = re.compile(r"[0-9a-zа-яё][0-9a-zа-яё._/-]{4,}", re.IGNORECASE)
+INCOMING_CARRY_WORDS = 3   # общих слов с пульсом, назвавшим отправителя, — уже записано
+INCOMING_CARRY_WORDS_ANON = 6  # столько же без имени отправителя в пульсе
+INCOMING_TAKE_SLACK_MIN = 10  # окно открывается чуть раньше первого пульса сессии
 
-    Берутся доставки AO (``<ao-session-delivery …>[from X]``) и межсессионная почта
-    (``<cross-session-message … from-name="X">``); уведомления харнесса (F17) —
-    нет. Свежие сверху, не больше :data:`INCOMING_MAX`, остальное — счётом."""
+
+def sender_key(name: str) -> str:
+    """Имя отправителя без хвоста uds-сокета: ``app-development-1-da`` →
+    ``app-development-1``, ``management-16-61 [4a4d71]`` → ``management-16``."""
+    name = (name or "").strip().split()[0] if (name or "").strip() else ""
+    m = _UDS_SUFFIX.match(name)
+    return (m.group(1) if m else name).lower()
+
+
+def is_closing_reply(text: str) -> bool:
+    """Ответ отправителю — итог (сдано, хеш, pytest, путь в output/), а не квитанция
+    «получен» / «принял, пришлю к …»."""
+    return bool(_RESULT_RE.search(text or "")) and not _PROMISE_RE.search(text or "")
+
+
+def _carry_words(text: str) -> set:
+    return {w.lower().strip("._/-") for w in _CARRY_WORD.findall(text or "")}
+
+
+def carried_by_pulse(who: str, body: str, at, pulses: Sequence["tuple"]) -> bool:
+    """Входящее уже лежит в пульсе (дедуп против пульсов и ПЕРЕДАЧИ): пульс не
+    раньше доставки называет отправителя и делит с ней :data:`INCOMING_CARRY_WORDS`
+    слов (без имени — :data:`INCOMING_CARRY_WORDS_ANON`). Одно имя не в счёт —
+    «запросила разбор у music-15» не несёт сам разбор."""
+    names = {n for n in (sender_key(who), speaker_label(body)) if n}
+    if any(n.startswith("management") for n in names):
+        names.add("менеджер")  # пульсы зовут менеджера ролью, номер меняется
+    words = _carry_words(_dialog.clip(body, INCOMING_CLIP * 2)) - names
+    for p_at, line in pulses:
+        if p_at < at.replace(second=0, microsecond=0):
+            continue
+        low = line.lower()
+        shared = len(words & _carry_words(low))
+        if shared >= INCOMING_CARRY_WORDS_ANON or (
+                shared >= INCOMING_CARRY_WORDS and any(n in low for n in names)):
+            return True
+    return False
+
+
+def speaker_label(body: str) -> str:
+    """Подпись отправителя в начале текста — так его зовут пульсы: «handoffs · 03 →
+    …» → ``handoffs · 03``, «[tide-stack — board · 03, tide-stack-23 → …]» →
+    ``board · 03``. Нет подписи — пусто."""
+    m = _SPEAKER_RE.match(body or "")
+    return " ".join(m.group(1).split()).lower() if m else ""
+
+
+def _transcript_rows(transcript: Path):
     import json
 
-    if transcript is None:
-        return []
-    try:
-        with open(transcript, "rb") as fh:
-            fh.seek(0, 2)
-            size = fh.tell()
-            fh.seek(max(0, size - _TRANSCRIPT_TAIL))
-            raw = fh.read().decode("utf-8", errors="ignore")
-    except OSError:
-        return []
-    found = []
-    seen = set()  # одна доставка бывает и очередью, и репликой — один раз
+    with open(transcript, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - _TRANSCRIPT_TAIL))
+        raw = fh.read().decode("utf-8", errors="ignore")
     for ln in raw.splitlines():
-        if "session-delivery" not in ln and "cross-session-message" not in ln:
+        if ("session-delivery" not in ln and "cross-session-message" not in ln
+                and '"tool_use"' not in ln):
             continue
         try:
             row = json.loads(ln)
         except ValueError:
             continue
-        if not isinstance(row, dict) or row.get("type") not in ("user", "attachment"):
+        if isinstance(row, dict):
+            yield row
+
+
+def _replies(row: dict) -> List["tuple[str, str]"]:
+    """``[(кому, текст)]`` исходящих сообщений в строке ассистента: ``ao send
+    --session X`` в Bash и SendMessage."""
+    out = []
+    if row.get("type") != "assistant":
+        return out
+    for b in (row.get("message") or {}).get("content") or []:
+        if not isinstance(b, dict) or b.get("type") != "tool_use":
             continue
+        inp = b.get("input") or {}
+        if b.get("name") == "SendMessage":
+            out.append((sender_key(str(inp.get("to") or "")),
+                        str(inp.get("message") or "")))
+        elif b.get("name") == "Bash":
+            cmd = str(inp.get("command") or "")
+            for m in _AO_SEND_RE.finditer(cmd):
+                out.append((sender_key(m.group(1)), cmd))
+    return out
+
+
+def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = ()
+                    ) -> List[str]:
+    """Входящие сообщения других сессий в транскрипте после *since* (местное
+    время) → ``- поручено мне — от <X> в ЧЧ:ММ: <первые ~200 знаков>``.
+
+    Берутся доставки AO (``<ao-session-delivery …>[from X]``, и пачкой в одной
+    реплике, и внутри ``<pasted_content>``) и межсессионная почта
+    (``<cross-session-message … from-name="X">``); уведомления харнесса (F17) —
+    нет. Не берутся закрытые: сессия ответила отправителю итогом
+    (:func:`is_closing_reply`; «получен» не закрывает) или записала их пульсом из
+    *context* (:func:`carried_by_pulse`). Свежие сверху, не больше
+    :data:`INCOMING_MAX`, остальное — счётом и путём к транскрипту."""
+    if transcript is None:
+        return []
+    try:
+        rows = list(_transcript_rows(transcript))
+    except OSError:
+        return []
+    found = []
+    replies = []  # (время, кому, текст)
+    seen = set()  # одна доставка бывает и очередью, и репликой — один раз
+    for row in rows:
         at = _dialog._stamp(str(row.get("timestamp") or ""))
-        if at is None or (since is not None and at <= since):
+        if at is None:
+            continue
+        if row.get("type") == "assistant":
+            replies += [(at, to, text) for to, text in _replies(row)]
+            continue
+        if row.get("type") not in ("user", "attachment"):
+            continue
+        if since is not None and at <= since:
             continue
         text = _user_text(row)
         for rx in (_DELIVERY_RE, _CROSS_RE):
@@ -1519,6 +1621,11 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
                     continue
                 seen.add((who, body))
                 found.append((at, who, body))
+    pulses = _pulse_stamps(context)
+    found = [(at, who, body) for at, who, body in found
+             if not any(r_at >= at and to == sender_key(who) and is_closing_reply(text)
+                        for r_at, to, text in replies)
+             and not carried_by_pulse(who, body, at, pulses)]
     found.sort(key=lambda r: r[0], reverse=True)
     out = ["- поручено мне — от {0} в {1}: {2}".format(
         who, at.strftime("%H:%M"), _dialog.clip(body, INCOMING_CLIP))
@@ -1526,22 +1633,33 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
     if len(found) > INCOMING_MAX:
         out.append("- (ещё поручений: {0} — транскрипт {1})".format(
             len(found) - INCOMING_MAX, transcript))
+    elif any(len(body) > INCOMING_CLIP for _, _, body in found[:INCOMING_MAX]):
+        out.append("- (полные тексты входящих — транскрипт {0})".format(transcript))
     return out
 
 
+def session_taken_at(context: Sequence[str]):
+    """Когда сессия приняла нить: первый пульс её паспорта (приём пишет его сам —
+    «нить принята»). Пульсов нет — None."""
+    stamps = _pulse_stamps(context)
+    return stamps[0][0] if stamps else None
+
+
 def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
-    """Входящие поручения передающей сессии от пульса перед ПЕРЕДАЧЕЙ
-    (:func:`incoming_since`; одного пульса мало — за :data:`INCOMING_LOOKBACK_HOURS`
-    до него или до «сейчас»). Никогда не падает."""
+    """Входящие поручения и материалы передающей сессии ЗА ВСЮ ЕЁ ЖИЗНЬ — с приёма
+    (:func:`session_taken_at` минус :data:`INCOMING_TAKE_SLACK_MIN`), не закрытые
+    итогом и не записанные пульсом (SOC-101 F29: окно «с пульса перед ПЕРЕДАЧЕЙ»
+    теряло доставки, пришедшие раньше и не записанные). Пульсов нет — за
+    :data:`INCOMING_LOOKBACK_HOURS` до «сейчас». Никогда не падает."""
     from datetime import datetime, timedelta
 
     try:
         sid = (fields.read_field(Path(session_entry) / "arc.md",
                                  offload.CLAUDE_SESSION_FIELD) or "").strip()
-        since = incoming_since(context) or (
-            (_last_pulse_at(context) or now or datetime.now())
-            - timedelta(hours=INCOMING_LOOKBACK_HOURS))
-        return incoming_orders(transcript_path(sid), since)
+        taken = session_taken_at(context)
+        since = (taken - timedelta(minutes=INCOMING_TAKE_SLACK_MIN) if taken else
+                 (now or datetime.now()) - timedelta(hours=INCOMING_LOOKBACK_HOURS))
+        return incoming_orders(transcript_path(sid), since, context)
     except Exception:  # noqa: BLE001 — сид важнее
         return []
 

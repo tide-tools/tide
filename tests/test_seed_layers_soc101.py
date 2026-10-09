@@ -475,7 +475,10 @@ def test_incoming_orders_after_the_last_pulse_reach_inflight(live, msk):
     assert orders[1] == ("- поручено мне — от management-13 в 07:31: Поручение: промерь "
                          "автосид main после правки F22–F24 и пришли вердикт комментом в "
                          "SOC-101 к 13:00.")
-    assert len(orders) == 2  # до пульса ПЕРЕДАЧА (06:03) и уведомления харнесса — нет
+    # доставка 06:03 старше ПЕРЕДАЧИ, но пришла за жизнь сессии и не закрыта итогом —
+    # тоже в сиде (F29: окно с приёма, не с пульса); уведомления харнесса — нет
+    assert len(orders) == 3
+    assert orders[2].startswith("- поручено мне — от ") and " в 06:03: main · 02 → " in orders[2]
     text = "\n".join(inflight)
     assert "usage limit" not in text and "task-notification" not in text
     assert "[from me]" not in text                                # ответ ассистента

@@ -99,7 +99,9 @@ def test_report_a_minute_before_handover_reaches_the_seed(tmp_path, msk, monkeyp
     sess.mkdir()
     (sess / "arc.md").write_text("# s\n\nclaude-session: {0}\n".format(sid), encoding="utf-8")
     out = seed_draft.session_incoming(sess, CTX)
-    assert out == ["- поручено мне — от tide-stack-12 в 08:25: Пакет Г СДАН: 230b37b … 29cfac7"]
+    # окно — с приёма сессии (F29 жизнь): «старое» 08:21 не закрыто итогом и не в пульсе
+    assert out == ["- поручено мне — от tide-stack-12 в 08:25: Пакет Г СДАН: 230b37b … 29cfac7",
+                   "- поручено мне — от a в 08:21: старое"]
 
 
 # --- F34: пульсы курсора старше ПЕРЕДАЧИ помечены ---------------------------------
