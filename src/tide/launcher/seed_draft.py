@@ -785,6 +785,10 @@ def collected_map(root: Path, session_entry: Path, thread_entry: Path) -> List[s
 _PULSE_STAMP = re.compile(r"^-?\s*\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})(?::\d{2})?\s*[—-]?\s*")
 
 
+_GIST_NAME_DOT = re.compile(r"\s·\s(?=(?:\d{2}|NN)\b)")
+_GIST_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ0-9«\"(])|\s·\s")
+
+
 def pulse_gist(line: str, limit: int = JOURNAL_GIST) -> str:
     """Строка пульса сжато: ``- ЧЧ:ММ — первая фраза`` до *limit* знаков.
 
@@ -793,7 +797,10 @@ def pulse_gist(line: str, limit: int = JOURNAL_GIST) -> str:
     raw = line.strip().lstrip("-").strip()
     m = _PULSE_STAMP.match("- " + raw)
     stamp, rest = (m.group(1) + " — ", raw[m.end() - 2:]) if m else ("", raw)
-    first = re.split(r"(?<=[.;!?])\s|\s·\s", rest, maxsplit=1)[0].strip()
+    # F31: « · NN» — часть имени («context-keeper · 03»), «;» — середина правила:
+    # режем только по концу предложения или по « · » между фразами
+    first = _GIST_SPLIT.split(_keep_name_dots(_GIST_NAME_DOT.sub(_KEEP, rest)),
+                              maxsplit=1)[0].replace(_KEEP, " · ").strip()
     text = "- " + stamp + first
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 

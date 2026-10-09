@@ -243,3 +243,19 @@ def test_fetch_builds_one_query_per_team(monkeypatch):
     assert seed_draft.linear_fetch(["SOC-7", "SOC-8"]) == {"SOC-7": ("Todo", "unstarted")}
     assert len(sent) == 1 and sent[0][0]["variables"] == {"team": "SOC", "nums": [7.0, 8.0]}
     assert sent[0][2] <= 5
+
+
+# --- F31: сжатие журнала не рвёт имена и правила ------------------------------------
+
+@pytest.mark.parametrize("line, want", [
+    ("- 2026-10-09T07:55:00 — context-keeper · 03 сдала мелочи truth. Дальше коммит",
+     "- 07:55 — context-keeper · 03 сдала мелочи truth."),
+    ("- 2026-10-09T07:35:00 — менеджер теперь management-14; --deliverable 16–20 знаков",
+     "- 07:35 — менеджер теперь management-14; --deliverable 16–20 знаков"),
+    ("- 2026-10-09T06:28:00 — board · 03: мобильная v2 · потом макет",
+     "- 06:28 — board · 03: мобильная v2"),
+    ("- 2026-10-09T06:30:00 — сдано в tide@1.0.51 и v2.2. Потом ещё",
+     "- 06:30 — сдано в tide@1.0.51 и v2.2."),
+])
+def test_gist_keeps_session_names_and_rules(line, want):
+    assert seed_draft.pulse_gist(line, limit=200) == want
