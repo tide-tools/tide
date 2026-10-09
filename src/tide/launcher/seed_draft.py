@@ -78,7 +78,8 @@ _NEXT_SEP = "·"
 # «·» inside a session's name is not a list separator (SOC-101 F8): «проект — нить ·
 # 04», «ao-and-order · 04», «… · 01 · tide-stack-8» (SOC-72) stay whole.
 # F37: «… · 02 (tide-stack-20)» — имя с AO-id в скобках — тоже целое.
-_NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]|\s*\())"
+# F52: «designer · 06 = app-development-22» — имя с AO-id через «=» — тоже.
+_NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]|\s*=|\s*\())"
                        r"|(?<=\b\d{2})\s·\s(?=[A-Za-z][\w.-]*-\d+\b)")
 _KEEP = "\x00"
 # «проект — нить · NN» с любым хвостом (SOC-101): «management — main · 02 через ao

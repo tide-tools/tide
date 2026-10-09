@@ -197,3 +197,12 @@ def test_linear_keys_from_thread_goal_and_previous_seed(monkeypatch):
     assert "  - SOC-90 — https://linear.app/socaseinpoint/issue/SOC-90 — закрыта (Canceled) " \
            "(из прошлого сида)" in block
     assert "_linear_sources" not in text and "цели нити\", " not in text
+
+
+# --- F52: «имя · NN = id» не рвётся --------------------------------------------------
+
+def test_name_with_equals_ao_id_is_kept_whole():
+    got = seed_draft.block_next(["«готово — посмотри» (вид от designer · 06 = "
+                                 "app-development-22) ~2.5 ч · таймлайн SOC-107 ~5 ч"])
+    assert got == ["- «готово — посмотри» (вид от designer · 06 = app-development-22) ~2.5 ч",
+                   "- таймлайн SOC-107 ~5 ч"]
