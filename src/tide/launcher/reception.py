@@ -77,13 +77,29 @@ def _short_old(new_title: str, old_title: str) -> str:
     return old_title
 
 
+# SOC-101 F36: аудит видит только РАЗДЕЛЫ сида — потерянные хеши, статусы Linear и
+# правила менеджера внутри раздела ему не видны. Голое «Потеряно: ничего» давало
+# Грише ложное спокойствие, поэтому строка всегда говорит, чем мерили.
+LOST_SCOPE = "по сверке разделов"
+
+
+def lost_line(lost: Optional[List[str]]) -> str:
+    """Хвост строки «Потеряно: …» — с мерой, а не голым «ничего».
+
+    *lost* — пропавшие разделы; ``None`` — сверка не прошла (тогда не «ничего»)."""
+    if lost is None:
+        return "сверка разделов не прошла — не знаю"
+    if not lost:
+        return LOST_SCOPE + " — ничего"
+    return clip("{0}: {1}".format(LOST_SCOPE, ", ".join(lost)), LOST_MAX)
+
+
 def reception_text(*, new_title: str, old_title: str, taken: str,
-                   lost: List[str]) -> str:
+                   lost: Optional[List[str]]) -> str:
     """Три строки Грише: кто у кого принял, что взято, что потеряно."""
     return "{new} приняла у {old}\nВзято: {taken}\nПотеряно: {lost}".format(
         new=new_title, old=_short_old(new_title, old_title),
-        taken=clip(taken or "—", TAKEN_MAX),
-        lost=clip(", ".join(lost), LOST_MAX) if lost else "ничего")
+        taken=clip(taken or "—", TAKEN_MAX), lost=lost_line(lost))
 
 
 def not_alive_text(new_title: str, old_title: str) -> str:
@@ -126,13 +142,14 @@ def titles(home: Path, rec: Dict[str, object]) -> "tuple[str, str]":
                        "прошлой сессии {0}".format(sid[:8]))
 
 
-def _lost(home: Path, key: str) -> List[str]:
-    """Разделы аудита со статусом missing (кроме понятой цели — её даёт «Взято»)."""
+def _lost(home: Path, key: str) -> Optional[List[str]]:
+    """Разделы аудита со статусом missing (кроме понятой цели — её даёт «Взято»).
+    ``None`` — аудит не прошёл: это не «ничего не потеряно» (F36)."""
     try:
         from . import handoff_audit
         report = handoff_audit.audit(Path(home), key)
-    except Exception:  # noqa: BLE001 — нет аудита — не «потеряно»
-        return []
+    except Exception:  # noqa: BLE001 — нет аудита — не знаем, а не «ничего»
+        return None
     return [s["title"] for s in report.get("sections") or []
             if s.get("status") == handoff_audit.MISSING and s.get("key") != "understood"]
 
@@ -347,6 +364,6 @@ def wrap_offload(sub) -> None:
 
 
 __all__ = ["ANNOUNCED", "CLOSE_PROPOSED", "announce_not_alive", "announce_reception",
-           "clip", "close_text", "propose_close",
+           "clip", "close_text", "lost_line", "propose_close",
            "compose_reception", "not_alive_text", "reception_text", "send", "titles",
            "wrap_offload"]

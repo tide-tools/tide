@@ -129,7 +129,13 @@ def test_reception_message_is_three_short_lines():
     assert lost.startswith("Потеряно: ")
     ok = reception.reception_text(new_title="A — t · 02", old_title="B — u · 05",
                                   taken="t", lost=[])
-    assert ok == "A — t · 02 приняла у B — u · 05\nВзято: t\nПотеряно: ничего"
+    # F36: аудит видит только разделы — «ничего» всегда с мерой, не голое
+    assert ok == ("A — t · 02 приняла у B — u · 05\nВзято: t\n"
+                  "Потеряно: по сверке разделов — ничего")
+    unknown = reception.reception_text(new_title="A — t · 02", old_title="B — u · 05",
+                                       taken="t", lost=None)
+    assert unknown.endswith("Потеряно: сверка разделов не прошла — не знаю")
+    assert "Потеряно: ничего" not in unknown
 
 
 def test_live_reception_message_is_short(seam, sent):
@@ -158,7 +164,19 @@ def test_lost_lists_missing_audit_sections(seam, sent, monkeypatch):
     ]})
     hq.take(seam["home"], seam["key"], session="new-sid")
     reception.announce_reception(seam["home"], seam["key"])
-    assert sent[0]["text"].endswith("Потеряно: неотвеченные реплики Гриши")
+    assert sent[0]["text"].endswith(
+        "Потеряно: по сверке разделов: неотвеченные реплики Гриши")
+
+
+def test_failed_audit_is_not_nothing_lost(seam, sent, monkeypatch):
+    from tide.launcher import handoff_audit
+
+    def _boom(home, key):
+        raise RuntimeError("нет сида")
+    monkeypatch.setattr(handoff_audit, "audit", _boom)
+    hq.take(seam["home"], seam["key"], session="new-sid")
+    reception.announce_reception(seam["home"], seam["key"])
+    assert sent[0]["text"].endswith("Потеряно: сверка разделов не прошла — не знаю")
 
 
 def test_not_alive_sends_one_message(world, monkeypatch, sent):
