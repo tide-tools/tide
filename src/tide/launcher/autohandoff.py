@@ -234,9 +234,17 @@ def build_auto_seed(session_entry: Path) -> str:
     def bodies_at(clip: int) -> Dict[str, List[str]]:
         out = sd.draft_bodies(root, session_entry, pulse_clip=clip)
         out = {k: [ln for ln in v if "<!--" not in ln] for k, v in out.items()}
-        out[sd.ENTRY_MAP].append(
-            "- автохендофф: читай паспорт прошлой сессии {0}/arc.md, plan.md нити и "
-            "«неотвеченные реплики Гриши» ниже".format(session_entry.name))
+        # пустая карта — «—» и ОДИН указатель (абсолютные пути); не пустая — карта
+        # и тот же указатель последней строкой перед топиком
+        pointer = ("указатель: паспорт прошлой сессии {0} (курсор, ## context), plan.md "
+                   "нити {1}".format(session_entry.resolve() / "arc.md",
+                                     thread.resolve() / "plan.md"))
+        emap = out[sd.ENTRY_MAP]
+        topic = [ln for ln in emap if ln.lstrip("- ").startswith("топик:")]
+        real = [ln for ln in emap if ln not in topic]
+        out[sd.ENTRY_MAP] = (real + ["- " + pointer] if real else
+                             ["{0} карту входа не курировали — {1}".format(sd.EMPTY, pointer)]
+                             ) + topic
         return out
 
     bodies = bodies_at(0)

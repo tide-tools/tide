@@ -393,18 +393,57 @@ LINEAR_URL_DEFAULT = "https://linear.app/socaseinpoint/issue/{key}"
 _ISSUE_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
 
 
-def block_links(text: str, prefixes: Sequence[str] = ("SOC",)) -> List[str]:
+LINEAR_STATUSES = ("In Review", "In Progress", "Done", "Todo", "Backlog", "Canceled",
+                   "Cancelled", "Duplicate", "Triage")
+_STATUS_RE = re.compile(r"\b({0})\b".format("|".join(LINEAR_STATUSES)), re.IGNORECASE)
+_SLASH_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9})-(\d+)((?:/\d+)+)\b")
+_KEY_RUN = r"[A-Z][A-Z0-9]{1,9}-\d+"
+# «SOC-57, SOC-39, SOC-51 — In Review», «SOC-108 In Review», «SOC-100 в In Review»
+_STATUS_RUN_RE = re.compile(
+    r"((?:{0})(?:\s*(?:,|и|·)\s*(?:{0}))*)\s*(?:[—:–-]\s*|\(|в\s+|is\s+)?\s*({1})\b".format(
+        _KEY_RUN, "|".join(LINEAR_STATUSES)), re.IGNORECASE)
+
+
+def expand_issue_runs(text: str) -> str:
+    """«SOC-92/96/77» → «SOC-92, SOC-96, SOC-77»: каждый номер — свой ключ."""
+    def one(m):
+        nums = [m.group(2)] + [n for n in m.group(3).split("/") if n]
+        return ", ".join("{0}-{1}".format(m.group(1), n) for n in nums)
+    return _SLASH_RE.sub(one, text or "")
+
+
+def issue_statuses(text: str) -> Dict[str, str]:
+    """Статус задачи Linear, записанный рядом с её номером в *text* (первое
+    упоминание выигрывает — подавай текст свежим сверху). Только локально:
+    в Linear не ходим."""
+    out: Dict[str, str] = {}
+    canon = {s.lower(): s for s in LINEAR_STATUSES}
+    for m in _STATUS_RUN_RE.finditer(expand_issue_runs(text)):
+        status = canon[m.group(2).lower()]
+        for key in re.findall(_KEY_RUN, m.group(1)):
+            out.setdefault(key, status)
+    return out
+
+
+def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
+                status_text: str = "") -> List[str]:
     """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
 
     Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
-    искать, где это. Адрес — ``$TIDE_LINEAR_ISSUE_URL`` (шаблон с ``{key}``)."""
+    искать, где это. Адрес — ``$TIDE_LINEAR_ISSUE_URL`` (шаблон с ``{key}``).
+    «SOC-92/96/77» — три задачи. Статус — рядом со ссылкой, если он записан в
+    *status_text* (или в самом *text*) локально (:func:`issue_statuses`)."""
     tmpl = (os.environ.get(LINEAR_URL_ENV) or "").strip() or LINEAR_URL_DEFAULT
+    text = expand_issue_runs(text)
+    statuses = issue_statuses((status_text or "") + "\n" + text)
     seen: List[str] = []
     for key in _ISSUE_RE.findall(text or ""):
         if key.split("-", 1)[0] in prefixes and key not in seen:
             seen.append(key)
     seen.sort(key=lambda k: int(k.rsplit("-", 1)[1]))
-    return ["- {0} — {1}".format(k, tmpl.format(key=k)) for k in seen]
+    return ["- {0} — {1}{2}".format(k, tmpl.format(key=k),
+                                    " — " + statuses[k] if k in statuses else "")
+            for k in seen]
 
 
 def block_awaiting(questions: Sequence[str],
@@ -529,7 +568,9 @@ def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
     """
     kept = [ln for ln in live_lines(inherited)
             if "<!--" not in ln and not is_hole(ln)
-            and not ln.lstrip("- ").startswith("топик:")]  # указатель считается заново
+            and not ln.lstrip("- ").startswith(("топик:", "автохендофф:"))]
+    # ↑ указатель на топик считается заново; заглушка автохендоффа — не карта
+    # (SOC-101: заглушки наследовались и множились, одна указывала на чужую сессию)
     return kept + [
         "- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
         "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)
@@ -646,7 +687,9 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     budget = max(0, int((share * rest - tail) / (1 - share)))
     for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
         out[JOURNAL] = block_journal(context, budget=budget, source=source)
-        out[LINEAR] = block_links(render_draft(out, header=header))
+        # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
+        out[LINEAR] = block_links(render_draft(out, header=header) + "\n" + "\n".join(context),
+                                  status_text="\n".join(reversed(list(context))))
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
                           if not _PASS_RE.match(ln.strip())) - share * len(text)
@@ -822,9 +865,6 @@ TOPIC_FILE = "topic.md"
 # сильнее всего; иначе топик сам называет нить — ``threads:``, ``дом:``,
 # ``нити и работы:`` в topic.md.
 _TOPIC_THREAD_KEYS = ("threads", "дом", "нити и работы", "нить", "нити")
-LINEAR_STATUSES = ("In Review", "In Progress", "Done", "Todo", "Backlog", "Canceled",
-                   "Cancelled", "Duplicate", "Triage")
-_STATUS_RE = re.compile(r"\b({0})\b".format("|".join(LINEAR_STATUSES)), re.IGNORECASE)
 
 
 def _topic_field(text: str, key: str) -> str:

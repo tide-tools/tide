@@ -109,7 +109,7 @@ def test_f3_f4_experience_and_entry_map_inherited_from_the_input_seed(scene):
     assert "<!--" not in exp
     entry = seed.partition("## карта входа\n\n")[2].partition("\n## ")[0]
     assert entry.splitlines()[0] == "- 1. plan.md нити — шаги"
-    assert "автохендофф: читай паспорт прошлой сессии" in entry
+    assert "- указатель: паспорт прошлой сессии " in entry  # абсолютный путь, один раз
 
 
 # --- F5: журнал не тонет, но ≤ 30% тела ------------------------------------------

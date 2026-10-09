@@ -283,3 +283,49 @@ def test_topic_pointer_by_threads_field_and_status(live):
 def test_no_topic_says_what_was_checked(live):
     line = seed_draft.topic_pointer(live["root"], live["thread"])
     assert line.startswith("- топик: нить не связана ни с одним топиком (проверено: /")
+
+
+# --- п.7 · карта входа без заглушек; задачи Linear со статусом ---------------------
+
+def test_entry_map_does_not_inherit_the_stub(live):
+    seed_in = live["sess"] / "input" / seed_draft.INPUT_SEED_NAME
+    seed_in.parent.mkdir(parents=True, exist_ok=True)
+    # живая карта сида main · 03: две заглушки, одна — на чужую сессию 01-main
+    seed_in.write_text(
+        "## карта входа\n\n- автохендофф: карту никто не курировал — читай паспорт прошлой "
+        "сессии 01-main/arc.md, plan.md нити и хвост диалога ниже\n- автохендофф: читай "
+        "паспорт прошлой сессии 02-main-2/arc.md, plan.md нити и «неотвеченные реплики "
+        "Гриши» ниже\n", encoding="utf-8")
+    entry = _block(ah.build_auto_seed(live["sess"]), "карта входа").splitlines()
+    assert "01-main" not in "\n".join(entry) and "02-main-2" not in "\n".join(entry)
+    assert entry[0] == "— карту входа не курировали — указатель: паспорт прошлой сессии " \
+        "{0} (курсор, ## context), plan.md нити {1}".format(
+            live["sess"].resolve() / "arc.md", live["thread"].resolve() / "plan.md")
+    assert len(entry) == 2 and entry[1].startswith("- топик:")
+
+
+def test_linear_slash_runs_expand_and_status_rides_next_to_the_link(monkeypatch):
+    monkeypatch.setenv(seed_draft.LINEAR_URL_ENV, "https://l.example/{key}")
+    text = ("по слову: SOC-92/96/77 и SOC-68.\n- SOC-57, SOC-39, SOC-51 — In Review\n"
+            "SOC-100 в In Review")
+    assert seed_draft.block_links(text) == [
+        "- SOC-39 — https://l.example/SOC-39 — In Review",
+        "- SOC-51 — https://l.example/SOC-51 — In Review",
+        "- SOC-57 — https://l.example/SOC-57 — In Review",
+        "- SOC-68 — https://l.example/SOC-68",
+        "- SOC-77 — https://l.example/SOC-77",
+        "- SOC-92 — https://l.example/SOC-92",
+        "- SOC-96 — https://l.example/SOC-96",
+        "- SOC-100 — https://l.example/SOC-100 — In Review",
+    ]
+
+
+def test_linear_numbers_from_compressed_pulses_still_listed(live):
+    from tide import offload
+
+    for i in range(30):
+        offload.write_pulse(live["sess"], note="шаг {0}: ".format(i) + "детали " * 40
+                            + "SOC-{0}".format(200 + i))
+    seed = ah.build_auto_seed(live["sess"])
+    assert "сжато строк" in seed
+    assert "- SOC-200 — " in _block(seed, "задачи Linear")  # номер из сжатого пульса
