@@ -139,3 +139,59 @@ def test_batch_skips_only_new_and_manager_letters(world, monkeypatch, tmp_path, 
     assert not (paths.state_dir(w["home"]) / handed_off.TWO_HEADS_LOG).exists()
 
 
+# --- F68 ------------------------------------------------------------------------
+
+def test_raised_not_taken_forwards_to_new_by_pickup(world, monkeypatch, tmp_path, capsys):
+    w = _base(world, monkeypatch, tmp_path)
+    _raise(w["rec"])
+    registry.record(w["home"], "new-sid", "proj-24", "/arc")
+    assert hq.is_dissolved(w["home"], "old-sid") is None   # окно: ещё не принята
+    assert _hook(monkeypatch, BATCH) == 0
+    out = capsys.readouterr().out
+    assert [h for h, _ in w["ao"].calls] == ["proj-24"] * 4
+    fl = _fl(w["home"])
+    assert len(fl) == 4 and all("(до приёма)" in ln for ln in fl)
+    assert "поднята, ещё не приняла" in out
+    assert "уже переслано ей механикой" in out
+    # приём — те же доставки уже в FL, второй пересылки нет
+    hq.take(w["home"], w["key"], session="new-sid")
+    assert _hook(monkeypatch, BATCH) == 0
+    assert len(w["ao"].calls) == 4
+
+
+def test_raised_without_address_queues_then_delivers_on_take(world, monkeypatch, tmp_path,
+                                                            capsys):
+    w = _base(world, monkeypatch, tmp_path)
+    _raise(w["rec"])
+    monkeypatch.setattr(handed_off, "raised_successor",
+                        lambda home, rec: {"ao_session": "", "title": "proj — seam · 02"})
+    assert _hook(monkeypatch, BATCH) == 0
+    out = capsys.readouterr().out
+    assert w["ao"].calls == []
+    assert "в очереди, перешлю механикой при приёме" in out
+    assert len(handed_off._pending(w["home"])) == 4
+    assert _fl(w["home"]) == []
+    # новая приняла — первый же хук (её промпт) сливает очередь
+    hq.take(w["home"], w["key"], session="new-sid")
+    assert _hook(monkeypatch, "привет", sid="new-sid") == 0
+    assert [h for h, _ in w["ao"].calls] == ["proj-24"] * 4
+    fl = _fl(w["home"])
+    assert len(fl) == 4 and all("из очереди до приёма" in ln for ln in fl)
+    assert handed_off._pending(w["home"]) == []
+
+
+def test_not_raised_offer_stays_silent(world, monkeypatch, tmp_path, capsys):
+    w = _base(world, monkeypatch, tmp_path)          # оффер есть, подъёма нет
+    assert _hook(monkeypatch, BATCH) == 0
+    assert w["ao"].calls == [] and _fl(w["home"]) == []
+    assert "нить" not in capsys.readouterr().out
+
+
+def test_raised_new_order_raises_no_alarm(world, monkeypatch, tmp_path, capsys):
+    w = _base(world, monkeypatch, tmp_path)
+    _raise(w["rec"])
+    registry.record(w["home"], "new-sid", "proj-24", "/arc")
+    called = []
+    monkeypatch.setattr(handed_off, "two_heads_alarm", lambda *a, **k: called.append(a))
+    assert _hook(monkeypatch, _ao(5, "proj-24", "сделай SOC-98, проверь доску")) == 0
+    assert called == [] and w["ao"].calls == []
