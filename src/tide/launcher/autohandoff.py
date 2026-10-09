@@ -284,9 +284,16 @@ def build_auto_seed(session_entry: Path) -> str:
         out = {k: [ln for ln in v if "<!--" not in ln] for k, v in out.items()}
         # пустая карта — «—» и ОДИН указатель (абсолютные пути); не пустая — карта
         # и тот же указатель последней строкой перед топиком
-        pointer = ("указатель: паспорт прошлой сессии {0} (курсор, ## context), plan.md "
-                   "нити {1}".format(session_entry.resolve() / "arc.md",
-                                     thread.resolve() / "plan.md"))
+        # plan.md — только если «главное» в нём есть (как F50: не звать в пустое)
+        try:
+            from ..arc import plan_main
+            has_main = bool(plan_main.live_lines(thread))
+        except Exception:  # noqa: BLE001
+            has_main = False
+        pointer = "указатель: паспорт прошлой сессии {0} (курсор, ## context)".format(
+            session_entry.resolve() / "arc.md")
+        if has_main:
+            pointer += ", plan.md нити {0}".format(thread.resolve() / "plan.md")
         emap = out[sd.ENTRY_MAP]
         topic = [ln for ln in emap if ln.lstrip("- ").startswith("топик:")]
         real = [ln for ln in emap if ln not in topic]

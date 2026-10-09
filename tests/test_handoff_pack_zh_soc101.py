@@ -426,3 +426,16 @@ def test_old_false_line_in_dialog_md_is_skipped_on_read(tmp_path):
     lines = dialog._thread_lines(thread)
     assert not any("pasted_content" in ln for ln in lines)
     assert any("старые записи удаляем" in ln for ln in lines)
+
+
+# --- указатель карты: plan.md нити — только при живом «главном» -----------------
+
+def test_auto_seed_pointer_skips_plan_without_main(world):
+    seed = ah.build_auto_seed(world["sess"])
+    ptr = [ln for ln in seed.splitlines() if "указатель: паспорт прошлой сессии" in ln]
+    assert ptr and all("plan.md" not in ln for ln in ptr)
+
+
+def test_inflight_empty_text_names_the_reception_window():
+    hole = handoff_contract.block("inflight").empty
+    assert "за жизнь сессии (с её приёма)" in hole and "перед ПЕРЕДАЧЕЙ" not in hole
