@@ -11,10 +11,12 @@
 * квитанция: ``tide mail read <нить> NNN`` печатает письмо и пишет ``ack``
   (кто, когда) в журнал ``inbox/log.jsonl``; ``tide mail ls <нить>`` —
   непрочитанное / прочитанное;
-* повтор: отсоединённый ожидальщик (как autoraise) через
+* повтор: отсоединённый ожидальщик ящика (flock ``inbox/watch.lock``) через
   ``$TIDE_MAIL_RETRY_MIN`` минут (по умолчанию 15) без квитанции пингует снова;
   после :data:`MAX_RETRIES` повторов — строка менеджеру
   (:func:`tide.launcher.autohandoff.send_alert`, ``route=manager``);
+  умер ожидальщик (kill, перезагрузка) — любой хук почты и любой ``tide mail *``
+  поднимают его заново (:func:`revive_project`), без launchd/cron;
 * хуки SessionStart и UserPromptSubmit сессии нити печатают
   «почта: N непрочитанных — tide mail ls <нить>».
 
@@ -297,10 +299,9 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
     if do_ping:
         out["ping"] = ping(tdir, num)
     if watch is None:
-        watch = (os.environ.get(WATCH_ENV) or "").strip().lower() not in (
-            "0", "off", "no", "false", "нет")
-    if watch:
-        out["watcher"] = _spawn_watch(tdir, num)
+        watch = _watch_enabled()
+    if watch and not watcher_alive(tdir):
+        out["watcher"] = _spawn_watch(tdir)
     return out
 
 
@@ -365,7 +366,7 @@ def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
 
 def watch(tdir: Path, num: object, *, minutes: Optional[float] = None,
           sleep=time.sleep) -> str:
-    """Ожидальщик: шагает по письму, пока не квитанция или тревога."""
+    """Ожидальщик одного письма (старый вход, оставлен для совместимости)."""
     minutes = minutes if minutes is not None else retry_minutes()
     while True:
         sleep(max(1.0, minutes * 60 / 4))
@@ -377,9 +378,103 @@ def watch(tdir: Path, num: object, *, minutes: Optional[float] = None,
             return res
 
 
-def _spawn_watch(tdir: Path, num: str) -> Optional[int]:
-    """Отсоединённый ``tide mail watch`` (своя сессия процессов) → pid. Не падает."""
-    argv = [sys.executable, "-m", "tide", "mail", "watch", str(tdir), num]
+# --- ожидальщик ящика и его подъём (SOC-143: повтор переживает перезапуск) --------
+#
+# Один ожидальщик на ящик нити. Пока он жив, он держит flock на
+# ``inbox/watch.lock`` — ядро снимает лок сам, когда процесс умер (kill,
+# перезагрузка), так что «жив ли» = «занят ли лок», без pid-гаданий.
+# ``inbox/watch.pid`` — витрина (pid + пульс), не источник правды.
+# Любой хук почты и любой ``tide mail *`` зовут :func:`revive_project` /
+# :func:`revive`: есть письма в ожидании и лок свободен → поднять ожидальщика.
+# Ожидальщик первым делом делает проход (просроченный повтор — сразу), а второй
+# ожидальщик не встанет: он берёт лок без ожидания и, не взяв, уходит.
+
+LOCK_NAME = "watch.lock"
+PIDFILE_NAME = "watch.pid"
+
+
+def _watch_enabled() -> bool:
+    return (os.environ.get(WATCH_ENV) or "").strip().lower() not in (
+        "0", "off", "no", "false", "нет")
+
+
+def pending(tdir: Path) -> List[Dict[str, object]]:
+    """Письма, которые ещё ждут ожидальщика: без квитанции и без тревоги."""
+    return [r for r in letters(tdir) if not r["acks"] and not r["alerted"]]
+
+
+def _try_lock(tdir: Path):
+    """Открытый файл с эксклюзивным flock или None (лок занят / нет fcntl)."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — не POSIX
+        return None
+    box = inbox(tdir)
+    box.mkdir(parents=True, exist_ok=True)
+    fh = open(str(box / LOCK_NAME), "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def watcher_alive(tdir: Path) -> bool:
+    """Жив ли ожидальщик ящика: лок держит кто-то другой. Миллисекунды, без сети."""
+    if not (inbox(tdir) / LOCK_NAME).exists():
+        return False
+    fh = _try_lock(tdir)
+    if fh is None:
+        return True
+    fh.close()  # закрытие снимает лок
+    return False
+
+
+def _heartbeat(tdir: Path) -> None:
+    try:
+        (inbox(tdir) / PIDFILE_NAME).write_text(
+            "{0} {1}\n".format(os.getpid(), _iso(_now())), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def watch_box(tdir: Path, *, minutes: Optional[float] = None,
+              sleep=time.sleep) -> str:
+    """Ожидальщик ящика: проход по всем ждущим письмам сразу, затем каждые
+    ``minutes/4``; выходит, когда ждать нечего. ``busy`` — уже есть живой."""
+    minutes = minutes if minutes is not None else retry_minutes()
+    while True:
+        fh = _try_lock(tdir)
+        if fh is None:
+            return "busy"
+        try:
+            while True:
+                _heartbeat(tdir)
+                waiting = False
+                for rec in pending(tdir):
+                    try:
+                        res = step(tdir, rec["num"], minutes=minutes)
+                    except MailError:
+                        continue
+                    waiting = waiting or res in ("wait", "retry")
+                if not waiting:
+                    break
+                sleep(max(1.0, minutes * 60 / 4))
+        finally:
+            try:
+                (inbox(tdir) / PIDFILE_NAME).unlink()
+            except OSError:
+                pass
+            fh.close()
+        # письмо могло лечь, пока лок ещё держали, — перепроверить без лока
+        if not pending(tdir):
+            return "idle"
+
+
+def _spawn_watch(tdir: Path, num: Optional[str] = None) -> Optional[int]:
+    """Отсоединённый ``tide mail watch <ящик>`` (своя сессия процессов) → pid."""
+    argv = [sys.executable, "-m", "tide", "mail", "watch", str(tdir)]
     try:
         proc = subprocess.Popen(argv, cwd=str(tdir), start_new_session=True,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -389,10 +484,37 @@ def _spawn_watch(tdir: Path, num: str) -> Optional[int]:
         return None
 
 
+def revive(tdir: Path) -> Optional[int]:
+    """Есть ждущие письма и нет живого ожидальщика → поднять его (pid). Не падает."""
+    try:
+        if not _watch_enabled() or not pending(tdir) or watcher_alive(tdir):
+            return None
+        return _spawn_watch(tdir)
+    except Exception:  # noqa: BLE001 — хук и CLI не смеют упасть из-за подъёма
+        return None
+
+
+def revive_project(root: Path) -> List[int]:
+    """:func:`revive` по всем ящикам нитей проекта ``<root>/.tide/arcs/*/inbox``."""
+    out: List[int] = []
+    try:
+        arcs = Path(root) / ".tide" / "arcs"
+        for log in sorted(arcs.glob("*/{0}/{1}".format(INBOX_DIRNAME, LOG_NAME))):
+            pid = revive(log.parent.parent)
+            if pid:
+                out.append(pid)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 # --- хуки ------------------------------------------------------------------------
 
 def session_line(root: Path, session: Optional[str]) -> Optional[str]:
-    """«почта: N непрочитанных — tide mail ls <нить>» для сессии нити, иначе None."""
+    """«почта: N непрочитанных — tide mail ls <нить>» для сессии нити, иначе None.
+
+    Попутно (любой хук почты) поднимает умерших ожидальщиков проекта."""
+    revive_project(Path(root))
     if not session:
         return None
     try:
@@ -428,7 +550,7 @@ def cmd_prompt_hook(args) -> int:
             sid = str(payload.get("session_id") or "")
         sid = sid or (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
         if root is not None:
-            line = session_line(root, sid)
+            line = session_line(root, sid)  # внутри — revive_project
             if line:
                 print(line)
     except Exception as exc:  # noqa: BLE001
@@ -438,6 +560,18 @@ def cmd_prompt_hook(args) -> int:
 
 # --- CLI -------------------------------------------------------------------------
 
+def _revive_cli(ref: Optional[str] = None) -> None:
+    """Любой ``tide mail *``: поднять умерших ожидальщиков проекта (и нити *ref*)."""
+    try:
+        root = paths.find_tide_root()
+        if root is not None:
+            revive_project(root)
+        if ref:
+            revive(thread_dir(ref))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _cmd_send(args) -> int:
     if args.file:
         text = Path(args.file).expanduser().read_text(encoding="utf-8")
@@ -445,6 +579,7 @@ def _cmd_send(args) -> int:
         text = sys.stdin.read()
     else:
         text = args.text
+    _revive_cli()
     out = send(args.thread, text, sender=args.sender, do_ping=not args.no_ping)
     p = out["ping"] or {}
     if not args.no_ping:
@@ -460,6 +595,7 @@ def _cmd_send(args) -> int:
 
 def _cmd_read(args) -> int:
     text, ack = read(args.thread, args.num, by=args.by)
+    _revive_cli(args.thread)
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
     print("— квитанция: {0} прочитал(а) {1} в {2}".format(ack["by"], ack["num"], ack["at"]))
     return 0
@@ -467,6 +603,7 @@ def _cmd_read(args) -> int:
 
 def _cmd_ls(args) -> int:
     tdir = thread_dir(args.thread)
+    _revive_cli(args.thread)
     recs = letters(tdir)
     new = [r for r in recs if not r["acks"]]
     print("почта нити {0}: {1} непрочитанных, {2} прочитанных".format(
@@ -487,7 +624,7 @@ def _cmd_ls(args) -> int:
 def _cmd_watch(args) -> int:
     target = Path(args.thread)
     tdir = target if target.is_dir() else thread_dir(args.thread)
-    print(watch(tdir, args.num))
+    print(watch_box(tdir))
     return 0
 
 
@@ -495,6 +632,7 @@ def _cmd_retry(args) -> int:
     tdir = thread_dir(args.thread)
     for r in unread(tdir):
         print("{0}: {1}".format(r["num"], step(tdir, r["num"])))
+    _revive_cli(args.thread)
     return 0
 
 
@@ -529,7 +667,7 @@ def register(subparsers) -> None:
 
     w = sub.add_parser("watch", help=argparse.SUPPRESS)
     w.add_argument("thread", help="thread ref or thread dir")
-    w.add_argument("num")
+    w.add_argument("num", nargs="?", help="ignored: the watcher serves the whole inbox")
     w.set_defaults(func=_cmd_watch, _cmd="mail watch")
 
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
@@ -537,4 +675,5 @@ def register(subparsers) -> None:
 
 __all__ = ["MAX_RETRIES", "MailError", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
-           "retry_minutes", "send", "session_line", "step", "thread_dir", "unread", "watch"]
+           "pending", "retry_minutes", "revive", "revive_project", "send", "session_line", "step", "thread_dir", "unread", "watch",
+           "watch_box", "watcher_alive"]
