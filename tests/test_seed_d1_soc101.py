@@ -282,3 +282,22 @@ def test_seed_header_says_who_you_are_and_live_manager(tmp_project, monkeypatch)
         new.name.split("-")[0], old.name.split("-")[0])
     assert head[3] == "отчитываешься менеджеру: management-14 (tide whois manager на момент сборки)"
     assert "ao-control" not in "\n".join(head) and "продолжаешь сессию" not in "\n".join(head)
+
+
+# --- F33: журнал есть, реплик Гриши нет ---------------------------------------------
+
+def test_unanswered_says_journal_exists_but_no_words(tmp_project, monkeypatch):
+    from tide.arc import dialog, stream
+
+    monkeypatch.delenv(dialog.LOG_ENV, raising=False)
+    thread = stream.new_thread(tmp_project, "dlg", goal="нить")
+    assert seed_draft.block_unanswered(thread) == []          # журнала нет — пусто
+    dialog.dialog_path(thread).write_text(
+        "# dialog\n\n- 2026-10-09T05:51:19 · Гриша · ao · Your claude.ai usage limit has "
+        "reset. Continue the task you were working on when the limit was reached.\n",
+        encoding="utf-8")
+    assert seed_draft.block_unanswered(thread) == [
+        "— реплик Гриши нет (журнал есть; уведомлений харнесса отброшено: 1)"]
+    with open(dialog.dialog_path(thread), "a", encoding="utf-8") as fh:
+        fh.write("- 2026-10-09T06:00:00 · Гриша · ao · смерджи PR\n")
+    assert seed_draft.block_unanswered(thread)[-1].endswith("смерджи PR")

@@ -1311,6 +1311,26 @@ def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> L
         return []
 
 
+def block_unanswered(thread_entry: Path, n: int = DIALOG_TAIL) -> List[str]:
+    """Неотвеченные реплики Гриши: хвост диалога нити; журнал есть, а реплик в нём
+    нет — так и сказано, со счётом отброшенных уведомлений харнесса (SOC-101 F33:
+    «журнала диалога нет» при живом dialog.md с одной харнесс-строкой было неправдой)."""
+    lines = _dialog.tail(thread_entry, n)
+    if lines:
+        return lines
+    path = _dialog.dialog_path(Path(thread_entry))
+    log = _dialog.log_path(Path(thread_entry))
+    if not path.is_file() and not (log is not None and log.is_file()):
+        return []  # журналов нет — правило пустоты блока (контракт)
+    dropped = 0
+    for ln in _read(path).splitlines():
+        m = _dialog._LINE_RE.match(ln)
+        if m and m.group(2).strip() == _dialog.HUMAN and _dialog.is_harness_notice(m.group(4)):
+            dropped += 1
+    return ["{0} реплик Гриши нет (журнал есть; уведомлений харнесса отброшено: {1})".format(
+        EMPTY, dropped)]
+
+
 def manager_line() -> str:
     """Текущий адрес менеджера одной строкой — резолвером :mod:`tide.whois`
     (``~/.tide/manager.json``, без него — цепочка хендоффов нити менеджера), а не
@@ -1375,7 +1395,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                session_incoming(session_entry,
                                                 section_body(passport, "context")),
                                _auto.open_items(root, thread_entry)),
-        UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
+        UNANSWERED: block_unanswered(thread_entry),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"),
                                    labels.get("entry_map", []),
                                    collected_map(root, session_entry, thread_entry))
