@@ -2186,22 +2186,142 @@ def is_info_letter(body: str) -> bool:
     return bool(_INFO_RE.search(body or "")) and not _ASK_RE.search(body or "")
 
 
-def pulse_names_sender(who: str, at, pulses: Sequence["tuple"]) -> bool:
-    """Пульс не раньше доставки называет id отправителя (``tide-stack-24``, без
-    хвоста uds) — сессия входящее записала (F60). ``tide-stack-2`` не совпадает с
-    ``tide-stack-24``."""
+def pulse_names_sender(who: str, at, pulses: Sequence["tuple"],
+                       roles: Optional["SenderRoles"] = None) -> bool:
+    """Пульс не раньше доставки называет отправителя — сессия входящее записала
+    (F60). Имя — AO-id (``tide-stack-24``, без хвоста uds; ``tide-stack-2`` не
+    совпадает с ``tide-stack-24``) или роль из реестра сессий *roles* (F82):
+    «main · 05», а своя нить — и коротко «· 03»."""
     key = sender_key(who)
     if not key:
         return False
     rx = re.compile(r"(?<![\w-]){0}(?!\d)".format(re.escape(key)), re.IGNORECASE)
+    alias = roles.matcher(key) if roles is not None else None
     for p_at, line in pulses:
         if p_at < at.replace(second=0, microsecond=0):
             continue
         # фраза «запросила у X, жду к 15:15» — ожидание от X, а не запись его письма
-        if any(rx.search(sent) and not _WAIT_RE.search(sent)
+        if any((rx.search(sent) or (alias is not None and alias(sent)))
+               and not _WAIT_RE.search(sent)
                for sent in _SENT_END.split(line)):
             return True
     return False
+
+
+# SOC-143 F82: пульсы зовут отправителя ролью («main · 05», «· 03»), а доставка
+# AO — id («tide-stack-31»). Реестр сессий — паспорта проекта: title
+# «проект — нить · NN · <AO-id>» (with_ao_id) даёт AO-id → «нить · NN».
+_TITLE_ROLE = re.compile(r"^(?:.*? — )?(\S.*? · \d{2,}) · (\S+)$")
+
+
+def _project_roles(root: Path) -> Dict[str, str]:
+    """AO-id → «нить · NN» по паспортам сессий проекта *root*. Никогда не падает."""
+    out: Dict[str, str] = {}
+    try:
+        passports = sorted(paths.arcs_dir(Path(root)).glob("*/arcs/*/arc.md"))
+    except Exception:  # noqa: BLE001
+        return out
+    for passport in passports:
+        try:
+            title = (fields.read_field(passport, "title") or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        m = _TITLE_ROLE.match(title)
+        if m:
+            out[m.group(2).lower()] = " ".join(m.group(1).split()).lower()
+    return out
+
+
+class SenderRoles:
+    """Роли отправителей для :func:`pulse_names_sender` (F82): AO-id → «нить · NN»
+    по реестру сессий своего проекта и проекта отправителя (AO-id
+    ``<проект>-NN`` → проект ростера). *own_thread* — нить передающей сессии: её
+    сессии пульс зовёт коротко «· 03»; «handoffs · 03» — уже чужая нить."""
+
+    def __init__(self, roles: Dict[str, str], own_thread: str = "",
+                 lookup=None) -> None:
+        self.roles = {k.lower(): v for k, v in roles.items()}
+        self.own_thread = (own_thread or "").lower()
+        self._lookup = lookup  # key → {AO-id: роль} проекта отправителя (лениво)
+
+    def role(self, key: str) -> str:
+        key = (key or "").lower()
+        if key not in self.roles and self._lookup is not None:
+            try:
+                self.roles.update({k: v for k, v in (self._lookup(key) or {}).items()
+                                   if k not in self.roles})
+            except Exception:  # noqa: BLE001
+                pass
+        return self.roles.get(key, "")
+
+    def threads(self) -> set:
+        return {r.rsplit(" · ", 1)[0] for r in self.roles.values() if " · " in r}
+
+    def matcher(self, key: str):
+        """Функция «предложение зовёт отправителя ролью» или None (роли нет)."""
+        role = self.role(key)
+        if " · " not in role:
+            return None
+        name, num = role.rsplit(" · ", 1)
+        full = re.compile(r"(?<![\w-]){0}\s*·\s*{1}(?!\d)".format(
+            r"\s+".join(re.escape(w) for w in name.split()), re.escape(num)),
+            re.IGNORECASE)
+        if name != self.own_thread:
+            return full.search
+        others = self.threads() - {name}
+        short = re.compile(r"(?:([\w-]+)\s*)?·\s*{0}(?!\d)".format(re.escape(num)))
+
+        def names(sent: str) -> bool:
+            if full.search(sent):
+                return True
+            # «шаг 2 сдан · 03» — своя сессия 03; «handoffs · 03» — чужая нить
+            return any((m.group(1) or "").lower() not in others
+                       for m in short.finditer(sent))
+        return names
+
+
+def sender_roles(root: Path, session_entry: Path) -> SenderRoles:
+    """:class:`SenderRoles` для передающей сессии: реестр своего проекта + ленивый
+    проект отправителя из ростера. Никогда не падает."""
+    own_thread = slug.entry_slug(Path(session_entry).parents[1].name) \
+        if len(Path(session_entry).parents) > 1 else ""
+    cache: Dict[str, Dict[str, str]] = {}
+
+    def lookup(key: str) -> Dict[str, str]:
+        project = key.rsplit("-", 1)[0] if "-" in key else ""
+        if not project or project in cache:
+            return cache.get(project, {})
+        cache[project] = {}
+        from .. import roster
+        for entry in roster.read_roster(paths.control_home()):
+            if entry.get("name") == project:
+                cache[project] = _project_roles(Path(entry["path"]).expanduser())
+        return cache[project]
+
+    return SenderRoles(_project_roles(root), own_thread, lookup)
+
+
+# SOC-143 F82: почта шов-синка приходит доставкой AO «почта 002 … — tide mail read
+# <нить> 002». Разобрана, когда сессия письмо прочла (квитанция ``ack`` в
+# inbox/log.jsonl) и пульс после этого говорит «беру / снимаю / разобран».
+_MAIL_REF = re.compile(r"tide\s+mail\s+read\s+\S+\s+(\d{3,})|почт[аеуы]\s+(\d{3,})",
+                       re.IGNORECASE)
+_TAKE_DROP_RE = re.compile(r"(?<!\w)(?:беру|снимаю|снят[оаы]?|сняла?|разобран[аоы]?)"
+                           r"(?!\w)", re.IGNORECASE)
+
+
+def closed_by_mail_read(body: str, at, pulses: Sequence["tuple"],
+                        reads: Dict[str, object]) -> bool:
+    """Доставка письма нити разобрана (F82): квитанция прочтения *reads* (номер →
+    время ack, местное) и пульс «беру / снимаю» не раньше доставки и квитанции."""
+    m = _MAIL_REF.search(body or "")
+    if not m or not reads:
+        return False
+    read_at = reads.get(m.group(1) or m.group(2))
+    if read_at is None:
+        return False
+    since = max(at, read_at).replace(second=0, microsecond=0)
+    return any(p_at >= since and _TAKE_DROP_RE.search(line) for p_at, line in pulses)
 
 
 def _carry_words(text: str) -> set:
@@ -2279,8 +2399,9 @@ def _replies(row: dict) -> List["tuple[str, str]"]:
     return out
 
 
-def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = ()
-                    ) -> List[str]:
+def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = (),
+                    *, roles: Optional[SenderRoles] = None,
+                    mail_reads: Optional[Dict[str, object]] = None) -> List[str]:
     """Входящие сообщения других сессий в транскрипте после *since* (местное
     время) → ``- поручено мне — от <X> в ЧЧ:ММ: <первые ~200 знаков>``.
 
@@ -2289,8 +2410,10 @@ def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = 
     (``<cross-session-message … from-name="X">``); уведомления харнесса (F17) —
     нет. Не берутся закрытые (F60): сессия ответила отправителю по делу
     (:func:`closes_by_reply`; квитанция «получен» и обещание не закрывают), пульс
-    после доставки назвал id отправителя (:func:`pulse_names_sender`) или несёт её
-    суть (:func:`carried_by_pulse`); и не поручения — письма без просьбы
+    после доставки назвал отправителя — id или ролью из *roles* (F82,
+    :func:`pulse_names_sender`) — или несёт её суть (:func:`carried_by_pulse`),
+    письмо нити прочитано и разобрано пульсом «беру / снимаю» (F82,
+    :func:`closed_by_mail_read`); и не поручения — письма без просьбы
     (:func:`is_info_letter`). Свежие сверху, не больше
     :data:`INCOMING_MAX`, остальное — счётом и путём к транскрипту."""
     if transcript is None:
@@ -2326,8 +2449,9 @@ def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = 
              if not is_info_letter(body)
              and not any(r_at >= at and to == sender_key(who) and closes_by_reply(text)
                          for r_at, to, text in replies)
-             and not pulse_names_sender(who, at, pulses)
-             and not carried_by_pulse(who, body, at, pulses)]
+             and not pulse_names_sender(who, at, pulses, roles)
+             and not carried_by_pulse(who, body, at, pulses)
+             and not closed_by_mail_read(body, at, pulses, mail_reads or {})]
     found.sort(key=lambda r: r[0], reverse=True)
     out = ["- поручено мне — от {0} в {1}: {2}".format(
         who, at.strftime("%H:%M"), _dialog.clip(body, INCOMING_CLIP))
@@ -2604,7 +2728,8 @@ def mark_finished_workers(lines: Sequence[str], live, finished) -> List[str]:
     return out
 
 
-def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
+def session_incoming(session_entry: Path, context: Sequence[str], now=None,
+                     root: Optional[Path] = None) -> List[str]:
     """Входящие поручения и материалы передающей сессии ЗА ВСЮ ЕЁ ЖИЗНЬ — с приёма
     (:func:`session_taken_at` минус :data:`INCOMING_TAKE_SLACK_MIN`), не закрытые
     итогом и не записанные пульсом (SOC-101 F29: окно «с пульса перед ПЕРЕДАЧЕЙ»
@@ -2618,7 +2743,13 @@ def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> L
         taken = session_taken_at(context)
         since = (taken - timedelta(minutes=INCOMING_TAKE_SLACK_MIN) if taken else
                  (now or datetime.now()) - timedelta(hours=INCOMING_LOOKBACK_HOURS))
-        return incoming_orders(transcript_path(sid), since, context)
+        title = (fields.read_field(Path(session_entry) / "arc.md", "title") or "").strip()
+        m = _TITLE_ROLE.match(title)
+        me = m.group(2).lower() if m else ""
+        root = root or Path(session_entry).parents[4]
+        return incoming_orders(transcript_path(sid), since, context,
+                               roles=sender_roles(root, session_entry),
+                               mail_reads=mail_reads(Path(session_entry).parents[1], me))
     except Exception:  # noqa: BLE001 — сид важнее
         return []
 
@@ -2631,15 +2762,12 @@ MAIL_FIRST = 120                # первая строка письма — н�
 _MAIL_LETTER = re.compile(r"^(\d{3,})-от-(.+)\.md$")
 
 
-def _mail_unread(thread_entry: Path) -> List[Dict[str, str]]:
-    """Непрочитанные письма нити: ``[{num, sender, first}]`` по номеру."""
+def _mail_events(thread_entry: Path) -> List[Dict[str, object]]:
+    """Журнал почты нити (inbox/log.jsonl) — события по порядку; нет — []."""
     import json
 
-    box = Path(thread_entry) / "inbox"
-    if not box.is_dir():
-        return []
-    evs = []
-    log = box / "log.jsonl"
+    log = Path(thread_entry) / "inbox" / "log.jsonl"
+    evs: List[Dict[str, object]] = []
     if log.is_file():
         for ln in log.read_text(encoding="utf-8").splitlines():
             try:
@@ -2648,6 +2776,34 @@ def _mail_unread(thread_entry: Path) -> List[Dict[str, str]]:
                 continue
             if isinstance(ev, dict):
                 evs.append(ev)
+    return evs
+
+
+def mail_reads(thread_entry: Path, me: str = "") -> Dict[str, object]:
+    """Номер письма → первая квитанция прочтения (``ack``) сессией *me* (AO-id), в
+    местном времени (F82). *me* неизвестен — квитанция любого. Никогда не падает."""
+    out: Dict[str, object] = {}
+    try:
+        evs = _mail_events(Path(thread_entry))
+    except Exception:  # noqa: BLE001
+        return out
+    me = (me or "").lower()
+    for ev in evs:
+        if ev.get("ev") != "ack" or (me and sender_key(str(ev.get("by") or "")) != me):
+            continue
+        at = _dialog._stamp(str(ev.get("at") or ""))
+        num = str(ev.get("num") or "")
+        if at is not None and num and (num not in out or at < out[num]):
+            out[num] = at
+    return out
+
+
+def _mail_unread(thread_entry: Path) -> List[Dict[str, str]]:
+    """Непрочитанные письма нити: ``[{num, sender, first}]`` по номеру."""
+    box = Path(thread_entry) / "inbox"
+    if not box.is_dir():
+        return []
+    evs = _mail_events(Path(thread_entry))
     acked = {str(e.get("num")) for e in evs if e.get("ev") == "ack"}
     sent = {str(e.get("num")): e for e in evs if e.get("ev") == "sent"}
     out = []
@@ -2824,7 +2980,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     where += settled
     inflight = _merge_lines(label_inflight, worker_lines(live_runs),
                             session_incoming(session_entry,
-                                             section_body(passport, "context")),
+                                             section_body(passport, "context"),
+                                             root=root),
                             _auto.open_items(root, thread_entry),
                             thread_mail(thread_entry))
     return {
