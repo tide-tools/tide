@@ -409,9 +409,30 @@ def compose_reception(home: Path, rec: Dict[str, object]) -> str:
         passed = passed_text(home, rec, seed_text)
     except Exception:  # noqa: BLE001 — без «Передано» сообщение всё равно уходит
         passed = ""
+    lost = _lost(home, str(rec["name"]))
+    if lost is not None:
+        lost = lost + _lost_decisions(home, rec, seed_text)
     return reception_text(new_title=new, old_title=old, taken=taken or "—",
-                          lost=_lost(home, str(rec["name"])), passed=passed,
-                          tails=open_tails(seed_text))
+                          lost=lost, passed=passed, tails=open_tails(seed_text))
+
+
+def _lost_decisions(home: Path, rec: Dict[str, object], seed_text: str) -> List[str]:
+    """SOC-101 F63: решения входного сида старой, выпавшие из нового сида молча
+    (не перенесены и не «снято: …»), — тоже потеря; сверка разделов её не видит."""
+    try:
+        from .handoff import _origin_entry
+        from .seed_draft import INPUT_SEED_NAME, dropped_decisions
+        origin = _origin_entry(Path(home), rec)
+        if origin is None:
+            return []
+        prev = (origin / "input" / INPUT_SEED_NAME).read_text(encoding="utf-8")
+        gone = dropped_decisions(prev, seed_text)
+    except Exception:  # noqa: BLE001 — уведомление не падает
+        return []
+    if not gone:
+        return []
+    return ["решения прошлого сида: выпало {0} ({1})".format(
+        len(gone), clip(gone[0], 60))]
 
 
 def _log(home: Path, line: str) -> None:

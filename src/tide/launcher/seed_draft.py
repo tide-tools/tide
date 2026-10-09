@@ -288,7 +288,7 @@ def labeled_pulses(context: Sequence[str]) -> Dict[str, List[str]]:
 
 
 # Хвост строки сида, который не меняет её смысла: «(пульс ЧЧ:ММ)», «(статус: …)».
-_LINE_SUFFIX = re.compile(r"\s*\((?:пульс|статус:)[^()]*\)\s*$")
+_LINE_SUFFIX = re.compile(r"\s*\((?:пульс|статус:|из прошлого сида)[^()]*\)\s*$")
 FOLD_MIN = 15  # короче — не сворачиваем «вложенным»: «ao send» не съест чужую строку
 
 
@@ -954,6 +954,86 @@ def block_decisions(records: Sequence[Dict[str, object]],
             mark = marks[id(rec)] or ("правило, в силе" if decision.is_rule(rec)
                                       else "not done")
             out.append("- {0} — {1} ({2})".format(rec.get("num"), what, mark))
+    return out
+
+
+# SOC-101 F63: решения копятся, как опыт (F22) — решения входного сида переходят
+# дальше; снятое — строкой «снято: … — причина: …», а не молча.
+INHERITED_MARK = "(из прошлого сида)"
+_REVOKE_RE = re.compile(r"снят|сняли|снимаю|отмен|больше не|не в силе|не действ|"
+                        r"заменен|заменён|superseded|dropped", re.IGNORECASE)
+REVOKE_SHARE = 0.5     # доля слов решения в строке-отмене — это она его снимает
+REVOKE_MIN_WORDS = 2
+
+
+def _bare(line: str) -> str:
+    return re.sub(r"^\s*[-*]\s+", "", line or "").strip()
+
+
+def _revokes(revoker: str, decision_line: str) -> bool:
+    dw, rw = _sig_words(decision_line), _sig_words(revoker)
+    shared = len(dw & rw)
+    return shared >= REVOKE_MIN_WORDS and shared >= REVOKE_SHARE * len(dw)
+
+
+def inherit_decisions(inherited: Sequence[str], current: Sequence[str] = (),
+                      records: Sequence[Dict[str, object]] = ()) -> List[str]:
+    """Решения входного сида → строки блока «решения» этого сида (F63).
+
+    Каждое переходит дальше с пометкой :data:`INHERITED_MARK`; снятое — строкой
+    ``- снято: <решение> — причина: <что сняло>``. Сняло — строка этой сессии
+    (*current*: метки «Решения:», решения нити) со словом отмены
+    (:data:`_REVOKE_RE`), делящая с решением большую часть слов, или решение нити
+    (*records*) в статусе superseded/dropped о том же. Уже снятое прошлым сидом
+    («снято: …») переходит как есть: история снятия не теряется."""
+    from ..arc import decision  # lazy: decision reaches up into cli (known debt)
+
+    revokers = [_bare(c) for c in current if _REVOKE_RE.search(c or "")]
+    gone = []
+    for rec in records:
+        st = decision.normalize_status(str(rec.get("status") or ""))
+        if st != decision.ACCEPTED:
+            what = str(rec.get("what") or "").strip()
+            if what:
+                gone.append(("решение {0} нити — {1}".format(rec.get("num"), st), what))
+    out: List[str] = []
+    for ln in live_lines(inherited):
+        if "<!--" in ln or is_hole(ln):
+            continue
+        body = _bare(ln)
+        if not body or body.lower().startswith("снято:"):
+            if body:
+                out.append("- " + body)
+            continue
+        why = next((r for r in revokers if _revokes(r, body)), "")
+        if not why:
+            why = next((reason for reason, what in gone if _revokes(what, body)), "")
+        if why:
+            out.append("- снято: {0} — причина: {1}".format(
+                _LINE_SUFFIX.sub("", body), why))
+        elif INHERITED_MARK in body:
+            out.append("- " + body)
+        else:
+            out.append("- {0} {1}".format(body, INHERITED_MARK))
+    return out
+
+
+def dropped_decisions(prev_seed: str, new_seed: str) -> List[str]:
+    """Решения прошлого сида, которых нет в новом ни строкой, ни «снято: …» (F63) —
+    для TG о приёме: «Потеряно: ничего» при выпавшем решении — неправда."""
+    prev = [_bare(ln) for ln in live_lines(contract.find_body(sections(prev_seed or ""),
+                                                              "decisions"))
+            if "<!--" not in ln and not is_hole(ln)]
+    new = [_bare(ln) for ln in live_lines(contract.find_body(sections(new_seed or ""),
+                                                             "decisions"))]
+    out = []
+    for d in prev:
+        if not d or d.lower().startswith("снято:"):
+            continue
+        dw = _sig_words(d)
+        if not any(norm_line(d) == norm_line(n) or (
+                dw and len(dw & _sig_words(n)) >= SIMILAR_SHARE * len(dw)) for n in new):
+            out.append(d)
     return out
 
 
@@ -2404,7 +2484,13 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             nums, labels.get("experience", []) + layer(lays, "experience")
             + contract.find_body(seed_in, "experience"),
             _candidate_gists(root, nums)),
-        DECISIONS: _merge_lines(labels.get("decisions", []), decisions),
+        # F63: решения копятся, как опыт (F22): метки пульсов → решения нити →
+        # решения входного сида (снятые — с причиной)
+        DECISIONS: _merge_lines(
+            labels.get("decisions", []), decisions,
+            inherit_decisions(contract.find_body(seed_in, "decisions"),
+                              labels.get("decisions", []) + decisions,
+                              _thread_decisions(root, thread_entry))),
         AWAITING: _merge_lines(
             labels.get("awaiting", []),
             mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),

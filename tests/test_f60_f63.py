@@ -142,3 +142,75 @@ def test_mention_inside_message_is_not_a_reply():
             'ao send --session management-15 --message "сдано; пиши через '
             'ao send --session tide-stack-24 --message"')}}]}}
     assert [to for to, _ in seed_draft._replies(row)] == ["management-15"]
+
+
+# --- F63: решения входного сида наследуются -----------------------------------
+
+PREV_DECISIONS = [
+    "- TG Грише о каждом приёме по умолчанию (tg 3119), выключатель TIDE_ACCEPT_NOTIFY "
+    "(пульс 10:57)",
+    "- правило §5 менеджера — «принята с замечаниями» (пульс 10:57)",
+    "- формат решений = decisions-tg.jsonl, src у каждой записи (пульс 09:10)",
+]
+
+
+def test_inherited_decisions_carry_over_with_mark():
+    out = seed_draft.inherit_decisions(PREV_DECISIONS)
+    assert len(out) == 3
+    assert all(ln.endswith(seed_draft.INHERITED_MARK) for ln in out)
+    assert out[0].startswith("- TG Грише о каждом приёме по умолчанию")
+    # повторное наследование не множит пометку
+    again = seed_draft.inherit_decisions(out)
+    assert again == out
+
+
+def test_revoked_decision_goes_with_reason():
+    current = ["- TG о каждом приёме по умолчанию больше не шлём — Гриша выключил "
+               "TIDE_ACCEPT_NOTIFY=fail (пульс 18:00)"]
+    out = seed_draft.inherit_decisions(PREV_DECISIONS, current)
+    assert out[0].startswith("- снято: TG Грише о каждом приёме по умолчанию")
+    assert "— причина: TG о каждом приёме по умолчанию больше не шлём" in out[0]
+    assert out[1].endswith(seed_draft.INHERITED_MARK)
+    # снятое переходит дальше как история, без новой пометки
+    assert seed_draft.inherit_decisions(out)[0] == out[0]
+
+
+def test_revoked_by_thread_record():
+    recs = [{"num": "31", "status": "superseded",
+             "what": "формат решений decisions-tg.jsonl src у каждой записи"}]
+    out = seed_draft.inherit_decisions(PREV_DECISIONS, (), recs)
+    assert out[2].startswith("- снято: формат решений = decisions-tg.jsonl")
+    assert "причина: решение 31 нити — superseded" in out[2]
+
+
+def _seed(decisions):
+    return "## главное\n\n- x\n\n## решения\n\n{0}\n\n## задачи Linear\n\n- —\n".format(
+        "\n".join(decisions))
+
+
+def test_dropped_decisions_for_reception():
+    prev = _seed(PREV_DECISIONS)
+    kept = _seed(seed_draft.inherit_decisions(PREV_DECISIONS))
+    assert seed_draft.dropped_decisions(prev, kept) == []
+    lost = _seed(PREV_DECISIONS[:1])
+    gone = seed_draft.dropped_decisions(prev, lost)
+    assert len(gone) == 2 and gone[0].startswith("правило §5")
+    revoked = _seed([PREV_DECISIONS[0], "- снято: правило §5 менеджера — «принята с "
+                     "замечаниями» — причина: x", PREV_DECISIONS[2]])
+    assert seed_draft.dropped_decisions(prev, revoked) == []
+
+
+def test_reception_does_not_say_nothing_lost_when_a_decision_dropped(tmp_path, monkeypatch):
+    from tide.launcher import reception
+
+    origin = tmp_path / "old"
+    (origin / "input").mkdir(parents=True)
+    (origin / "input" / "handoff-seed.md").write_text(_seed(PREV_DECISIONS), encoding="utf-8")
+    import tide.launcher.handoff as handoff
+    monkeypatch.setattr(handoff, "_origin_entry", lambda home, rec: origin)
+    got = reception._lost_decisions(tmp_path, {}, _seed(PREV_DECISIONS[:1]))
+    assert got and got[0].startswith("решения прошлого сида: выпало 2")
+    line = reception.lost_line([] + got)
+    assert "ничего" not in line
+    assert reception._lost_decisions(
+        tmp_path, {}, _seed(seed_draft.inherit_decisions(PREV_DECISIONS))) == []
