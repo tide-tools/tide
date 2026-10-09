@@ -170,8 +170,9 @@ def register_hook_group(subparsers) -> None:
         "handoff-confirm",
         help="UserPromptSubmit: first message confirms a picked-up handoff offer",
     )
-    from ..handoff_queue import cmd_handoff_confirm  # lazy: avoid import cycle
-    hc.set_defaults(func=cmd_handoff_confirm, _cmd="hook handoff-confirm")
+    # confirm + (у старой, отдавшей нить) пересылка входящего новой — SOC-101 C14
+    from .handed_off import cmd_prompt  # lazy: avoid import cycle
+    hc.set_defaults(func=cmd_prompt, _cmd="hook handoff-confirm")
 
     on = hsub.add_parser(
         "offload-nudge",
