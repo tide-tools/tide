@@ -31,6 +31,7 @@ orchestration; :func:`cmd_handoff` is the thin CLI handler wired by ``cli.py``.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
@@ -846,11 +847,37 @@ def _print_outcome(result: "HandoffResult") -> None:
         print("tide: {0}".format(not_alive_line(result.spawn, result.offer_path.stem)))
 
 
+def layers_warning(root: Path, arc_ref: str) -> Optional[str]:
+    """Слои нити «ожидание / где мы / опыт» пусты — предупреждение ручной передачи.
+
+    SOC-101 (acceptance-01 §12 п.1): то же, что печатает ``--auto``
+    (:func:`tide.launcher.autohandoff.layers_warning`), но для ``tide handoff <нить>``.
+    Не нить (обычная арка) или не нашлась — молчит. Никогда не падает: передача важнее.
+    """
+    try:
+        from ..arc import stream as _stream, thread_layers, worktree
+
+        _owner, entry = worktree.resolve_project_and_arc(Path(root), arc_ref)
+        if entry is None:
+            return None
+        if not _stream.is_thread(entry):
+            parent = entry.parents[1] if len(entry.parents) > 1 else None
+            if parent is None or not _stream.is_thread(parent):
+                return None
+            entry = parent  # сессия внутри нити → её нить
+        return thread_layers.exit_warning(entry)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def cmd_handoff(args) -> int:
     """``tide handoff <arc>`` — distil, remind, hang the offer, raise the fresh session."""
     if getattr(args, "auto", False):
         return cmd_handoff_auto(args)
     root = paths.require_tide_root()
+    warning = layers_warning(root, args.arc)
+    if warning:
+        print(warning, file=sys.stderr)  # предупреждение, не блок (SOC-101)
     summary = _read_summary_arg(args)
     result = run_handoff(
         root,
