@@ -78,6 +78,16 @@ _NEXT_SEP = "·"
 _NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]))"
                        r"|(?<=\b\d{2})\s·\s(?=[A-Za-z][\w.-]*-\d+\b)")
 _KEEP = "\x00"
+# «проект — нить · NN» с любым хвостом (SOC-101): «management — main · 02 через ao
+# send», «… · NN (management-11)» — номер сессии стоит за именем вида «X — Y»,
+# и « · » перед ним имени не рвёт, что бы ни шло следом.
+_DASH_NAME_DOT = re.compile(r"(?<=\S)(\s—\s[\w.@-]+)\s·\s(?=(?:\d{2}|NN)\b)")
+
+
+def _keep_name_dots(line: str) -> str:
+    """Спрятать « · » внутри имён сессий, чтобы ``split`` по « · » их не рвал."""
+    line = _DASH_NAME_DOT.sub(lambda m: m.group(1) + _KEEP, line)
+    return _NAME_DOT.sub(_KEEP, line)
 
 # Сырой журнал пульса в сиде — не больше этой доли тела (SOC-101 F5): старое сжато
 # до строки, но не тонет — счёт и путь к полной записи в паспорте.
@@ -314,7 +324,7 @@ def block_next(nxt: Sequence[str]) -> List[str]:
     """
     items: List[str] = []
     for line in live_lines(nxt):
-        for part in _NAME_DOT.sub(_KEEP, line).split(_NEXT_SEP):
+        for part in _keep_name_dots(line).split(_NEXT_SEP):
             part = part.replace(_KEEP, " · ").strip(" -\t")
             if part:
                 items.append("- {0}".format(part))

@@ -351,3 +351,20 @@ def test_draft_hangs_no_offer_and_moves_no_status(tmp_project, session, monkeypa
     assert handoff_queue.list_offers(home) == []
     assert (session / "arc.md").read_text(encoding="utf-8") == before
     assert (fields.read_field(session / "arc.md", "status") or "") == "active"
+
+
+def test_next_keeps_dash_names_with_any_tail():
+    """SOC-101: имя «проект — нить · NN» рвалось на два пункта, если за номером
+    шло слово, а не « · »/конец строки. Строки — живые: доска пульта 09.10 и
+    находка handoffs · 02 («дальше» рвёт имя «management — main · NN»)."""
+    live = "nochnaya-smena — main · 01 передала нить → nochnaya-smena — main · 02"
+    assert seed_draft.block_next([live]) == ["- " + live]
+    got = seed_draft.block_next([
+        "итог → management — main · NN через ao send · отдать tide@sha continuity-audit"])
+    assert got == ["- итог → management — main · NN через ao send",
+                   "- отдать tide@sha continuity-audit"]
+    got = seed_draft.block_next(["отчёт management — main · 02 (management-12) · дальше"])
+    assert got == ["- отчёт management — main · 02 (management-12)", "- дальше"]
+    # обычный список с числом в шаге по-прежнему режется
+    assert seed_draft.block_next(["проверить · 10 тестов · выкатить"]) == [
+        "- проверить", "- 10 тестов", "- выкатить"]
