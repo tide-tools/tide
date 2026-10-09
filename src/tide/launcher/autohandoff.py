@@ -239,8 +239,7 @@ def build_auto_seed(session_entry: Path) -> str:
             "«неотвеченные реплики Гриши» ниже".format(session_entry.name))
         return out
 
-    clip = sd.JOURNAL_CLIP  # хвост пульса в «где мы» — тоже сырой журнал (F5)
-    bodies = bodies_at(clip)
+    bodies = bodies_at(0)
     nxt = [ln.lstrip("- ").strip() for ln in bodies.get(sd.NEXT, []) if ln.strip()]
     header = [
         "# автохендофф — {0} · нить {1}".format(session_entry.name, thread.name),
@@ -251,12 +250,10 @@ def build_auto_seed(session_entry: Path) -> str:
         # _pickup_goal берёт цель новой сессии отсюда
         header.append("следующий шаг: {0}".format(nxt[0]))
     head = "\n".join(header)
-    body_len = len(sd.render_draft(bodies, header=head))
-    if sd.raw_pulse_chars(context, clip=clip) > sd.JOURNAL_SHARE * body_len / 2:
-        clip = sd.JOURNAL_GIST  # хвост съел бы бюджет старшего журнала — короче
-        bodies[sd.WHERE] = bodies_at(clip)[sd.WHERE]
-    return sd.seal(bodies, context=context, header=head, clip=clip,
-                   source="{0} (## context)".format(session_entry / "arc.md"))
+    # хвост пульса в «где мы» — тоже сырой журнал (F5), но режется только по
+    # бюджету (F16), а последний пульс и ПЕРЕДАЧА — никогда (F24)
+    return sd.seal_budgeted(bodies_at, context=context, header=head,
+                            source="{0} (## context)".format(session_entry / "arc.md"))
 
 
 # --- сигнал ------------------------------------------------------------------

@@ -92,8 +92,8 @@ def _keep_name_dots(line: str) -> str:
 # Сырой журнал пульса в сиде — не больше этой доли тела (SOC-101 F5): старое сжато
 # до строки, но не тонет — счёт и путь к полной записи в паспорте.
 JOURNAL_SHARE = contract.JOURNAL_SHARE
-JOURNAL_CLIP = 160
-JOURNAL_GIST = 72
+JOURNAL_CLIP = 160   # хвост пульса режется сюда ТОЛЬКО когда журнал не влез в долю
+JOURNAL_GIST = 72    # …и сюда, если и 160 мало
 
 
 class SeedDraftError(StreamError):
@@ -331,19 +331,34 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
     for rec in sorted(works, key=_work_order, reverse=True):
         lines.append(work_line(rec))
     pulse = live_lines(context)
-    for ln in reversed(pulse[-tail:] if tail > 0 else pulse):
+    start = max(0, len(pulse) - tail) if tail > 0 else 0
+    for i in reversed(range(start, len(pulse))):
+        ln = pulse[i]
         ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
-        if clip and len(ln) > clip:
+        if clip and len(ln) > clip and not is_protected_pulse(pulse, i):
             ln = ln[: clip - 1].rstrip() + "…"
         lines.append(ln)
     return lines
 
 
+_PASS_RE = re.compile(r"\bпередача\b", re.IGNORECASE)
+
+
+def is_protected_pulse(pulse: Sequence[str], i: int) -> bool:
+    """Пульс, который не режется никогда (SOC-101 F24/F16): последний перед
+    передачей и любой с меткой «ПЕРЕДАЧА» — это кураторский текст, а не журнал."""
+    return i == len(pulse) - 1 or bool(_PASS_RE.search(pulse[i]))
+
+
 def raw_pulse_chars(context: Sequence[str], tail: int = PULSE_TAIL, clip: int = 0) -> int:
-    """Сколько знаков сырого пульса несёт курсор (его хвост из *tail* строк)."""
+    """Сколько знаков СЫРОГО пульса несёт курсор (его хвост из *tail* строк).
+
+    Защищённые пульсы (:func:`is_protected_pulse`) — не сырой журнал: они идут
+    целиком и в долю 30% не считаются."""
     pulse = live_lines(context)
-    return sum(min(len(ln) + 3, (clip + 1) if clip else len(ln) + 3)
-               for ln in (pulse[-tail:] if tail > 0 else pulse))
+    start = max(0, len(pulse) - tail) if tail > 0 else 0
+    return sum(min(len(pulse[i]) + 3, (clip + 1) if clip else len(pulse[i]) + 3)
+               for i in range(start, len(pulse)) if not is_protected_pulse(pulse, i))
 
 
 LINEAR_URL_ENV = "TIDE_LINEAR_ISSUE_URL"
@@ -518,19 +533,23 @@ def block_journal(context: Sequence[str], *, budget: int, source: str = "",
     (:func:`pulse_gist`); что не влезло и так — счётом и путём к полной записи
     (*source*). Пусто — когда старше хвоста ничего нет.
     """
-    older = live_lines(context)
-    older = older[:-tail] if tail > 0 else []
-    if not older:
+    pulse = live_lines(context)
+    n_old = max(0, len(pulse) - tail) if tail > 0 else 0
+    if not n_old:
         return []
-    full = [ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
-            for ln in reversed(older)]
-    if sum(len(ln) + 1 for ln in full) <= budget:
-        return full  # влезает целиком — ничего не сжимаем
+    keep = {i for i in range(n_old) if is_protected_pulse(pulse, i)}
+    full = [(i, pulse[i] if pulse[i].lstrip().startswith("-") else "- {0}".format(pulse[i]))
+            for i in reversed(range(n_old))]
+    if sum(len(ln) + 1 for i, ln in full if i not in keep) <= budget:
+        return [ln for _i, ln in full]  # влезает целиком — ничего не сжимаем
     out: List[str] = []
     pointer = "- (сжато строк: 00, не вошло: 00 — полностью: {0})".format(
         source or "## context паспорта сессии")
     used, clipped, left = len(pointer) + 1, 0, 0  # указатель тоже в бюджете
-    for ln in full:  # не влезает — ВСЕ строки сжатыми, чтобы дошло больше шагов
+    for i, ln in full:  # не влезает — ВСЕ строки сжатыми, чтобы дошло больше шагов
+        if i in keep:
+            out.append(ln)  # ПЕРЕДАЧА — целиком и вне бюджета
+            continue
         short = pulse_gist(ln)
         if used + len(short) + 1 > budget:
             left += 1
@@ -601,10 +620,32 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         out[JOURNAL] = block_journal(context, budget=budget, source=source)
         out[LINEAR] = block_links(render_draft(out, header=header))
         text = render_draft(out, header=header)
-        over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]) - share * len(text)
+        over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
+                          if not _PASS_RE.search(ln)) - share * len(text)
         if over <= 0 or budget == 0:
             break
         budget = max(0, budget - int(over) - 1)
+    return text
+
+
+def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
+                  source: str = "") -> str:
+    """Сид с журналом по бюджету (SOC-101 F16/F24): сжатие — только по бюджету.
+
+    *bodies_at(clip)* — тела блоков с хвостом пульса в «где мы», обрезанным до
+    *clip* (0 — целиком). Сначала всё целиком; не влез весь журнал в долю
+    :data:`JOURNAL_SHARE` — сжимается старший журнал (:func:`block_journal`), а
+    хвост в «где мы» режется до :data:`JOURNAL_CLIP`, потом до :data:`JOURNAL_GIST`,
+    только если он один съел бы больше половины бюджета. Последний пульс и
+    «ПЕРЕДАЧА» не режутся никогда (:func:`is_protected_pulse`).
+    """
+    text = ""
+    for clip in (0, JOURNAL_CLIP, JOURNAL_GIST):
+        bodies = bodies_at(clip)
+        text = seal(bodies, context=context, header=header, clip=clip, source=source)
+        tail = raw_pulse_chars(context, clip=clip)
+        if tail <= JOURNAL_SHARE * len(text) / 2:
+            break
     return text
 
 
@@ -813,13 +854,16 @@ def build_draft(root: Path, session_entry: Path) -> str:
     """Собрать текст черновика для *session_entry* из того, что лежит на диске."""
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
-    bodies = draft_bodies(root, session_entry)
-    for name, hint in DRAFT_HINTS.items():
-        bodies[name] = list(bodies.get(name) or []) + [hint]
+    def bodies_at(clip: int) -> Dict[str, List[str]]:
+        bodies = draft_bodies(root, session_entry, pulse_clip=clip)
+        for name, hint in DRAFT_HINTS.items():
+            bodies[name] = list(bodies.get(name) or []) + [hint]
+        return bodies
+
     context = section_body(sections(_read(session_entry / "arc.md")), "context")
-    return seal(bodies, context=context,
-                header=draft_header(session_entry.name, thread_entry.name),
-                source="{0} (## context)".format(session_entry / "arc.md"))
+    return seal_budgeted(bodies_at, context=context,
+                         header=draft_header(session_entry.name, thread_entry.name),
+                         source="{0} (## context)".format(session_entry / "arc.md"))
 
 
 # --- резолв сессии + запись -------------------------------------------------

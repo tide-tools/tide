@@ -115,10 +115,14 @@ def test_f3_f4_experience_and_entry_map_inherited_from_the_input_seed(scene):
 # --- F5: журнал не тонет, но ≤ 30% тела ------------------------------------------
 
 def _raw_share(seed: str) -> float:
-    """Доля сырого журнала в сиде: строки пульса в курсоре + секция журнала."""
+    """Доля сырого журнала в сиде: строки пульса в курсоре + секция журнала.
+
+    Последний пульс (первый в «где мы», свежие сверху) — не журнал: он идёт
+    целиком и вне доли (SOC-101 F24)."""
     cur = seed.partition("## где мы\n")[2].partition("\n## ")[0]
     journal = seed.partition("## сырой журнал\n")[2].partition("\n## ")[0]
-    raw = sum(len(ln) + 1 for ln in cur.splitlines() if ln.startswith("- 20")) + len(journal)
+    pulses = [ln for ln in cur.splitlines() if ln.startswith("- 20")][1:]
+    raw = sum(len(ln) + 1 for ln in pulses) + len(journal)
     return raw / len(seed)
 
 

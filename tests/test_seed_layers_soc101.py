@@ -113,3 +113,56 @@ def test_old_live_seed_lied_and_the_new_one_names_checked_sources(tmp_project, m
         assert body.startswith("— источник пуст: "), (name, body)
     assert "метки «Ждёт Гришу:» в пульсах" in _block(seed, "ждёт Гришу")
     assert "открытые пункты работ нити" in _block(seed, "в работе прямо сейчас")
+
+
+# --- п.3 · F24/F16: пульсы не режутся, сжатие только по бюджету -------------------
+
+def _pulse_lines(live_sess) -> list:
+    text = (live_sess / "arc.md").read_text(encoding="utf-8")
+    return [ln for ln in text.partition("## context\n")[2].partition("\n## ")[0].splitlines()
+            if ln.startswith("- 20")]
+
+
+def test_live_pass_pulse_arrives_whole(live):
+    old = (FIX / "continuity-audit-02-seed.md").read_text(encoding="utf-8")
+    assert "- 2026-10-09T07:30:18 — ПЕРЕДАЧА. Ожидание Гриши: каждая новая сессия п…" in old
+    seed = ah.build_auto_seed(live["sess"])
+    passing = _pulse_lines(live["sess"])[-1]
+    assert "ПЕРЕДАЧА" in passing and len(passing) > 1000
+    assert passing in seed.splitlines()  # целиком, ни знака не срезано
+
+
+def test_pulses_not_clipped_while_the_journal_fits(live):
+    # тело сида большое (слой «где мы» нити на 40 строк) — журнал влезает в 30%:
+    # ни один пульс, даже длиннее 160 знаков, не режется
+    pp = stream.passport_path(live["thread"])
+    text = pp.read_text(encoding="utf-8").partition("## where we are\n")[0]
+    pp.write_text(text + "## where we are\n### где мы\n" + "".join(
+        "- сделано: пункт {0} доведён до приёмки, сдан и проверен руками\n".format(i)
+        for i in range(120)), encoding="utf-8")
+    seed = ah.build_auto_seed(live["sess"])
+    pulses = _pulse_lines(live["sess"])
+    assert sum(len(p) > 160 for p in pulses) >= 5
+    for ln in pulses:
+        assert ln in seed.splitlines(), ln[:60]
+    assert "сжато строк" not in seed
+
+
+def test_live_journal_is_compressed_only_by_budget(live):
+    seed = ah.build_auto_seed(live["sess"])
+    journal = _block(seed, "сырой журнал")
+    # бюджет мал (тело короткое) — старшее сжато, но с честным счётом и путём
+    assert "сжато строк" in journal and "arc.md (## context)" in journal
+
+
+def test_pass_pulse_is_kept_whole_even_when_older_and_over_budget():
+    ctx = ["- 2026-10-09T05:{0:02d}:00 — шаг {0}: ".format(i) + "детали " * 40
+           for i in range(20)]
+    ctx = [c.rstrip() for c in ctx]
+    ctx[3] = ("- 2026-10-09T05:03:00 — ПЕРЕДАЧА (черновая). " + "слово " * 80).rstrip()
+    out = seed_draft.block_journal(ctx, budget=300, source="arc.md")
+    assert ctx[3] in out                      # старше хвоста, бюджет мал — а целиком
+    assert any(ln.endswith("…") for ln in out)  # остальное сжато по бюджету
+    tail = seed_draft.block_cursor([], ctx, clip=72)
+    assert tail[0] == ctx[-1]                 # последний пульс — целиком при любом clip
+    assert all(len(ln) <= 72 for ln in tail[1:])
