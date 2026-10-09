@@ -142,3 +142,36 @@ def test_in_review_and_next_for_grisha_reach_awaiting(monkeypatch):
     assert ("- SOC-112 на проверке (In Review) — предлагаю: посмотреть и сказать слово "
             "через менеджера; Done ставит проверяющий") in block
     assert "SOC-107" not in block
+
+
+# --- F50: карта сборщика — без пустого «главного», с кодом и тестами -------------------
+
+def test_map_skips_empty_main_and_adds_code_and_tests(tmp_path):
+    thread = tmp_path / "29-@board"
+    sess = thread / "arcs" / "03-board-3"
+    sess.mkdir(parents=True)
+    (sess / "arc.md").write_text("# s\n", encoding="utf-8")
+    (thread / "plan.md").write_text("# plan\n\n## главное\n\n", encoding="utf-8")
+    t = _write(tmp_path / "t.jsonl", [
+        _tool("2026-10-09T16:00:00Z", "a", "Edit", {"file_path": "/r/board/home.html"}),
+        _tool("2026-10-09T16:05:00Z", "b", "Bash", {
+            "command": "cd /r && python3 -m pytest -q board/ 2>&1 | tail -3"}),
+        _tool("2026-10-09T16:06:00Z", "c", "Bash", {
+            "command": "cd /r && git add board/live.py .tide/arcs/x/arc.md && git commit -m x"}),
+    ])
+    out = seed_draft.collected_map(tmp_path, sess, thread, transcripts=[t])
+    text = "\n".join(out)
+    assert "«главное»" not in text
+    assert "- код (последние тронутые сессией и воркерами): /r/board/live.py, " \
+           "/r/board/home.html" in text
+    assert "/.tide/" not in text.split("код", 1)[1]
+    assert "- тесты: cd /r && python3 -m pytest -q board/ (последний прогон в транскрипте)" \
+        in text
+    # команда из опыта сильнее транскрипта
+    assert seed_draft.test_command(["- тесты: `env -u X .venv/bin/python -m pytest -q`"],
+                                   [t]) == "env -u X .venv/bin/python -m pytest -q (из опыта)"
+    # «главное» есть — пункт plan.md на месте
+    (thread / "plan.md").write_text("# plan\n\n## главное\n\n- SOC-51 доска\n",
+                                    encoding="utf-8")
+    assert "«главное»" in "\n".join(seed_draft.collected_map(tmp_path, sess, thread,
+                                                             transcripts=[]))

@@ -150,7 +150,9 @@ def test_pass_without_map_warns_and_collects(tmp_project, capsys):
     assert seed_draft.warn_missing_map(ctx, stream=buf)
     assert "нет метки «Карта:»" in buf.getvalue()
     thread = stream.new_thread(tmp_project, "kart", goal="нить с картой")
-    (thread / "plan.md").write_text("# plan\n", encoding="utf-8")
+    # F50: plan.md зовётся, только если «главное» в нём записано
+    (thread / "plan.md").write_text("# plan\n\n## главное\n\n- SOC-1 карта\n",
+                                    encoding="utf-8")
     sess = stream.new_session(tmp_project, "kart", "s1", goal="шаг")
     got = seed_draft.collected_map(tmp_project, sess, thread)
     assert len(got) == 3 and all(seed_draft.COLLECTED in ln for ln in got)

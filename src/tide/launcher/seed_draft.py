@@ -951,12 +951,126 @@ def pass_without_map(context: Sequence[str]) -> bool:
     return False
 
 
-def collected_map(root: Path, session_entry: Path, thread_entry: Path) -> List[str]:
-    """Карта-черновик с диска (C11): «главное» plan.md нити, topic.md нити (или
-    goal-файл со слоями), паспорт передающей сессии — абсолютные пути и «зачем»."""
+# Команда тестов в опыте или в транскрипте: «… -m pytest …», «npm test», «go test».
+_TEST_CMD = re.compile(r"(?:\b(?:env\s+-u\s+\S+\s+)*(?:[A-Z_]+=\S+\s+)*\S*python3?\s+-m\s+pytest"
+                       r"|\bpytest\b|\bnpm\s+(?:run\s+)?test\b|\bgo\s+test\b|\bnode\s+--test\b)")
+
+
+def test_command(experience: Sequence[str] = (), transcripts: Sequence[Path] = ()) -> str:
+    """Команда тестов кодовой нити (F50): из опыта (строка с командой в бэктиках или
+    после «тесты:»), иначе — последний прогон тестов в транскриптах сессии и её
+    воркеров (сегмент ``cd … && … pytest …``). Нет — пусто."""
+    import json
+
+    for ln in experience:
+        for code in re.findall(r"`([^`]+)`", ln):
+            if _TEST_CMD.search(code):
+                return "{0} (из опыта)".format(code.strip())
+    last = ("", "")
+    for t in transcripts:
+        try:
+            raw = Path(t).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for ln in raw.splitlines():
+            if '"tool_use"' not in ln or "test" not in ln:
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            for b in ((row.get("message") or {}).get("content") or []) if isinstance(row, dict) else []:
+                if not isinstance(b, dict) or b.get("name") != "Bash":
+                    continue
+                cmd = str((b.get("input") or {}).get("command") or "").split("\n", 1)[0]
+                parts = [x.strip() for x in cmd.split("&&")]
+                hit = [i for i, x in enumerate(parts) if _TEST_CMD.search(x)]
+                if not hit:
+                    continue
+                seg = parts[hit[0]].split("|", 1)[0].split(" 2>", 1)[0].strip()
+                cd = [x for x in parts[:hit[0]] if x.startswith("cd ")]
+                got = " && ".join(cd[-1:] + [seg])
+                ts = str(row.get("timestamp") or "")
+                if ts >= last[0]:
+                    last = (ts, got)
+    return "{0} (последний прогон в транскрипте)".format(last[1]) if last[1] else ""
+
+
+def touched_files(transcripts: Sequence[Path], since=None, limit: int = 6) -> List[str]:
+    """Последние тронутые кодовые файлы сессии и её воркеров (F50): ``file_path``
+    Edit/Write и файлы коммитов ``git commit`` из их транскриптов — свежие сверху.
+    Файлы арок (``/.tide/``) — не код."""
+    import json
+
+    found = {}
+    for t in transcripts:
+        try:
+            raw = Path(t).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for ln in raw.splitlines():
+            if '"tool_use"' not in ln:
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("timestamp") or "")
+            for b in (row.get("message") or {}).get("content") or []:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                paths = []
+                if b.get("name") in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+                    paths = [str(inp.get("file_path") or inp.get("notebook_path") or "")]
+                elif b.get("name") == "Bash":
+                    cmd = str(inp.get("command") or "")
+                    m = re.search(r"^cd\s+(\S+)", cmd)
+                    base = m.group(1) if m else ""
+                    for m2 in re.finditer(r"\bgit\s+add\s+([^&|;\n]+)", cmd):
+                        for f in m2.group(1).split():
+                            if f.startswith("-") or f in (".", "-A"):
+                                continue
+                            paths.append(f if f.startswith("/") or not base
+                                         else "{0}/{1}".format(base.rstrip("/"), f))
+                for f in paths:
+                    if f and "/.tide/" not in f and not f.startswith(".tide/"):
+                        found[f] = max(found.get(f, ""), ts)
+    order = sorted(found, key=lambda f: found[f], reverse=True)
+    return order[:limit]
+
+
+def session_transcripts(session_entry: Path) -> List[Path]:
+    """Транскрипт передающей сессии и транскрипты её сабагентов."""
+    try:
+        sid = (fields.read_field(Path(session_entry) / "arc.md",
+                                 offload.CLAUDE_SESSION_FIELD) or "").strip()
+        main = transcript_path(sid)
+    except Exception:  # noqa: BLE001
+        return []
+    if main is None:
+        return []
+    subs = sorted((main.parent / main.stem / "subagents").glob("*.jsonl"))
+    return [main] + subs
+
+
+def collected_map(root: Path, session_entry: Path, thread_entry: Path,
+                  experience: Sequence[str] = (),
+                  transcripts: Optional[Sequence[Path]] = None) -> List[str]:
+    """Карта-черновик с диска (C11): «главное» plan.md нити (только если оно есть —
+    F50), topic.md нити (или goal-файл со слоями), паспорт передающей сессии; для
+    кодовой нити — последние тронутые файлы и команда тестов (F50)."""
+    from ..arc import plan_main
+
     out: List[str] = []
     plan = Path(thread_entry) / "plan.md"
-    if plan.is_file():
+    try:
+        has_main = bool(plan_main.live_lines(thread_entry))
+    except Exception:  # noqa: BLE001
+        has_main = False
+    if plan.is_file() and has_main:
         out.append("- {0} — «главное»: SOC-N, кому сдавать, с кем не дублировать {1}".format(
             plan.resolve(), COLLECTED))
     topics = thread_topics(root, thread_entry)
@@ -972,6 +1086,15 @@ def collected_map(root: Path, session_entry: Path, thread_entry: Path) -> List[s
     if arc.is_file():
         out.append("- {0} — паспорт прошлой сессии: курсор, ## context с пульсом "
                    "ПЕРЕДАЧА {1}".format(arc.resolve(), COLLECTED))
+    if transcripts is None:
+        transcripts = session_transcripts(session_entry)
+    files = touched_files(transcripts)
+    if files:
+        out.append("- код (последние тронутые сессией и воркерами): {0} {1}".format(
+            ", ".join(files), COLLECTED))
+        cmd = test_command(experience, transcripts)
+        if cmd:
+            out.append("- тесты: {0} {1}".format(cmd, COLLECTED))
     return out
 
 
@@ -1960,7 +2083,10 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         UNANSWERED: block_unanswered(thread_entry),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"),
                                    labels.get("entry_map", []),
-                                   collected_map(root, session_entry, thread_entry))
+                                   collected_map(root, session_entry, thread_entry,
+                                                 labels.get("experience", [])
+                                                 + layer(lays, "experience")
+                                                 + contract.find_body(seed_in, "experience")))
         + [topic_pointer(root, thread_entry)],
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
     }
