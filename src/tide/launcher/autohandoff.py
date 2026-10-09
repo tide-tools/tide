@@ -35,6 +35,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -316,6 +317,17 @@ def send_alert(text: str, *, route: str, source: str = "",
 
 # --- оркестрация -------------------------------------------------------------
 
+def layers_warning(thread_dir: Path) -> Optional[str]:
+    """Слои нити «ожидание / где мы / опыт» пусты — предупреждение на передаче
+    (SOC-101, acceptance-01 §12 п.1). Никогда не падает: передача важнее."""
+    from ..arc import thread_layers
+
+    try:
+        return thread_layers.exit_warning(thread_dir)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def caller_session_entry(root: Path, ref: Optional[str] = None) -> Path:
     """Своя сессия: *ref* (арка-сессия) или по ``$CLAUDE_CODE_SESSION_ID``."""
     from . import seed_draft
@@ -333,6 +345,7 @@ class AutoResult:
     decision: Decision
     seed: str
     handoff: Optional[object] = None        # HandoffResult, None на dry-run
+    warning: Optional[str] = None           # слои нити пусты (SOC-101) — не блок
     signal: Optional[Dict[str, object]] = None
 
 
@@ -350,7 +363,10 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
     thread = thread_of(entry)
     decision = decide_for(entry)
     seed = build_auto_seed(entry)
-    res = AutoResult(session=entry, thread=thread, decision=decision, seed=seed)
+    res = AutoResult(session=entry, thread=thread, decision=decision, seed=seed,
+                     warning=layers_warning(thread))
+    if res.warning:
+        print(res.warning, file=sys.stderr)  # предупреждение, не блок
     if dry_run:
         return res
     owner = _project_root(entry)
@@ -397,4 +413,4 @@ def render_dry_run(res: AutoResult) -> str:
 __all__ = ["AUTO_CHAIN_FIELD", "AutoHandoffError", "AutoResult", "CHAIN_LIMIT",
            "Decision", "HANDED_OFF_FIELD", "PROGRESS_MARK_FIELD", "build_auto_seed",
            "count_progress", "decide", "decide_for", "open_items", "open_questions",
-           "render_dry_run", "run_auto", "send_alert", "signal_stall"]
+           "layers_warning", "render_dry_run", "run_auto", "send_alert", "signal_stall"]

@@ -361,3 +361,72 @@ def test_inherited_manager_line_is_not_carried(live):
                        encoding="utf-8")
     main = _block(ah.build_auto_seed(live["sess"]), "главное")
     assert "management-7" not in main and main.startswith("- SOC-7")
+
+
+# --- п.9 · слои на выходе сессии: предупреждение и досев каркаса --------------------
+
+# Шапка нити, рождённой до c51b04f (живая 31-@main до заполнения): H1-заглушка и
+# одна строка-заглушка в where we are, слоёв нет.
+OLD_GOAL = ("# main-thread — <тред: the work-line this thread carries>\n\n"
+            "goal: главная нить\nstatus: active\nkind: thread\n\n"
+            "# The thread's items = its sessions (NN-slug in arcs/), chained by from:.\n\n"
+            "## where we are\n<the live state of the thread>\n")
+
+
+def test_layers_warning_names_empty_layers_and_does_not_block(live):
+    from tide.arc import thread_layers as tl
+
+    w = tl.exit_warning(live["thread"])
+    assert "«ожидание Гриши», «где мы», «опыт»" in w and "--seed-skeleton" in w
+    res = ah.run_auto(live["root"], session_ref=live["sess"].name, dry_run=True)
+    assert res.warning == w and res.seed  # сид собран, передача не остановлена
+
+
+def test_layers_warning_silent_when_filled(live):
+    from tide.arc import thread_layers as tl
+
+    pp = stream.passport_path(live["thread"])
+    text = pp.read_text(encoding="utf-8").partition("## where we are\n")[0]
+    pp.write_text(text + "## where we are\n### ожидание Гриши\n- а (09.10)\n\n### где мы\n"
+                  "- б\n\n### опыт\n- в\n", encoding="utf-8")
+    assert tl.exit_warning(live["thread"]) is None
+
+
+def test_seed_skeleton_adds_three_layers_and_keeps_the_rest(tmp_path):
+    from tide.arc import thread_layers as tl
+
+    g = tmp_path / "main-goal.md"
+    g.write_text(OLD_GOAL + "\n## заметки\n- своё\n", encoding="utf-8")
+    assert tl.seed_skeleton(g) == ["ожидание Гриши", "где мы", "опыт"]
+    out = g.read_text(encoding="utf-8")
+    assert out.startswith(OLD_GOAL.rstrip("\n"))          # всё прежнее на месте
+    assert out.endswith("## заметки\n- своё\n")
+    where = out.partition("## where we are\n")[2].partition("\n## ")[0]
+    assert [ln[4:] for ln in where.splitlines() if ln.startswith("### ")] == \
+        ["ожидание Гриши", "где мы", "опыт"]
+    assert tl.seed_skeleton(g) == []                       # повтор — ничего не меняет
+    assert g.read_text(encoding="utf-8") == out
+
+
+def test_seed_skeleton_fills_only_missing_layers(tmp_path):
+    from tide.arc import thread_layers as tl
+
+    g = tmp_path / "x-goal.md"
+    g.write_text("# x\n\nkind: thread\n\n## where we are\n### где мы\n- идёт работа\n",
+                 encoding="utf-8")
+    assert tl.seed_skeleton(g) == ["ожидание Гриши", "опыт"]
+    out = g.read_text(encoding="utf-8")
+    assert "### где мы\n- идёт работа\n" in out and out.count("### где мы") == 1
+
+
+def test_seed_skeleton_cli_verb(live, monkeypatch, capsys):
+    from tide import cli
+
+    pp = stream.passport_path(live["thread"])
+    pp.write_text(OLD_GOAL, encoding="utf-8")
+    monkeypatch.chdir(live["root"])
+    assert cli.main(["thread", "layers", live["thread"].name, "--seed-skeleton"]) == 0
+    out = capsys.readouterr().out
+    assert "досеян каркас: ожидание Гриши, где мы, опыт" in out
+    assert "пусты — ожидание Гриши, где мы, опыт" in out    # каркас — ещё не слова
+    assert "### опыт" in pp.read_text(encoding="utf-8")

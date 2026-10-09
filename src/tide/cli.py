@@ -408,6 +408,7 @@ def _register_thread(sub) -> None:
 
     register_thread(sub)
     _register_thread_holder(sub)
+    _register_thread_layers(sub)
 
 
 def _register_thread_holder(sub) -> None:
@@ -442,6 +443,27 @@ def _register_thread_holder(sub) -> None:
         else:
             print(_holder.render(rec))
         return 0
+
+    p.set_defaults(func=_dispatch)
+
+
+def _register_thread_layers(sub) -> None:
+    # SOC-101 (acceptance-01 §12 п.1): `tide thread layers <нить> [--seed-skeleton]` —
+    # какие из трёх слоёв нити пусты; --seed-skeleton досевает их пустой каркас в
+    # goal-файл старой нити, не трогая остальное.
+    p = sub.choices.get("thread")
+    if p is None:
+        return
+    p.add_argument("--seed-skeleton", action="store_true", dest="seed_skeleton",
+                   help="with `layers`: add the empty three-layer scaffold to the goal file")
+    prev = p.get_default("func")
+
+    def _dispatch(args) -> int:
+        if getattr(args, "ref", None) != "layers":
+            return prev(args)
+        from .arc import thread_layers
+
+        return thread_layers.cmd_layers(args)
 
     p.set_defaults(func=_dispatch)
 
