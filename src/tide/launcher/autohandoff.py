@@ -18,12 +18,14 @@
 
 1. в нити висит вопрос к человеку — артефакт ``question`` со статусом ``new``;
 2. три автопередачи подряд прошли без продвижения — не прибавилось ни отмеченных
-   пунктов работ нити, ни актов (``акт: …`` в паспортах её сессий).
+   пунктов работ нити, ни содержательных пульсов её сессий (акты — тоже пульсы;
+   механика приёма и передачи не считается, см. :func:`count_progress`).
 
-Тогда хендофф делается без подъёма (оффер висит для ▶), а Грише идёт сигнал
-«нить встала»: артефакт на стол доски + внешняя команда из ``$TIDE_ALERT_CMD``
-с ``TIDE_ALERT_ROUTE=human``, если она задана (адресов человека пакет tide не
-знает). Ту же команду зовёт сторож контекста (route ``log`` / ``manager``).
+Тогда хендофф делается без подъёма (оффер висит для ▶), а сигнал «нить встала»
+идёт сразу тремя путями: артефакт на стол доски, внешняя команда из
+``$TIDE_ALERT_CMD`` с ``TIDE_ALERT_ROUTE=human`` (если задана) и менеджеру —
+``ao send`` по адресу ``tide whois manager`` (контракт v1: стоп не молчит).
+Ту же внешнюю команду зовёт сторож контекста (route ``log`` / ``manager``).
 
 Чистые функции (``count_progress``, ``open_questions``, ``decide``,
 ``build_auto_seed``) — без argparse; :func:`run_auto` — оркестрация.
@@ -50,7 +52,7 @@ CHAIN_LIMIT = 3
 
 # Поля паспорта сессии.
 AUTO_CHAIN_FIELD = "auto-chain"        # автопередач подряд без продвижения до этой сессии
-PROGRESS_MARK_FIELD = "progress-mark"  # пункты+акты нити на момент рождения сессии
+PROGRESS_MARK_FIELD = "progress-mark"  # пункты+пульсы нити на момент рождения сессии
 HANDED_OFF_FIELD = "handed-off"        # эта сессия уже передала нить (хук молчит)
 
 ALERT_CMD_ENV = "TIDE_ALERT_CMD"
@@ -82,12 +84,46 @@ def _project_root(session_entry: Path) -> Path:
     return root
 
 
-def count_progress(root: Path, thread_dir: Path) -> int:
-    """Продвижение нити одним числом: отмеченные пункты её работ + акты её сессий.
+# Строки ``## context``, которые пишет МЕХАНИКА, а не работа сессии: приём оффера
+# (handoff_queue.RECEPTION_PULSE), «приём не состоялся» старой сессии
+# (launcher.handoff.NOT_ALIVE_LINE). Сторож контекста в паспорт не пишет (только
+# поле ``ctx-ping:``), поэтому его пинги в счёт и так не попадают.
+_MECHANICAL_PULSES = (
+    "шов приёма закрыт механикой",
+    "приём не состоялся — не замирай",
+)
 
-    Работы считаются ВСЕ (и закрытые): закрытие работы не должно выглядеть как
-    откат. Акты — только настоящие (``акт: …``), не пульс: пульс просит сам хук
-    контекста, и считай мы его — предохранитель не сработал бы никогда.
+
+def is_mechanical_pulse(text: str) -> bool:
+    """Строка пульса — механика или сама передача, не продвижение нити.
+
+    Механика: приём оффера, «приём не состоялся». Передача: нота с меткой
+    ``ПЕРЕДАЧА`` в начале (:func:`tide.handoff_contract.is_pass_note`) — её
+    пишет каждая передающая сессия, и считай мы её, сессия, которая ничего не
+    сделала, кроме приёма и передачи, давала бы прогресс (петля без стопа).
+    """
+    from .. import handoff_contract
+
+    body = " ".join((text or "").split())
+    if not body:
+        return True
+    if any(mark in body for mark in _MECHANICAL_PULSES):
+        return True
+    return handoff_contract.is_pass_note(body)
+
+
+def count_progress(root: Path, thread_dir: Path) -> int:
+    """Продвижение нити одним числом: отмеченные пункты её работ + содержательные
+    пульсы всех её сессий.
+
+    По контракту v1 работа живёт в Linear, а нити пишут о ней пульсами — поэтому
+    продвижение видно по ``## context`` паспортов: каждая строка
+    ``- <ISO-время> — …`` (акт — тоже такая строка), КРОМЕ механики
+    (:func:`is_mechanical_pulse`). Защита от петли сохраняется: сессия, которая
+    только приняла нить и передала её дальше, ничего не прибавляет.
+
+    Монотонно: работы считаются ВСЕ (и закрытые) — закрытие работы не откат;
+    пульсы — по ВСЕМ сессиям нити, закрытым тоже, а пульсы только дописываются.
     """
     done = 0
     try:
@@ -95,8 +131,8 @@ def count_progress(root: Path, thread_dir: Path) -> int:
             done += int(rec.get("done") or 0)
     except StreamError:
         pass
-    kind = acts.KIND + ":"
-    done += sum(1 for a in acts.read_acts(Path(thread_dir)) if a.text.startswith(kind))
+    done += sum(1 for a in acts.read_acts(Path(thread_dir))
+                if not is_mechanical_pulse(a.text))
     return done
 
 
@@ -197,7 +233,7 @@ def decide(*, origin_chain: Optional[int], origin_mark: Optional[int],
     elif stalled_hop and (origin_chain or 0) >= limit:
         d.spawn, d.reason = False, STOP_STALLED
         d.detail = ("{0} автопередачи подряд без продвижения — ни пунктов работ, "
-                    "ни актов не прибавилось".format(origin_chain))
+                    "ни содержательных пульсов не прибавилось".format(origin_chain))
     return d
 
 
@@ -271,17 +307,19 @@ def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
                  source: str = "",
                  now: Optional[datetime] = None) -> Dict[str, object]:
     """«Нить встала»: артефакт на стол доски + ``$TIDE_ALERT_CMD`` с
-    ``TIDE_ALERT_ROUTE=human``, если задана (:func:`send_alert`).
+    ``TIDE_ALERT_ROUTE=human``, если задана (:func:`send_alert`), + сразу
+    менеджеру ``ao send`` (:func:`tell_manager`) — стоп не молчит, даже когда
+    внешней команды в env нет.
 
     Никогда не падает: сигнал — уведомление, не шаг, от которого зависит передача.
-    Возвращает ``{"artifact": путь|None, "alert": код возврата|None}``.
+    Возвращает ``{"artifact": путь|None, "alert": код|None, "manager": {...}}``.
     """
     tslug = slug.entry_slug(Path(thread_dir).name)
     caption = "нить {0} встала: нужен ты".format(tslug)
     how = ("оффер {0} висит — ▶ на доске или tide pickup {0}, когда разберёшься"
            .format(offer) if offer else "новую сессию не поднимал")
     content = "{0}.\n{1}.".format(detail, how)
-    out: Dict[str, object] = {"artifact": None, "alert": None}
+    out: Dict[str, object] = {"artifact": None, "alert": None, "manager": None}
     try:
         out["artifact"] = _artifact.new_artifact(
             root, caption, "message", content, from_arc=tslug, now=now)
@@ -290,7 +328,58 @@ def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
     text = "{0} — {1}".format(caption, content.replace("\n", " "))
     out["alert"] = send_alert(text, route=ROUTE_HUMAN, source=source or tslug,
                               extra_env={"TIDE_ALERT_THREAD": tslug})
+    out["manager"] = tell_manager(stall_manager_text(
+        Path(root).name, tslug, detail, offer=offer))
     return out
+
+
+def stall_manager_text(project: str, thread: str, detail: str, *,
+                       offer: str = "") -> str:
+    """Менеджеру: какая нить встала, почему, номер оффера и команда подъёма."""
+    head = "tide: нить {0}/{1} встала, новую сессию не поднял. Почему: {2}.".format(
+        project, thread, (detail or "").rstrip("."))
+    if offer:
+        return "{0} Оффер {1} висит; подъём: tide pickup {1}".format(head, offer)
+    return head + " Оффера нет."
+
+
+def _ao_send(handle: str, text: str) -> Optional[int]:
+    """``ao send --session <handle> --message <text>`` → код возврата.
+
+    Бинарь — тот же, что у адаптера AO (:func:`tide.adapters.ao.ao_bin`,
+    ``$TIDE_AO_BIN``). None — ao не установлен; -1 — не запустилась.
+    Никогда не падает."""
+    from ..adapters import ao as _ao
+
+    if not _ao.ao_available():
+        return None
+    exe = _ao.ao_bin()
+    try:
+        proc = subprocess.run([exe, "send", "--session", handle, "--message", text],
+                              capture_output=True, text=True, timeout=60)
+        return proc.returncode
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return -1
+
+
+def tell_manager(text: str) -> Dict[str, object]:
+    """Написать менеджеру (адрес — :func:`tide.whois.manager`, как ``tide whois
+    manager``) через ``ao send``. Нет менеджера или ao — тихо пропускаем.
+
+    → ``{"to": ao-id|None, "code": код|None}``. Никогда не падает."""
+    try:
+        from .. import whois
+        rec = whois.manager()
+    except Exception:  # noqa: BLE001 — no address is a skip, not a failure
+        rec = {}
+    handle = str(rec.get("ao_session") or "").strip()
+    if not handle:
+        return {"to": None, "code": None}
+    try:
+        code = _ao_send(handle, text)
+    except Exception:  # noqa: BLE001
+        code = -1
+    return {"to": handle, "code": code}
 
 
 def send_alert(text: str, *, route: str, source: str = "",
@@ -413,4 +502,5 @@ def render_dry_run(res: AutoResult) -> str:
 __all__ = ["AUTO_CHAIN_FIELD", "AutoHandoffError", "AutoResult", "CHAIN_LIMIT",
            "Decision", "HANDED_OFF_FIELD", "PROGRESS_MARK_FIELD", "build_auto_seed",
            "count_progress", "decide", "decide_for", "open_items", "open_questions",
-           "layers_warning", "render_dry_run", "run_auto", "send_alert", "signal_stall"]
+           "is_mechanical_pulse", "layers_warning", "render_dry_run", "run_auto",
+           "send_alert", "signal_stall", "stall_manager_text", "tell_manager"]

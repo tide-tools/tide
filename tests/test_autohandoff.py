@@ -298,14 +298,16 @@ def test_decide_three_branches():
     assert "что выбрать" in asked.detail
 
 
-def test_progress_counts_checked_items_and_acts_not_pulses(world):
+def test_progress_counts_checked_items_acts_and_pulses(world):
+    # контракт v1: работа в Linear, нить пишет о ней пульсами — пульс тоже прогресс
+    # (механика приёма/передачи — нет: tests/test_autohandoff_stall_fix.py)
     from tide import acts, offload
 
     _work(world["proj"], "07", world["thread"].name, "- [x] a\n- [ ] b\n- [x] c\n")
     _work(world["proj"], "08", "other", "- [x] чужое\n")
     offload.write_pulse(world["sess"], note="просто пульс")
     acts.write_act(world["sess"], "сделал шаг", proof="тест")
-    assert ah.count_progress(world["proj"], world["thread"]) == 3
+    assert ah.count_progress(world["proj"], world["thread"]) == 4
 
 
 def test_open_questions_only_new_and_only_this_thread(world):
@@ -383,7 +385,8 @@ def test_auto_spawns_and_successor_inherits_chain(world, monkeypatch, capsys):
         rec["arc"].split("/", 1)[1]
     pp = born / "arc.md"
     assert fields.read_field(pp, ah.AUTO_CHAIN_FIELD) == "1"
-    assert fields.read_field(pp, ah.PROGRESS_MARK_FIELD) == "1"
+    # отмеченный пункт работы + пульс «собрал хук» (пульс — тоже продвижение)
+    assert fields.read_field(pp, ah.PROGRESS_MARK_FIELD) == "2"
     seed = (born / "input" / "handoff-seed.md").read_text(encoding="utf-8")
     assert "пишу тесты сторожа" in seed and "последняя реплика Гриши" in seed
     assert fields.read_field(world["sess"] / "arc.md", ah.HANDED_OFF_FIELD)
