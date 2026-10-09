@@ -2,6 +2,8 @@
 
 F44 — хук порога даёт готовый шаблон пульса ПЕРЕДАЧА, ``handoff --auto`` без
 свежей ПЕРЕДАЧИ предупреждает (``--strict`` — отказывает).
+F53 — ``tide thread layer <нить> --expect … --where … --exp …``: голова вписывает
+слои нити командой, без записи файлов руками.
 
 Всё на временных каталогах (фикстура ``world`` из test_autohandoff): ни настоящих
 AO-сессий, ни ao send, ни Telegram.
@@ -14,8 +16,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from tide import cli, fields, handoff_contract, handoff_queue as hq, offload
+from tide.arc import stream, thread_layers as tl
 from tide.hooks import context_watch as cw, role_gate
-from tide.launcher import autohandoff as ah
+from tide.launcher import autohandoff as ah, seed_draft
 from tests.test_autohandoff import SID, _payload, world  # noqa: F401 — фикстура
 
 
@@ -44,8 +47,9 @@ def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
     r = cw.watch_reason(world["proj"], _payload(world, 203_000))
     assert r
     i_pass = r.index('tide offload seam/s1 "ПЕРЕДАЧА. Где мы:')
+    i_layer = r.index("tide thread layer seam --expect")
     i_auto = r.index(cw.AUTO_CMD)
-    assert i_pass < i_auto
+    assert i_pass < i_layer < i_auto
     for label in ("Ожидание Гриши: «…» (tg N)", "Ждёт Гришу:", "В полёте:", "Хвосты:",
                   "Решения:", "Опыт:", "Карта: <путь> — зачем"):
         assert label in r
@@ -56,14 +60,14 @@ def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
 def test_hard_and_alarm_hooks_give_the_same_template(world, tokens, word):
     r = cw.watch_reason(world["proj"], _payload(world, tokens))
     assert word in r and ah.pass_template(world["sess"]) in r
-    assert cw.AUTO_CMD in r
+    assert "tide thread layer seam" in r and cw.AUTO_CMD in r
 
 
 def test_hook_commands_pass_the_role_gate(world):
     r = cw.watch_reason(world["proj"], _payload(world, 300_000))
     cmds = [ln.strip().lstrip("0123456789. ") for ln in r.splitlines()
             if ln.strip().lstrip("0123456789. ").startswith("tide ")]
-    assert len(cmds) == 2
+    assert len(cmds) == 3
     for c in cmds:
         assert role_gate._bash_refusal(c) is None, c
 
@@ -121,3 +125,48 @@ def test_auto_with_fresh_pass_is_silent(world, monkeypatch, capsys):
     assert cli.main(["handoff", "continue", "--auto", "--dry-run", "--strict"]) == 0
     cap = capsys.readouterr()
     assert "ПЕРЕДАЧА за последние" not in cap.err and "шаблон:" not in cap.out
+
+
+# --- F53: tide thread layer ---------------------------------------------------
+
+def test_thread_layer_cli_fills_exactly_the_seed_layers(world, capsys):
+    thread = world["thread"]
+    assert tl.empty_layers(thread)
+    rc = cli.main(["thread", "layer", "seam", "--expect", "«доска с телефона» (tg 3365)",
+                   "--where", "v2.4 сдана · воркер жив", "--exp", "role-gate режет curl"])
+    assert rc == 0
+    assert tl.empty_layers(thread) == []
+    lays = seed_draft.layers(stream.passport_path(thread).read_text(encoding="utf-8"))
+    assert any("«доска с телефона» (tg 3365)" in ln for ln in seed_draft.layer(lays, "expectation"))
+    assert any("v2.4 сдана" in ln for ln in seed_draft.layer(lays, "where"))
+    assert any("role-gate" in ln for ln in seed_draft.layer(lays, "experience"))
+    assert "заполнены" in capsys.readouterr().out
+    # повтор дописывает, не затирает; заглушек нет
+    cli.main(["thread", "layer", "seam", "--expect", "второе слово"])
+    text = stream.passport_path(thread).read_text(encoding="utf-8")
+    body = text.partition("### ожидание Гриши")[2].partition("###")[0]
+    assert "(tg 3365)" in body and "второе слово" in body and "<" not in body
+
+
+def test_thread_layer_on_thread_without_skeleton(world):
+    pp = stream.passport_path(world["thread"])
+    head = pp.read_text(encoding="utf-8").partition("## where we are")[0]
+    pp.write_text(head.rstrip() + "\n\n## where we are\n<the live state>\n\n## tail\nx\n",
+                  encoding="utf-8")
+    assert tl.write_layers(pp, {"where": "шаг 2"}) == ["где мы"]
+    text = pp.read_text(encoding="utf-8")
+    assert "## tail\nx" in text and "шаг 2" in text
+    assert tl.empty_layers(world["thread"]) == ["ожидание Гриши", "опыт"]
+
+
+def test_thread_layer_needs_a_value(world):
+    with pytest.raises(tl.LayersError, match="tide thread layer seam"):
+        cli_args = type("A", (), {"target": "seam", "layer_expect": None,
+                                  "layer_where": " ", "layer_exp": None})()
+        tl.cmd_layer(cli_args)
+
+
+def test_layers_warning_names_the_layer_command(world):
+    w = tl.exit_warning(world["thread"])
+    assert "tide thread layer seam --expect" in w
+    assert role_gate._bash_refusal(tl.layer_cmd("seam")) is None

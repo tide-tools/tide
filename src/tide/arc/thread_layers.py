@@ -7,14 +7,18 @@
 * :func:`empty_layers` / :func:`exit_warning` — какие слои пусты; ``tide handoff``
   (и ``--auto``) предупреждает, но НЕ блокирует передачу: нить с пустыми слоями
   всё равно лучше передать, чем застрять.
+* :func:`write_layers` / ``tide thread layer <нить> --expect … --where … --exp …`` —
+  вписать слои командой: голове role-gate писать файлы запрещает, а CLI tide ей
+  разрешён (SOC-101 F53).
 * :func:`seed_skeleton` — досевает пустой каркас недостающих слоёв в goal-файл
   старой нити, не трогая остальное (``tide thread layers --seed-skeleton <нить>``).
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .. import handoff_contract as contract, io as _io, paths, resolve
 from . import stream as _stream
@@ -61,16 +65,91 @@ def empty_layers(thread_dir: Path) -> List[str]:
             if not any(h.startswith(contract.name(key).lower()) for h in live)]
 
 
+# Флаги ``tide thread layer`` → ключ слоя контракта (SOC-101 F53).
+LAYER_FLAGS = (("expect", "expectation"), ("where", "where"), ("exp", "experience"))
+
+
+def layer_cmd(thread: str) -> str:
+    """Готовая команда, которой голова (ей role-gate запрещает писать файлы) вписывает
+    слои нити: ``tide thread layer <нить> --expect "…" --where "…" --exp "…"``."""
+    return ('tide thread layer {0} --expect "<чего ждёт Гриша — его словами, tg N>" '
+            '--where "<сделано · идёт · ждёт Гришу>" --exp "<грабли, отвергнутое>"'
+            .format(thread))
+
+
 def exit_warning(thread_dir: Path) -> Optional[str]:
     """Предупреждение на передаче, когда слои нити пусты (None — все заполнены)."""
     empty = empty_layers(thread_dir)
     if not empty:
         return None
     goal = _stream.passport_path(Path(thread_dir))
+    from .. import slug as _slug
     return ("tide: слои нити пусты — {0} ({1}, ## where we are). Новая сессия не узнает "
-            "их из сида: впиши их до передачи словами Гриши, с датой. Каркаса нет — "
-            "tide thread layers --seed-skeleton {2}. Передачу не останавливаю.".format(
-                ", ".join("«{0}»".format(n) for n in empty), goal, Path(thread_dir).name))
+            "их из сида: впиши их до передачи словами Гриши — командой (файлы руками "
+            "не нужны, голове она разрешена):\n  {2}\nКаркас слоёв она досеет сама (только "
+            "каркас — tide thread layers --seed-skeleton {3}). Передачу не "
+            "останавливаю.".format(
+                ", ".join("«{0}»".format(n) for n in empty), goal,
+                layer_cmd(_slug.entry_slug(Path(thread_dir).name)), Path(thread_dir).name))
+
+
+def write_layers(goal_path: Path, values: Dict[str, str], *,
+                 now: Optional[datetime] = None) -> List[str]:
+    """Вписать строки в слои ``## where we are`` goal-файла нити (SOC-101 F53).
+
+    *values* — ``{ключ слоя контракта: текст}`` (``expectation`` / ``where`` /
+    ``experience``). Каркаса нет — досевается (:func:`seed_skeleton`). Строка
+    ``- ДД.ММ ЧЧ:ММ — текст`` встаёт в конец слоя, заглушка ``<…>`` слоя уходит,
+    живые строки остаются. Ровно те секции, что читают :func:`empty_layers` и
+    сборщик сида. Вернуть имена слоёв, куда вписано."""
+    goal_path = Path(goal_path)
+    values = {k: " ".join(str(v or "").split()) for k, v in values.items()}
+    values = {k: v for k, v in values.items() if v}
+    if not values:
+        return []
+    seed_skeleton(goal_path)
+    lines = goal_path.read_text(encoding="utf-8").splitlines()
+    stamp = (now or datetime.now()).strftime("%d.%m %H:%M")
+    done: List[str] = []
+    for key, _ph in contract.THREAD_LAYERS:
+        if key not in values:
+            continue
+        want = contract.name(key).lower()
+        start, end = _where_span(lines)
+        head = next((i for i in range(start, end) if lines[i].startswith("### ")
+                     and lines[i][4:].strip().lower().startswith(want)), -1)
+        if head < 0:
+            continue
+        stop = next((j for j in range(head + 1, end) if lines[j].startswith("### ")), end)
+        body = [ln for ln in lines[head + 1:stop] if not ln.strip().startswith("<")]
+        while body and not body[-1].strip():
+            body.pop()
+        while body and not body[0].strip():
+            body.pop(0)
+        body.append("- {0} — {1}".format(stamp, values[key]))
+        tail = [""] if stop < len(lines) else []
+        lines = lines[:head + 1] + body + tail + lines[stop:]
+        done.append(contract.name(key))
+    _io.atomic_write(goal_path, "\n".join(lines).rstrip("\n") + "\n")
+    return done
+
+
+def cmd_layer(args) -> int:
+    """``tide thread layer <нить> --expect "…" --where "…" --exp "…"``."""
+    target = (getattr(args, "target", None) or "").strip()
+    values = {key: getattr(args, "layer_" + flag, None) or ""
+              for flag, key in LAYER_FLAGS}
+    if not target or not any(v.strip() for v in values.values()):
+        raise LayersError("thread layer: назови нить и хотя бы один слой — " +
+                          layer_cmd(target or "<нить>"))
+    entry = thread_entry(paths.require_tide_root(), target)
+    goal = _stream.passport_path(entry)
+    done = write_layers(goal, values)
+    print("tide: {0} — вписано: {1}".format(goal, ", ".join(done) or "ничего"))
+    empty = empty_layers(entry)
+    print("tide: слои нити {0}: {1}".format(
+        entry.name, "пусты — " + ", ".join(empty) if empty else "заполнены"))
+    return 0
 
 
 def seed_skeleton(goal_path: Path) -> List[str]:
@@ -133,5 +212,5 @@ def cmd_layers(args) -> int:
     return 0
 
 
-__all__ = ["LayersError", "cmd_layers", "empty_layers", "exit_warning", "seed_skeleton",
-           "thread_entry"]
+__all__ = ["LAYER_FLAGS", "LayersError", "cmd_layer", "cmd_layers", "empty_layers",
+           "exit_warning", "layer_cmd", "seed_skeleton", "thread_entry", "write_layers"]

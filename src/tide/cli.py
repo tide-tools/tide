@@ -456,13 +456,24 @@ def _register_thread_layers(sub) -> None:
         return
     p.add_argument("--seed-skeleton", action="store_true", dest="seed_skeleton",
                    help="with `layers`: add the empty three-layer scaffold to the goal file")
+    # SOC-101 F53: `tide thread layer <нить> --expect … --where … --exp …` — голова
+    # вписывает слои командой (role-gate запрещает ей писать файлы, tide — можно).
+    p.add_argument("--expect", dest="layer_expect", default=None,
+                   help="with `layer`: line for «ожидание Гриши» (his words, tg N)")
+    p.add_argument("--where", dest="layer_where", default=None,
+                   help="with `layer`: line for «где мы» (done · going · waits for Гриша)")
+    p.add_argument("--exp", dest="layer_exp", default=None,
+                   help="with `layer`: line for «опыт» (rakes, loops, rejected)")
     prev = p.get_default("func")
 
     def _dispatch(args) -> int:
-        if getattr(args, "ref", None) != "layers":
+        ref = getattr(args, "ref", None)
+        if ref not in ("layers", "layer"):
             return prev(args)
         from .arc import thread_layers
 
+        if ref == "layer":
+            return thread_layers.cmd_layer(args)
         return thread_layers.cmd_layers(args)
 
     p.set_defaults(func=_dispatch)

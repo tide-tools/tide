@@ -91,14 +91,26 @@ def _offload_cmd(entry: Path) -> str:
             "\"<что сделал>\"".format(_ref(entry)))
 
 
+def _layer_cmd(entry: Path) -> str:
+    """Шаг слоёв нити (SOC-101 F53): голове писать файлы нельзя, CLI — можно."""
+    from ..arc import thread_layers
+
+    return thread_layers.layer_cmd(slug.entry_slug(entry.parent.parent.name))
+
+
 def handoff_steps(entry: Path) -> str:
-    """Шаги передачи (SOC-101 F44): пульс ПЕРЕДАЧА со всеми метками, автопередача. Без ПЕРЕДАЧИ сид собирается без карты, ожидания Гриши, «ждёт
+    """Три шага передачи (SOC-101 F44): пульс ПЕРЕДАЧА со всеми метками, слои нити,
+    автопередача. Без ПЕРЕДАЧИ сид собирается без карты, ожидания Гриши, «ждёт
     Гришу», «в полёте» и хвостов — поэтому шаблон готовый, а не «<что сделал>»."""
     from ..launcher import autohandoff
 
     return ("  1. пульс ПЕРЕДАЧА — заполни каждую метку (нечего — «нет»):\n"
             "     {0}\n"
-            "  2. {1}").format(autohandoff.pass_template(entry), AUTO_CMD)
+            "  2. слои нити (ожидание Гриши словами Гриши с датой · где мы · опыт), если "
+            "пусты:\n"
+            "     {1}\n"
+            "  3. {2}").format(autohandoff.pass_template(entry), _layer_cmd(entry),
+                              AUTO_CMD)
 
 
 def soft_text(entry: Path, tokens: int, soft: int, hard: int) -> str:
