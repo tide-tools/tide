@@ -26,6 +26,9 @@ DOMAIN = {
     "health", "harness", "lookback", "ledger", "roster",
     # domain data that lives in .tide/ even though the module sits top-level:
     "canon", "contract", "gate", "readme", "strictness",
+    # who to message (manager / thread holder) — reads roster, registry, the chain;
+    # the launcher and the hooks both resolve addressees through it (SOC-101)
+    "whois",
 }
 API = {"api"}
 LAUNCH = {"launcher", "adapters"}
