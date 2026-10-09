@@ -220,3 +220,10 @@ def test_pult_log_notice_rows_are_dropped(live, tmp_path, monkeypatch):
     from tide import fields
     fields.set_field(stream.passport_path(live["thread"]), dialog.LOG_FIELD, str(log))
     assert [ln.rsplit(" · ", 1)[1] for ln in dialog.tail(live["thread"])] == ["привет"]
+
+
+def test_pass_label_is_the_start_of_the_note_not_a_word_in_it():
+    pulse = ["- 2026-10-09T07:12:04 — справки: передача работы 117 фактов",
+             "- 2026-10-09T07:30:18 — ПЕРЕДАЧА. всё", "- 2026-10-09T07:31:00 — последний"]
+    assert not seed_draft.is_protected_pulse(pulse, 0)
+    assert seed_draft.is_protected_pulse(pulse, 1) and seed_draft.is_protected_pulse(pulse, 2)

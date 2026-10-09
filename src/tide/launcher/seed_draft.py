@@ -341,13 +341,16 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
     return lines
 
 
-_PASS_RE = re.compile(r"\bпередача\b", re.IGNORECASE)
+# Метка «ПЕРЕДАЧА» — начало ноты пульса (после штампа), а не слово в тексте:
+# «передача работы 117 фактов» — обычный пульс.
+_PASS_RE = re.compile(r"^-?\s*(?:\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*|\d{2}:\d{2}\s*[—-]\s*)?"
+                      r"ПЕРЕДАЧА\b", re.IGNORECASE)
 
 
 def is_protected_pulse(pulse: Sequence[str], i: int) -> bool:
     """Пульс, который не режется никогда (SOC-101 F24/F16): последний перед
     передачей и любой с меткой «ПЕРЕДАЧА» — это кураторский текст, а не журнал."""
-    return i == len(pulse) - 1 or bool(_PASS_RE.search(pulse[i]))
+    return i == len(pulse) - 1 or bool(_PASS_RE.match(pulse[i].strip()))
 
 
 def raw_pulse_chars(context: Sequence[str], tail: int = PULSE_TAIL, clip: int = 0) -> int:
@@ -621,7 +624,7 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         out[LINEAR] = block_links(render_draft(out, header=header))
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
-                          if not _PASS_RE.search(ln)) - share * len(text)
+                          if not _PASS_RE.match(ln.strip())) - share * len(text)
         if over <= 0 or budget == 0:
             break
         budget = max(0, budget - int(over) - 1)
