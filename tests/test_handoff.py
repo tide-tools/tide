@@ -525,3 +525,53 @@ def test_run_handoff_born_session_is_titled_thread_and_number(tmp_project, monke
     want = "{0} — ao-and-order · 03".format(tmp_project.name)
     assert fields.read_field(born / "arc.md", "title") == want
     assert entry.name.endswith("@ao-and-order")
+
+
+# --- F13 (SOC-101): новая нить помнит нить-предшественницу ---------------------
+
+def _origin(tmp_project, sid="sid-origin"):
+    from tide import fields
+    stream.new_thread(tmp_project, "old", goal="старая нить")
+    sess = stream.new_session(tmp_project, "old", "head")
+    fields.set_field(sess / "arc.md", "claude-session", sid)
+    return sess
+
+
+def test_handoff_new_stamps_from_on_the_new_thread(tmp_project, monkeypatch, tmp_path):
+    from tide import fields
+    from tide.launcher import seed_draft
+
+    _queue_home(monkeypatch, tmp_path)
+    origin = _origin(tmp_project)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-origin")
+    fresh = stream.new_thread(tmp_project, "fresh", goal="новая нить")
+    handoff.run_handoff(tmp_project, arc_ref="fresh", mode="new", summary="# d\n\nX\n")
+    want = "{0}/{1}".format(origin.parents[1].name, origin.name)
+    assert fields.read_field(stream.passport_path(fresh), "from") == want
+    assert seed_draft.predecessor_thread(tmp_project, fresh) == origin.parents[1]
+
+
+def test_handoff_new_explicit_from_session_wins_and_live_from_kept(
+        tmp_project, monkeypatch, tmp_path):
+    from tide import fields
+
+    _queue_home(monkeypatch, tmp_path)
+    origin = _origin(tmp_project)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "nobody")
+    fresh = stream.new_thread(tmp_project, "fresh", goal="новая нить")
+    handoff.run_handoff(tmp_project, arc_ref="fresh", mode="new", summary="# d\n\nX\n",
+                        from_session="sid-origin")
+    assert fields.read_field(stream.passport_path(fresh), "from").endswith(origin.name)
+    # живой from: не переписывается; continue его не ставит вовсе
+    assert handoff.link_predecessor_thread(tmp_project, fresh, ("sid-origin",)) is None
+
+
+def test_handoff_continue_does_not_stamp_thread_from(tmp_project, monkeypatch, tmp_path):
+    from tide import fields
+
+    _queue_home(monkeypatch, tmp_path)
+    _origin(tmp_project)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-origin")
+    t = stream.new_thread(tmp_project, "cont2", goal="g")
+    handoff.run_handoff(tmp_project, arc_ref="cont2", mode="continue", summary="# d\n")
+    assert not fields.read_field(stream.passport_path(t), "from")

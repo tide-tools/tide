@@ -1336,6 +1336,9 @@ def spark(
 
     if new_thread and not dry_run:
         thread_entry = stream.new_thread(project, new_thread, goal=goal)
+        # F13: нить, рождённая из сессии, помнит предшественницу (from: нити)
+        from .handoff import _caller_sid, link_predecessor_thread
+        link_predecessor_thread(project, thread_entry, (_caller_sid(),))
     elif new_thread:
         thread_entry = None  # dry-run чист (cand 98): нить НЕ рождается
     elif thread:

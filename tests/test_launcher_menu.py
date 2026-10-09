@@ -728,6 +728,23 @@ def test_spark_new_thread_creates_pins_and_registers(home_with_project):
     assert sid in reg and reg[sid]["handle"] == "stub"
 
 
+def test_spark_new_thread_stamps_from_on_predecessor(home_with_project, monkeypatch):
+    """F13 (SOC-101): спарк новой нити из сессии — from: нити на её нить."""
+    home, proj = home_with_project
+    from tide import fields
+    from tide.arc import stream
+
+    stream.new_thread(proj, "parent", goal="родитель")
+    origin = stream.new_session(proj, "parent", "head")
+    fields.set_field(origin / "arc.md", "claude-session", "sid-parent")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-parent")
+    assert menu.spark(home, _spark_entry(home, proj), new_thread="child",
+                      goal="ребёнок", adapter=_OkAdapter()).ok
+    child = next(t for t in stream.thread_entries(proj) if "child" in t.name)
+    assert fields.read_field(stream.passport_path(child), "from") == "{0}/{1}".format(
+        origin.parents[1].name, origin.name)
+
+
 def test_spark_existing_thread_adds_a_session(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream

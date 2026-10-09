@@ -366,6 +366,53 @@ def _origin_sid(stream_mod, owner_root: Path, thread_slug: str, given: str) -> s
         return given
 
 
+def link_predecessor_thread(owner_root: Path, thread_entry: Path,
+                            origins: "tuple" = ()) -> Optional[str]:
+    """F13 (SOC-101): новая нить помнит, из какой выросла — ``from:`` в паспорте
+    нити = ``<нить-предшественница>/<сессия>`` той сессии, что её родила.
+
+    *origins* — кандидаты в родившую сессию по порядку: явный ``--from-session``
+    (sid или имя арки), потом ``$CLAUDE_CODE_SESSION_ID`` вызывателя. Первая
+    найденная в этом проекте сессия ДРУГОЙ нити и становится предшественницей;
+    живой ``from:`` нити не переписывается. Сид его уже читает
+    (:func:`tide.launcher.seed_draft.predecessor_thread`). → записанное значение
+    или None. Никогда не роняет хендофф."""
+    try:
+        from .. import fields, offload, resolve
+        from ..arc import stream as _stream
+
+        passport = _stream.passport_path(thread_entry)
+        have = (fields.read_field(passport, "from") or "").strip()
+        if have and have != "-" and not have.startswith("<"):
+            return None
+        for ref in origins:
+            ref = (ref or "").strip()
+            if not ref:
+                continue
+            sess = offload.find_session_by_claude_id(owner_root, ref)
+            if sess is None:
+                try:
+                    sess = resolve.find_session(owner_root, ref)
+                except Exception:  # noqa: BLE001 — неоднозначно/нет: следующий
+                    sess = None
+            if sess is None:
+                continue
+            pred = sess.parents[1]
+            if pred.resolve() == Path(thread_entry).resolve():
+                continue
+            value = "{0}/{1}".format(pred.name, sess.name)
+            fields.set_field(passport, "from", value)
+            return value
+    except Exception:  # noqa: BLE001 — родословная не смеет сорвать хендофф
+        return None
+    return None
+
+
+def _caller_sid() -> str:
+    import os
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+
 def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
     """The ``claude-session`` id of the thread's current holder (newest session), or None.
 
@@ -501,6 +548,8 @@ def run_handoff(
         entry = resolve_open_entry(owner_root, arc_ref)
         if entry is not None and _stream.is_thread(entry):
             tslug = slug.entry_slug(entry.name)
+            if mode == FORK_NEW:  # F13: новая нить — from: на нить-предшественницу
+                link_predecessor_thread(owner_root, entry, (from_session, _caller_sid()))
             # Origin id for the multiples detector: auto-fill from the thread's
             # current holder when the caller didn't pass it (cand 78). Explicit
             # --from-session still wins — normalised to a sid when it names an arc
