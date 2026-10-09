@@ -331,3 +331,66 @@ def test_not_taken_new_never_closes_old(pair, tmp_path):
     v = ac.verdict(pair, rec, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
                    session_of=lambda h: {"isTerminated": False})
     assert v["close"] is False and "нет taken-at" in v["why"]
+
+
+# --- SOC-143: промежуточный итог сабагента = воркер жив ------------------------------
+
+INTERIM = ("<task-notification>\n<task-id>a320</task-id>\n<tool-use-id>tu1</tool-use-id>\n"
+           "<status>completed</status>\n<summary>Agent \"полный pytest\" finished</summary>\n"
+           "<note>This agent stopped with background work of its own still running. It may "
+           "resume on its own when that work completes or reports, and the same task-id "
+           "notifies again if it does; the result below may be interim.</note>\n"
+           "<result>Прогон идёт, жду уведомления.</result>\n</task-notification>")
+FINAL = ("<task-notification>\n<task-id>a320</task-id>\n<tool-use-id>tu1</tool-use-id>\n"
+         "<status>completed</status>\n<summary>Agent \"полный pytest\" finished</summary>\n"
+         "<result>2000 passed</result>\n</task-notification>")
+
+
+def _interim_transcript(tmp_path, *tail) -> Path:
+    t0 = NOW - timedelta(hours=1)
+    rows = [
+        _row("assistant", t0, [{"type": "tool_use", "id": "tu1", "name": "Agent",
+                                "input": {"description": "полный pytest"}}]),
+        _row("user", t0, [{"type": "tool_result", "tool_use_id": "tu1",
+                           "content": "Async agent launched. agentId: a320"}]),
+        _row("user", NOW - timedelta(minutes=40), INTERIM),
+        # старая переслала промежуточное новой — это не итог
+        _row("assistant", NOW - timedelta(minutes=30), [{
+            "type": "tool_use", "id": "f1", "name": "Bash",
+            "input": {"command": "ao send --session new-9 'pytest идёт'"}}]),
+    ] + list(tail)
+    p = tmp_path / "interim.jsonl"
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+def test_interim_notification_means_worker_alive(pair, tmp_path):
+    tr = _interim_transcript(tmp_path)
+    assert ac.interim_workers(tr) == ['a320 «Agent "полный pytest" finished»']
+    kills = []
+    res = ac.sweep(pair, now=NOW, transcript_of=lambda sid: tr,
+                   session_of=lambda h: {"isTerminated": False},
+                   kill=kills.append, alert=lambda *a: None, say=lambda *a: True)
+    assert not kills and res[0]["close"] is False
+    assert "не сдали итог" in res[0]["why"] and "a320" in res[0]["why"]
+
+
+def test_final_after_interim_needs_forward(pair, tmp_path):
+    tr = _interim_transcript(tmp_path, _row("user", NOW - timedelta(minutes=20), FINAL))
+    assert ac.interim_workers(tr) == []
+    v = _v(pair, tr)
+    assert v["close"] is False and "не пересланы" in v["why"]
+    tr = _interim_transcript(tmp_path, _row("user", NOW - timedelta(minutes=20), FINAL),
+                             _row("assistant", NOW - timedelta(minutes=10), [{
+                                 "type": "tool_use", "id": "f2", "name": "Bash",
+                                 "input": {"command": "ao send --session new-9 '2000 passed'"}}]))
+    assert _v(pair, tr)["close"] is True
+
+
+def test_sendmessage_after_final_revives_worker(tmp_path):
+    tr = _interim_transcript(
+        tmp_path, _row("user", NOW - timedelta(minutes=20), FINAL),
+        _row("assistant", NOW - timedelta(minutes=15), [{
+            "type": "tool_use", "id": "s1", "name": "SendMessage",
+            "input": {"to": "a320", "message": "ещё прогон"}}]))
+    assert ac.interim_workers(tr) == ["a320 «возобновлён письмом после итога»"]

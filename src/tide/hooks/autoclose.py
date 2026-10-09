@@ -14,6 +14,9 @@
 * новая — принявшая этот оффер (``taken-by``), её AO-сессия известна и жива;
 * в транскрипте старой нет живых фоновых воркеров — тот же признак, что у блока
   сида «в работе прямо сейчас» (:func:`tide.launcher.seed_draft.background_workers`);
+  и ни один сабагент не сдал лишь промежуточный итог — последнее уведомление
+  «background work of its own still running … may be interim» или письмо ему после
+  итога = воркер жив (:func:`interim_workers`, SOC-143);
 * каждый итог воркера, пришедший старой после передачи (``<task-notification>``),
   она потом переслала новой — ход старой, где назван AO-id новой (``ao send``,
   SendMessage); и в ``state/forward-pending.jsonl`` нет писем этой пары;
@@ -147,6 +150,50 @@ def unforwarded_results(transcript: Path, since: datetime, new_ao) -> List[str]:
     return ["{0} «{1}»".format(at.strftime("%H:%M"), what) for at, what in pending]
 
 
+_INTERIM = ("background work of its own still running", "may be interim",
+            "notifies again")
+
+
+def interim_workers(transcript: Path) -> List[str]:
+    """Сабагенты, чей ПОСЛЕДНИЙ ``<task-notification>`` промежуточный (SOC-143):
+    «stopped with background work of its own still running … result below may be
+    interim» — воркер ещё гоняет своё (полный pytest), итог впереди. Сюда же —
+    сабагент, которому старая написала SendMessage после его последнего уведомления
+    (возобновлён, итога ещё нет). ``background_workers`` считает концом любое
+    уведомление — этого мало. → ``["agentId «summary»", …]``."""
+    import re
+
+    notif = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+    tid_re = re.compile(r"<task-id>\s*([^<\s]+)\s*</task-id>")
+    summ = re.compile(r"<summary>(.*?)</summary>", re.S)
+    state: Dict[str, tuple] = {}  # agentId → (живой?, подпись)
+    for row in _rows(transcript):
+        if row.get("type") == "assistant":
+            for b in (row.get("message") or {}).get("content") or []:
+                if (isinstance(b, dict) and b.get("type") == "tool_use"
+                        and b.get("name") == "SendMessage"):
+                    to = str((b.get("input") or {}).get("to") or "")
+                    if to in state:
+                        state[to] = (True, "возобновлён письмом после итога")
+            continue
+        if row.get("type") not in ("user", "attachment"):
+            continue
+        blob = json.dumps(row.get("message") or row.get("attachment") or {},
+                          ensure_ascii=False)
+        if "task-notification" not in blob:
+            continue
+        text = blob.replace("\\n", "\n").replace('\\"', '"')
+        for m in notif.finditer(text):
+            body = m.group(1)
+            t = tid_re.search(body)
+            if not t:
+                continue
+            s_ = summ.search(body)
+            what = " ".join((s_.group(1) if s_ else "итог воркера").split())[:80]
+            state[t.group(1)] = (any(k in body for k in _INTERIM), what)
+    return ["{0} «{1}»".format(a, w) for a, (live, w) in state.items() if live]
+
+
 def last_activity(transcript: Path) -> Optional[datetime]:
     last = None
     for row in _rows(transcript):
@@ -255,6 +302,10 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     if live:
         return no("воркеры старой живы ({0}): {1} — жду".format(
             len(live), "; ".join(ln.lstrip("- ").split(" — ", 1)[0] for ln in live[:3])))
+    interim = interim_workers(tr)
+    if interim:
+        return no("воркеры старой не сдали итог (промежуточный/возобновлён) ({0}): {1} — "
+                  "жду".format(len(interim), "; ".join(interim[:3])))
     raised = _parse_iso(rec.get("raised_at"))
     since = min(t for t in (taken, raised) if t is not None)
     left = unforwarded_results(tr, since, forward_to)
@@ -449,5 +500,5 @@ def register_autoclose(hsub) -> None:
     ap.set_defaults(func=cmd_autoclose, _cmd="handoffs autoclose")
 
 
-__all__ = ["ENV", "LOG", "candidates", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
+__all__ = ["ENV", "LOG", "candidates", "interim_workers", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
            "register_autoclose", "render", "sweep", "unforwarded_results", "verdict"]
