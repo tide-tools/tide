@@ -1692,6 +1692,102 @@ def topic_pointer(root: Path, thread_entry: Path) -> str:
     return "- топик: " + " · ".join(parts)
 
 
+# F55 (SOC-101): указатель на топик — не ответ. Холодная сессия файлы не читает, и
+# «чего ждёт Гриша» по топику ей неоткуда взять. Под строкой «топик:» печатаем
+# дословно «Гриша ждёт» и «дальше» страницы + дату её правки (видно, если отстала).
+# Префикс «топик:» — чтобы строки шли за указателем, где бы его ни переставили
+# (autohandoff уносит «топик:» в конец карты), и не наследовались из прошлого сида.
+TOPIC_MARK = "топик:"
+TOPIC_DIGEST_LINES = 8   # строк на один топик, вместе со строкой даты
+TOPIC_CLIP = 220
+_TOPIC_WAIT_HEAD = re.compile(r"(?i)жд[её]т\s+гриша|гриша\s+жд[её]т")
+_TOPIC_WAIT_LINE = re.compile(r"(?i)^\s*[-*]?\s*гриша\s+жд[её]т\s*:\s*(.+)$")
+_TOPIC_NEXT_FIELD = re.compile(r"(?i)^(?:что\s+)?дальше\s*:\s*(.*)$")
+_TOPIC_NEXT_HEAD = re.compile(r"(?i)^##\s+(?:что\s+)?дальше\b")
+_TOPIC_FIELD = re.compile(r"^[^\s:#][^:]{0,30}:(?:\s|$)")
+
+
+def _clip(text: str, n: int = TOPIC_CLIP) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+
+
+def topic_waits(text: str) -> List[str]:
+    """«Гриша ждёт» страницы: строки «Гриша ждёт: …» где угодно, иначе пункты
+    секции, чей заголовок про «ждёт Гриша»."""
+    lines = text.splitlines()
+    waits = [m.group(1).strip() for m in map(_TOPIC_WAIT_LINE.match, lines) if m]
+    if waits:
+        return waits
+    out: List[str] = []
+    inside = False
+    for ln in lines:
+        head = _HEAD_RE.match(ln)
+        if head:
+            inside = bool(_TOPIC_WAIT_HEAD.search(head.group(1)))
+            continue
+        if inside and ln.strip():
+            if _TOPIC_FIELD.match(ln):
+                break
+            out.append(ln.strip().lstrip("-* ").strip())
+    return out
+
+
+def topic_next(text: str) -> str:
+    """«дальше» страницы: поле «дальше:» (первая строка) или первая строка секции."""
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        m = _TOPIC_NEXT_FIELD.match(ln)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        if _TOPIC_NEXT_HEAD.match(ln):
+            for nxt in lines[i + 1:]:
+                if _HEAD_RE.match(nxt):
+                    break
+                if nxt.strip():
+                    return nxt.strip().lstrip("-* ").strip()
+    return ""
+
+
+def topic_digest(topic_file: Path) -> List[str]:
+    """До :data:`TOPIC_DIGEST_LINES` строк под указателем «топик:» — дословно."""
+    from datetime import datetime
+
+    f = Path(topic_file)
+    text = _read(f)
+    try:
+        stamp = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        stamp = "?"
+    checked = _topic_field(text, "сверено")
+    out = ["  - {0} {1} — страница правлена {2}{3}".format(
+        TOPIC_MARK, f.parent.name, stamp, ", сверено: " + checked if checked else "")]
+    waits = topic_waits(text)
+    nxt = topic_next(text)
+    room = TOPIC_DIGEST_LINES - 1 - (1 if nxt else 0)
+    if not waits:
+        ask = _topic_field(text, "вопрос")
+        out.append("  - {0} Гриша ждёт — на странице не записано{1}".format(
+            TOPIC_MARK, "; вопрос топика: " + _clip(ask) if ask else ""))
+    else:
+        shown = waits if len(waits) <= room else waits[:room - 1]
+        out += ["  - {0} Гриша ждёт — {1}".format(TOPIC_MARK, _clip(w)) for w in shown]
+        if len(shown) < len(waits):
+            out.append("  - {0} … ещё {1} — в {2}".format(
+                TOPIC_MARK, len(waits) - len(shown), f.resolve()))
+    if nxt:
+        out.append("  - {0} дальше — {1}".format(TOPIC_MARK, _clip(nxt)))
+    return out
+
+
+def topic_block(root: Path, thread_entry: Path) -> List[str]:
+    """Строка «топик:» + дословная выжимка каждой страницы топика (F55)."""
+    lines = [topic_pointer(root, thread_entry)]
+    for f in thread_topics(root, thread_entry):
+        lines += topic_digest(f)
+    return lines
+
+
 # --- входящие поручения из транскрипта передающей сессии (SOC-101 п.10) -----------
 #
 # continuity-audit · 01 → 02 потеряла поручение, пришедшее через ao send / uds после
@@ -2243,7 +2339,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  labels.get("experience", [])
                                                  + layer(lays, "experience")
                                                  + contract.find_body(seed_in, "experience")))
-        + [topic_pointer(root, thread_entry)],
+        + topic_block(root, thread_entry),
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
                          ("прошлого сида", "\n".join(contract.find_body(seed_in, "linear")))],
