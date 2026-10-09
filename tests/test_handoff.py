@@ -215,17 +215,20 @@ def test_cli_handoff_dry_run_smoke(tmp_project, monkeypatch, capsys):
     assert any(p.name.startswith("handoff-") for p in ws.iterdir())
 
 
-def test_cli_handoff_offers_and_notes_retired_flags(tmp_project, monkeypatch, tmp_path, capsys):
+def test_cli_handoff_no_spawn_only_hangs_the_offer(tmp_project, monkeypatch, tmp_path, capsys):
+    # decision 07: the handoff raises the fresh session itself; --no-spawn keeps
+    # the pull model (offer hangs for ▶). Auto-spawn: tests/test_handoff_autospawn.py
     from tide import cli, handoff_queue
 
     home = _queue_home(monkeypatch, tmp_path)
+    monkeypatch.delenv(handoff.NO_SPAWN_ENV, raising=False)
     stream.new_arc(tmp_project, "ship-it")
     monkeypatch.chdir(tmp_project)
     rc = cli.main(["handoff", "ship-it", "--no-spawn"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "offer hung" in out
-    assert "--no-spawn is retired" in out
+    assert "передано в" not in out
     (rec,) = handoff_queue.list_offers(home)
     assert rec["status"] == "offered"
 

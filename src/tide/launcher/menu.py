@@ -1177,9 +1177,19 @@ def cmd_menu(args) -> int:
             return 0
         if nav[0] == HANDOFF_PICK:
             # Picked a handoff → seed-based pickup of its owning project, mark taken.
+            # Same in-flight guard as the board's ▶ (`tide pickup`): an offer the
+            # handoff already raised by itself is focused, never spawned twice.
+            adapter = get_adapter(adapter_name)
+            if not dry_run:
+                from .pickup import in_flight  # lazy: pickup imports menu
+                busy = in_flight(root, nav[1], adapter)
+                if busy is not None:
+                    print("tide: handoff {0} [{1}] {2}".format(
+                        nav[1]["slug"], busy["action"], busy["detail"]))
+                    return 0
             res = launch_handoff(
                 nav[1], all_entries, control_home=root,
-                adapter=get_adapter(adapter_name), role=role,
+                adapter=adapter, role=role,
                 skip_permissions=skip_permissions, dry_run=dry_run,
             )
             flag = "ok" if res.ok else "FAILED"

@@ -504,6 +504,20 @@ def reserve(home: Path, key: str, *, session: str) -> Dict[str, object]:
     return _parse(rec["path"])
 
 
+def unreserve(home: Path, key: str) -> Optional[Dict[str, object]]:
+    """Undo a reservation on a still-OFFERED handoff — back to a plain fresh offer.
+
+    Used when the handoff's own auto-spawn failed: the reservation it made would
+    otherwise read as «поднимается» on the board for the whole TTL, while nothing
+    is coming up. A taken/dropped offer is left alone (returns None)."""
+    rec = _resolve(home, key)
+    if rec["status"] != STATUS_OFFERED:
+        return None
+    _set_field(rec["path"], "pickup-session", "-")
+    _set_field(rec["path"], "reserved-at", "-")
+    return _parse(rec["path"])
+
+
 def confirm_for_session(home: Path, session: str, *,
                         as_session: Optional[str] = None) -> Optional[Dict[str, object]]:
     """Claim the offered handoff RESERVED for *session* (the confirm hook's core).
@@ -588,7 +602,11 @@ def _home() -> Path:
     return paths.control_home()
 
 
-def _cmd_offer(args) -> int:
+def offer_from_args(args) -> Path:
+    """``tide handoffs offer`` minus the exit code: validate, hang, print; → the record.
+
+    The CLI edge reuses it to raise the fresh session right after (the launcher's
+    auto-spawn, decision 07) — the queue itself never spawns (layer rule)."""
     note = " ".join(args.note) if getattr(args, "note", None) else None
     validate_target(_home(), project=args.project, arc=args.arc)
     path = offer(
@@ -597,6 +615,11 @@ def _cmd_offer(args) -> int:
         from_session=getattr(args, "from_session", None), note=note,
     )
     print("tide: handoff offered {0} (status: offered)".format(path.name))
+    return path
+
+
+def _cmd_offer(args) -> int:
+    offer_from_args(args)
     return 0
 
 

@@ -416,10 +416,15 @@ def _register_handoffs(sub) -> None:
     # UserPromptSubmit hook). `tide handoffs` lists what is hanging in the control-home.
     # seed_draft.register_draft adds `draft` — the seven-block seed draft — composed
     # here (edge) because the queue is domain and may not import the launcher.
+    # launcher.handoff.register_offer_spawn teaches `offer` to raise the fresh session
+    # right away (decision 07 handoff-autospawn) — composed here for the same reason.
     from .handoff_queue import register as register_handoffs
+    from .launcher.handoff import register_offer_spawn
     from .launcher.seed_draft import register_draft
 
-    register_draft(register_handoffs(sub))
+    hsub = register_handoffs(sub)
+    register_draft(hsub)
+    register_offer_spawn(hsub)
 
 
 def _register_offload(sub) -> None:

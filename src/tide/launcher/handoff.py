@@ -14,9 +14,15 @@ the control-home queue — the same queue ``tide handoffs`` manages and the
    chat is abandoned.
 3. **hang the offer** — ``continue`` (resume THIS arc) / ``new`` (fresh
    orchestrator to pick a candidate) land a record in the queue
-   (:mod:`tide.handoff_queue`); ``close`` just distils. This command NEVER opens
-   a terminal — the fresh session is pulled from ``tide menu`` (offer → take),
-   which is what keeps one holder per thread (no Mickey-17 multiples).
+   (:mod:`tide.handoff_queue`); ``close`` just distils.
+4. **raise the fresh session** (decision 07 handoff-autospawn) — right after the
+   offer is hung, the CLI runs the SAME door the board's ▶ runs
+   (:func:`tide.launcher.pickup.run_pickup`: reserve → spawn through the resolved
+   adapter, AO in practice). The old session is told it has handed over and
+   stops; the human closes it. One thread — one orchestrator: the offer is
+   reserved for the new session, so a later ▶ only focuses it. A failed spawn
+   leaves the offer plain ``offered`` (reservation undone) for ▶ by hand;
+   ``--no-spawn`` / ``$TIDE_HANDOFF_NO_SPAWN`` keep the old pull-only behaviour.
 
 Two layers as everywhere else: pure functions (``build_summary`` …) are argparse-
 and disk-free and snapshot-testable; :func:`run_handoff` is the disk
@@ -24,8 +30,6 @@ orchestration; :func:`cmd_handoff` is the thin CLI handler wired by ``cli.py``.
 """
 
 from __future__ import annotations
-
-import argparse
 
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -43,6 +47,17 @@ FORK_CONTINUE = "continue"
 FORK_NEW = "new"
 FORK_CLOSE = "close"
 FORK_MODES = (FORK_CONTINUE, FORK_NEW, FORK_CLOSE)
+
+# Opt-out of the auto-spawn (decision 07): set to anything truthy ⇒ pull-only, the
+# offer just hangs for ▶ (same as ``--no-spawn``).
+NO_SPAWN_ENV = "TIDE_HANDOFF_NO_SPAWN"
+
+# The OLD session's identity must not leak into the spawn: inside AO a caller's
+# ``$AO_SESSION_ID`` would make the fresh session look like a child of the one
+# being retired, and claude's own markers make a nested launch refuse to start.
+# The board's ▶ never carried them — the auto-spawn runs exactly as clean.
+_DETACH_ENV = ("AO_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE",
+               "CLAUDE_CODE_ENTRYPOINT")
 
 
 class HandoffError(StreamError):
@@ -204,6 +219,8 @@ class HandoffResult:
     * ``summary_path`` — the workspace file the distil was written to.
     * ``candidate_reminder`` — the backlog reminder text (always computed).
     * ``offer_path`` — the queue record (None for ``close`` and ``dry_run``).
+    * ``spawn`` — the auto-spawn outcome (the ``tide pickup --json`` dict:
+      ``ok``/``action``/``detail``/``handle``/``adapter``); None when not attempted.
     """
 
     mode: str
@@ -211,6 +228,12 @@ class HandoffResult:
     candidate_reminder: str
     offer_path: Optional[Path] = None
     notes: List[str] = field(default_factory=list)
+    spawn: Optional[dict] = None
+
+    @property
+    def handed_over(self) -> bool:
+        """True when the fresh session is up (or already coming up) — the old one stops."""
+        return bool(self.spawn and self.spawn.get("ok"))
 
 
 def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
@@ -361,6 +384,49 @@ def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Op
         return None
 
 
+def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None) -> dict:
+    """Raise the fresh session for offer *key* NOW — the board's ▶, pressed by tide.
+
+    Delegates to :func:`tide.launcher.pickup.run_pickup` (the one door: in-flight
+    guard → reserve → spawn → registry record), so the AO real-sid relink and the
+    first-prompt confirm work exactly as after a hand-pressed ▶. Runs with the old
+    session's identity scrubbed from the environment (:data:`_DETACH_ENV`).
+
+    Never raises. On failure the reservation the attempt made is undone, so the
+    offer is a plain ``offered`` record again — ▶ by hand works as before.
+    """
+    import os
+
+    from .. import handoff_queue
+    from . import pickup
+
+    saved = {k: os.environ.pop(k) for k in _DETACH_ENV if k in os.environ}
+    try:
+        out = pickup.run_pickup(Path(home), key, adapter_name=adapter_name)
+    except Exception as exc:  # noqa: BLE001  a spawn failure must not break the handoff
+        out = {"ok": False, "action": "failed", "detail": str(exc) or type(exc).__name__}
+    finally:
+        os.environ.update(saved)
+    if not out.get("ok"):
+        try:
+            handoff_queue.unreserve(Path(home), key)
+        except Exception:  # noqa: BLE001  best-effort — the offer itself is intact
+            pass
+    return out
+
+
+def handed_over_line(spawn: dict) -> str:
+    """The one plain line that tells the OLD session it is done (decision 07)."""
+    handle = str(spawn.get("handle") or "").strip()
+    where = "новую сессию"
+    if spawn.get("adapter") == "ao":
+        where += " AO"
+    if handle:
+        where += " " + handle
+    return ("передано в {0} — эта сессия больше ничего не делает; "
+            "закрой её, когда удобно".format(where))
+
+
 def run_handoff(
     root: Path,
     *,
@@ -370,16 +436,19 @@ def run_handoff(
     from_session: Optional[str] = None,
     dry_run: bool = False,
     date: Optional[str] = None,
+    spawn: bool = False,
+    adapter_name: Optional[str] = None,
 ) -> HandoffResult:
-    """Run a handoff: distil → workspace, remind candidates, hang the offer.
+    """Run a handoff: distil → workspace, remind candidates, hang the offer, raise it.
 
     *summary* is the distilled markdown (the caller prepares it); when absent a
     minimal stub is built from *mode*/*arc_ref* so the call never silently writes
     nothing. For ``continue``/``new`` the offer lands in the control-home queue
-    (:func:`tide.handoff_queue.offer`) and is picked up from ``tide menu`` /
-    ``tide handoffs take`` — this function NEVER opens a terminal (pull model;
-    one holder per thread). ``close`` just distils. ``dry_run`` distils but
-    leaves the queue untouched.
+    (:func:`tide.handoff_queue.offer`); with *spawn* the fresh session is raised
+    right away through the ▶ door (:func:`spawn_offer`, adapter *adapter_name* or
+    the resolved pin). Without *spawn* (the library default — the CLI turns it on)
+    the offer just hangs for ▶. ``close`` just distils and never spawns.
+    ``dry_run`` distils but leaves the queue untouched.
     """
     root = Path(root)
     if mode not in FORK_MODES:
@@ -482,12 +551,25 @@ def run_handoff(
         mode=mode,
         from_session=from_session,
     )
-    result.notes.append(
-        "offer hung: {0} — pick it up from 'tide menu' "
-        "(or 'tide handoffs take {1}')".format(
-            result.offer_path.name, result.offer_path.stem
+    key = result.offer_path.stem
+    if not spawn:
+        result.notes.append(
+            "offer hung: {0} — pick it up from 'tide menu' "
+            "(or 'tide pickup {1}')".format(result.offer_path.name, key)
         )
-    )
+        return result
+
+    result.spawn = spawn_offer(home, key, adapter_name=adapter_name)
+    if result.handed_over:
+        result.notes.append("offer {0}: {1} — {2}".format(
+            key, result.spawn.get("action"), result.spawn.get("detail") or ""))
+    else:
+        result.notes.append(
+            "offer hung: {0} — новую сессию сам поднять не вышло ({1}); оффер ждёт "
+            "в очереди: ▶ на доске, 'tide menu' или 'tide pickup {2}'".format(
+                result.offer_path.name, result.spawn.get("detail") or "без подробностей",
+                key)
+        )
     return result
 
 
@@ -504,15 +586,20 @@ def _read_summary_arg(args) -> Optional[str]:
     return p.read_text(encoding="utf-8")
 
 
+def _spawn_wanted(args) -> bool:
+    """Auto-spawn unless ``--no-spawn`` or ``$TIDE_HANDOFF_NO_SPAWN`` opts out."""
+    import os
+
+    if getattr(args, "no_spawn", False):
+        return False
+    env = (os.environ.get(NO_SPAWN_ENV) or "").strip().lower()
+    return env in ("", "0", "false", "no", "off")
+
+
 def cmd_handoff(args) -> int:
-    """``tide handoff <arc>`` — distil to workspace, remind, hang the offer."""
+    """``tide handoff <arc>`` — distil, remind, hang the offer, raise the fresh session."""
     root = paths.require_tide_root()
     summary = _read_summary_arg(args)
-    retired = [
-        "--{0}".format(flag.replace("_", "-"))
-        for flag in ("no_spawn", "adapter")
-        if getattr(args, flag, None)
-    ]
     result = run_handoff(
         root,
         arc_ref=args.arc,
@@ -520,24 +607,67 @@ def cmd_handoff(args) -> int:
         summary=summary,
         from_session=getattr(args, "from_session", None),
         dry_run=bool(getattr(args, "dry_run", False)),
+        spawn=_spawn_wanted(args),
+        adapter_name=getattr(args, "adapter", None),
     )
     print("tide: handoff [{0}] → {1}".format(result.mode, result.summary_path))
     print(result.candidate_reminder)
-    for flag in retired:
-        print(
-            "  note: {0} is retired — handoff never spawns; the queue "
-            "('tide handoffs') is the one path in".format(flag)
-        )
     for note in result.notes:
         print("  {0}".format(note))
+    if result.handed_over:
+        # LAST line on purpose: the old session reads it and stops (decision 07).
+        print("tide: {0}".format(handed_over_line(result.spawn)))
     return 0
+
+
+def report_spawn(spawn: dict, key: str) -> None:
+    """Print the auto-spawn outcome; the hand-over line goes LAST (the old session stops)."""
+    if spawn.get("ok"):
+        print("  offer {0}: {1} — {2}".format(key, spawn.get("action"), spawn.get("detail") or ""))
+        print("tide: {0}".format(handed_over_line(spawn)))
+    else:
+        print("  новую сессию сам поднять не вышло ({0}); оффер {1} ждёт в очереди: "
+              "▶ на доске, 'tide menu' или 'tide pickup {1}'".format(
+                  spawn.get("detail") or "без подробностей", key))
+
+
+def cmd_handoffs_offer(args) -> int:
+    """``tide handoffs offer …`` — hang the offer (the queue verb), then raise it.
+
+    The ``/handoff`` skill hangs its offer through this verb, so the auto-spawn
+    (decision 07) lives here too — same door, same opt-outs as ``tide handoff``.
+    ``--mode close`` never spawns.
+    """
+    from .. import handoff_queue
+
+    path = handoff_queue.offer_from_args(args)
+    if (getattr(args, "mode", None) or "") == FORK_CLOSE or not _spawn_wanted(args):
+        return 0
+    report_spawn(spawn_offer(paths.control_home(), path.stem,
+                             adapter_name=getattr(args, "adapter", None)), path.stem)
+    return 0
+
+
+def register_offer_spawn(hsub) -> None:
+    """Teach ``tide handoffs offer`` to raise the fresh session (CLI edge composes it —
+    the queue is domain and may not import the launcher)."""
+    op = hsub.choices.get("offer")
+    if op is None:
+        return
+    op.add_argument("--no-spawn", action="store_true", dest="no_spawn",
+                    help="only hang the offer, don't raise the fresh session "
+                         "(also ${0}=1)".format(NO_SPAWN_ENV))
+    op.add_argument("--adapter", default=None,
+                    help="terminal adapter for the fresh session (default: as ▶)")
+    op.set_defaults(func=cmd_handoffs_offer)
 
 
 def register(subparsers) -> None:
     """Add the ``handoff`` command to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
         "handoff",
-        help="warm-handoff: distil chat → arc workspace, hang an offer in the queue",
+        help="warm-handoff: distil chat → arc workspace, hang an offer and raise "
+             "the fresh session",
     )
     p.add_argument("arc", help="the open arc to anchor the handoff on")
     p.add_argument(
@@ -556,11 +686,12 @@ def register(subparsers) -> None:
         dest="from_session",
         help="origin session id — recorded on the offer for the multiples detector",
     )
-    # retired flags (cand 05): accepted so old invocations don't crash, but inert —
-    # the handoff never opens a terminal any more
     p.add_argument("--no-spawn", action="store_true", dest="no_spawn",
-                   help=argparse.SUPPRESS)
-    p.add_argument("--adapter", help=argparse.SUPPRESS)
+                   help="only hang the offer, don't raise the fresh session "
+                        "(also ${0}=1)".format(NO_SPAWN_ENV))
+    p.add_argument("--adapter", default=None,
+                   help="terminal adapter for the fresh session (default: the "
+                        "resolved pin, same as ▶)")
     p.add_argument(
         "--dry-run",
         action="store_true",

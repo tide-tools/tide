@@ -18,6 +18,46 @@ from ..adapters import get_adapter
 from . import menu as _menu
 
 
+def in_flight(control_home: Path, record: dict, adapter) -> Optional[dict]:
+    """A launch of *record* already IN FLIGHT → the focus answer; else None (go spawn).
+
+    Shared by every door that can start an offer — ``tide pickup`` (board ▶), the
+    ``tide menu`` picker and the handoff's own auto-spawn — so a second press on an
+    offer that was just raised never mints a second session (one thread — one
+    orchestrator).
+    """
+    # Идемпотент-гард (cand 93): the offer is already RESERVED and a spawn was
+    # RECORDED → a second ▶ (double click; the page flips only on the session's
+    # first prompt) NEVER relaunches — the reservation+record IS the truth that a
+    # launch is in flight. Focus is best-effort only: in the first seconds after
+    # create `orca terminal focus` can return false while the tab boots (the same
+    # lesson as cand 101 — focus flakiness must not be read as death; live 14.07:
+    # reading it as death minted a duplicate sid+tab).
+    #
+    # A reservation is only evidence of a launch IN FLIGHT while it is fresh. Past
+    # the TTL it is evidence of the opposite — ▶ was pressed and the terminal never
+    # said hello (19.07: Orca died in `login:`, the tab handle stayed in the registry
+    # and this guard focused a corpse forever, so the offer could not be raised
+    # again by hand). `pickup_stale` is already computed on every record and the menu
+    # already trusts it; the door reads it too, and a stale reserve falls through to
+    # a clean relaunch (the fresh `reserve` overwrites it — nothing to unwind).
+    reserved = str(record.get("pickup_session") or "").strip()
+    if not reserved or reserved == "-" or record.get("pickup_stale"):
+        return None
+    from .. import registry
+
+    handle = registry.recorded_handle(control_home, reserved)
+    if not handle:
+        return None
+    focused = adapter.focus(handle)
+    return {"ok": True,
+            "action": "focused" if focused else "already-launching",
+            "handle": handle,
+            "adapter": getattr(adapter, "name", ""),
+            "detail": ("уже поднимается — сфокусировал вкладку" if focused
+                       else "уже поднимается — вкладка бутится, дубль не чеканю")}
+
+
 def run_pickup(
     control_home: Path,
     key: str,
@@ -35,34 +75,10 @@ def run_pickup(
         return {"ok": False, "action": "failed",
                 "detail": "pickup: no pending offer {0!r}".format(key)}
     adapter = get_adapter(_menu.resolve_adapter_name(control_home, adapter_name))
-
-    # Идемпотент-гард (cand 93): the offer is already RESERVED and a spawn was
-    # RECORDED → a second ▶ (double click; the page flips only on the session's
-    # first prompt) NEVER relaunches — the reservation+record IS the truth that a
-    # launch is in flight. Focus is best-effort only: in the first seconds after
-    # create `orca terminal focus` can return false while the tab boots (the same
-    # lesson as cand 101 — focus flakiness must not be read as death; live 14.07:
-    # reading it as death minted a duplicate sid+tab).
-    #
-    # A reservation is only evidence of a launch IN FLIGHT while it is fresh. Past
-    # the TTL it is evidence of the opposite — ▶ was pressed and the terminal never
-    # said hello (19.07: Orca died in `login:`, the tab handle stayed in the registry
-    # and this guard focused a corpse forever, so the offer could not be raised
-    # again by hand). `pickup_stale` is already computed on every record and the menu
-    # already trusts it; the door reads it too, and a stale reserve falls through to
-    # a clean relaunch (the fresh `reserve` overwrites it — nothing to unwind).
-    reserved = str(record.get("pickup_session") or "").strip()
-    if reserved and reserved != "-" and not record.get("pickup_stale") and not dry_run:
-        from .. import registry
-
-        handle = registry.recorded_handle(control_home, reserved)
-        if handle:
-            focused = adapter.focus(handle)
-            return {"ok": True,
-                    "action": "focused" if focused else "already-launching",
-                    "handle": handle,
-                    "detail": ("уже поднимается — сфокусировал вкладку" if focused
-                               else "уже поднимается — вкладка бутится, дубль не чеканю")}
+    if not dry_run:
+        busy = in_flight(control_home, record, adapter)
+        if busy is not None:
+            return busy
     res = _menu.launch_handoff(
         record,
         _menu.list_entries(control_home),
@@ -71,7 +87,8 @@ def run_pickup(
         dry_run=dry_run,
     )
     return {"ok": bool(res.ok), "action": "spawned" if res.ok else "failed",
-            "detail": res.detail or ""}
+            "detail": res.detail or "", "handle": str(res.ref or "") if res.ok else "",
+            "adapter": getattr(adapter, "name", "")}
 
 
 def cmd_pickup(args) -> int:
