@@ -594,8 +594,10 @@ def session_ref(entry: Path) -> str:
 
 
 def pass_template(entry: Path) -> str:
-    """Готовая команда пульса ПЕРЕДАЧА со всеми метками сида."""
-    return 'tide offload {0} "{1}"'.format(session_ref(entry), PASS_TEMPLATE_NOTE)
+    """Готовая команда пульса ПЕРЕДАЧА со всеми метками сида; курсор и «дальше» —
+    тем же вызовом (их сборщик берёт в «где мы» и «следующий шаг»)."""
+    return ('tide offload {0} --cursor "<где стоишь>" --next "<шаги через · >" "{1}"'
+            .format(session_ref(entry), PASS_TEMPLATE_NOTE))
 
 
 def pass_fresh_minutes() -> int:

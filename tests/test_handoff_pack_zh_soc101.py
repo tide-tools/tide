@@ -46,7 +46,8 @@ def test_pass_template_labels_all_parse_into_seed_blocks():
 def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
     r = cw.watch_reason(world["proj"], _payload(world, 203_000))
     assert r
-    i_pass = r.index('tide offload seam/s1 "ПЕРЕДАЧА. Где мы:')
+    i_pass = r.index('tide offload seam/s1 --cursor "<где стоишь>" --next "<шаги через · >" '
+                     '"ПЕРЕДАЧА. Где мы:')
     i_layer = r.index("tide thread layer seam --expect")
     i_auto = r.index(cw.AUTO_CMD)
     assert i_pass < i_layer < i_auto
