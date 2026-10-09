@@ -45,6 +45,12 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 from .. import paths
+# Признаки воркеров по транскрипту — общие с приёмом и сидом (SOC-143, слои):
+# живут в tide.arc.workers, автозакрытие берёт оттуда.
+from ..arc.workers import (  # noqa: F401 — часть публичного имени autoclose
+    FINAL_STATUSES, ended, interim_workers, last_activity, unforwarded_results,
+    rows as _rows, row_at as _at, parse_iso as _parse_iso, pending_for as _pending_for,
+)
 
 ENV = "TIDE_AUTOCLOSE_OLD"
 LOG = "autoclose.log"
@@ -53,24 +59,6 @@ LOOKBACK_HOURS = 24
 QUIET_MIN = 3
 THROTTLE_SEC = 120
 ROUTE_MANAGER = "manager"
-
-
-# Конечные статусы AO (``status``/``activity.state``): сессия уже вышла — kill не нужен.
-FINAL_STATUSES = ("exited", "terminated", "killed", "done", "completed", "merged",
-                  "cleanup", "errored", "failed", "stopped", "dead")
-
-
-def ended(s: Optional[dict]) -> str:
-    """Конечный статус AO-сессии *s* (``"exited"`` …) или ``""``, если жива."""
-    if not s:
-        return ""
-    act = s.get("activity")
-    act = act.get("state") if isinstance(act, dict) else act
-    for v in (s.get("status"), act):
-        v = str(v or "").strip().lower()
-        if v in FINAL_STATUSES:
-            return v
-    return "terminated" if s.get("isTerminated") else ""
 
 
 def enabled(env: Optional[Dict[str, str]] = None) -> bool:
@@ -105,141 +93,7 @@ def journal(home: Path, *parts: str) -> Optional[str]:
     return line
 
 
-# --- транскрипт старой ---------------------------------------------------------
-
-def _rows(transcript: Path) -> Iterable[dict]:
-    try:
-        raw = Path(transcript).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return []
-    out = []
-    for ln in raw.splitlines():
-        try:
-            row = json.loads(ln)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            out.append(row)
-    return out
-
-
-def _at(row: dict) -> Optional[datetime]:
-    from ..arc import dialog
-    return dialog._stamp(str(row.get("timestamp") or ""))
-
-
-def unforwarded_results(transcript: Path, since: datetime, new_ao) -> List[str]:
-    """Итоги воркеров, пришедшие старой после *since* и не пересланные новой:
-    после ``<task-notification>`` нет хода старой (tool_use), где назван *new_ao*
-    (строка или список AO-id — подходит любой). → ``["ЧЧ:ММ «summary»", …]``."""
-    import re
-
-    targets = [new_ao] if isinstance(new_ao, str) else list(new_ao or ())
-    targets = [t for t in targets if t]
-
-    notif = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
-    summ = re.compile(r"<summary>(.*?)</summary>", re.S)
-    pending: List[tuple] = []
-    for row in _rows(transcript):
-        at = _at(row)
-        if row.get("type") == "assistant":
-            if not pending or not targets:
-                continue
-            for b in (row.get("message") or {}).get("content") or []:
-                if not (isinstance(b, dict) and b.get("type") == "tool_use"):
-                    continue
-                said = json.dumps(b.get("input") or {}, ensure_ascii=False)
-                if any(t in said for t in targets):
-                    pending = []
-                    break
-            continue
-        if at is None or at < since:
-            continue
-        blob = json.dumps(row.get("message") or row.get("attachment") or {},
-                          ensure_ascii=False)
-        if "task-notification" not in blob:
-            continue
-        try:
-            from ..launcher.seed_draft import _user_text
-            text = _user_text(row) or blob
-        except Exception:  # noqa: BLE001
-            text = blob
-        for m in notif.finditer(str(text)):
-            s = summ.search(m.group(1))
-            pending.append((at, " ".join((s.group(1) if s else "итог воркера").split())[:80]))
-    return ["{0} «{1}»".format(at.strftime("%H:%M"), what) for at, what in pending]
-
-
-_INTERIM = ("background work of its own still running", "may be interim",
-            "notifies again")
-
-
-def interim_workers(transcript: Path) -> List[str]:
-    """Сабагенты, чей ПОСЛЕДНИЙ ``<task-notification>`` промежуточный (SOC-143):
-    «stopped with background work of its own still running … result below may be
-    interim» — воркер ещё гоняет своё (полный pytest), итог впереди. Сюда же —
-    сабагент, которому старая написала SendMessage после его последнего уведомления
-    (возобновлён, итога ещё нет). ``background_workers`` считает концом любое
-    уведомление — этого мало. → ``["agentId «summary»", …]``."""
-    import re
-
-    notif = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
-    tid_re = re.compile(r"<task-id>\s*([^<\s]+)\s*</task-id>")
-    summ = re.compile(r"<summary>(.*?)</summary>", re.S)
-    state: Dict[str, tuple] = {}  # agentId → (живой?, подпись)
-    for row in _rows(transcript):
-        if row.get("type") == "assistant":
-            for b in (row.get("message") or {}).get("content") or []:
-                if (isinstance(b, dict) and b.get("type") == "tool_use"
-                        and b.get("name") == "SendMessage"):
-                    to = str((b.get("input") or {}).get("to") or "")
-                    if to in state:
-                        state[to] = (True, "возобновлён письмом после итога")
-            continue
-        if row.get("type") not in ("user", "attachment"):
-            continue
-        blob = json.dumps(row.get("message") or row.get("attachment") or {},
-                          ensure_ascii=False)
-        if "task-notification" not in blob:
-            continue
-        text = blob.replace("\\n", "\n").replace('\\"', '"')
-        for m in notif.finditer(text):
-            body = m.group(1)
-            t = tid_re.search(body)
-            if not t:
-                continue
-            s_ = summ.search(body)
-            what = " ".join((s_.group(1) if s_ else "итог воркера").split())[:80]
-            state[t.group(1)] = (any(k in body for k in _INTERIM), what)
-    return ["{0} «{1}»".format(a, w) for a, (live, w) in state.items() if live]
-
-
-def last_activity(transcript: Path) -> Optional[datetime]:
-    last = None
-    for row in _rows(transcript):
-        at = _at(row)
-        if at is not None and (last is None or at > last):
-            last = at
-    return last
-
-
 # --- решение -------------------------------------------------------------------
-
-def _parse_iso(raw: object) -> Optional[datetime]:
-    try:
-        ts = datetime.fromisoformat(str(raw or "").strip())
-    except ValueError:
-        return None
-    return ts.astimezone().replace(tzinfo=None) if ts.tzinfo else ts
-
-
-def _pending_for(home: Path, offer: str) -> int:
-    try:
-        from .handed_off import _pending
-        return sum(1 for i in _pending(home) if str(i.get("offer") or "") == offer)
-    except Exception:  # noqa: BLE001
-        return 0
-
 
 def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = None,
             session_of: Optional[Callable[[str], Optional[dict]]] = None,

@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .. import fields, handoff_queue as hq, paths
+from .. import fields, handoff_queue as hq, paths, slug as _slug
 from ..arc import stream as _stream
 
 ANNOUNCED = "announced"          # метка в оффере: «<штамп> · sent|no-cmd|rc=N»
@@ -543,15 +543,42 @@ def _old_workers(transcript: Optional[Path]) -> List[str]:
     return background_workers(transcript)
 
 
+def successor(home: Path, rec: Dict[str, object]) -> Dict[str, str]:
+    """Кто ведёт нить сейчас: ``{ao_session, title}`` — whois по цепочке, запасной —
+    тот, кто принял оффер *rec* (его AO-id и название по сиду)."""
+    out = {"ao_session": "", "title": ""}
+    project = str(rec.get("project") or "").strip()
+    thread = str(rec.get("arc") or "").split("/", 1)[0]
+    if project and project != "-" and thread and thread != "-":
+        try:
+            from .. import whois
+            w = whois.thread("{0}/{1}".format(project, _slug.entry_slug(thread)), home=home)
+            out = {"ao_session": w.get("ao_session", ""), "title": w.get("title", "")}
+        except Exception:  # noqa: BLE001 — нет адреса по цепочке: запасной путь
+            pass
+    if not out["ao_session"]:
+        try:
+            from ..arc import holder
+            out["ao_session"] = holder.ao_handle_for(Path(home), str(rec.get("taken_by") or ""))
+        except Exception:  # noqa: BLE001
+            pass
+    if not out["title"]:
+        try:
+            out["title"] = titles(home, rec)[0]
+        except Exception:  # noqa: BLE001
+            out["title"] = "новая сессия"
+    return out
+
+
 def close_blockers(home: Path, rec: Dict[str, object]) -> List[str]:
     """Почему старую ЕЩЁ рано предлагать закрыть (F72, SOC-143) — та же проверка
     воркеров, что у автозакрытия (:func:`tide.hooks.autoclose.verdict`): живые фоновые
     воркеры по транскрипту старой, сабагент с промежуточным итогом или возобновлённый
-    (:func:`~tide.hooks.autoclose.interim_workers`), итог, не пересланный новой
-    (:func:`~tide.hooks.autoclose.unforwarded_results`), письма пары в очереди
+    (:func:`~tide.arc.workers.interim_workers`), итог, не пересланный новой
+    (:func:`~tide.arc.workers.unforwarded_results`), письма пары в очереди
     пересылки. Пусто — можно предлагать. Транскрипта нет — проверить нечем, не держим
     (менеджер решает сам, как до F72). Только чтение."""
-    from ..hooks import autoclose as ac
+    from ..arc import workers as ac
 
     home = Path(home)
     old_sid = str(rec.get("from_session") or "")
@@ -573,19 +600,18 @@ def close_blockers(home: Path, rec: Dict[str, object]) -> List[str]:
         old_ao = holder.ao_handle_for(home, old_sid)
         new_sid = str(rec.get("taken_by") or "")
         new_ao = holder.ao_handle_for(home, new_sid) if new_sid else ""
-        from ..hooks.handed_off import successor
         head_ao = successor(home, rec).get("ao_session", "")
         forward_to = [a for a in (new_ao, head_ao) if a and a != old_ao]
     except Exception:  # noqa: BLE001
         pass
-    taken = ac._parse_iso(rec.get("taken_at"))
-    raised = ac._parse_iso(rec.get("raised_at"))
+    taken = ac.parse_iso(rec.get("taken_at"))
+    raised = ac.parse_iso(rec.get("raised_at"))
     stamps = [t for t in (taken, raised) if t is not None]
     if stamps and forward_to:
         left = ac.unforwarded_results(tr, min(stamps), forward_to)
         if left:
             out.append("итоги воркеров не пересланы новой: {0}".format(", ".join(left[:3])))
-    queued = ac._pending_for(home, str(rec.get("name") or ""))
+    queued = ac.pending_for(home, str(rec.get("name") or ""))
     if queued:
         out.append("в очереди пересылки {0} писем этой пары".format(queued))
     return out

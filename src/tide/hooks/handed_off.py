@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import paths, slug
+from .. import paths
 
 FORWARD_ENV = "TIDE_FORWARD_HANDED_OFF"
 FORWARD_LOG = "forwarded.log"
@@ -130,32 +130,9 @@ def _remember(home: Path, key: str, line: str) -> None:
     _remember_in(home, FORWARD_LOG, key, line)
 
 
-def successor(home: Path, rec: Dict[str, object]) -> Dict[str, str]:
-    """Кто ведёт нить сейчас: ``{ao_session, title}`` — whois по цепочке, запасной —
-    тот, кто принял оффер *rec* (его AO-id и название по сиду)."""
-    out = {"ao_session": "", "title": ""}
-    project = str(rec.get("project") or "").strip()
-    thread = str(rec.get("arc") or "").split("/", 1)[0]
-    if project and project != "-" and thread and thread != "-":
-        try:
-            from .. import whois
-            w = whois.thread("{0}/{1}".format(project, slug.entry_slug(thread)), home=home)
-            out = {"ao_session": w.get("ao_session", ""), "title": w.get("title", "")}
-        except Exception:  # noqa: BLE001 — нет адреса по цепочке: запасной путь
-            pass
-    if not out["ao_session"]:
-        try:
-            from ..arc import holder
-            out["ao_session"] = holder.ao_handle_for(Path(home), str(rec.get("taken_by") or ""))
-        except Exception:  # noqa: BLE001
-            pass
-    if not out["title"]:
-        try:
-            from ..launcher import reception
-            out["title"] = reception.titles(home, rec)[0]
-        except Exception:  # noqa: BLE001
-            out["title"] = "новая сессия"
-    return out
+# «Кто ведёт нить сейчас» — общий с приёмом (launcher/reception, SOC-143 F72):
+# живёт там, хук берёт оттуда (хуку вниз можно, приёму вверх — нет).
+from ..launcher.reception import successor  # noqa: E402
 
 
 def _address(new: Dict[str, str]) -> str:
@@ -326,7 +303,7 @@ def _manager_ao(home: Path) -> str:
 
 # --- окно «поднята, но не приняла» (SOC-101 F68) --------------------------------
 
-PENDING_LOG = "forward-pending.jsonl"
+from ..arc.workers import PENDING_LOG, pending_forwards  # noqa: E402
 
 
 def _real(value: object) -> bool:
@@ -392,21 +369,8 @@ def _deliver(home: Path, new_ao: str, *, old: str, msg: Dict[str, str],
     return ok
 
 
-def _pending(home: Path) -> List[Dict[str, str]]:
-    try:
-        lines = (paths.state_dir(Path(home)) / PENDING_LOG).read_text(
-            encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    out = []
-    for ln in lines:
-        try:
-            item = json.loads(ln)
-        except ValueError:
-            continue
-        if isinstance(item, dict):
-            out.append(item)
-    return out
+# Чтение очереди — общее с автозакрытием и приёмом (tide.arc.workers, SOC-143).
+_pending = pending_forwards
 
 
 def _write_pending(home: Path, items: List[Dict[str, str]]) -> None:

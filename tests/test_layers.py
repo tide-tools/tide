@@ -20,7 +20,10 @@ STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
          "context_fill",
          # pure data of the seed contract (imports nothing): engine, board and
          # skill all read the seed blocks from it
-         "handoff_contract"}
+         "handoff_contract",
+         # stdlib-only splitter of « · » that keeps session names «роль · NN» whole
+         # (imports nothing): the seed and `thread layer --main` cut lines through it
+         "name_dots"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",
@@ -47,10 +50,6 @@ KNOWN_DEBT = {
     ("arc/land.py", "cli"),
     ("arc/stream.py", "adapters"),
     ("arc/worktree.py", "adapters"),
-    # SOC-143 F83: признак «промежуточный итог сабагента = жив» один на tide —
-    # interim_workers в hooks/autoclose.py; перенести вниз (domain), когда тот файл
-    # освободится, и снять эту строку.
-    ("launcher/seed_draft.py", "hooks"),
 }
 
 

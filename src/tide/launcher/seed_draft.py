@@ -2096,25 +2096,8 @@ def incoming_since(context: Sequence[str]):
     return stamps[last - 1][0] if last > 0 else None
 
 
-def _user_text(row: dict) -> str:
-    """Текст доставки в строке транскрипта: реплика пользователя (``type: user``)
-    или сообщение, пришедшее очередью, пока сессия работала (SOC-101 F28:
-    ``type: attachment`` с ``attachment.type: queued_command`` — ``prompt``)."""
-    if row.get("type") == "attachment":
-        att = row.get("attachment") or {}
-        if not isinstance(att, dict) or att.get("type") != "queued_command":
-            return ""
-        content = att.get("prompt")
-    elif row.get("type") == "user":
-        content = (row.get("message") or {}).get("content")
-    else:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(str(b.get("text") or "") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text")
-    return ""
+# Текст доставки в строке транскрипта — общий с автозакрытием (tide.arc.workers).
+from ..arc.workers import user_text as _user_text  # noqa: E402
 
 
 # Ответ отправителю закрывает входящее, только если он — итог (SOC-101 F29, разборы
@@ -2404,10 +2387,10 @@ def _git_mark(cwd: str, at) -> "tuple[str, str]":
 def _interim_agents(transcript: Path) -> set:
     """agentId сабагентов, чей последний ``<task-notification>`` промежуточный
     («… still running … may be interim») или возобновлённых письмом после итога —
-    ещё в полёте (SOC-143). Признак — один на tide: :func:`tide.hooks.autoclose.
+    ещё в полёте (SOC-143). Признак — один на tide: :func:`tide.arc.workers.
     interim_workers` (автозакрытие старой судит по нему же)."""
     try:
-        from ..hooks.autoclose import interim_workers
+        from ..arc.workers import interim_workers
         return {w.split(" ", 1)[0] for w in interim_workers(Path(transcript))}
     except Exception:  # noqa: BLE001 — сид важнее
         return set()
