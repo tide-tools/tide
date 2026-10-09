@@ -462,6 +462,61 @@ def _pass_map_warning(note: str) -> None:
         return
 
 
+# SOC-101 C1: в пульсе ПЕРЕДАЧА — метка «Ожидание Гриши:» (или «Ожидание:») и
+# «Хвосты:». Метка — после начала ноты или конца фразы/тире, как в контракте.
+_LABEL_AT = r"(?:^|(?<=[.;!?»)\]—])\s+|(?<=\s—)\s|^-?\s*)"
+_EXPECT_LABEL = re.compile(_LABEL_AT + r"ожидани[ея](?:\s+гриши)?(?:\s*\([^()]*\))?\s*:",
+                           re.IGNORECASE)
+_TAILS_LABEL = re.compile(_LABEL_AT + r"(?:открытые\s+)?хвосты(?:\s*\([^()]*\))?\s*:",
+                          re.IGNORECASE)
+EXPECT_WARNING = ("в пульсе ПЕРЕДАЧА нет метки «Ожидание Гриши:», а слой «ожидание "
+                  "Гриши» нити пуст — новая сессия не узнает, чего Гриша ждёт; впиши "
+                  "его словами Гриши с датой: tide offload \"ПЕРЕДАЧА. … Ожидание Гриши: "
+                  "«…» (tg N, дата)\"")
+TAILS_HINT = ("назови открытые хвосты меткой «Хвосты:» — что красное, что не проверено "
+              "вживую, что обещано (или «Хвосты: нет»)")
+
+
+def _expectation_layer(passport: Path) -> List[str]:
+    """Строки слоя «### ожидание Гриши» в ``## where we are`` goal-файла нити
+    (заглушки ``<…>`` не в счёт). Нить — дедушка сессии (…/NN-@thread/arcs/NN-s)."""
+    from .arc.stream import passport_path
+
+    try:
+        thread = Path(passport).parent.parents[1]
+        text = passport_path(thread).read_text(encoding="utf-8")
+    except (OSError, IndexError):
+        return []
+    out: List[str] = []
+    section = head = ""
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            section, head = ln[3:].strip().lower(), ""
+        elif ln.startswith("### "):
+            head = ln[4:].strip().lower()
+        elif (section.startswith("where we are") and head.startswith("ожидание")
+              and ln.strip() and not ln.strip().startswith("<")):
+            out.append(ln.rstrip())
+    return out
+
+
+def _pass_labels_warning(passport: Path, note: str) -> None:
+    """Пульс «ПЕРЕДАЧА» (SOC-101 C1): без «Ожидание Гриши:» при пустом слое нити —
+    предупреждение, как о «Карта:» (C11); без «Хвосты:» — мягкая подсказка. В stderr,
+    rc не меняется, ошибка — молчание."""
+    try:
+        from . import handoff_contract
+        text = " ".join((note or "").split())
+        if not handoff_contract.is_pass_note(text):
+            return
+        if not _EXPECT_LABEL.search(text) and not _expectation_layer(passport):
+            print("tide: внимание — {0}".format(EXPECT_WARNING), file=sys.stderr)
+        if not _TAILS_LABEL.search(text):
+            print("tide: подсказка — {0}".format(TAILS_HINT), file=sys.stderr)
+    except Exception:  # noqa: BLE001 — предупреждение не смеет уронить пульс
+        return
+
+
 def _main_gate(root: Path, ref: str):
     """Старт-гейт «главного» нити (решение Гриши № 24) — :func:`tide.arc.plan_main.gate`
     для сессии *ref*; None — молчим (или сессия не нашлась: ошибку скажет offload)."""
@@ -504,6 +559,7 @@ def _cmd_offload(args) -> int:
     if warn:
         print(warn, file=sys.stderr)
     _pass_map_warning(note)
+    _pass_labels_warning(passport, note)
     return 0
 
 

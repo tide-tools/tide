@@ -172,6 +172,53 @@ def test_cli_offload_warns_pass_without_map(tmp_project, session, monkeypatch, c
     assert note.split()[0] in (session / "arc.md").read_text(encoding="utf-8")
 
 
+def _fill_expectation(session, text):
+    goal = stream.passport_path(session.parent.parent)
+    body = goal.read_text(encoding="utf-8")
+    head = "### ожидание Гриши"
+    assert head in body
+    goal.write_text(body.replace(head, head + "\n" + text, 1), encoding="utf-8")
+
+
+@pytest.mark.parametrize("note, expect_warned, tails_hint", [
+    ("ПЕРЕДАЧА. Где мы: шаг 3. Карта: /a — x; /b — y; /c — z", True, True),
+    ("ПЕРЕДАЧА. Ожидание Гриши: «к пятнице» (tg 1, 09.10). Хвосты: нет", False, False),
+    ("ПЕРЕДАЧА. Ожидание: к пятнице. Хвосты: verify красный; Д2 не вживую", False, False),
+    ("ПЕРЕДАЧА. Ждёт Гришу: ответ. Хвосты: нет", True, False),
+    ("обычный пульс: хвосты ещё есть", False, False),
+])
+def test_cli_offload_pass_warns_expectation_and_tails(tmp_project, session, monkeypatch,
+                                                       capsys, note, expect_warned,
+                                                       tails_hint):
+    """SOC-101 C1: ПЕРЕДАЧА без «Ожидание Гриши:» при пустом слое — предупреждение;
+    без «Хвосты:» — мягкая подсказка. Пульс записан, rc 0."""
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "otliv", note]) == 0
+    err = capsys.readouterr().err
+    assert ("нет метки «Ожидание Гриши:»" in err) is expect_warned
+    assert ("меткой «Хвосты:»" in err) is tails_hint
+    assert note.split()[0] in (session / "arc.md").read_text(encoding="utf-8")
+
+
+def test_cli_offload_pass_quiet_when_expectation_layer_filled(tmp_project, session,
+                                                              monkeypatch, capsys):
+    """Слой «ожидание Гриши» нити заполнен — метка в пульсе не обязательна."""
+    _fill_expectation(session, "- «живой шов к пятнице» (tg 3119, 09.10)")
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "otliv", "ПЕРЕДАЧА. Где мы: шаг 3. Хвосты: нет"]) == 0
+    assert "Ожидание Гриши" not in capsys.readouterr().err
+
+
+def test_pass_labels_warning_swallows_errors(monkeypatch, capsys, tmp_path):
+    from tide import handoff_contract
+
+    def boom(*_a, **_k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(handoff_contract, "is_pass_note", boom)
+    offload._pass_labels_warning(tmp_path / "arc.md", "ПЕРЕДАЧА. без меток")
+    assert capsys.readouterr().err == ""
+
+
 def test_pass_map_warning_swallows_errors(monkeypatch, capsys):
     from tide import handoff_contract
 
