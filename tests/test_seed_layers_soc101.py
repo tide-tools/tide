@@ -222,6 +222,29 @@ def test_pult_log_notice_rows_are_dropped(live, tmp_path, monkeypatch):
     assert [ln.rsplit(" · ", 1)[1] for ln in dialog.tail(live["thread"])] == ["привет"]
 
 
+# --- п.5 · ожидание Гриши — слой нити дословно, с датой ----------------------------
+
+def test_expectation_is_the_thread_layer_verbatim_with_date(live):
+    pp = stream.passport_path(live["thread"])
+    text = pp.read_text(encoding="utf-8").partition("## where we are\n")[0]
+    pp.write_text(text + "## where we are\n### ожидание Гриши\n"
+                  "- Дословно (TG 09.10 ~06:10): «работа чётко передаётся между сессиями»\n"
+                  "- «все подписываю, доверяю тебе»\n", encoding="utf-8")
+    exp = _block(ah.build_auto_seed(live["sess"]), "ожидание Гриши").splitlines()
+    assert exp[:2] == ["- Дословно (TG 09.10 ~06:10): «работа чётко передаётся между сессиями»",
+                       "- «все подписываю, доверяю тебе»"]
+    assert exp[2].startswith("- (слой нити дословно: {0} · правлен 20".format(pp))
+    assert not any(ln.startswith(("нить: ", "этот шаг: ")) for ln in exp)  # не goal:
+
+
+def test_expectation_falls_back_to_the_pass_pulse_label(live):
+    # слой нити пуст (каркас) — ожидание из метки «Ожидание Гриши:» ПЕРЕДАЧИ
+    exp = _block(ah.build_auto_seed(live["sess"]), "ожидание Гриши")
+    assert exp.startswith("- каждая новая сессия получает его ожидание, где мы и опыт "
+                          "(пульс 07:30)")
+    assert "план v1 аудита" not in exp  # goal: сессии сюда больше не попадает
+
+
 def test_pass_label_is_the_start_of_the_note_not_a_word_in_it():
     pulse = ["- 2026-10-09T07:12:04 — справки: передача работы 117 фактов",
              "- 2026-10-09T07:30:18 — ПЕРЕДАЧА. всё", "- 2026-10-09T07:31:00 — последний"]

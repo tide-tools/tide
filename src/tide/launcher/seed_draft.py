@@ -264,6 +264,30 @@ def block_final(thread_goal: str, session_goal: str) -> List[str]:
     return lines
 
 
+def block_expectation(layer_lines: Sequence[str], goal_file: Optional[Path] = None,
+                      pulse_lines: Sequence[str] = ()) -> List[str]:
+    """Ожидание Гриши: слой нити ДОСЛОВНО и с датой (SOC-101, пакет Г п.5).
+
+    Раньше блок склеивал ``goal:`` нити и ``goal:`` сессии — это цель, а не слово
+    Гриши, и она устаревала (адресат management-7 давно закрыт). Теперь: строки
+    слоя «### ожидание Гриши» как есть + строка-источник с путём и датой правки
+    goal-файла. Слой пуст — метка «Ожидание Гриши:» самого свежего пульса; нет и
+    её — пусто (блок скажет, какие источники проверены).
+    """
+    lines = [ln for ln in layer_lines if ln.strip()]
+    if lines:
+        if goal_file is not None:
+            from datetime import datetime
+
+            try:
+                day = datetime.fromtimestamp(Path(goal_file).stat().st_mtime).strftime("%Y-%m-%d")
+            except OSError:
+                day = "дата правки неизвестна"
+            lines.append("- (слой нити дословно: {0} · правлен {1})".format(goal_file, day))
+        return lines
+    return list(pulse_lines)
+
+
 def _work_order(rec: Dict[str, object]) -> "tuple[int, str]":
     """Ключ порядка работ — по НОМЕРУ, а не по строке: «9» младше «100»."""
     num = str(rec.get("num") or "")
@@ -822,8 +846,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
     return {
         MAIN: block_main(thread_entry, contract.find_body(seed_in, "main"), pred),
-        EXPECTATION: layer(lays, "expectation") + block_final(
-            _goal_of(thread_entry), _goal_of(session_entry)),
+        EXPECTATION: block_expectation(
+            layer(lays, "expectation"), _stream.passport_path(thread_entry),
+            labels.get("expectation", [])),
         WHERE: where,
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
         # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.

@@ -231,8 +231,9 @@ def test_build_draft_maps_every_source_to_its_block(tmp_project, session):
     _loaded(tmp_project, session)
     out = seed_draft.build_draft(tmp_project, session)
 
-    assert "нить: единый слой: одно место, где видно живьём" in out
-    assert "этот шаг: довести шов хендоффа" in out
+    # ожидание — слово Гриши из слоя нити, не склейка goal: нити и сессии (SOC-101 п.5)
+    assert "нить: единый слой: одно место, где видно живьём" not in out
+    assert "этот шаг: довести шов хендоффа" not in out
     assert "воркер строит tide handoffs draft" in out          # курсор
     assert "разложили маппинг источник→блок" in out            # хвост пульса
     assert "- принять работу 16" in out and "- чекнуть шаг 2" in out
