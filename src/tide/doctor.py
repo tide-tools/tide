@@ -14,6 +14,10 @@ a handful of independent checks and printing one ok/warn/fail line each:
                       exists) — the mine that detonates at pickup time (cand 34).
 * **ao-worktrees**    every live AO session worktree of a tide project carries
                       tide's hooks (session-start, handoff-confirm, context-watch).
+* **agent-contract**  «Контракт агентов v1»: ``~/.claude/rules/agent-contract-v1.md``
+                      resolves and equals ``origin/main`` of the repo it links into
+                      (local ref only — no fetch); ``agent-contract-ref`` warns when
+                      ``~/.claude/CLAUDE.md`` does not reference it.
 
 DESIGN RAZOR — this is on-demand ONLY. It is NEVER wired into a hook, a daemon, or
 any periodic checker (that would violate tide's no-autonomy razor; SessionStart
@@ -31,7 +35,9 @@ unit-testable; :func:`register` wires the thin CLI handler.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
@@ -50,6 +56,13 @@ _UNSET = object()
 STATUS_OK = "ok"
 STATUS_WARN = "warn"
 STATUS_FAIL = "fail"
+
+# «Контракт агентов v1» — paths relative to the home dir (Path.home() unless injected).
+AGENT_CONTRACT_LINK = Path(".claude") / "rules" / "agent-contract-v1.md"
+AGENT_CONTRACT_REPO_FILE = "docs/agent-contract-v1.md"   # path inside the linked repo
+AGENT_CONTRACT_REF = "origin/main"                       # the signed truth (local ref)
+AGENT_CONTRACT_CLAUDE_MD = Path(".claude") / "CLAUDE.md"
+AGENT_CONTRACT_NEEDLE = "agent-contract-v1.md"           # what CLAUDE.md must mention
 
 # The minimum interpreter tide supports (pyproject ``requires-python = ">=3.12"``).
 MIN_PYTHON: Tuple[int, int] = (3, 12)
@@ -447,6 +460,106 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
                        "хуки tide во всех {0} AO-worktree tide-проектов".format(seen))
 
 
+def _git_out(repo: Path, *args: str) -> Optional[bytes]:
+    """``git -C repo args`` stdout as bytes, or None on any error / nonzero exit."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=5)
+    except Exception:  # noqa: BLE001 — no git / timeout reads as "can't tell"
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _fetch_age(top: Path) -> str:
+    """Human age of the repo's last fetch (FETCH_HEAD mtime), '' when unknown."""
+    out = _git_out(top, "rev-parse", "--git-path", "FETCH_HEAD")
+    if not out:
+        return ""
+    fh = Path(out.decode().strip())
+    fh = fh if fh.is_absolute() else top / fh
+    try:
+        secs = max(0, time.time() - fh.stat().st_mtime)
+    except OSError:
+        return ""
+    if secs < 3600:
+        return "fetched {0}m ago".format(int(secs // 60))
+    if secs < 86400:
+        return "fetched {0}h ago".format(int(secs // 3600))
+    return "fetched {0}d ago".format(int(secs // 86400))
+
+
+def check_agent_contract(home: Optional[Path] = None) -> CheckResult:
+    """FAIL unless ``~/.claude/rules/agent-contract-v1.md`` resolves AND equals
+    ``origin/main:docs/agent-contract-v1.md`` of the repo the link points into.
+
+    The contract outranks every other instruction, so a dangling link or a copy
+    that drifted from the signed text is a real failure, not advice. The repo is
+    derived from the RESOLVED path (``git rev-parse --show-toplevel``); the
+    comparison is against the LOCAL ``origin/main`` ref — no network — and the
+    line says how old the last fetch is when that is cheap to tell.
+    """
+    name = "agent-contract"
+    base = Path(home) if home is not None else Path.home()
+    link = base / AGENT_CONTRACT_LINK
+    if not link.exists():  # exists() follows the link: covers missing AND dangling
+        what = "broken link -> {0}".format(link.readlink()) if link.is_symlink() else "missing"
+        return CheckResult(name, STATUS_FAIL, "Контракт агентов v1: {0} — {1}".format(link, what))
+    target = link.resolve()
+    try:
+        local = target.read_bytes()
+    except OSError as exc:
+        return CheckResult(name, STATUS_FAIL, "Контракт агентов v1 unreadable: {0}".format(exc))
+    top_out = _git_out(target.parent, "rev-parse", "--show-toplevel")
+    if not top_out:
+        return CheckResult(
+            name, STATUS_FAIL,
+            "Контракт агентов v1: {0} is not inside a git repo — cannot compare "
+            "with {1}".format(target, AGENT_CONTRACT_REF))
+    top = Path(top_out.decode().strip())
+    spec = "{0}:{1}".format(AGENT_CONTRACT_REF, AGENT_CONTRACT_REPO_FILE)
+    truth = _git_out(top, "show", spec)
+    age = _fetch_age(top)
+    age_s = " ({0})".format(age) if age else ""
+    if truth is None:
+        return CheckResult(
+            name, STATUS_FAIL,
+            "Контракт агентов v1: {0} not found in {1}{2} — no {3} ref or file "
+            "absent there".format(spec, top, age_s, AGENT_CONTRACT_REF))
+    if local != truth:
+        branch = (_git_out(top, "rev-parse", "--abbrev-ref", "HEAD") or b"?").decode().strip()
+        head = _git_out(top, "show", "HEAD:" + AGENT_CONTRACT_REPO_FILE)
+        if head is not None and head != local:
+            why = "uncommitted edits in the working copy"
+        elif branch != AGENT_CONTRACT_REF.split("/", 1)[-1]:
+            why = "{0} is checked out on branch '{1}'".format(top.name, branch)
+        else:
+            why = "local {0} differs from {1} — pull (or push) {2}".format(
+                branch, AGENT_CONTRACT_REF, top.name)
+        return CheckResult(
+            name, STATUS_FAIL,
+            "Контракт агентов v1: local file {0} != {1}{2} — {3}".format(
+                target, spec, age_s, why))
+    return CheckResult(
+        name, STATUS_OK,
+        "Контракт агентов v1: {0} -> {1} == {2}{3}".format(link, target, spec, age_s))
+
+
+def check_agent_contract_ref(home: Optional[Path] = None) -> CheckResult:
+    """WARN when ``~/.claude/CLAUDE.md`` has no line referencing the contract file
+    — the link alone loads it as a rule, the CLAUDE.md line says it outranks the rest."""
+    name = "agent-contract-ref"
+    base = Path(home) if home is not None else Path.home()
+    md = base / AGENT_CONTRACT_CLAUDE_MD
+    try:
+        text = md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return CheckResult(name, STATUS_WARN, "{0} missing/unreadable — no reference to "
+                           "{1}".format(md, AGENT_CONTRACT_NEEDLE))
+    if any(AGENT_CONTRACT_NEEDLE in ln for ln in text.splitlines()):
+        return CheckResult(name, STATUS_OK, "{0} references {1}".format(md, AGENT_CONTRACT_NEEDLE))
+    return CheckResult(name, STATUS_WARN, "{0} has no line referencing {1} — add the "
+                       "«Контракт агентов v1» line".format(md, AGENT_CONTRACT_NEEDLE))
+
+
 def run_doctor(
     root: Optional[Path],
     *,
@@ -454,10 +567,11 @@ def run_doctor(
     source=_UNSET,
     network: bool = True,
     control_home: Optional[Path] = None,
+    home: Optional[Path] = None,
 ) -> DoctorReport:
     """Run every check over *root* and return the aggregate :class:`DoctorReport`.
 
-    *source* / *marker_path* / *control_home* are injectable so the aggregate is
+    *source* / *marker_path* / *control_home* / *home* are injectable so the aggregate is
     testable without the real install state or the network. *source* follows
     :func:`check_channel`'s sentinel: omit it to resolve the real source, pass
     ``None`` for "no source". *network* gates only the channel probe.
@@ -471,6 +585,8 @@ def run_doctor(
         check_channel(source=source, network=network),
         check_roster_worktrees(control_home),
         check_ao_worktree_hooks(),
+        check_agent_contract(home),
+        check_agent_contract_ref(home),
     ]
     return DoctorReport(results)
 

@@ -19,6 +19,12 @@ def _hermetic_home(tmp_path, monkeypatch):
     # Redirect the install-marker home so doctor reads a tmp (absent) marker,
     # never the developer's real ~/.local/share/tide marker.
     monkeypatch.setenv("TIDE_HOME", str(tmp_path / "tide-home"))
+    # The agent-contract check reads the real ~/.claude — stub it OK here (its own
+    # behaviour is unit-tested in test_doctor.py against a fake home + git repo).
+    from tide import doctor
+
+    monkeypatch.setattr(doctor, "check_agent_contract",
+                        lambda home=None: doctor.CheckResult("agent-contract", doctor.STATUS_OK, "stub"))
 
 
 def test_doctor_is_wired_into_the_parser():

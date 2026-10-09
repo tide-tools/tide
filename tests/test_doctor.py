@@ -326,6 +326,7 @@ def test_run_doctor_no_fail_exits_zero(tmp_project, tmp_path):
         marker_path=marker,
         source=None,         # no source → warn (not fail)
         network=False,
+        home=make_contract_home(tmp_path),
     )
     assert report.exit_code == 0
     assert report.ok is True
@@ -354,6 +355,7 @@ def test_run_doctor_warn_does_not_trip_exit_code(tmp_project, tmp_path):
         marker_path=tmp_path / "absent.json",
         source=None,
         network=False,
+        home=make_contract_home(tmp_path),
     )
     assert report.exit_code == 0
     assert any(r.status == doctor.STATUS_WARN for r in report.results)
@@ -409,3 +411,108 @@ def test_marker_older_than_the_running_code_is_a_warn_with_the_fix(tmp_path):
     assert res.status == doctor.STATUS_WARN
     assert "1.0.43" in res.detail and "1.0.48" in res.detail
     assert "reinstall" in res.detail
+
+
+# --- «Контракт агентов v1» --------------------------------------------------
+
+_CONTRACT = "# Контракт агентов v1\nправило 1\n"
+
+
+def make_contract_home(tmp_path: Path, *, text: str = _CONTRACT,
+                       claude_md: Optional[str] = "rules: ~/.claude/rules/agent-contract-v1.md\n"
+                       ) -> Path:
+    """Fake home: ~/.claude/rules/agent-contract-v1.md -> mgmt/docs/... in a git
+    repo whose refs/remotes/origin/main carries *text*."""
+    repo = tmp_path / "mgmt"
+    (repo / "docs").mkdir(parents=True)
+    f = repo / "docs" / "agent-contract-v1.md"
+    f.write_text(text, encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "c")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    home = tmp_path / "home"
+    (home / ".claude" / "rules").mkdir(parents=True)
+    (home / ".claude" / "rules" / "agent-contract-v1.md").symlink_to(f)
+    if claude_md is not None:
+        (home / ".claude" / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
+    return home
+
+
+def test_agent_contract_ok(tmp_path):
+    home = make_contract_home(tmp_path)
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_OK, res.detail
+    assert "origin/main:docs/agent-contract-v1.md" in res.detail
+    assert doctor.check_agent_contract_ref(home).status == doctor.STATUS_OK
+
+
+def test_agent_contract_broken_link_fails(tmp_path):
+    home = make_contract_home(tmp_path)
+    (tmp_path / "mgmt" / "docs" / "agent-contract-v1.md").unlink()
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_FAIL
+    assert "broken link" in res.detail
+
+
+def test_agent_contract_missing_link_fails(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_FAIL
+    assert "missing" in res.detail
+
+
+def test_agent_contract_uncommitted_edit_fails(tmp_path):
+    home = make_contract_home(tmp_path)
+    (tmp_path / "mgmt" / "docs" / "agent-contract-v1.md").write_text("drift\n", encoding="utf-8")
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_FAIL
+    assert "local file" in res.detail and "origin/main" in res.detail
+    assert "uncommitted" in res.detail
+
+
+def test_agent_contract_other_branch_fails(tmp_path):
+    home = make_contract_home(tmp_path)
+    repo = tmp_path / "mgmt"
+    _git(repo, "checkout", "-q", "-b", "draft")
+    (repo / "docs" / "agent-contract-v1.md").write_text("draft text\n", encoding="utf-8")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "d")
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_FAIL
+    assert "branch 'draft'" in res.detail
+
+
+def test_agent_contract_main_behind_origin_fails(tmp_path):
+    home = make_contract_home(tmp_path)
+    repo = tmp_path / "mgmt"
+    (repo / "docs" / "agent-contract-v1.md").write_text("v1.1\n", encoding="utf-8")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "new")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "reset", "-q", "--hard", "HEAD~1")  # local main not pulled
+    res = doctor.check_agent_contract(home)
+    assert res.status == doctor.STATUS_FAIL
+    assert "pull" in res.detail
+
+
+def test_agent_contract_no_origin_ref_fails(tmp_path):
+    home = make_contract_home(tmp_path)
+    _git(tmp_path / "mgmt", "update-ref", "-d", "refs/remotes/origin/main")
+    assert doctor.check_agent_contract(home).status == doctor.STATUS_FAIL
+
+
+def test_agent_contract_claude_md_line_missing_warns(tmp_path):
+    home = make_contract_home(tmp_path, claude_md="# nothing here\n")
+    res = doctor.check_agent_contract_ref(home)
+    assert res.status == doctor.STATUS_WARN
+    assert "agent-contract-v1.md" in res.detail
+    (home / ".claude" / "CLAUDE.md").unlink()
+    assert doctor.check_agent_contract_ref(home).status == doctor.STATUS_WARN
+
+
+def test_run_doctor_fails_on_contract_drift(tmp_project, tmp_path):
+    home = make_contract_home(tmp_path)
+    (tmp_path / "mgmt" / "docs" / "agent-contract-v1.md").write_text("drift\n", encoding="utf-8")
+    report = doctor.run_doctor(tmp_project, marker_path=tmp_path / "absent.json",
+                               source=None, network=False, home=home)
+    assert report.exit_code != 0
