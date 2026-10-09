@@ -268,3 +268,37 @@ def test_unwritten_newcomer_does_not_displace_a_working_chat(world, tmp_path, mo
     stash = json.loads((world["home"] / sessions.AO_STASH_FILENAME).read_text())
     assert stash[AO]["sid"] == REAL
     assert fields.read_field(world["pp"], "claude-session") == REAL
+
+
+# --- F15 (SOC-101): a reused AO id never wakes a CLOSED arc ----------------------
+
+def test_closed_arc_pinning_the_stale_id_is_left_alone(world):
+    # AO reuses ids across months: the archived arc pins an old id on this handle.
+    _bug_state(world)
+    old = world["proj"] / ".tide" / "arcs" / "__07-@old__" / "arcs" / "__04-pult__"
+    old.mkdir(parents=True)
+    opp = old / "arc.md"
+    stale = "6235209d-0000-4000-8000-000000000015"
+    opp.write_text("# 04-pult\n\ntitle: old · pult\nstatus: done\n"
+                   "claude-session: {0}\n".format(stale), encoding="utf-8")
+    registry.record(world["home"], stale, AO, str(old))
+    sessions.ao_relink(world["home"], AO, REAL, project_root=world["proj"])
+    assert fields.read_field(world["pp"], "claude-session") == REAL
+    assert fields.read_field(opp, "claude-session") == stale
+    assert registry.read(world["home"])[REAL]["arc"] == str(world["sdir"])
+    assert fields.read_field(opp, "title") == "old · pult"
+
+
+def test_is_closed_passport_reads_the_seal(tmp_path):
+    live = tmp_path / "01-@t" / "arcs" / "02-s" / "arc.md"
+    live.parent.mkdir(parents=True)
+    live.write_text("status: active\n", encoding="utf-8")
+    assert not sessions.is_closed_passport(live)
+    live.write_text("status: done\n", encoding="utf-8")
+    assert sessions.is_closed_passport(live)
+    for d in ("__01-@t__/arcs/02-s", "01-@t/arcs/__02-s__"):
+        pp = tmp_path / d / "arc.md"
+        pp.parent.mkdir(parents=True)
+        pp.write_text("status: active\n", encoding="utf-8")
+        assert sessions.is_closed_passport(pp)
+    assert not sessions.is_closed_passport(None)

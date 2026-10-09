@@ -645,8 +645,8 @@ def _ao_name_by_title(root: Path, session: str, adapter=None) -> Optional[str]:
     if not ao:
         return None
     entry = _offload.find_session_by_claude_id(root, session)
-    if entry is None:
-        return None
+    if entry is None or _sessions.is_closed_passport(entry / "arc.md"):
+        return None  # F15: a sealed arc never names a live AO session (reused AO id)
     title = ((fields.read_field(entry / "arc.md", "title") or "").strip()
              or (_stream.thread_session_title(entry) or "").strip())
     if not title or title.startswith("<"):

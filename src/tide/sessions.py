@@ -281,6 +281,27 @@ def _passport_of(arc: str) -> Optional[Path]:
     return pp if pp.is_file() else None
 
 
+def is_closed_passport(pp: Optional[Path]) -> bool:
+    """True when passport *pp* belongs to a CLOSED arc — never re-bound to a new chat.
+
+    Closed is tide's seal (:func:`tide.arc.stream.close`): the session dir or its
+    thread dir wrapped in ``__…__``, and ``status: done`` in the passport. An AO id
+    is reused across months (F15: tide-stack-12 relinked the archived
+    ``__25-@edinyy-sloy__/__04-pult__`` and AO took its title) — a sealed arc is
+    history, its ``claude-session:``/``title:`` stay as they were.
+    """
+    if pp is None:
+        return False
+    from . import fields, slug  # lazy: keep sessions light for the hooks
+
+    p = Path(pp)
+    entry = p.parent if p.name.endswith(".md") else p
+    if any(slug.is_closed_entry(seg) for seg in entry.parts):
+        return True
+    pf = p if p.name.endswith(".md") else p / "arc.md"
+    return (fields.read_field(pf, "status") or "").strip().lower() in ("done", "closed")
+
+
 def ao_relink(
     control_home: Path,
     ao_id: str,
@@ -317,6 +338,8 @@ def ao_relink(
     pins nothing, a pre-pick (no chat), or a service chat — never another working chat.
     A service chat never relinks at all, nor does a chat not yet on disk while this
     AO session already has a proven one (:func:`_unproven_newcomer`).
+
+    A CLOSED arc's passport (:func:`is_closed_passport`) is never rewritten (F15).
     """
     from . import fields, handoff_queue  # lazy: keep sessions light for the hooks
 
@@ -344,6 +367,8 @@ def ao_relink(
             cont.append(s)
 
     claim_pp, _pin = _launch_claim(r, env)
+    if is_closed_passport(claim_pp):
+        claim_pp = None
     claimed_by: Dict[str, Path] = {}  # stale pin → the passport the launch turn names
     if claim_pp is not None:
         cur = (fields.read_field(claim_pp, "claude-session") or "").strip()
@@ -365,7 +390,8 @@ def ao_relink(
         entry_arc = str((reg.get(p) or {}).get("arc") or "")
         if _passport_of(entry_arc) is not None:
             passports.append(_passport_of(entry_arc))
-            arc_for_real = arc_for_real or entry_arc
+            if not is_closed_passport(_passport_of(entry_arc)):
+                arc_for_real = arc_for_real or entry_arc
         for rec in (offers if p in pre else []):
             hit = False
             for key, field in (("pickup_session", "pickup-session"),
@@ -387,6 +413,8 @@ def ao_relink(
             if found is not None:
                 passports.append(found if found.name.endswith(".md") else found / "arc.md")
         for pp in passports:
+            if is_closed_passport(pp):
+                continue  # F15: a sealed arc is history, a reused AO id must not wake it
             if (fields.read_field(pp, "claude-session") or "").strip() == p:
                 fields.set_field(pp, "claude-session", r)
                 # the new chat is alive: an ``ended:`` stamp belongs to the old one
@@ -401,7 +429,7 @@ def ao_relink(
         data.pop(p, None)
     cur = data.get(r) or {}
     arc = (arc_for_real or str(cur.get("arc") or "")
-           or next((x for x in old_arcs if x), ""))
+           or next((x for x in old_arcs if x and not is_closed_passport(_passport_of(x))), ""))
     data[r] = {"handle": a, "arc": arc,
                "ts": datetime.now().isoformat(timespec="seconds")}
     _io.atomic_write(registry.registry_file(control_home),
