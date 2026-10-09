@@ -47,6 +47,10 @@ KNOWN_DEBT = {
     ("arc/land.py", "cli"),
     ("arc/stream.py", "adapters"),
     ("arc/worktree.py", "adapters"),
+    # SOC-143 F83: признак «промежуточный итог сабагента = жив» один на tide —
+    # interim_workers в hooks/autoclose.py; перенести вниз (domain), когда тот файл
+    # освободится, и снять эту строку.
+    ("launcher/seed_draft.py", "hooks"),
 }
 
 

@@ -708,8 +708,20 @@ LINEAR_KEYCHAIN = "linear-api-key"
 LINEAR_OFF_ENV = "TIDE_LINEAR_OFFLINE"    # =1 — в Linear не ходить (статус из текста)
 LINEAR_TIMEOUT = 4.0                       # с; плюс ≤1 с на Keychain — укладываемся в 5
 CLOSED_TYPES = ("completed", "canceled")
+# SOC-143 F85: в том же запросе — комментарии «Взял: <проект> — <нить> · NN» (кто ведёт
+# задачу); отдельного похода в сеть нет.
 _LINEAR_QUERY = ("query($team:String!,$nums:[Float!]){issues(filter:{team:{key:{eq:$team}},"
-                 "number:{in:$nums}},first:250){nodes{identifier state{name type}}}}")
+                 "number:{in:$nums}},first:250){nodes{identifier state{name type} "
+                 "comments(filter:{body:{startsWith:\"Взял\"}},last:10){nodes{body}}}}}")
+# «Взял: tide-stack — handoffs · 06 (…)» → (проект, нить)
+_TAKER_RE = re.compile(r"^\s*Взял:\s*(\S.*?)\s+[—–]\s+([^\s·(,.;:]+)")
+
+
+def parse_taker(body: str) -> "Optional[tuple[str, str]]":
+    """Кто взял задачу по комментарию «Взял: <проект> — <нить> · NN …» (контракт
+    v1 §3) → ``(проект, нить)``; не такой комментарий — None."""
+    m = _TAKER_RE.match(body or "")
+    return (m.group(1).strip(), m.group(2).strip()) if m else None
 
 
 class LinearUnavailable(Exception):
@@ -747,6 +759,7 @@ def linear_fetch(keys: Sequence[str]) -> Dict[str, "tuple[str, str]"]:
         return {}
     token = _linear_key()
     out: Dict[str, "tuple[str, str]"] = {}
+    takers: Dict[str, List["tuple[str, str]"]] = {}
     for team, nums in by_team.items():
         body = json.dumps({"query": _LINEAR_QUERY,
                            "variables": {"team": team, "nums": nums}}).encode()
@@ -761,8 +774,14 @@ def linear_fetch(keys: Sequence[str]) -> Dict[str, "tuple[str, str]"]:
             raise LinearUnavailable("Linear вернул ошибку")
         for node in (data["data"].get("issues") or {}).get("nodes") or []:
             st = node.get("state") or {}
-            out[str(node.get("identifier"))] = (str(st.get("name") or ""),
-                                                str(st.get("type") or ""))
+            key = str(node.get("identifier"))
+            out[key] = (str(st.get("name") or ""), str(st.get("type") or ""))
+            got = [parse_taker(str(c.get("body") or ""))
+                   for c in ((node.get("comments") or {}).get("nodes") or [])]
+            if any(got):
+                takers[key] = [t for t in got if t]
+    out = _States(out)
+    out.takers = takers
     return out
 
 
@@ -786,7 +805,9 @@ def linear_states(keys: Sequence[str]):
         if want <= got and getattr(val, "_fetch", None) is fetch:
             return val
     try:
-        val = _States(fetch(sorted(want)))
+        got = fetch(sorted(want))
+        val = _States(got)
+        val.takers = dict(getattr(got, "takers", None) or {})
     except LinearUnavailable as e:
         val = e
     except Exception as e:  # noqa: BLE001 — сид важнее
@@ -800,11 +821,15 @@ def linear_states(keys: Sequence[str]):
 
 
 class _States(dict):
-    """Ответ Linear (dict) с пометкой, какой функцией получен (для кэша)."""
+    """Ответ Linear (dict) с пометкой, какой функцией получен (для кэша), и
+    ``takers`` — ``{SOC-N: [(проект, нить), …]}`` из комментариев «Взял:» (F85)."""
+
+    takers: Dict[str, List["tuple[str, str]"]] = {}
 
 
 def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
-                status_text: str = "", live=None) -> List[str]:
+                status_text: str = "", live=None,
+                foreign: Optional[Dict[str, str]] = None) -> List[str]:
     """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
 
     Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
@@ -823,18 +848,24 @@ def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
         if key.split("-", 1)[0] in prefixes and key not in seen:
             seen.append(key)
     seen.sort(key=lambda k: int(k.rsplit("-", 1)[1]))
+    foreign = foreign or {}
     if isinstance(live, dict):
-        opened, closed = [], []
+        opened, closed, others = [], [], []
         for k in seen:
             name, kind = live.get(k, ("", ""))
             if kind in CLOSED_TYPES:
                 closed.append("  - {0} — {1} — закрыта ({2})".format(k, tmpl.format(key=k), name))
+            elif k in foreign:  # F71/F85: ведёт другая нить — не задача этой
+                others.append("  - {0} — {1} — {2} ({3})".format(
+                    k, tmpl.format(key=k), name or "в Linear не найдена", foreign[k]))
             else:
                 opened.append("- {0} — {1} — {2}".format(
                     k, tmpl.format(key=k), name or "в Linear не найдена"))
         if not seen:
             return []
         out = ["- (статусы — из Linear на момент сборки)"] + opened
+        if others:
+            out += ["- ведут другие нити — не задачи этой нити:"] + others
         if closed:
             out += ["- закрыты в Linear — не открытые задачи нити:"] + closed
         return out
@@ -1463,7 +1494,11 @@ def render_draft(bodies: Dict[str, List[str]], *, header: str = "") -> str:
 
 # Блоки, где номер задачи, закрытой в Linear, помечается на месте (F43): там его
 # читают как живую работу — шаг плана, «ждёт Гришу», открытый хвост.
-MARK_CLOSED_IN = (MAIN, AWAITING, TAILS)
+# SOC-143 F73: статус «SOC-107 (In Review)» из пульса врал и в «где мы», «ожидании»,
+# «следующем шаге» — помечаются все блоки, где номер читают как состояние; кроме
+# «задач Linear» (статус там свой), «решений» (F69) и сырого журнала (история).
+MARK_CLOSED_IN = (MAIN, EXPECTATION, WHERE, TAILS, EXPERIENCE, AWAITING, NEXT, INFLIGHT,
+                  UNANSWERED, ENTRY_MAP, ENVIRONMENT)
 
 
 def mark_closed(lines: Sequence[str], live) -> List[str]:
@@ -1477,8 +1512,9 @@ def mark_closed(lines: Sequence[str], live) -> List[str]:
         closed = []
         for key in linear_keys(ln):
             name, kind = live.get(key, ("", ""))
-            if kind in CLOSED_TYPES and key not in closed:
-                closed.append("{0} — {1} в Linear".format(key, name or "закрыта"))
+            tag = "{0} — {1} в Linear".format(key, name or "закрыта")
+            if kind in CLOSED_TYPES and tag not in closed and tag not in ln:
+                closed.append(tag)
         out.append(ln + (" ({0})".format("; ".join(closed)) if closed else ""))
     return out
 
@@ -1506,17 +1542,77 @@ def mark_linear_source(lines: Sequence[str], seen_text: str,
     return out
 
 
-def review_awaiting(live) -> List[str]:
+def review_awaiting(live, foreign: Sequence[str] = ()) -> List[str]:
     """Задачи Linear на проверке (F48) — пункты «ждёт Гришу»: In Review ждёт приёмки
-    (Гриша смотрит, Done ставит проверяющий уровнем выше). *live* не словарь — []."""
+    (Гриша смотрит, Done ставит проверяющий уровнем выше). *live* не словарь — [].
+    Чужие (*foreign*, ведёт другая нить — SOC-143 F85) — не пункт этой нити."""
     if not isinstance(live, dict):
         return []
     out = []
     for key in sorted(live, key=lambda k: int(k.rsplit("-", 1)[1])):
         name = str((live.get(key) or ("", ""))[0] or "")
-        if "review" in name.lower():
+        if "review" in name.lower() and key not in foreign:
             out.append("- {0} на проверке ({1}) — предлагаю: посмотреть и сказать слово "
                        "через менеджера; Done ставит проверяющий".format(key, name))
+    return out
+
+
+# SOC-143 F85/F71: чья задача. Скрытый ключ тел блоков — ``[проект, нить]`` этой нити.
+THREAD_SELF = "_thread_self"
+_DONT_DUP = re.compile(r"не\s+дублир\w*", re.IGNORECASE)
+
+
+def dont_dup_keys(lines: Sequence[str]) -> List[str]:
+    """Номера задач из строк «не дублировать: …» — их ведут другие нити (F71)."""
+    out: List[str] = []
+    for ln in lines:
+        m = _DONT_DUP.search(ln or "")
+        if m:
+            out += [k for k in linear_keys(ln[m.end():]) if k not in out]
+    return out
+
+
+def foreign_issues(keys: Sequence[str], live, me: Sequence[str] = (),
+                   dont_dup: Sequence[str] = ()) -> Dict[str, str]:
+    """``{SOC-N: «ведёт …»}`` — задачи, которые ведёт ДРУГАЯ нить (F85/F71).
+
+    Главнее — Linear: комментарии «Взял: <проект> — <нить> · NN» (*live*.takers);
+    есть такие, и ни один не от этой нити (*me* = ``[проект, нить]``) — чужая. Нет
+    их — номер из строки «не дублировать» чужой. Нить не известна — по Linear не
+    судим, только «не дублировать»."""
+    takers = getattr(live, "takers", None) or {}
+    proj, thread = (list(me) + ["", ""])[:2]
+    out: Dict[str, str] = {}
+    for k in keys:
+        got = takers.get(k) or []
+        if got and thread:
+            mine = any(t == thread and (not proj or not p or p == proj) for p, t in got)
+            if not mine:
+                p, t = got[-1]
+                out[k] = "ведёт {0} — {1}".format(p, t)
+        elif not got and k in dont_dup:
+            out[k] = "в «не дублировать»"
+    return out
+
+
+# F85: пункт «ждёт Гришу» про приёмку/Done задачи, которая уже закрыта в Linear, — снят.
+_REVIEW_ASK = re.compile(r"\bDone\b|In Review|на проверк|приёмк|приемк|приня|закрыт|"
+                         r"посмотреть", re.IGNORECASE)
+
+
+def drop_resolved(lines: Sequence[str], live, foreign: Sequence[str] = ()) -> List[str]:
+    """«Ждёт Гришу» без пунктов, которые решены (F85): все номера строки закрыты в
+    Linear и строка просит приёмку/Done; или номер — чужая задача на проверке
+    («SOC-102 на проверке» ведёт board). *live* не словарь — как есть."""
+    if not isinstance(live, dict):
+        return list(lines)
+    out = []
+    for ln in lines:
+        keys = linear_keys(ln)
+        if keys and _REVIEW_ASK.search(ln) and all(
+                (live.get(k) or ("", ""))[1] in CLOSED_TYPES or k in foreign for k in keys):
+            continue
+        out.append(ln)
     return out
 
 
@@ -1550,12 +1646,18 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         seen = render_draft(out, header=header) + "\n" + "\n".join(context)
         sources = list(out.get(LINEAR_SOURCES) or [])
         hay = seen + "".join("\n" + text for _name, text in sources)
-        live = linear_states(linear_keys(hay))
+        keys = linear_keys(hay)
+        live = linear_states(keys)
+        foreign = foreign_issues(  # F85/F71: чужие задачи — не задачи нити
+            keys, live, out.get(THREAD_SELF) or (),
+            dont_dup_keys([ln for k in (MAIN, AWAITING, NEXT) for ln in out.get(k) or []]))
         out[LINEAR] = mark_linear_source(
-            block_links(hay, status_text="\n".join(reversed(list(context))), live=live),
+            block_links(hay, status_text="\n".join(reversed(list(context))), live=live,
+                        foreign=foreign),
             seen, sources)
-        if AWAITING in out:  # F48: задачи на проверке ждут Гришу
-            out[AWAITING] = _merge_lines(awaiting, review_awaiting(live))
+        if AWAITING in out:  # F48: задачи на проверке ждут Гришу (F85: свои, не Done)
+            out[AWAITING] = drop_resolved(
+                _merge_lines(awaiting, review_awaiting(live, foreign)), live, foreign)
             if AWAITING in plain:
                 plain[AWAITING] = list(out[AWAITING])
         for k, body in plain.items():  # F43: закрытые в Linear — помечены на месте
@@ -2299,26 +2401,39 @@ def _git_mark(cwd: str, at) -> "tuple[str, str]":
     return top, sha
 
 
-def background_workers(transcript: Optional[Path], git=_git_mark) -> List[str]:
-    """Незавершённые фоновые сабагенты в транскрипте (F45) — строками «в работе».
+def _interim_agents(transcript: Path) -> set:
+    """agentId сабагентов, чей последний ``<task-notification>`` промежуточный
+    («… still running … may be interim») или возобновлённых письмом после итога —
+    ещё в полёте (SOC-143). Признак — один на tide: :func:`tide.hooks.autoclose.
+    interim_workers` (автозакрытие старой судит по нему же)."""
+    try:
+        from ..hooks.autoclose import interim_workers
+        return {w.split(" ", 1)[0] for w in interim_workers(Path(transcript))}
+    except Exception:  # noqa: BLE001 — сид важнее
+        return set()
+
+
+def worker_runs(transcript: Optional[Path], interim: bool = True):
+    """Фоновые сабагенты транскрипта на момент сборки (F45, SOC-143 F83) →
+    ``(живые, сдавшие)``: живые — ``[(agentId, описание, время запуска, cwd)]``,
+    сдавшие — ``[(agentId, описание, время финального итога)]``.
 
     Запуск — ``Agent`` с ответом «Async agent launched … agentId: X»; возобновление —
     SendMessage с ``resumedAgentId``; конец — ``<task-notification>`` с тем же
-    tool-use-id (любой статус). Что не кончилось — «воркер «описание» — жив в
-    старой сессии, итог перешлёт старая; адрес SendMessage/task-id; коммиты — git log
-    <репо> после <sha>»."""
+    tool-use-id. Промежуточное уведомление (:func:`_interim_agents`) — не конец
+    (*interim* False — любое уведомление конец, как до SOC-143)."""
     import json
 
     if transcript is None:
-        return []
+        return [], []
     try:
         raw = Path(transcript).read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return []
+        return [], []
     calls = {}    # tool_use_id → (описание, agentId из входа SendMessage, время, cwd)
     desc_of = {}  # agentId → описание
     runs = {}     # tool_use_id → (agentId, описание, время, cwd)
-    done = set()
+    done = {}     # tool_use_id → время уведомления о конце
     for ln in raw.splitlines():
         if ('"tool_use"' not in ln and '"tool_result"' not in ln
                 and "task-notification" not in ln):
@@ -2362,13 +2477,35 @@ def background_workers(transcript: Optional[Path], git=_git_mark) -> List[str]:
                 desc_of[agent] = call[0]
             runs[b.get("tool_use_id")] = (agent, desc, call[2] or at, call[3])
         for m in _NOTIF_RE.finditer(_user_text(row) or json.dumps(content, ensure_ascii=False)):
-            done.add(m.group(1))
-    live = {}
+            done[m.group(1)] = at
+    still = _interim_agents(transcript) if runs and interim else set()
+    live, ended = {}, {}
     for tid, run in runs.items():
-        if tid not in done:
+        if tid not in done or run[0] in still:
             live[run[0]] = run  # один воркер — одна строка (последний запуск)
+        else:
+            prev = ended.get(run[0])
+            if prev is None or (done[tid] and prev[2] and done[tid] > prev[2]):
+                ended[run[0]] = (run[0], run[1], done[tid])
+    finished = [r for a, r in ended.items() if a not in live]
+    finished.sort(key=lambda r: r[2] or 0, reverse=True)
+    return sorted(live.values(), key=lambda r: r[2] or 0, reverse=True), finished
+
+
+def background_workers(transcript: Optional[Path], git=_git_mark) -> List[str]:
+    """Незавершённые фоновые сабагенты в транскрипте (F45) — строками «в работе»:
+    «воркер «описание» — жив в старой сессии, итог перешлёт старая; адрес
+    SendMessage/task-id; коммиты — git log <репо> после <sha>» (:func:`worker_runs`).
+
+    Конец — любое уведомление: автозакрытие и приём (hooks/autoclose, reception)
+    судят о промежуточном итоге сами (``interim_workers``). Сид — через
+    :func:`session_worker_runs`, где промежуточный итог = ещё в полёте (F83)."""
+    return worker_lines(worker_runs(transcript, interim=False)[0], git=git)
+
+
+def worker_lines(live, git=_git_mark) -> List[str]:
     out = []
-    for agent, desc, at, cwd in sorted(live.values(), key=lambda r: r[2] or 0, reverse=True):
+    for agent, desc, at, cwd in live:
         top, sha = git(cwd, at) if at else ("", "")
         tail = "; коммиты — git log {0} после {1}".format(top, sha) if top and sha else ""
         out.append("- воркер «{0}» — жив в старой сессии (с {1}), итог перешлёт старая; "
@@ -2380,12 +2517,108 @@ def background_workers(transcript: Optional[Path], git=_git_mark) -> List[str]:
 
 def session_workers(session_entry: Path) -> List[str]:
     """Фоновые воркеры передающей сессии (:func:`background_workers`). Не падает."""
+    return worker_lines(session_worker_runs(session_entry)[0])
+
+
+def session_worker_runs(session_entry: Path):
+    """:func:`worker_runs` транскрипта передающей сессии. Не падает."""
     try:
         sid = (fields.read_field(Path(session_entry) / "arc.md",
                                  offload.CLAUDE_SESSION_FIELD) or "").strip()
-        return background_workers(transcript_path(sid))
+        return worker_runs(transcript_path(sid))
     except Exception:  # noqa: BLE001 — сид важнее
-        return []
+        return [], []
+
+
+# --- SOC-143 F83: «в полёте» — по транскрипту на момент сборки ------------------
+#
+# Метка «В полёте: сабагент — тема …» и слой «где мы» пишутся ДО итога сабагента
+# (хук велит ПЕРЕДАЧУ, пока он работает); итог пришёл за секунды до сборки — сид
+# держал сдавшего живым. Финальный итог в транскрипте → не в полёте.
+
+_WORKER_WORD = re.compile(r"саб-?агент|суб-?агент|воркер|subagent|\bагент", re.IGNORECASE)
+_WORKER_STOP = {"сабагент", "субагент", "воркер", "агент", "subagent", "agent", "итог",
+                "принять", "диску"}
+WORKER_MATCH_MIN = 2       # общих значимых слов строки и описания воркера — тот же
+_PULSE_AT = re.compile(r"\(пульс (\d{2}:\d{2})\)")
+
+
+_CLAUSE_SPLIT = re.compile(r"\s·\s|;\s+")
+
+
+def _worker_words(text: str) -> set:
+    return {w for w in norm_line(text).split()
+            if (len(w) >= 4 and w not in _WORKER_STOP) or (w.isdigit() and len(w) >= 3)}
+
+
+def _worker_clauses(line: str) -> List[str]:
+    """Куски строки (по « · » и «; »), где назван сабагент/воркер."""
+    return [c for c in _CLAUSE_SPLIT.split(line or "") if _WORKER_WORD.search(c)]
+
+
+def _match_worker(line: str, runs) -> Optional[tuple]:
+    """Воркер из *runs* (``(agentId, описание, …)``), о котором строка: agentId в ней
+    или :data:`WORKER_MATCH_MIN` общих значимых слов с описанием."""
+    words = _worker_words(line)
+    best, score = None, 0
+    for run in runs:
+        if run[0] and run[0] in line:
+            return run
+        n = len(words & _worker_words(run[1]))
+        if n >= WORKER_MATCH_MIN and n > score:
+            best, score = run, n
+    return best
+
+
+def _hhmm(at) -> str:
+    return at.strftime("%H:%M:%S") if at else "?"
+
+
+def settle_inflight(lines: Sequence[str], live, finished):
+    """Пункты «в полёте» из меток пульсов, сверенные с транскриптом (F83) →
+    ``(оставшиеся, снятые)``. Пункт про сабагента снимается, если его воркер сдал
+    финальный итог (описание совпало), или — пункт без узнаваемого воркера — живых
+    нет, а последний итог пришёл не раньше пульса с меткой. Снятые — строками для
+    «где мы» (с временем итога): молча не тонет."""
+    kept, gone = [], []
+    for ln in lines:
+        if not _WORKER_WORD.search(ln) or not finished:
+            kept.append(ln)
+            continue
+        if _match_worker(ln, live):
+            kept.append(ln)
+            continue
+        run = _match_worker(ln, finished)
+        if run is None and not live:
+            m = _PULSE_AT.search(ln)
+            last = finished[0]
+            if not m or (last[2] and last[2].strftime("%H:%M") >= m.group(1)):
+                run = last
+        if run is None:
+            kept.append(ln)
+            continue
+        gone.append("- сабагент «{0}» сдал итог в {1} (транскрипт на момент сборки) — "
+                    "снят из «{2}»: {3}".format(run[1] or run[0], _hhmm(run[2]), INFLIGHT,
+                                                ln.strip().lstrip("- ")))
+    return kept, gone
+
+
+def mark_finished_workers(lines: Sequence[str], live, finished) -> List[str]:
+    """Строки («где мы»), где сабагент назван идущим, а его воркер уже сдал
+    финальный итог (F83), — с пометкой «сдал итог в ЧЧ:ММ:СС»."""
+    out = []
+    for ln in lines:
+        run = None
+        for clause in _worker_clauses(ln) if finished else ():
+            if not _match_worker(clause, live):
+                run = _match_worker(clause, finished)
+            if run is not None:
+                break
+        if run is not None and "сдал итог" not in ln:
+            ln = "{0} (сабагент «{1}» сдал итог в {2} — по транскрипту на момент " \
+                 "сборки, не в полёте)".format(ln.rstrip(), run[1] or run[0], _hhmm(run[2]))
+        out.append(ln)
+    return out
 
 
 def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
@@ -2560,6 +2793,16 @@ def manager_line() -> str:
             "цепочки его нити) — спроси tide whois manager перед отправкой")
 
 
+def _project_name(root: Path) -> str:
+    root = Path(root)
+    return root.parent.name if root.name == ".tide" else root.name
+
+
+def _thread_word(thread_entry: Path) -> str:
+    """«30-@handoffs» → «handoffs» — так нить зовут в «Взял: <проект> — <нить> · NN»."""
+    return re.sub(r"^\d+-@?", "", Path(thread_entry).name)
+
+
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
     """Тела блоков контракта для *session_entry* с диска — общее у черновика и
@@ -2585,13 +2828,18 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     context = section_body(passport, "context")
     labels = labeled_pulses(context)
     summary = prose_lines(section_body(passport, "summary"))
-    where = mark_stale_manager(layer(lays, "where")) + block_cursor(
+    live_runs, done_runs = session_worker_runs(session_entry)
+    # F83: слой «где мы» — снимок до итога сабагента; сдавший помечен по транскрипту
+    where = mark_finished_workers(mark_stale_manager(layer(lays, "where")),
+                                  live_runs, done_runs) + block_cursor(
         section_body(passport, "cursor"), section_body(passport, "context"),
         works=works, clip=pulse_clip)
     if summary:
         where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
-    inflight = _merge_lines(labels.get("inflight", []),
-                            session_workers(session_entry),
+    label_inflight, settled = settle_inflight(labels.get("inflight", []),
+                                              live_runs, done_runs)
+    where += settled
+    inflight = _merge_lines(label_inflight, worker_lines(live_runs),
                             session_incoming(session_entry,
                                              section_body(passport, "context")),
                             _auto.open_items(root, thread_entry),
@@ -2638,6 +2886,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  + contract.find_body(seed_in, "experience")))
         + topic_block(root, thread_entry),
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
+        THREAD_SELF: [_project_name(root), _thread_word(thread_entry)],
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
                          ("прошлого сида", "\n".join(contract.find_body(seed_in, "linear")))],
     }
