@@ -242,3 +242,16 @@ def test_dropped_offer_is_quiet(world, monkeypatch, said, clock):
     out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID)
     assert out["action"] in ("accepted", "superseded")
     assert said == {"manager": [], "ao": [], "human": []}
+
+
+def test_ao_relinked_reservation_is_still_ours(world, monkeypatch, said, clock):
+    """AO переписал pickup-session на настоящий claude-id — это та же сессия."""
+    from tide import registry
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    key = _reserved_offer(world["home"], sid="real-claude-id")
+    monkeypatch.setattr(registry, "recorded_handle",
+                        lambda home, sid, **kw: AO_NEW if sid == "real-claude-id" else None)
+    out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID, skip_alive=True)
+    assert out["action"] == reception_watch.DIED
+    assert len(said["manager"]) == 1
+    assert hq._resolve(world["home"], key)["pickup_session"] == "-"

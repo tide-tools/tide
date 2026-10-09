@@ -124,7 +124,7 @@ def signal_failed(home: Path, key: str, *, detail: str, handle: str = "",
     if rec.get("status") != hq.STATUS_OFFERED:
         return out  # уже принят/снят — не тревога
     reserved = str(rec.get("pickup_session") or "").strip()
-    if not sid or reserved in ("", "-") or reserved == sid:
+    if not sid or reserved in ("", "-") or _ours(home, reserved, sid, handle):
         try:
             out["unreserved"] = hq.unreserve(home, key) is not None
         except Exception:  # noqa: BLE001
@@ -149,7 +149,22 @@ def signal_failed(home: Path, key: str, *, detail: str, handle: str = "",
 
 # --- сам сторож ------------------------------------------------------------------
 
-def _offer_state(home: Path, key: str, sid: str) -> str:
+def _ours(home: Path, reserved: str, sid: str, handle: str) -> bool:
+    """Резерв всё ещё этого подъёма? AO-перепривязка (sessions: pre-pick → настоящий
+    claude-id) переписывает pickup-session — это та же сессия, если реестр ведёт
+    новый id в наш *handle*."""
+    if reserved == sid:
+        return True
+    if not handle or reserved in ("", "-"):
+        return False
+    try:
+        from .. import registry
+        return (registry.recorded_handle(Path(home), reserved) or "").strip() == handle
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _offer_state(home: Path, key: str, sid: str, handle: str = "") -> str:
     """offered | done (принят/снят/нет) | superseded (резерв уже чужой)."""
     from .. import handoff_queue as hq
     try:
@@ -159,7 +174,7 @@ def _offer_state(home: Path, key: str, sid: str) -> str:
     if rec.get("status") != hq.STATUS_OFFERED:
         return "done"
     reserved = str(rec.get("pickup_session") or "").strip()
-    if sid and reserved != sid:
+    if sid and not _ours(home, reserved, sid, handle):
         return "superseded"
     return "offered"
 
@@ -189,7 +204,7 @@ def watch(home: Path, key: str, handle: str, *, adapter_name: Optional[str] = No
                                                  "adapter": adapter_name or ""},
                                      adapter_name=adapter_name, timeout=live_timeout)
         if alive.get("action") == handoff.NOT_ALIVE:
-            if _offer_state(home, key, sid) != "offered":
+            if _offer_state(home, key, sid, handle) != "offered":
                 return dict(out, action="superseded")
             out.update(action=handoff.NOT_ALIVE, detail=alive.get("detail") or "")
             out["signal"] = signal_failed(home, key, detail=str(out["detail"]),
@@ -199,7 +214,7 @@ def watch(home: Path, key: str, handle: str, *, adapter_name: Optional[str] = No
     deadline = clock() + limit
     probe = getattr(adapter, "alive", None)
     while True:
-        state = _offer_state(home, key, sid)
+        state = _offer_state(home, key, sid, handle)
         if state == "done":
             return dict(out, action="accepted")
         if state == "superseded":
