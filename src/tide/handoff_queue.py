@@ -986,13 +986,13 @@ def _cmd_multiples(args) -> int:
         print("  {0}: origin {1} → held now by {2}  (thread {3}){4}".format(
             r["name"], r["from_session"], r["taken_by"], r["arc"],
             " — {0}".format(r["evidence"]) if r.get("evidence") else ""))
-    if not getattr(args, "no_send", False):
+    alarm = getattr(args, "two_heads_alarm", None)  # край CLI подставляет (F49)
+    if alarm is not None and not getattr(args, "no_send", False):
         # SOC-101 F49: две головы — тревога обеим (ao send), раз на пару
-        from .hooks import handed_off
         for r in ms:
             if not recently_active(r):
                 continue  # старая давно замолчала — история, не тревога
-            sent = handed_off.two_heads_alarm(_home(), r, evidence=str(r.get("evidence") or ""))
+            sent = alarm(_home(), r, evidence=str(r.get("evidence") or ""))
             if sent:
                 print("    → сказано: {0}".format(", ".join(sent)))
     return 1

@@ -240,6 +240,14 @@ def two_heads_alarm(home: Path, rec: Dict[str, object], *, evidence: str = "",
         return []
 
 
+def register_two_heads(hsub) -> None:
+    """Научить ``tide handoffs multiples`` слать тревогу «две головы» (край CLI
+    собирает: очередь — домен и хуки не импортирует)."""
+    mp = hsub.choices.get("multiples")
+    if mp is not None:
+        mp.set_defaults(two_heads_alarm=two_heads_alarm)
+
+
 def context_text(*, new_addr: str, sender: str, forwarded: Optional[str],
                  new_ao: str, mine: bool, from_new: bool = False) -> str:
     """Строка в контекст старой: кому передана нить и что делать с этим сообщением."""
