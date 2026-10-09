@@ -408,8 +408,13 @@ def block_expectation(layer_lines: Sequence[str], goal_file: Optional[Path] = No
     return list(quotes)
 
 
-# C1: цитата Гриши в пульсе — «Гриша/Гриши/Гришу …» и текст в «ёлочках» в одной фразе.
-_GRISHA_QUOTE = re.compile(r"Гриш\w*.*«[^«»]{8,}»|«[^«»]{8,}».*Гриш\w*")
+# C1/F46: цитата Гриши — «слово/слова Гриши …: «…»» или «Гриша (tg N): «…»»: Гриша —
+# говорящий, а за подписью сразу двоеточие или скобка и ёлочки. «"решение" только у
+# ответа Гриши», «Ждёт решения менеджера: помечать «решением» …» — не его слова.
+_GRISHA_SPEAKER = (r"(?:[Сс]лов[оа]\s+Гриши|\bГриша)"
+                   r"(?P<mid>(?:[^«.\n]|\.(?!\s)){0,120}?)[:)]\s*«(?P<q>[^«»]{8,})»")
+_GRISHA_QUOTE = re.compile(_GRISHA_SPEAKER)
+_TG_NUM = re.compile(r"\btg\b\D{0,12}?(\d{3,6})", re.IGNORECASE)
 
 
 def grisha_quotes(*contexts: Sequence[str], limit: int = 5) -> List[str]:
@@ -428,6 +433,51 @@ def grisha_quotes(*contexts: Sequence[str], limit: int = 5) -> List[str]:
                     out.append("- {0} (цитата из пульса {1})".format(
                         sent, m.group(1).replace("T", " ")[:16]))
     return fold_lines(out)[:limit]
+
+
+def grisha_words(transcript: Optional[Path], limit: int = 5) -> List[str]:
+    """Слова Гриши из доставок транскрипта (F46): «Слово Гриши (tg N): «…»» в
+    сообщениях менеджера и других сессий → ``- «…» (слово Гриши, tg N, через X в
+    ЧЧ:ММ)``, свежие сверху, без повторов, не больше *limit*."""
+    if transcript is None:
+        return []
+    try:
+        rows = list(_transcript_rows(transcript))
+    except OSError:
+        return []
+    found = []
+    for row in rows:
+        if row.get("type") not in ("user", "attachment"):
+            continue
+        at = _dialog._stamp(str(row.get("timestamp") or ""))
+        text = _user_text(row)
+        for rx in (_DELIVERY_RE, _CROSS_RE):
+            for m in rx.finditer(text):
+                who, body = m.group(1).strip(), " ".join(m.group(2).split())
+                for q in _GRISHA_QUOTE.finditer(body):
+                    tg = _TG_NUM.search(q.group("mid") or "")
+                    found.append((at, "- «{0}» (слово Гриши{1}, через {2}{3})".format(
+                        q.group("q").strip(), ", tg " + tg.group(1) if tg else "",
+                        sender_key(who), " в " + at.strftime("%H:%M") if at else "")))
+    found.sort(key=lambda r: r[0] or 0, reverse=True)
+    out: List[str] = []
+    seen = set()
+    for _at, line in found:
+        key = norm_line(line.split("» (", 1)[0])
+        if key not in seen:
+            seen.add(key)
+            out.append(line)
+    return out[:limit]
+
+
+def session_grisha_words(session_entry: Path) -> List[str]:
+    """:func:`grisha_words` транскрипта передающей сессии. Не падает."""
+    try:
+        sid = (fields.read_field(Path(session_entry) / "arc.md",
+                                 offload.CLAUDE_SESSION_FIELD) or "").strip()
+        return grisha_words(transcript_path(sid))
+    except Exception:  # noqa: BLE001 — сид важнее
+        return []
 
 
 def _work_order(rec: Dict[str, object]) -> "tuple[int, str]":
@@ -1859,8 +1909,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         EXPECTATION: block_expectation(
             layer(lays, "expectation"), _stream.passport_path(thread_entry),
             labels.get("expectation", []),
-            grisha_quotes(context, section_body(
-                sections(_read(_stream.passport_path(thread_entry))), "context"))),
+            fold_lines(session_grisha_words(session_entry) + grisha_quotes(
+                context, section_body(
+                    sections(_read(_stream.passport_path(thread_entry))), "context")))[:5]),
         WHERE: where,
         TAILS: block_tails(context, labels.get(TAILS_KEY, [])),
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
