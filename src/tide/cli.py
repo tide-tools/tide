@@ -464,10 +464,12 @@ def _register_handoffs(sub) -> None:
     # right away (decision 07 handoff-autospawn) — composed here for the same reason.
     from .handoff_queue import register as register_handoffs
     from .launcher.handoff import register_offer_spawn
+    from .launcher.handoff_audit import register_audit
     from .launcher.seed_draft import register_draft
 
     hsub = register_handoffs(sub)
     register_draft(hsub)
+    register_audit(hsub)  # SOC-101 п.3: what a seed lacks, section by section
     register_offer_spawn(hsub)
 
 
