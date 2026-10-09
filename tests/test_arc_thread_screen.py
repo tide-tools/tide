@@ -433,7 +433,15 @@ def test_main_block_stops_at_the_next_heading(tmp_project):
 
 def test_screen_says_plainly_when_there_is_no_main_block(tmp_project):
     nit = _thread(tmp_project)
+    (ts.resolve_thread(tmp_project, nit) / "plan.md").unlink()  # нить до решения 24
     assert "главное · none" in ts.render(tmp_project, nit)
+
+
+def test_fresh_thread_screen_shows_the_main_hints(tmp_project):
+    """Решение № 24: нить рождается с каркасом «главного» — экран показывает
+    подсказки, что вписать (старт-гейт их не пропустит)."""
+    out = ts.render(tmp_project, _thread(tmp_project))
+    assert "главное — читать первым" in out and "<SOC-N" in out
 
 
 def test_check_asks_a_working_thread_for_its_main_block(tmp_project):

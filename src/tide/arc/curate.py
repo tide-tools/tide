@@ -144,7 +144,8 @@ def drop_thread(thread_dir: Path) -> Path:
     sub = d / "arcs"
     has_session = sub.is_dir() and any(
         c.is_dir() and not c.name.startswith("__") for c in sub.iterdir())
-    if has_session or (d / "plan.md").is_file():
+    from . import plan_main  # нетронутый каркас «главного» нить не наполняет
+    if has_session or ((d / "plan.md").is_file() and not plan_main.is_scaffold(d)):
         raise StreamError("drop-thread: thread is not empty — close it by hand instead")
     grave = d.parent / DROPPED_DIRNAME
     grave.mkdir(exist_ok=True)

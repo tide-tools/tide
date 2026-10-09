@@ -36,6 +36,11 @@ def _has_any_file(d: Path) -> bool:
     return any(p.is_file() for p in d.rglob("*"))
 
 
+def _plan_scaffold(entry_dir: Path) -> bool:
+    from . import plan_main
+    return plan_main.is_scaffold(entry_dir)
+
+
 def contentless(entry_dir: Path) -> bool:
     """True when nothing real ever landed in *entry_dir* — a passport-only scaffold.
 
@@ -51,6 +56,8 @@ def contentless(entry_dir: Path) -> bool:
     passport = stream.passport_path(entry_dir)
     for p in entry_dir.iterdir():
         if p.is_file():
+            if p.name == "plan.md" and _plan_scaffold(entry_dir):
+                continue      # нетронутый каркас «главного» (решение 24) — не жизнь
             if p != passport:
                 return False  # a real file at the entry's root → alive
         elif p.name == paths.ARCS_DIRNAME:

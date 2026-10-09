@@ -69,6 +69,8 @@ def _project_with_seeded_offer(tmp_control_home):
     scaffold_project(proj, name="proj")
     roster.add(tmp_control_home, "proj", str(proj))
     entry = stream.new_thread(proj, "redesign")
+    from tests.test_plan_main import fill_main
+    fill_main(entry)  # решение № 24: иначе старт-гейт не пропустит первый пульс
     sess = stream.new_session(proj, "redesign", "kickoff")
     seed = sess / "input" / "handoff-seed.md"
     seed.write_text("# seed\n\nделай следующий шаг\n", encoding="utf-8")
@@ -573,6 +575,8 @@ def test_validate_target_accepts_thread_and_session_by_name_or_slug(tmp_control_
 
     proj = _rostered_project(tmp_control_home, name="x")
     entry = stream.new_thread(proj, "redesign")
+    from tests.test_plan_main import fill_main
+    fill_main(entry)  # решение № 24: иначе старт-гейт не пропустит первый пульс
     sess = stream.new_session(proj, "redesign", "kickoff")
     hq.validate_target(tmp_control_home, project="x",
                        arc="{0}/{1}".format(entry.name, sess.name))  # dir names
@@ -605,6 +609,8 @@ def test_cli_offer_still_hangs_valid_offer(tmp_control_home, monkeypatch, capsys
 
     proj = _rostered_project(tmp_control_home, name="x")
     entry = stream.new_thread(proj, "redesign")
+    from tests.test_plan_main import fill_main
+    fill_main(entry)  # решение № 24: иначе старт-гейт не пропустит первый пульс
     sess = stream.new_session(proj, "redesign", "kickoff")
     monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
     rc = cli.main(["handoffs", "offer", "kickoff", "--project", "x",

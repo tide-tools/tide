@@ -17,6 +17,7 @@ stamp is added on open by :mod:`tide.arc.stream`, not baked into the template.
 from __future__ import annotations
 
 from .. import handoff_contract as _contract
+from . import plan_main as _plan_main
 
 
 def arc_md(name: str) -> str:
@@ -69,12 +70,27 @@ def thread_goal_md(slug: str, goal: str = "") -> str:
         "goal: <one line — what this thread is about; ≤12 words>\n"
         "status: active\n"
         "kind: thread\n"
+        "{req_field}: {req_value}\n"
         "\n"
         "# The thread's items = its sessions (NN-slug in arcs/), chained by from:.\n"
         "\n"
         "## where we are\n"
         "{where}"
-    ).format(slug=slug, head=head, where=where_we_are_scaffold())
+    ).format(slug=slug, head=head, where=where_we_are_scaffold(),
+             req_field=_plan_main.REQUIRED_FIELD, req_value=_plan_main.REQUIRED_VALUE)
+
+
+def thread_plan_md(slug: str) -> str:
+    """Seed ``plan.md`` of a thread: only «## главное — читать первым» with three hints
+    (решение Гриши № 24). Steps and ``final:`` are written by the agent (закон 47);
+    the start-gate refuses the thread's first pulse while the hints still stand."""
+    hints = "".join("- {0}\n".format(h) for h in _plan_main.HINTS)
+    return (
+        "# план нити {slug} · v1\n"
+        "\n"
+        "{heading}\n"
+        "{hints}"
+    ).format(slug=slug, heading=_plan_main.HEADING, hints=hints)
 
 
 def session_md(name: str) -> str:

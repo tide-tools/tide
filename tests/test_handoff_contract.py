@@ -13,15 +13,16 @@ from tide.launcher import handoff, handoff_audit, seed_draft
 SKILL = Path(__file__).resolve().parent.parent / "skills" / "handoff" / "SKILL.md"
 
 CONTRACT_ORDER = [
-    "ожидание Гриши", "где мы", "опыт", "решения", "задачи Linear", "ждёт Гришу",
+    "главное", "ожидание Гриши", "где мы", "опыт", "решения", "задачи Linear", "ждёт Гришу",
     "следующий шаг", "в работе прямо сейчас", "неотвеченные реплики Гриши",
     "карта входа", "окружение", "сырой журнал",
 ]
 
 
-def test_twelve_blocks_in_contract_order_none_droppable():
+def test_thirteen_blocks_in_contract_order_none_droppable():
+    """Двенадцать блоков контракта и «главное» нити первым (решение Гриши № 24)."""
     assert list(hc.NAMES) == CONTRACT_ORDER
-    assert len({b.key for b in hc.BLOCKS}) == 12
+    assert len({b.key for b in hc.BLOCKS}) == 13
     assert all(b.keep_empty and b.empty for b in hc.BLOCKS)
     assert all(b.kind in (hc.PROSE, hc.LIST) for b in hc.BLOCKS)
     assert hc.JOURNAL_SHARE == 0.30 and hc.HANDOFF_TOKENS == 200_000
@@ -74,7 +75,7 @@ def test_consumers_read_the_one_source():
 
 def test_audit_sections_name_their_seed_blocks():
     keys = [k for k, _t in hc.AUDIT_SECTIONS]
-    assert keys == ["cursor", "context", "next", "decisions", "experience",
+    assert keys == ["main", "cursor", "context", "next", "decisions", "experience",
                     "expectation", "dialog", "understood"]
     titles = dict(hc.AUDIT_SECTIONS)
     assert titles["dialog"].startswith(hc.name("unanswered"))

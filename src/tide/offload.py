@@ -352,15 +352,34 @@ def _note_first_pulse(passport: Path, *, note: str, cursor: str) -> None:
         pass
 
 
+def _main_gate(root: Path, ref: str):
+    """Старт-гейт «главного» нити (решение Гриши № 24) — :func:`tide.arc.plan_main.gate`
+    для сессии *ref*; None — молчим (или сессия не нашлась: ошибку скажет offload)."""
+    try:
+        entry = find_session(Path(root), ref)
+        if entry is None:
+            return None
+        from .arc import plan_main
+        return plan_main.gate(entry)
+    except Exception:  # noqa: BLE001 — гейт не смеет уронить пульс
+        return None
+
+
 def _cmd_offload(args) -> int:
     root = paths.require_tide_root()
     note = " ".join(getattr(args, "note", []) or [])
     cursor = getattr(args, "cursor", "") or ""
     next_steps = getattr(args, "next_steps", "") or ""
     summary = getattr(args, "summary", "") or ""
+    verdict = _main_gate(root, args.session)
+    if verdict is not None and verdict.block:
+        print(verdict.reason, file=sys.stderr)
+        return 1
     passport = offload(root, args.session, note=note, cursor=cursor,
                        next_steps=next_steps, summary=summary)
     print("tide: offloaded → {0}".format(passport))
+    if verdict is not None:
+        print(verdict.reason, file=sys.stderr)
     confirmed = _confirm_pending_pickup(passport)
     if confirmed:
         print("tide: handoff {0} confirmed by this pulse (the first-prompt flip "

@@ -314,7 +314,7 @@ def test_contract_synonyms_cover_hand_headings():
 
     heads = ["финал", "курсор", "дальше", "решения", "опыт", "карта входа", "окружение"]
     assert set(hc.missing(heads)) == {
-        "задачи Linear", "ждёт Гришу", "в работе прямо сейчас",
+        "главное", "задачи Linear", "ждёт Гришу", "в работе прямо сейчас",
         "неотвеченные реплики Гриши", "сырой журнал"}
     assert hc.find_body({"что дальше": ["- x"]}, "next") == ["- x"]
     assert hc.find_body({"уроки": ["- y"]}, "experience") == ["- y"]

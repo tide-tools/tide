@@ -47,6 +47,7 @@ INPUT_SEED_NAME = "handoff-seed.md"
 BLOCKS = contract.NAMES
 
 # Имена блоков, которыми оперирует сборка (ключ → заголовок).
+MAIN = contract.name("main")
 EXPECTATION = contract.name("expectation")
 WHERE = contract.name("where")
 EXPERIENCE = contract.name("experience")
@@ -648,6 +649,26 @@ def predecessor_thread(root: Path, thread_entry: Path) -> Optional[Path]:
     return None
 
 
+def block_main(thread_entry: Path, inherited: Sequence[str] = (),
+               pred: Optional[Path] = None) -> List[str]:
+    """«Главное» нити (решение № 24): живые строки раздела plan.md нити; нет —
+    из входного сида, потом из plan.md нити-предшественницы (с пометкой)."""
+    from ..arc import plan_main
+
+    own = plan_main.live_lines(thread_entry)
+    if own:
+        return ["- " + ln.lstrip("-* ").strip() for ln in own]
+    kept = [ln for ln in live_lines(inherited) if not is_hole(ln) and "<!--" not in ln]
+    if kept:
+        return kept
+    if pred is not None:
+        theirs = plan_main.live_lines(pred)
+        if theirs:
+            return ["- {0} (из нити-предшественницы {1})".format(
+                ln.lstrip("-* ").strip(), pred.name) for ln in theirs]
+    return []
+
+
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
     """Тела блоков контракта для *session_entry* с диска — общее у черновика и
@@ -677,6 +698,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     if summary:
         where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
     return {
+        MAIN: block_main(thread_entry, contract.find_body(seed_in, "main"), pred),
         EXPECTATION: layer(lays, "expectation") + block_final(
             _goal_of(thread_entry), _goal_of(session_entry)),
         WHERE: where,

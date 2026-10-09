@@ -341,7 +341,11 @@ def audit(home: Path, key: str) -> Dict[str, object]:
 
     tail = before(_dialog.tail(thread_dir, n=0), cutoff)[-DIALOG_TAIL:]
 
+    from ..arc import plan_main
+
     sections = {
+        "main": audit_section("main", titles["main"], plan_main.live_lines(thread_dir),
+                              seed_text),
         "cursor": audit_section("cursor", titles["cursor"], cursor, seed_text),
         "context": audit_section("context", titles["context"], context, seed_text,
                                  gist=True),

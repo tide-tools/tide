@@ -13,10 +13,12 @@ import pytest
 from tide import cli, fields, offload
 from tide.arc import stream
 
+from tests.test_plan_main import fill_main
+
 
 @pytest.fixture
 def session(tmp_project):
-    stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean")
+    fill_main(stream.new_thread(tmp_project, "hygiene", goal="keep the seam clean"))
     return stream.new_session(tmp_project, "hygiene", "otliv")
 
 

@@ -483,6 +483,9 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False,
                      templates.thread_goal_md(s, (goal or "").strip()))
     if goal and goal.strip():
         fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
+    # решение Гриши № 24: план нити рождается с «главным» — тремя подсказками,
+    # которые старт-гейт (первый tide offload) не пропустит незаполненными
+    _io.atomic_write(entry / "plan.md", templates.thread_plan_md(s))
     stamp_rev(entry, root)
     return entry
 

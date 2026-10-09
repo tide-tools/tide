@@ -196,7 +196,7 @@ def test_render_draft_keeps_contract_order_and_all_blocks():
     out = seed_draft.render_draft({seed_draft.EXPECTATION: ["нить: X"]})
     heads = [ln[3:] for ln in out.splitlines() if ln.startswith("## ")]
     assert heads == list(seed_draft.BLOCKS) == list(handoff_contract.NAMES)
-    assert len(heads) == 12
+    assert len(heads) == 13  # двенадцать контракта + «главное» (решение 24)
 
 
 def test_render_draft_fills_an_empty_block_with_a_visible_hole_and_why():
