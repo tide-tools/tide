@@ -539,6 +539,13 @@ def _register_whois(sub) -> None:
     register_whois(sub)
 
 
+def _register_mail(sub) -> None:
+    # SOC-143: `tide mail send|read|ls` — почта нити с квитанцией и повтором пинга
+    from .mail import register as register_mail
+
+    register_mail(sub)
+
+
 def _register_lookback(sub) -> None:
     # отлив (cand 10): the reading watermark — refs/lookback/<reader>/<scope>,
     # status/mark/log. ON-DEMAND ONLY (no daemon, no hook, no LLM): the routine's
@@ -653,6 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_handoffs(subparsers)
     _register_offload(subparsers)
     _register_whois(subparsers)
+    _register_mail(subparsers)
     _register_lookback(subparsers)
     _register_truth(subparsers)
     _register_canon(subparsers)

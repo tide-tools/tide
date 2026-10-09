@@ -405,6 +405,17 @@ def _whoami(root: Path, session: Optional[str]) -> List[str]:
     return lines
 
 
+def _mail_line(root: Path, session: Optional[str]) -> List[str]:
+    """«почта: N непрочитанных — tide mail ls <нить>» (SOC-143) — или []."""
+    try:
+        from .. import mail
+
+        line = mail.session_line(root, session)
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        return []
+    return [line] if line else []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
     """Render the SessionStart text: health line + board + role reminder + warnings.
@@ -420,6 +431,7 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
     # pointer. Everything long (STREAM, decisions, warnings) goes below.
     lines: List[str] = _svetofor_line(root)
     lines += _whoami(root, session)
+    lines += _mail_line(root, session)
     lines.append(_role_reminder(role))
     lines += _multiple_warnings(session)
     lines += _thread_screen_pointer(root, session)
