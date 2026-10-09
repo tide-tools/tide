@@ -479,3 +479,69 @@ def test_letter_says_who_confirms_and_why(world):
     assert ("подтверждаешь ты — main проекта proj-main, потому что старая proj-41 закрыта"
             in body)
     assert rep["text"].splitlines()[1].startswith("подтверждаешь ты — ")
+
+
+def _stamp_to(world, to):
+    ss.check(world["new"], home=world["home"], who=to)
+    world["sent"].clear()
+
+
+def test_new_cannot_confirm_itself(world):
+    """Живой дефект context-keeper-4: sync-to main tide-stack-31, ok поставила сама новая."""
+    _stamp_to(world, {"ao_session": "proj-31", "role": "main проекта", "why": "старая закрыта"})
+    passport = world["new"] / "arc.md"
+    ss._set(passport, "claude-session", "sid-h2")          # новая = proj-42 по реестру
+    assert "proj-42" in ss.new_self(world["new"])
+    with pytest.raises(ss.SeamSyncError, match="подтверждает proj-31, не ты"):
+        ss.answer(world["new"], ss.OK, by="proj-42")
+    with pytest.raises(ss.SeamSyncError):                  # и под именем нить·сессия
+        ss.answer(world["new"], ss.FIX, "всё не так", by="handoffs·02-handoffs-2")
+    assert ss._get(passport, ss.SYNC) == ss.WAITING and not ss._get(passport, ss.SYNC_ANSWER)
+
+
+def test_new_found_by_title_when_no_registry(world):
+    passport = world["new"] / "arc.md"
+    ss._set(passport, "title", "proj — handoffs · 02 · proj-77")
+    assert ss.new_self(world["new"])[0] == "proj-77"
+    _stamp_to(world, {"ao_session": "proj-31", "role": "main проекта", "why": "-"})
+    with pytest.raises(ss.SeamSyncError):
+        ss.answer(world["new"], ss.OK, by="proj-77")
+
+
+def test_stranger_accepted_with_mark_human_plain(world):
+    _stamp_to(world, {"ao_session": "proj-31", "role": "main проекта", "why": "старая закрыта"})
+    out = ss.answer(world["new"], ss.OK, by="proj-9", me=["proj-42"])
+    assert out["answer"] == "proj-9 (не назначенный: proj-9 вместо proj-31)"
+    assert ss.status(world["new"])[ss.SYNC_ANSWER] == out["answer"]
+    out = ss.answer(world["new"], ss.OK, by="proj-31", me=["proj-42"])
+    assert out["answer"] == "proj-31"
+    out = ss.answer(world["new"], ss.OK, me=["proj-42"])   # без AO_SESSION_ID — человек
+    assert out["answer"] == "человек"
+
+
+def test_assigned_of():
+    assert ss.assigned_of("main проекта tide-stack-31 (старая tide-stack-22 закрыта)") == "tide-stack-31"
+    assert ss.assigned_of("старая proj-41 (старая жива)") == "proj-41"
+    assert ss.assigned_of("main проекта без адреса (нет адреса)") == ""
+    assert ss.assigned_of("") == ""
+
+
+def test_reset_drops_answer_back_to_waiting(world):
+    _stamp_to(world, {"ao_session": "proj-31", "role": "main проекта", "why": "-"})
+    passport = world["new"] / "arc.md"
+    ss.answer(world["new"], ss.OK, by="proj-9", me=["proj-42"])
+    ss._set(passport, ss.SYNC_REMINDED, "2026-10-09T19:00:00")
+    inbox = sorted((world["tdir"] / "inbox").iterdir())
+    rc = cli.main(["handoff", "sync", "reset", str(world["new"]), "--why", "ok поставила сама новая"])
+    assert rc == 0
+    assert ss._get(passport, ss.SYNC) == ss.WAITING
+    for key in (ss.SYNC_ANSWER, ss.SYNC_ANSWER_AT, ss.SYNC_REMINDED):
+        assert ss._get(passport, key) == ""
+    assert ss._get(passport, ss.SYNC_LETTER) == "001"     # прежнее письмо остаётся
+    text = passport.read_text(encoding="utf-8")
+    ctx = text.split("## context", 1)[1]
+    assert "ответ снят — было sync: ok, ответ proj-9" in ctx and "ok поставила сама новая" in ctx
+    assert ctx.strip().splitlines()[-1].startswith("- ") and "ответ снят" in ctx.strip().splitlines()[-1]
+    assert sorted((world["tdir"] / "inbox").iterdir()) == inbox and world["sent"] == []
+    with pytest.raises(ss.SeamSyncError):
+        ss.reset(world["new"], "  ")

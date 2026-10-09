@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from . import fields, paths
+from . import fields, paths, slug
 from .arc.stream import StreamError
 
 FIRST_PULSES = 3                 # столько настоящих пульсов новой — автозапуск сверки
@@ -622,6 +622,45 @@ def _set(passport: Path, key: str, value: str) -> None:
     atomic_write(passport, "\n".join(lines))
 
 
+def _unset(passport: Path, key: str) -> None:
+    from .io import atomic_write
+
+    passport = Path(passport)
+    lines = passport.read_text(encoding="utf-8").split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            return
+        if ln.startswith(key + ":"):
+            del lines[i]
+            atomic_write(passport, "\n".join(lines))
+            return
+
+
+def _context_line(passport: Path, note: str) -> None:
+    """Строка «- <время> — note» в конец ``## context`` (без offload: не пульс сессии)."""
+    from .io import atomic_write
+
+    passport = Path(passport)
+    lines = passport.read_text(encoding="utf-8").split("\n")
+    line = "- {0} — {1}".format(_now(), " ".join(note.split()))
+    try:
+        start = lines.index("## context")
+    except ValueError:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ["", "## context", line, ""]
+        atomic_write(passport, "\n".join(lines))
+        return
+    at = start + 1
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("## "):
+            break
+        if lines[i].strip():
+            at = i + 1
+    lines.insert(at, line)
+    atomic_write(passport, "\n".join(lines))
+
+
 # --- жесты ---------------------------------------------------------------------
 
 def _now() -> str:
@@ -783,11 +822,52 @@ def _who() -> str:
         return (os.environ.get("AO_SESSION_ID") or "").strip() or "человек"
 
 
+_AO_ID = re.compile(r"^[A-Za-z][\w.-]*-\d+[\w-]*$")
+
+
+def assigned_of(sync_to: str) -> str:
+    """AO-id подтверждающего из поля ``sync-to`` («роль <ao|без адреса> (почему)») или ``""``."""
+    head = (sync_to or "").split(" (", 1)[0].strip()
+    if not head or head.endswith("без адреса"):
+        return ""
+    last = head.split()[-1]
+    return last if _AO_ID.match(last) else ""
+
+
+def new_self(new_dir: Path, *, home: Optional[Path] = None) -> List[str]:
+    """Как может назваться сама новая: её AO-id (по claude-session, иначе «· <ao>» в конце
+    title) и «нить·сессия» (как пишет ``mail._who_am_i`` без AO)."""
+    new_dir = Path(new_dir)
+    out: List[str] = []
+    if home is None:
+        try:
+            home = paths.control_home(session_paths(new_dir)["root"])
+        except Exception:  # noqa: BLE001
+            home = None
+    ao = _new_ao(home, new_dir)
+    if not ao:
+        title = (fields.read_field(new_dir / "arc.md", "title") or "").strip()
+        m = re.search(r"·\s*(\S+)\s*$", title)
+        if m and _AO_ID.match(m.group(1)):
+            ao = m.group(1)
+    if ao:
+        out.append(ao)
+    try:
+        out.append("{0}·{1}".format(slug.entry_slug(new_dir.parents[1].name), new_dir.name))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = None,
            send_mail: Optional[Callable[..., Dict[str, object]]] = None,
-           ack: Optional[Callable[..., object]] = None) -> Dict[str, str]:
+           ack: Optional[Callable[..., object]] = None,
+           me: Optional[Sequence[str]] = None) -> Dict[str, str]:
     """Ответ подтверждающего: ``ok`` или ``fix`` с текстом. Поля — в паспорт новой;
-    письмо сверки — прочитано (квитанция); поправка — письмом новой (с пингом)."""
+    письмо сверки — прочитано (квитанция); поправка — письмом новой (с пингом).
+    Новая сама себя не подтверждает (*me* — как она может назваться, нет —
+    :func:`new_self`); ответ не назначенного в ``sync-to`` принимается с пометкой;
+    «человек» (ручной вызов без AO) — принимается."""
     new_dir = Path(new_dir)
     p = session_paths(new_dir)
     if not p["passport"].is_file():
@@ -797,6 +877,15 @@ def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = N
     if verdict == FIX and not (text or "").strip():
         raise SeamSyncError('sync fix: скажи, что поправить — tide handoff sync fix <новая> "…"')
     who = (by or "").strip() or _who()
+    if who != "человек":
+        selves = [x for x in (me if me is not None else new_self(new_dir)) if x]
+        if who in selves:
+            to = assigned_of(_get(p["passport"], SYNC_TO))
+            raise SeamSyncError("sync: подтверждает {0}, не ты — новая сама себя не "
+                                "подтверждает".format(to or _get(p["passport"], SYNC_TO)
+                                                      or "старая или main проекта"))
+    assigned = assigned_of(_get(p["passport"], SYNC_TO))
+    stranger = bool(assigned) and who != "человек" and who != assigned
     from . import mail as _mail
     num = _get(p["passport"], SYNC_LETTER)
     if num:
@@ -805,6 +894,8 @@ def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = N
         except Exception:  # noqa: BLE001 — квитанция не главное
             pass
     say = who if verdict == OK else "{0}: {1}".format(who, " ".join(text.split()))
+    if stranger:
+        say = "{0} (не назначенный: {1} вместо {2})".format(say, who, assigned)
     _set(p["passport"], SYNC, verdict)
     _set(p["passport"], SYNC_ANSWER, say)
     _set(p["passport"], SYNC_ANSWER_AT, _now())
@@ -816,6 +907,28 @@ def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = N
             sender=SENDER, root=p["root"])
         out["letter"] = str((res or {}).get("num") or "")
     return out
+
+
+def reset(new_dir: Path, why: str) -> Dict[str, str]:
+    """Снять ответ подтверждающего: sync → «ждёт ответа», ``sync-answer*`` и
+    ``sync-reminded`` — прочь, прежний ответ с причиной — строкой в ``## context``.
+    Письмо не шлёт: подтверждающий отвечает заново на прежнее письмо сверки."""
+    new_dir = Path(new_dir)
+    passport = session_paths(new_dir)["passport"]
+    if not passport.is_file():
+        raise SeamSyncError("sync: нет паспорта {0}".format(passport))
+    if not (why or "").strip():
+        raise SeamSyncError('sync reset: скажи почему — --why "…"')
+    was = {k: _get(passport, k) for k in (SYNC, SYNC_ANSWER, SYNC_ANSWER_AT)}
+    if not was[SYNC]:
+        raise SeamSyncError("sync reset: {0} не сверялась — снимать нечего".format(new_dir.name))
+    _set(passport, SYNC, WAITING)
+    for key in (SYNC_ANSWER, SYNC_ANSWER_AT, SYNC_REMINDED):
+        _unset(passport, key)
+    _context_line(passport, "шов-синк: ответ снят — было sync: {0}, ответ {1} ({2}); "
+                            "почему: {3}".format(was[SYNC], was[SYNC_ANSWER] or "—",
+                                                 was[SYNC_ANSWER_AT] or "—", why))
+    return {"was": was[SYNC], "answer": was[SYNC_ANSWER], "sync": WAITING}
 
 
 def status(new_dir: Path, *, now: Optional[datetime] = None) -> Dict[str, str]:
@@ -1002,6 +1115,14 @@ def _cmd_answer(args) -> int:
     return 0
 
 
+def _cmd_reset(args) -> int:
+    new_dir = _resolve(args.session)
+    out = reset(new_dir, args.why)
+    print("tide: шов-синк {0} — снят ответ «{1}» ({2}), снова {3}; письмо не отправлялось".format(
+        new_dir.name, out["was"], out["answer"] or "—", out["sync"]))
+    return 0
+
+
 def _cmd_status(args) -> int:
     new_dir = _resolve(args.session)
     st = status(new_dir)
@@ -1016,10 +1137,10 @@ def _cmd_status(args) -> int:
 
 
 def register_sync(hsub) -> None:
-    """``tide handoffs sync check|ok|fix|status`` (и алиас ``tide handoff sync …``)."""
+    """``tide handoffs sync check|ok|fix|reset|status`` (и алиас ``tide handoff sync …``)."""
     p = hsub.add_parser("sync", help="seam sync (SOC-143): the new session's retell vs the "
                                      "seed — done / next / to decide, confirmed by the old one")
-    sub = p.add_subparsers(dest="sync_cmd", metavar="<check|ok|fix|status>")
+    sub = p.add_subparsers(dest="sync_cmd", metavar="<check|ok|fix|reset|status>")
     c = sub.add_parser("check", help="reconcile the first pulses with the seed and send the "
                                      "list to the confirmer (old session, else project main)")
     c.add_argument("session", nargs="?", help="new session: dir | <нить>/<сессия> | current")
@@ -1036,6 +1157,11 @@ def register_sync(hsub) -> None:
     f.add_argument("session", help="new session: dir | <нить>/<сессия>")
     f.add_argument("text")
     f.set_defaults(func=_cmd_answer, verdict=FIX, _cmd="handoffs sync fix")
+    r = sub.add_parser("reset", help="drop a wrong answer: back to waiting, old answer logged "
+                                     "in ## context, no letter sent")
+    r.add_argument("session", help="new session: dir | <нить>/<сессия>")
+    r.add_argument("--why", required=True, help="why the answer is dropped")
+    r.set_defaults(func=_cmd_reset, _cmd="handoffs sync reset")
     s = sub.add_parser("status", help="seam sync result in the new session's passport")
     s.add_argument("session", nargs="?")
     s.set_defaults(func=_cmd_status, _cmd="handoffs sync status")
