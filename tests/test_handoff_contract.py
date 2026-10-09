@@ -95,3 +95,11 @@ def test_pickup_goal_reads_the_next_step_block():
     assert handoff._pickup_goal(Path("/nonexistent"), seed) == "прогнать тесты"
     # пустой блок «— почему» — не цель: падаем на цель нити (здесь её нет)
     assert handoff._pickup_goal(Path("/nonexistent"), seed_draft.render_draft({})) is None
+
+
+def test_skill_does_not_promise_a_dissolved_stamp():
+    """С 16.07 take() не пишет dissolved: — растворённость выводится из очереди
+    (handoff_queue.is_dissolved). Скилл обещал штамп — чистка SOC-101."""
+    text = SKILL.read_text(encoding="utf-8")
+    assert "растворит предшественника — `dissolved:`" not in text
+    assert "is_dissolved" in text
