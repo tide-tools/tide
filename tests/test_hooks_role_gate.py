@@ -930,3 +930,63 @@ def test_install_hooks_writes_role_gate(tmp_project):
     # Eight notes on first install: SessionStart + edit-gate + role-gate + ask-gate +
     # handoff-confirm + Stop offload-nudge + Stop context-watch + SessionEnd.
     assert len(notes) == 8
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator — AO session reads and the manager's Linear tool (decision № 26)
+# ---------------------------------------------------------------------------
+
+_LAM = role_gate._LINEAR_AS_MANAGER
+
+
+@pytest.mark.parametrize("command", [
+    "ao session ls",
+    "ao session ls --json",
+    "ao session show tide-stack-12",
+    "ao session show tide-stack-12 | head -20",
+    "ao session ls && tide status",
+    _LAM,
+    _LAM + " issue SOC-101",
+    _LAM + " comment SOC-101 'готово → ревью'",
+    "'" + _LAM + "' issue SOC-101",
+    _LAM + " issue SOC-101 2>&1 | tail -5",
+])
+def test_orchestrator_allows_ao_reads_and_linear_as_manager(command):
+    allow, _ = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is True
+
+
+@pytest.mark.parametrize("command", [
+    "ao",
+    "ao spawn tide-stack",
+    "ao session kill tide-stack-12",
+    "ao session",
+    "ao --verbose session ls",
+    "ao session restore tide-stack-12",
+    "ao status",
+    "ao session ls; ao session kill x",
+    "/tmp/linear-as-manager issue SOC-101",
+    "linear-as-manager issue SOC-101",
+    "./linear-as-manager issue SOC-101",
+    "~/Documents/management/tools/linear-as-manager issue SOC-101",
+    _LAM.replace("/tools/", "/tools/../tools/") + " x",
+    _LAM + ".bak issue SOC-101",
+    "bash -c '" + _LAM + " issue SOC-101'",
+    "sh " + _LAM,
+    _LAM + " issue SOC-101 > out.txt",
+    _LAM + " $(rm -rf .)",
+])
+def test_orchestrator_denies_other_ao_and_linear_paths(command):
+    allow, _ = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is False
+
+
+def test_ao_send_still_denied_before_its_own_decision():
+    allow, _ = role_gate.decide("Bash", {"command": "ao send tide-stack-12 'привет'"}, "orchestrator")
+    assert allow is False
+
+
+def test_explain_names_the_ao_rule():
+    text = role_gate.explain("ao session kill tide-stack-12")
+    assert "DENY" in text
+    assert "ao session ls|show" in text

@@ -42,6 +42,11 @@ A single segment is allowed when:
   NOT: ``git commit``, ``git push``, ``git merge``, ``git branch -D``,
   ``git worktree add/remove``.
 * Its first token is a read-only builtin — see ``_READONLY_BUILTINS``.
+* AO, read-only: ``ao session ls …`` and ``ao session show …`` — any other
+  ``ao`` subcommand is denied (Grisha's decision № 26).
+* The manager's Linear tool, run by its exact absolute path
+  (``_LINEAR_AS_MANAGER``) with any arguments. Matched as a string: another
+  path, a relative path, a symlink or a ``bash -c`` wrapper does not pass.
 
 And DENIED regardless of the above when it contains:
 
@@ -81,11 +86,20 @@ import json
 import re
 import shlex
 import sys
+from pathlib import Path
 from typing import List, NamedTuple, Optional, Tuple
 
 # PreToolUse exit-code protocol (Claude Code): 0 = allow, 2 = block + stderr reason.
 ALLOW_EXIT = 0
 BLOCK_EXIT = 2
+
+# The manager's Linear tool. Allowed ONLY by this exact absolute path, compared
+# as a string after shell unquoting: a copy elsewhere, a relative or ``~`` call
+# or a symlink is another string and stays denied. Built from the home dir so no
+# personal path ships in the package.
+_LINEAR_AS_MANAGER = str(
+    Path.home() / "Documents" / "management" / "tools" / "linear-as-manager"
+)
 
 # The cage, in one sentence. Shared with the SessionStart role reminder
 # (``hooks.session_start.ROLE_REMINDERS``) so the head learns its limits ON THE
@@ -94,7 +108,8 @@ BLOCK_EXIT = 2
 ALLOWED_SURFACE = (
     "Read/Grep/Glob, any `tide …`, read-only git (status/log/diff/show/rev-parse, "
     "branch/remote listing, worktree list), and ls/cat/pwd/cd/find/grep/head/tail/"
-    "wc/sort/uniq/echo — including `|` pipes, `&&` / `||` chains built only from "
+    "wc/sort/uniq/echo, `ao session ls|show`, `" + _LINEAR_AS_MANAGER + "` "
+    "— including `|` pipes, `&&` / `||` chains built only from "
     "those, and `2>&1` / `2>/dev/null`. Denied: file redirects (`>`), command "
     "substitution, and anything not on this list."
 )
@@ -120,6 +135,12 @@ _READONLY_BUILTINS = frozenset({
     "cd", "head", "tail", "wc", "sort", "uniq", "rg", "which", "file", "stat",
     "diff", "tree",
 })
+
+# AO: the head may look at sessions, nothing more. Keyed by ``ao`` subcommand →
+# the allowed second-level verbs (Grisha's decision № 26).
+_AO_ALLOWED = {
+    "session": frozenset({"ls", "show"}),
+}
 
 # git branch flags that mean destructive deletion.
 _GIT_BRANCH_DELETE_FLAGS = frozenset({"-D", "--delete", "-d"})
@@ -167,6 +188,7 @@ _RULE_REDIRECT = "file redirect (`>`) — that writes"
 _RULE_UNPARSEABLE = "unparseable quoting inside the link"
 _RULE_GIT_NOT_READONLY = "git subcommand is not read-only"
 _RULE_NOT_ALLOWED = "not on the read-only allowlist"
+_RULE_AO_NOT_ALLOWED = "ao subcommand is not allowed for the head (only `ao session ls|show`)"
 _RULE_UNBALANCED_QUOTES = (
     "unbalanced quotes — a command the gate cannot parse is one it cannot vouch for"
 )
@@ -225,6 +247,20 @@ def _is_git_subcommand_allowed(cmd: str) -> bool:
         return bool(rest) and rest[0] == "list"
 
     return False
+
+
+def _is_ao_allowed(args: List[str]) -> bool:
+    """Return True when ``ao <args>`` is on the head's AO allowlist.
+
+    The subcommand and its verb must be the first two tokens — a leading flag
+    (``ao --x session kill``) is not stepped over, it is denied.
+    """
+    if not args:
+        return False
+    verbs = _AO_ALLOWED.get(args[0])
+    if verbs is None:
+        return False
+    return len(args) >= 2 and args[1] in verbs
 
 
 def _split_segments(command: str) -> Optional[List[str]]:
@@ -390,6 +426,10 @@ def _segment_refusal(segment: str) -> Optional[str]:
 
     if parts and parts[0] in _READONLY_BUILTINS:
         return None
+    if parts and parts[0] == _LINEAR_AS_MANAGER:
+        return None
+    if parts and parts[0] == "ao":
+        return None if _is_ao_allowed(parts[1:]) else _RULE_AO_NOT_ALLOWED
     return _RULE_NOT_ALLOWED
 
 
