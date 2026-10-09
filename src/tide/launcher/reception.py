@@ -319,8 +319,59 @@ def _last_pass_note(passport: Path) -> str:
     return re.sub(r"^-?\s*\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*", "", found)
 
 
+_STAMP_HEAD = re.compile(r"^-?\s*\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*")
+_MANAGER_ID = re.compile(r"\bmanagement-\d+\b")
+
+
+def _passport_fresh(passport: Path) -> str:
+    """Свежее из паспорта старой, когда ПЕРЕДАЧИ нет: тело ``## cursor``, иначе
+    последний пульс ``## context``, иначе ``## summary``."""
+    try:
+        text = Path(passport).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    secs: Dict[str, List[str]] = {}
+    cur = None
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            cur = ln[3:].strip().lower().split(" ", 1)[0]
+            secs.setdefault(cur, [])
+            continue
+        if cur is not None and ln.strip() and ln.strip() not in ("-", "—") \
+                and "<!--" not in ln:
+            secs[cur].append(ln.strip())
+
+    def live(key: str) -> List[str]:
+        # заготовка шаблона «<…>» бывает в несколько строк — вырезаем целиком
+        text = re.sub(r"<[^<>]*>", "", "\n".join(secs.get(key) or []))
+        return [ln.strip() for ln in text.splitlines() if ln.strip(" -—")]
+
+    if live("cursor"):
+        return " ".join(live("cursor"))
+    if live("context"):
+        return _STAMP_HEAD.sub("", live("context")[-1])
+    return " ".join(live("summary"))
+
+
+def _stale_manager(line: str) -> bool:
+    """В строке — адрес менеджера, который уже не менеджер (tide whois manager)."""
+    ids = set(_MANAGER_ID.findall(line or ""))
+    if not ids:
+        return False
+    try:
+        from .. import whois
+        cur = str((whois.manager() or {}).get("ao_session") or "").strip()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(cur) and cur not in ids
+
+
 def passed_text(home: Path, rec: Dict[str, object], seed_text: str = "") -> str:
-    """Что передающая отдала: её пульс ПЕРЕДАЧА; нет его — «где мы» сида."""
+    """Что передающая отдала — из свежего (ошибка менеджера: «Передано» взяло
+    устаревшую первую строку слоя «где мы» нити main с «менеджер management-11»):
+    её пульс ПЕРЕДАЧА; нет его — курсор / последний пульс / итог её паспорта; нет
+    паспорта — «где мы» сида без строк слоя (они идут до курсора и без штампа)
+    и без строк с устаревшим адресом менеджера."""
     try:
         from .handoff import _origin_entry
         origin = _origin_entry(Path(home), rec)
@@ -330,8 +381,15 @@ def passed_text(home: Path, rec: Dict[str, object], seed_text: str = "") -> str:
         got = passed_from_note(_last_pass_note(origin / "arc.md"))
         if got:
             return got
+        fresh = _passport_fresh(origin / "arc.md")
+        if fresh:
+            return clip_sentences(fresh, PASSED_MAX)
     where = [ln.strip()[2:].strip() if ln.strip().startswith("- ") else ln.strip()
              for ln in seed_section(seed_text, "## где мы") if not ln.startswith("  ")]
+    stamped = [i for i, ln in enumerate(where) if _STAMP_HEAD.match(ln)]
+    if stamped:  # свежее — пульсы; всё выше первого пульса без штампа — слой и курсор
+        where = [_STAMP_HEAD.sub("", ln) for ln in where[stamped[0]:]]
+    where = [ln for ln in where if ln and not _stale_manager(ln)]
     return clip_sentences(" ".join(where[:2]), PASSED_MAX) if where else ""
 
 

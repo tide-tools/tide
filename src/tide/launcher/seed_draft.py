@@ -2072,6 +2072,37 @@ def block_unanswered(thread_entry: Path, n: int = DIALOG_TAIL) -> List[str]:
         EMPTY, dropped)]
 
 
+# Адрес менеджера в строке слоя; «через management-11» / «от management-11» — это
+# происхождение слов (кто донёс), не адрес — не устаревает.
+_MANAGER_ID = re.compile(r"(?<!через )(?<!от )\bmanagement-\d+\b")
+
+
+def current_manager_id() -> str:
+    """AO-id менеджера сейчас (``tide whois manager``); не нашёлся — пусто."""
+    from .. import whois
+
+    try:
+        return str((whois.manager() or {}).get("ao_session") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def mark_stale_manager(lines: Sequence[str], current: Optional[str] = None) -> List[str]:
+    """Строки слоя нити с адресом менеджера, который уже не менеджер, — с пометкой
+    «(устарело: менеджер сейчас X)». Слой правят руками, менеджер меняется
+    хендоффами: «где мы» нити main звала management-11 при management-16."""
+    cur = current_manager_id() if current is None else current
+    if not cur:
+        return list(lines)
+    out = []
+    for ln in lines:
+        ids = set(_MANAGER_ID.findall(ln))
+        if ids and cur not in ids:
+            ln = "{0} (устарело: менеджер сейчас {1})".format(ln.rstrip(), cur)
+        out.append(ln)
+    return out
+
+
 def manager_line() -> str:
     """Текущий адрес менеджера одной строкой — резолвером :mod:`tide.whois`
     (``~/.tide/manager.json``, без него — цепочка хендоффов нити менеджера), а не
@@ -2110,7 +2141,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     context = section_body(passport, "context")
     labels = labeled_pulses(context)
     summary = prose_lines(section_body(passport, "summary"))
-    where = layer(lays, "where") + block_cursor(
+    where = mark_stale_manager(layer(lays, "where")) + block_cursor(
         section_body(passport, "cursor"), section_body(passport, "context"),
         works=works, clip=pulse_clip)
     if summary:
@@ -2119,7 +2150,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         MAIN: (block_main(thread_entry, contract.find_body(seed_in, "main"), pred)
                or [contract.empty_line(contract.block("main"))]) + [manager_line()],
         EXPECTATION: block_expectation(
-            layer(lays, "expectation"), _stream.passport_path(thread_entry),
+            mark_stale_manager(layer(lays, "expectation")), _stream.passport_path(thread_entry),
             labels.get("expectation", []),
             fold_lines(session_grisha_words(session_entry) + grisha_quotes(
                 context, section_body(
@@ -2134,7 +2165,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             _candidate_gists(root, nums)),
         DECISIONS: _merge_lines(labels.get("decisions", []), decisions),
         AWAITING: _merge_lines(
-            labels.get("awaiting", []), layer_named(lays, "ждёт гришу", "ждет гришу"),
+            labels.get("awaiting", []),
+            mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
             block_awaiting(_auto.open_questions(root, thread_entry), works),
             next_for_grisha(block_next(section_body(passport, "next")))),
         NEXT: block_next(section_body(passport, "next")),

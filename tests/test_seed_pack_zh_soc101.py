@@ -243,3 +243,41 @@ def test_same_lesson_in_other_words_is_folded():
         "- итоги и хвосты слать и менеджеру, и главной нити (сейчас main · 04) (пульс 08:36)",
         "- TIDE_DIALOG_LOG в оболочке воркера путает журнал — тесты гонять и с env -u "
         "(пульс 13:42)"]
+
+
+# --- менеджер: «Передано» из свежего, устаревший адрес менеджера помечен ---------------
+
+def test_layer_line_with_old_manager_is_marked_stale():
+    got = seed_draft.mark_stale_manager(
+        ["- отчёты менеджеру management-11 через ao send", "- шаг 3 из 7",
+         "- менеджер management-16 ждёт итог"], current="management-16")
+    assert got == ["- отчёты менеджеру management-11 через ao send (устарело: менеджер "
+                   "сейчас management-16)", "- шаг 3 из 7", "- менеджер management-16 ждёт итог"]
+    assert seed_draft.mark_stale_manager(["- management-11"], current="") == ["- management-11"]
+
+
+def test_reception_passed_prefers_fresh_over_stale_layer(tmp_path, monkeypatch):
+    from tide import whois
+    from tide.launcher import handoff, reception
+
+    monkeypatch.setattr(whois, "manager", lambda: {"ao_session": "management-16"})
+    old = tmp_path / "01-old"
+    old.mkdir()
+    (old / "arc.md").write_text(
+        "# 01-old\n\n## summary\n<заготовка\nв две строки>\n\n## cursor — resume here\n"
+        "SOC-127: жду разборы, итог к 16:00\n\n## context\n"
+        "- 2026-10-09T13:55:00 — шаг\n", encoding="utf-8")
+    monkeypatch.setattr(handoff, "_origin_entry", lambda home, rec: old)
+    assert reception.passed_text(tmp_path, {}) == "SOC-127: жду разборы, итог к 16:00"
+    # паспорта нет — «где мы» сида: строки слоя (до первого пульса) и устаревший
+    # менеджер не идут в «Передано»
+    monkeypatch.setattr(handoff, "_origin_entry", lambda home, rec: None)
+    seed = ("## где мы\n\n- отчитываемся менеджеру management-11\n"
+            "- 2026-10-09T13:55:00 — свела SOC-127, коммент в Linear\n"
+            "- 2026-10-09T13:50:00 — сказала management-11 про срок\n\n## опыт\n")
+    assert reception.passed_text(tmp_path, {}, seed) == "свела SOC-127, коммент в Linear"
+
+
+def test_provenance_of_quote_is_not_a_stale_address():
+    line = "- Дословно (TG 09.10 ~06:10, через management-11): «чтобы работа передавалась»"
+    assert seed_draft.mark_stale_manager([line], current="management-16") == [line]
