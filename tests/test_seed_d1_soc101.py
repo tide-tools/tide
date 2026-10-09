@@ -114,3 +114,47 @@ def test_cursor_pulses_older_than_handover_are_marked():
     assert lines[4].endswith("сдала промер (до ПЕРЕДАЧИ)")
     # без ПЕРЕДАЧИ — без пометок
     assert not any(seed_draft.BEFORE_PASS in ln for ln in seed_draft.block_cursor([], CTX[:2]))
+
+
+# --- C11: карта входа из метки «Карта:» ---------------------------------------------
+
+PASS_WITH_MAP = ("- 2026-10-09T08:26:26 — ПЕРЕДАЧА. Слои освежены. Карта: /abs/plan.md — "
+                 "главное и кому сдавать; /abs/topic.md — что ждёт Гриша; /abs/arc.md — "
+                 "курсор и пульсы. Опыт: не резать по «;»")
+
+
+def test_map_label_becomes_entry_map_items():
+    labels = seed_draft.labeled_pulses([PASS_WITH_MAP])
+    assert labels["entry_map"] == [
+        "- /abs/plan.md — главное и кому сдавать (пульс 08:26)",
+        "- /abs/topic.md — что ждёт Гриша (пульс 08:26)",
+        "- /abs/arc.md — курсор и пульсы (пульс 08:26)",
+    ]
+    assert labels["experience"] == ["- не резать по «;» (пульс 08:26)"]
+    got = seed_draft.block_entry_map(["- старая карта"], labels["entry_map"], ["- собранная"])
+    assert got == labels["entry_map"]          # карта ПЕРЕДАЧИ — без каркаса и наследства
+    assert not seed_draft.pass_without_map([PASS_WITH_MAP])
+
+
+def test_pass_without_map_warns_and_collects(tmp_project, capsys):
+    import io
+
+    from tide.arc import stream
+
+    ctx = ["- 2026-10-09T08:26:26 — ПЕРЕДАЧА. В полёте: ничего"]
+    assert seed_draft.pass_without_map(ctx)
+    assert not seed_draft.pass_without_map(["- 2026-10-09T08:20:00 — шаг"])  # нет ПЕРЕДАЧИ
+    buf = io.StringIO()
+    assert seed_draft.warn_missing_map(ctx, stream=buf)
+    assert "нет метки «Карта:»" in buf.getvalue()
+    thread = stream.new_thread(tmp_project, "kart", goal="нить с картой")
+    (thread / "plan.md").write_text("# plan\n", encoding="utf-8")
+    sess = stream.new_session(tmp_project, "kart", "s1", goal="шаг")
+    got = seed_draft.collected_map(tmp_project, sess, thread)
+    assert len(got) == 3 and all(seed_draft.COLLECTED in ln for ln in got)
+    assert got[0].startswith("- {0} — «главное»".format((thread / "plan.md").resolve()))
+    assert got[-1].startswith("- {0} — паспорт прошлой сессии".format(
+        (sess / "arc.md").resolve()))
+    # наследство: собранная карта прошлого сида не переходит дальше
+    assert seed_draft.block_entry_map(got, (), ["- новая " + seed_draft.COLLECTED])[0] == \
+        "- новая " + seed_draft.COLLECTED

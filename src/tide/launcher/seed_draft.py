@@ -197,7 +197,7 @@ _NOTE_STAMP = re.compile(r"^-?\s*(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})(?::\d{2})?)\s*
 
 # Метки, чьё содержимое — СОСТОЯНИЕ (его переписывает каждый новый пульс): берётся
 # только из самого свежего пульса с этой меткой. Опыт и решения копятся — из всех.
-_STATE_LABELS = ("awaiting", "inflight", "expectation")
+_STATE_LABELS = ("awaiting", "inflight", "expectation", "entry_map")
 
 
 def pulse_notes(context: Sequence[str]) -> List["tuple[str, str]"]:
@@ -575,22 +575,67 @@ def block_experience(candidate_nums: Sequence[str],
     return out
 
 
-def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
-    """Карта входа: унаследованная из входного сида + каркас для пишущего.
+COLLECTED = "(карта собрана сборщиком)"
+MAP_WARNING = ("в пульсе ПЕРЕДАЧА нет метки «Карта:» — карту входа собрал сборщик; "
+               "впиши её в ноту: tide offload \"ПЕРЕДАЧА. … Карта: <абс. путь> — зачем; "
+               "<путь> — зачем; <путь> — зачем\"")
 
-    Движок её не собирает: пути он бы насыпал, но сид требует ПОРЯДКА чтения и
-    «зачем» — знание того, кто держит контекст. Карту, которую уже написали,
-    передаём дальше (SOC-101 F4), куратор правит дифф.
+
+def block_entry_map(inherited: Sequence[str] = (), labeled: Sequence[str] = (),
+                    collected: Sequence[str] = ()) -> List[str]:
+    """Карта входа (C11): метка «Карта:» свежего пульса → унаследованная карта
+    входного сида → карта, собранная сборщиком с диска (*collected*), + каркас.
+
+    Карту, которую написала передающая сессия, сборщик раскладывает по пунктам и
+    ничего к ней не добавляет. Нет её — передаём карту из входного сида (SOC-101
+    F4), куратор правит дифф. Нет и её — пункты *collected* с пометкой
+    :data:`COLLECTED`: честный прочерк холодной сессии не помогает.
     """
     kept = [ln for ln in live_lines(inherited)
-            if "<!--" not in ln and not is_hole(ln)
-            and not ln.lstrip("- ").startswith(("топик:", "автохендофф:"))]
-    # ↑ указатель на топик считается заново; заглушка автохендоффа — не карта
-    # (SOC-101: заглушки наследовались и множились, одна указывала на чужую сессию)
-    return kept + [
-        "- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
-        "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)
-    ]
+            if "<!--" not in ln and not is_hole(ln) and COLLECTED not in ln
+            and not ln.lstrip("- ").startswith(("топик:", "автохендофф:", "указатель:"))]
+    # ↑ указатель на топик считается заново; заглушка автохендоффа и собранная
+    # сборщиком карта — не карта (SOC-101: заглушки наследовались и множились)
+    hint = ["- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
+            "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)]
+    if labeled:
+        return list(labeled)
+    if kept:
+        return kept + hint
+    return list(collected) + hint
+
+
+def pass_without_map(context: Sequence[str]) -> bool:
+    """Последний пульс «ПЕРЕДАЧА» есть, а метки «Карта:» в нём нет (C11)."""
+    notes = pulse_notes(context)
+    for _stamp, note in reversed(notes):
+        if _PASS_RE.match(note):
+            return "entry_map" not in contract.pulse_labels(note)
+    return False
+
+
+def collected_map(root: Path, session_entry: Path, thread_entry: Path) -> List[str]:
+    """Карта-черновик с диска (C11): «главное» plan.md нити, topic.md нити (или
+    goal-файл со слоями), паспорт передающей сессии — абсолютные пути и «зачем»."""
+    out: List[str] = []
+    plan = Path(thread_entry) / "plan.md"
+    if plan.is_file():
+        out.append("- {0} — «главное»: SOC-N, кому сдавать, с кем не дублировать {1}".format(
+            plan.resolve(), COLLECTED))
+    topics = thread_topics(root, thread_entry)
+    for f in topics:
+        out.append("- {0} — топик нити: что Гриша ждёт по теме, что в полёте, "
+                   "Linear-родитель {1}".format(f.resolve(), COLLECTED))
+    if not topics:
+        goal = _stream.passport_path(thread_entry)
+        if goal.is_file():
+            out.append("- {0} — слои нити: ожидание Гриши, где мы, опыт {1}".format(
+                goal.resolve(), COLLECTED))
+    arc = Path(session_entry) / "arc.md"
+    if arc.is_file():
+        out.append("- {0} — паспорт прошлой сессии: курсор, ## context с пульсом "
+                   "ПЕРЕДАЧА {1}".format(arc.resolve(), COLLECTED))
+    return out
 
 
 _PULSE_STAMP = re.compile(r"^-?\s*\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})(?::\d{2})?\s*[—-]?\s*")
@@ -726,6 +771,7 @@ def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
     только если он один съел бы больше половины бюджета. Последний пульс и
     «ПЕРЕДАЧА» не режутся никогда (:func:`is_protected_pulse`).
     """
+    warn_missing_map(context)
     text = ""
     for clip in (0, JOURNAL_CLIP, JOURNAL_GIST):
         bodies = bodies_at(clip)
@@ -734,6 +780,17 @@ def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
         if tail <= JOURNAL_SHARE * len(text) / 2:
             break
     return text
+
+
+def warn_missing_map(context: Sequence[str], stream=None) -> bool:
+    """Предупредить передающую сессию (stderr), что в ПЕРЕДАЧЕ нет «Карта:» (C11).
+    Не блокирует: сид соберётся с картой сборщика. True — предупредили."""
+    import sys
+
+    if not pass_without_map(context):
+        return False
+    print("tide: внимание — {0}".format(MAP_WARNING), file=stream or sys.stderr)
+    return True
 
 
 # --- чтение диска -----------------------------------------------------------
@@ -1167,7 +1224,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                 section_body(passport, "context")),
                                _auto.open_items(root, thread_entry)),
         UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
-        ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"))
+        ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"),
+                                   labels.get("entry_map", []),
+                                   collected_map(root, session_entry, thread_entry))
         + [topic_pointer(root, thread_entry)],
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
     }

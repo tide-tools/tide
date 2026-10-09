@@ -149,7 +149,9 @@ def test_pulses_not_clipped_while_the_journal_fits(live):
     assert "сжато строк" not in seed
 
 
-def test_live_journal_is_compressed_only_by_budget(live):
+def test_live_journal_is_compressed_only_by_budget(live, monkeypatch):
+    # карта сборщика (C11) удлиняет тело — здесь меряем журнал без неё
+    monkeypatch.setattr(seed_draft, "collected_map", lambda *a: [])
     seed = ah.build_auto_seed(live["sess"])
     journal = _block(seed, "сырой журнал")
     # бюджет мал (тело короткое) — старшее сжато, но с честным счётом и путём
@@ -299,10 +301,12 @@ def test_entry_map_does_not_inherit_the_stub(live):
         "Гриши» ниже\n", encoding="utf-8")
     entry = _block(ah.build_auto_seed(live["sess"]), "карта входа").splitlines()
     assert "01-main" not in "\n".join(entry) and "02-main-2" not in "\n".join(entry)
-    assert entry[0] == "— карту входа не курировали — указатель: паспорт прошлой сессии " \
-        "{0} (курсор, ## context), plan.md нити {1}".format(
-            live["sess"].resolve() / "arc.md", live["thread"].resolve() / "plan.md")
-    assert len(entry) == 2 and entry[1].startswith("- топик:")
+    # заглушек нет; вместо прочерка — карта, собранная сборщиком (C11), и указатель
+    assert entry[-1].startswith("- топик:")
+    assert entry[-2].startswith("- указатель: паспорт прошлой сессии {0}".format(
+        live["sess"].resolve() / "arc.md"))
+    assert entry[:-2] and all(seed_draft.COLLECTED in ln for ln in entry[:-2])
+    assert any(str(live["sess"].resolve() / "arc.md") in ln for ln in entry[:-2])
 
 
 def test_linear_slash_runs_expand_and_status_rides_next_to_the_link(monkeypatch):
