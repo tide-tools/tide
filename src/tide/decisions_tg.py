@@ -44,9 +44,15 @@
 
     tide truth inbox [--since YYYY-MM-DD] [--json]
         пары «вопрос агента → ответ человека» из журнала пульта (dialog.jsonl),
-        для которых нет решения ни в одном decisions-tg.jsonl ростера.
+        для которых нет решения ни в одном decisions-tg.jsonl ростера. Ниже
+        отдельно — «возможные ответы» не реплаем: входящее без reply_to_tg не
+        позже ``--window`` минут (по умолчанию :data:`LOOSE_WINDOW_MIN`) после
+        нашего открытого вопроса (❓/🖐/опрос). Их tide не связывает — связь
+        подтверждает человек/менеджер через ``decide --q``.
     tide truth decide --topic <проект>/<NN-slug> --q N --a M[,K…] --decision "…"
         единственный путь записи: строка в журнал темы + строка в «## Решения».
+        Пишет только держатель нити context-keeper или её сабагент (та же
+        проверка, что у хука truth-gate; ``--dry-run`` — всем).
 
 Пара берётся из журнала пульта двумя путями: строка ``kind: ask-closed``
 ``{ask, source}``, где ``ask`` — исходящее (номер tg или id события log.jsonl),
@@ -452,6 +458,11 @@ FALLBACK_MANAGEMENT = Path.home() / "Documents" / MANAGEMENT
 SHORT_INBOX = 80
 UNKNOWN_Q = "(вопроса нет в журнале пульта)"
 SHORT_FACT = 100
+# Окно «возможного ответа не реплаем», минут. По журналу пульта 09.10: голос 3414
+# пришёл через 0,9 мин после вопроса 3413, текст 3463 — через 1,7 мин после 3461;
+# реплаи на вопросы — через 0,9 и 6,2 мин. Дальше 10 мин свободные сообщения —
+# уже новый разговор (цепочка 3657…3700 после 3645 — 10–52 мин), шум.
+LOOSE_WINDOW_MIN = 10.0
 
 _VOICE_RE = re.compile(r"\[tg 🎤\]\s*")
 _AUDIO_RE = re.compile(r"\s*\(аудио: [^)]*\)")
@@ -535,6 +546,7 @@ class Pult:
         self.out: Dict[int, Dict] = {}
         self.inc: Dict[int, Dict] = {}
         self.closed: List[Dict] = []
+        self.asks: List[Tuple[float, int]] = []  # (момент, tg) исходящих вопросов
         self._out_by_text: Dict[str, int] = {}
         for r in dialog_rows:
             d, k = r.get("dir"), r.get("kind")
@@ -542,6 +554,8 @@ class Pult:
                 ids = [n for n in (r.get("tg_msg_ids") or []) if _is_int(n)]
                 for n in ids:
                     self.out.setdefault(n, r)
+                if ids and is_question(r):
+                    self.asks.append((_ts_key(r.get("ts", "")), ids[0]))
                 t = (r.get("text") or "").strip()
                 if ids and t:
                     self._out_by_text.setdefault(t, ids[0])
@@ -626,6 +640,55 @@ class Pult:
                 add(q, a, unknown_ok=True)
         return sorted(seen.values(), key=lambda p: (p["answer"]["at"], p["question"]["tg"]))
 
+    def loose_pairs(self, window_min: float) -> List[Dict]:
+        """Возможные ответы не реплаем: входящее без ``reply_to_tg``, не попавшее ни в
+        одну пару :meth:`pairs`, пришедшее не позже *window_min* минут после
+        ближайшего предыдущего нашего вопроса (и, значит, до следующего).
+
+        Ничего не связывает — это кандидаты для человека/менеджера. У каждого
+        ``loose: True``, ``gap_s`` (секунд от вопроса) и ``closed`` — вопрос уже
+        закрыт в пульте (реплаем или ask-closed).
+        """
+        if window_min <= 0 or not self.asks:
+            return []
+        pairs = self.pairs()
+        paired = {p["answer"]["tg"] for p in pairs}
+        closed = {p["question"]["tg"] for p in pairs}
+        asks = sorted(self.asks)
+        out = []
+        for a, r in sorted(self.inc.items()):
+            if _is_int(r.get("reply_to_tg")) or a in paired:
+                continue
+            t = _ts_key(r.get("ts", ""))
+            if not t:
+                continue
+            prev = [(at, q) for at, q in asks if at <= t and q < a]
+            if not prev:
+                continue
+            at, q = prev[-1]
+            gap = t - at
+            if gap > window_min * 60:
+                continue
+            qr = self.out[q]
+            out.append({
+                "question": {"tg": q, "ask": self.ask_of(q), "at": qr.get("ts", ""),
+                             "text": self.text_of(qr)},
+                "answer": {"tg": a, "at": r.get("ts", ""), "text": self.text_of(r)},
+                "loose": True, "gap_s": int(gap), "closed": q in closed,
+            })
+        return out
+
+
+_ASK_MARKS = ("❓", "🖐")
+
+
+def is_question(row: Dict) -> bool:
+    """Исходящее — вопрос человеку: опрос или текст с «❓»/«🖐» в начале."""
+    if row.get("kind") == "poll":
+        return True
+    t = clean_text(row.get("text") or "", html=True).lstrip("*_ ")
+    return t.startswith(_ASK_MARKS)
+
 
 # --- tide truth inbox -------------------------------------------------------
 
@@ -682,7 +745,60 @@ def inbox(pult: Pult, projs: List[Tuple[str, Path]], since: _date,
     return pending, skipped
 
 
-def render_inbox(pending: List[Dict], skipped: int) -> str:
+def fact_refs(projs: List[Tuple[str, Path]]) -> set:
+    """Номера tg, на которые ссылается хоть одна строка ``facts.md`` тем (```tg:N```)."""
+    out = set()
+    for t in truth.list_topics(projs, show_all=True):
+        try:
+            text = (Path(t["dir"]) / truth.FACTS_FILE).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out.update(int(n) for n in _TG_REF_RE.findall(text))
+    return out
+
+
+def inbox_loose(pult: Pult, projs: List[Tuple[str, Path]], since: _date, skip: set,
+                window_min: float = LOOSE_WINDOW_MIN) -> Tuple[List[Dict], List[Dict]]:
+    """Возможные ответы не реплаем (:meth:`Pult.loose_pairs`) с ответа не раньше *since*.
+
+    ``(кандидаты, отброшенные)``; у отброшенных ``reason``: ответ уже в решении,
+    вопрос уже решён, ответ уже в фактах темы, пара в decisions-skip, вопрос закрыт
+    в пульте.
+    """
+    answers, questions = recorded(projs)
+    facts = fact_refs(projs)
+    pending, dropped = [], []
+    for p in pult.loose_pairs(window_min):
+        at = local_dt(p["answer"]["at"])
+        if at is None or at.date() < since:
+            continue
+        q, a = p["question"]["tg"], p["answer"]["tg"]
+        reason = None
+        if a in answers:
+            reason = "ответ уже в решении"
+        elif q in questions:
+            reason = "вопрос {0} уже решён".format(q)
+        elif a in facts:
+            reason = "уже в фактах темы"
+        elif (q, a) in skip:
+            reason = "в " + SKIP_FILE
+        elif p["closed"]:
+            reason = "вопрос {0} закрыт в пульте".format(q)
+        if reason:
+            dropped.append(dict(p, reason=reason))
+        else:
+            pending.append(p)
+    return pending, dropped
+
+
+def _gap(sec: int) -> str:
+    m, s = divmod(int(sec), 60)
+    return "+{0}м{1:02d}с".format(m, s)
+
+
+def render_inbox(pending: List[Dict], skipped: int, loose: Optional[List[Dict]] = None,
+                 dropped: Optional[List[Dict]] = None,
+                 window_min: float = 0) -> str:
     out = []
     for p in pending:
         at = local_dt(p["answer"]["at"])
@@ -692,6 +808,36 @@ def render_inbox(pending: List[Dict], skipped: int) -> str:
             short(p["question"]["text"], SHORT_INBOX), short(p["answer"]["text"], SHORT_INBOX)))
     out.append("без решения: {0}".format(len(pending)))
     out.append("пропущено: {0}".format(skipped))
+    if loose is None and dropped is None:
+        return "\n".join(out)
+    loose, dropped = loose or [], dropped or []
+    if loose:
+        out.append("")
+        out.append("возможные ответы — не реплай, по времени (≤{0:g} мин после вопроса); "
+                   "связь не записана, подтверди: tide truth decide --q N --a M …"
+                   .format(window_min))
+        groups: Dict[int, List[Dict]] = {}
+        for p in loose:  # пачка сообщений после одного вопроса — одной строкой
+            groups.setdefault(p["question"]["tg"], []).append(p)
+        for q, ps in groups.items():
+            p = ps[0]
+            at = local_dt(p["answer"]["at"])
+            when = at.strftime("%d.%m %H:%M") if at else "?"
+            out.append("{0}  {1} ⇢ {2}  {3}  «{4}» → «{5}»".format(
+                when, q, p["answer"]["tg"], _gap(p["gap_s"]),
+                short(p["question"]["text"], SHORT_INBOX),
+                short(p["answer"]["text"], SHORT_INBOX)))
+            if len(ps) > 1:
+                out.append("    + следом: " + ", ".join(
+                    "{0} {1}".format(x["answer"]["tg"], _gap(x["gap_s"])) for x in ps[1:]))
+    out.append("возможных ответов (не реплай): {0}".format(len(loose)))
+    if dropped:
+        by: Dict[str, List[str]] = {}
+        for p in dropped:
+            key = re.sub(r"вопрос \d+ ", "вопрос ", p["reason"])
+            by.setdefault(key, []).append(str(p["answer"]["tg"]))
+        out.append("по времени отброшено: {0} — {1}".format(len(dropped), "; ".join(
+            "{0}: {1}".format(k, ", ".join(v)) for k, v in by.items())))
     return "\n".join(out)
 
 
@@ -721,10 +867,14 @@ def cmd_inbox(args) -> int:
     pult = _pult(args, projs)
     skip = load_skip(management_root(projs) / ".tide" / truth.TOPICS_DIRNAME / SKIP_FILE)
     pending, skipped = inbox(pult, projs, since, skip)
+    window = getattr(args, "loose_window", None)
+    window = LOOSE_WINDOW_MIN if window is None else float(window)
+    loose, dropped = inbox_loose(pult, projs, since, skip, window)
     if getattr(args, "as_json", False):
-        print(json.dumps(pending, ensure_ascii=False, indent=1))
+        # возможные ответы — в конце списка, с "loose": true (связи нет)
+        print(json.dumps(pending + loose, ensure_ascii=False, indent=1))
     else:
-        print(render_inbox(pending, skipped))
+        print(render_inbox(pending, skipped, loose, dropped, window))
     return 0
 
 
@@ -946,6 +1096,19 @@ def render_decide(res: Dict) -> str:
     return "\n".join(out)
 
 
+def _require_keeper(verb: str) -> None:
+    """Писать может только держатель нити context-keeper или её сабагент —
+    та же проверка, что у хука truth-gate (сессия — ``$CLAUDE_CODE_SESSION_ID``).
+    Иначе :class:`truth.TruthError` (ненулевой код), ничего не пишется."""
+    from .hooks import truth_gate
+
+    ok, why = truth_gate.check_session(os.environ.get("CLAUDE_CODE_SESSION_ID"),
+                                       "tide truth " + verb)
+    if not ok:
+        why = why[len("tide: "):] if why.startswith("tide: ") else why
+        raise truth.TruthError("{0}: отказ, ничего не записано. {1}".format(verb, why))
+
+
 def cmd_decide(args) -> int:
     """``tide truth decide --topic P/NN-slug --q N --a M[,K] --decision "…" […]``."""
     no_q = bool(getattr(args, "d_no_question", False))
@@ -959,6 +1122,8 @@ def cmd_decide(args) -> int:
         raise truth.TruthError("decide: --q и --no-question вместе нельзя")
     if no_q and not (args.d_note or "").strip():
         raise truth.TruthError("decide: --no-question требует --note «почему без вопроса»")
+    if not args.d_dry_run:
+        _require_keeper("decide")
     projs = truth.resolve_projects(None)
     topic = resolve_topic(projs, args.d_topic)
     pult = _pult(args, projs)
@@ -1076,6 +1241,9 @@ def add_arguments(p) -> None:
     """Флаги inbox/decide на парсере ``tide truth`` (зовёт truth.register)."""
     p.add_argument("--since", metavar="YYYY-MM-DD",
                    help="inbox: ответы с этого дня (по умолчанию сегодня)")
+    p.add_argument("--window", dest="loose_window", type=float, metavar="МИН",
+                   help="inbox: окно «возможного ответа не реплаем» после нашего вопроса, "
+                        "минут (по умолчанию {0:g}; 0 — не показывать)".format(LOOSE_WINDOW_MIN))
     p.add_argument("--dialog", metavar="PATH",
                    help="inbox/decide: журнал пульта (иначе ${0})".format(DIALOG_ENV))
     p.add_argument("--log", metavar="PATH", dest="control_log",

@@ -571,3 +571,138 @@ def test_skip_verb_journaled(pult_world, capsys):
     assert rc == 1 and "уже в" in capsys.readouterr().err
     rc, out = _run(capsys, "check", "--project", "management")
     assert rc == 0 and "management/(decisions-skip.jsonl): ок 2 пропусков" in out
+
+
+# --- inbox: возможные ответы не реплаем (по времени) ---------------------------
+
+def _t(hm: str) -> str:
+    return "2026-10-08T{0}:00+00:00".format(hm)
+
+
+def _loose_rows():
+    """899 до вопросов; 900❓→ 901, 902 свободно (+2, +3 мин), 903 наш не-вопрос,
+    904 через 20 мин; 910❓ закрыт реплаем 911, следом 912; 100❓ уже решён → 102;
+    930🖐 → 931 (есть в фактах gamma); 940 опрос → 941."""
+    out = lambda tg, hm, text, kind="alert": {"ts": _t(hm), "dir": "out", "kind": kind,
+                                              "tg_msg_ids": [tg], "text": text,
+                                              "format": "html"}
+    inc = lambda tg, hm, text, **kw: {"ts": _t(hm), "dir": "in", "kind": "tg",
+                                      "tg_msg_id": tg, "text": text, **kw}
+    return [
+        inc(899, "11:00", "привет"),
+        out(900, "12:00", "<b>❓ Красим?</b>"),
+        inc(901, "12:02", "красим"),
+        inc(902, "12:03", "и в синий"),
+        out(903, "12:04", "принял", kind="reply"),
+        inc(904, "12:20", "а что по игре"),
+        out(910, "12:30", "❓ Второй?"),
+        inc(911, "12:31", "да", reply_to_tg=910),
+        inc(912, "12:32", "и ещё"),
+        out(100, "13:00", "❓ Делаем?"),
+        inc(102, "13:01", "делаем"),
+        out(930, "14:00", "🖐 Проверь"),
+        inc(931, "14:01", "проверил"),
+        out(940, "15:00", "Какой?", kind="poll"),
+        inc(941, "15:05", "первый"),
+    ]
+
+
+def test_is_question_marks():
+    assert dt.is_question({"text": "<b>❓ Да?</b>", "format": "html"})
+    assert dt.is_question({"text": "**❓Новые версии"})
+    assert dt.is_question({"text": "🖐 Клик"}) and dt.is_question({"kind": "poll"})
+    assert not dt.is_question({"text": "Принял, делаю"})
+
+
+def test_loose_pairs_window_and_bounds():
+    p = dt.Pult(_loose_rows(), [])
+    got = {(x["question"]["tg"], x["answer"]["tg"]): x for x in p.loose_pairs(10)}
+    assert set(got) == {(900, 901), (900, 902), (910, 912), (100, 102), (930, 931),
+                        (940, 941)}
+    assert got[(900, 901)]["loose"] is True and got[(900, 901)]["gap_s"] == 120
+    assert got[(910, 912)]["closed"] is True and not got[(900, 901)]["closed"]
+    assert (910, 911) not in got  # реплай — обычная пара, не «по времени»
+    assert (900, 904) in {(x["question"]["tg"], x["answer"]["tg"]) for x in p.loose_pairs(30)}
+    assert p.loose_pairs(0) == []
+
+
+def test_inbox_shows_loose_separately_never_links(world, tmp_path, monkeypatch, capsys):
+    dialog = tmp_path / "loose.jsonl"
+    dialog.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in _loose_rows()) + "\n",
+                      encoding="utf-8")
+    monkeypatch.setenv(dt.DIALOG_ENV, str(dialog))
+    monkeypatch.setenv(dt.LOG_ENV, str(tmp_path / "nolog.jsonl"))
+    g = world["gamma"] / ".tide" / "topics" / "01-g"
+    (g / "facts.md").write_text("# Ф\n\n## Сейчас\n\n- проверил · `tg:931`\n", encoding="utf-8")
+    journal_before = {str(p): p.read_bytes() for p in world["alpha"].rglob("*") if p.is_file()}
+    rc, out = _run(capsys, "inbox", "--since", "2026-10-08")
+    assert rc == 0
+    assert "без решения: 1" in out  # только реплай 910→911
+    assert "900 ⇢ 901  +2м00с  «❓ Красим?» → «красим»" in out
+    assert "    + следом: 902 +3м00с" in out
+    assert "940 ⇢ 941  +5м00с" in out
+    assert "904" not in out and "899" not in out  # вне окна / до вопросов
+    assert "возможных ответов (не реплай): 3" in out
+    assert "по времени отброшено: 3" in out
+    assert "вопрос уже решён: 102" in out and "уже в фактах темы: 931" in out
+    assert "вопрос закрыт в пульте: 912" in out
+    after = {str(p): p.read_bytes() for p in world["alpha"].rglob("*") if p.is_file()}
+    assert journal_before == after  # inbox ничего не связывает и не пишет
+    rc, out = _run(capsys, "inbox", "--since", "2026-10-08", "--window", "30")
+    assert "+ следом: 902 +3м00с, 904 +20м00с" in out
+    rc, out = _run(capsys, "inbox", "--since", "2026-10-08", "--window", "0")
+    assert "⇢" not in out and "возможных ответов (не реплай): 0" in out
+    rc, out = _run(capsys, "inbox", "--since", "2026-10-08", "--json")
+    data = json.loads(out)
+    assert [d.get("loose", False) for d in data] == [False, True, True, True]
+    assert data[1]["question"]["tg"] == 900 and data[1]["answer"]["tg"] == 901
+
+
+# --- decide: пишет только держатель нити context-keeper ------------------------
+
+KEEPER = {"thread": "34-@context-keeper", "project": "tide-stack",
+          "claude_session": "sid-keeper", "ao_session": "tide-stack-28",
+          "title": "tide-stack — context-keeper · 04 · tide-stack-28"}
+
+
+def test_decide_refused_for_foreign_session(pult_world, capsys, monkeypatch):
+    from tide.hooks import truth_gate as tg
+
+    monkeypatch.setattr(tg, "keeper", lambda home=None: KEEPER)
+    tdir = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    before = {n: (tdir / n).read_bytes() for n in (dt.JOURNAL_FILE, "facts.md", edits.EDITS_FILE)}
+    for sid in ("sid-other", None):
+        if sid:
+            monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        else:
+            monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        rc = cli.main(["truth", "decide", "--topic", "alpha/" + SLUG, "--q", "500", "--a", "501",
+                       "--decision", "да"])
+        err = capsys.readouterr().err
+        assert rc != 0
+        assert "decide: отказ, ничего не записано" in err and "ведёт context-keeper" in err
+        assert "ao send tide-stack-28" in err
+    assert before == {n: (tdir / n).read_bytes() for n in before}
+    # dry-run не пишет — проверка сессии не нужна
+    rc, out = _decide(capsys, "--q", "500", "--a", "501", "--decision", "да", "--dry-run")
+    assert rc == 0 and "dry-run" in out
+
+
+def test_decide_allowed_for_keeper_and_subagent(pult_world, capsys, monkeypatch):
+    from tide.hooks import truth_gate as tg
+
+    monkeypatch.setattr(tg, "keeper", lambda home=None: KEEPER)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-keeper")  # у сабагента тот же id
+    rc, out = _decide(capsys, "--q", "500", "--a", "501", "--decision", "да")
+    assert rc == 0 and out.startswith("записано"), out
+    tdir = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    assert edits.read_rows(tdir)[-1]["session"] == "sid-keeper"
+
+
+def test_check_session_shared_with_hook():
+    from tide.hooks import truth_gate as tg
+
+    assert tg.check_session("sid-keeper", "x", KEEPER) == (True, "")
+    ok, why = tg.check_session("sid-other", "x", KEEPER)
+    assert not ok and "ведёт context-keeper" in why
+    assert tg.check_session("", "x", lookup=lambda: None) == (True, "")  # механизм не заведён

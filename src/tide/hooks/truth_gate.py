@@ -118,6 +118,24 @@ def deny_message(k: Dict[str, str], what: str) -> str:
             "tide truth decide.".format(who, what, ao))
 
 
+def check_session(session_id, what: str, k: Optional[Dict[str, str]] = None, *,
+                  lookup=None) -> Tuple[bool, str]:
+    """Может ли claude-сессия *session_id* писать записи решений и фактов.
+
+    ``(True, "")`` — это держатель нити хранителя (или её сабагент: у него тот же
+    ``session_id``) либо нити хранителя нет в ростере (механизм не заведён).
+    Иначе ``(False, текст отказа)``. Одна проверка для хука и для
+    ``tide truth decide`` (там *session_id* — ``$CLAUDE_CODE_SESSION_ID``).
+    """
+    k = k if k is not None else (lookup or keeper)()
+    if k is None:
+        return True, ""
+    sid = str(session_id or "").strip()
+    if not sid or sid != k.get("claude_session"):
+        return False, deny_message(k, what)
+    return True, ""
+
+
 # --- что трогает вызов ----------------------------------------------------------
 
 def _resolve(raw: str, cwd: Optional[str]) -> Path:
@@ -195,13 +213,10 @@ def decide(payload: dict, k: Optional[Dict[str, str]] = None, *,
         return False, ("tide: {0} — журнал правок, его пишет только tide "
                        "(decide/skip/baseline и этот хук); руками не правится никем."
                        .format(next(p for p in found if edits.protected(p) == "edits")))
-    k = k if k is not None else (lookup or keeper)()
-    if k is None:
-        return True, ""  # нити хранителя нет — механизм не заведён
-    sid = str(payload.get("session_id") or "").strip()
     what = ", ".join(str(p) for p in found) or "tide truth decide/skip/baseline"
-    if not sid or sid != k.get("claude_session"):
-        return False, deny_message(k, what)
+    ok, why = check_session(payload.get("session_id"), what, k, lookup=lookup)
+    if not ok:
+        return False, why
     for d in sorted({p.parent for p in found}):
         bad = edits.mismatch(d)
         if bad:
