@@ -23,6 +23,7 @@ in :mod:`tide.hooks.install` — the thin adapter above this module.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -52,6 +53,27 @@ HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
 CONTEXT_WATCH_CMD = "tide hook context-watch"
 SESSION_END_CMD = "tide hook session-end"
+
+
+# The canonical set — every (event, command) :func:`merge_hooks` wires. The one
+# list doctor / ``ao ensure`` / ``install-hooks --worktree`` check a settings.json
+# against (SOC-101, cand 276): a ``.claude`` link only means «the same file as the
+# main tree», not «the hooks are in it».
+TIDE_HOOKS: Tuple[Tuple[str, str], ...] = (
+    (SESSION_START_EVENT, SESSION_START_CMD),
+    (PRE_TOOL_USE_EVENT, EDIT_GATE_CMD),
+    (PRE_TOOL_USE_EVENT, ROLE_GATE_CMD),
+    (PRE_TOOL_USE_EVENT, ASK_GATE_CMD),
+    (USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD),
+    (STOP_EVENT, OFFLOAD_NUDGE_CMD),
+    (STOP_EVENT, CONTEXT_WATCH_CMD),
+    (SESSION_END_EVENT, SESSION_END_CMD),
+)
+
+
+def hook_name(command: str) -> str:
+    """``tide hook ask-gate`` → ``ask-gate`` (the short name humans read)."""
+    return command.replace("tide hook ", "")
 
 
 class InstallError(StreamError):
@@ -259,6 +281,29 @@ def merge_hooks(data: dict) -> List[str]:
     return notes
 
 
+def missing_hooks(data: dict) -> List[str]:
+    """Short names of the :data:`TIDE_HOOKS` absent from a settings *data* dict
+    (each looked up under its own event), in canonical order."""
+    hooks = data.get(HOOKS_KEY) if isinstance(data, dict) else None
+    hooks = hooks if isinstance(hooks, dict) else {}
+    out: List[str] = []
+    for event, command in TIDE_HOOKS:
+        groups = hooks.get(event)
+        if not (isinstance(groups, list) and _command_present(groups, command)):
+            out.append(hook_name(command))
+    return out
+
+
+def missing_hooks_at(path: Path) -> List[str]:
+    """:func:`missing_hooks` of the settings.json at *path* (follows a ``.claude``
+    link); an unreadable / non-JSON file misses them all."""
+    try:
+        data = _load(path)
+    except (InstallError, OSError):
+        data = {}
+    return missing_hooks(data)
+
+
 # --- I/O -------------------------------------------------------------------
 
 def install_hooks(root: Path) -> Tuple[Path, List[str]]:
@@ -283,15 +328,28 @@ def install_hooks_in_worktree(tree: Path) -> Tuple[Optional[Path], List[str]]:
     the hooks :func:`install_hooks` merged there never reach the session (live 09.10:
     no context-watch in music-3..7, no tide hooks at all in mitehq-1). AO runs this
     as the project's ``postCreate`` — before the agent starts, so the very first
-    SessionStart already fires. A symlinked ``.claude`` IS the main tree's: skipped.
+    SessionStart already fires.
+
+    A symlinked ``.claude`` IS the main tree's — but a link is not proof the hooks
+    are in it (SOC-101, cand 276: ask-gate never reached topics). The missing ones
+    are merged into the main settings.json the link points at (merge-not-clobber,
+    a ``.bak`` copy first); nothing missing → nothing written.
 
     The edit must never ride a commit of the project: a tracked settings.json is
     marked ``skip-worktree`` in this worktree's index. Returns ``(path, notes)``;
-    ``(None, [])`` when skipped.
+    ``(path, [])`` when everything is already wired.
     """
     tree = Path(tree)
-    if (tree / CLAUDE_DIRNAME).is_symlink():
-        return None, []
+    link = tree / CLAUDE_DIRNAME
+    if link.is_symlink():
+        path = link.resolve() / SETTINGS_FILE
+        data = _load(path)
+        notes = merge_hooks(data)
+        if notes:
+            if path.is_file():
+                shutil.copy2(str(path), str(path.with_name(path.name + ".bak")))
+            _io.atomic_write(path, json.dumps(data, indent=2) + "\n")
+        return path, notes
     path, notes = install_hooks(tree)
     if notes:
         rel = str(path.relative_to(tree))

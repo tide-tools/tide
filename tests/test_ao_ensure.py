@@ -129,3 +129,49 @@ def test_doctor_f9_without_ao_says_nothing_extra(tmp_path):
 
     assert doctor.ao_projects_without_hooks() == []
     assert doctor.check_ao_worktree_hooks(tmp_path / "none").status == doctor.STATUS_OK
+
+
+# --- SOC-101 cand 276: a .claude link is not proof the hooks are in it -------------
+
+def _linked_project(tmp_path, *, full: bool):
+    from tide import harness
+
+    mgmt = _git_repo(tmp_path / "mgmt")  # .claude untracked → symlinked
+    data: dict = {}
+    if full:
+        harness.merge_hooks(data)
+    (mgmt / ".claude" / "settings.json").write_text(json.dumps(data))
+    cfg = dict(LIVE_CFG, symlinks=[".tide", ".claude"])
+    return mgmt, cfg
+
+
+def test_linked_project_with_full_set_is_ok(fake_ao, tmp_path, monkeypatch, capsys):
+    from tide import doctor
+
+    mgmt, cfg = _linked_project(tmp_path, full=True)
+    _seed(fake_ao, tmp_path, {"mgmt": (mgmt, cfg)})
+    assert cli.main(["ao", "ensure", "--all", "--dry-run"]) == 0
+    assert "mgmt: ok — hooks already reach" in capsys.readouterr().out
+    assert doctor.ao_linked_missing_hooks() == []
+    assert doctor.check_ao_worktree_hooks(tmp_path / "none").status == doctor.STATUS_OK
+
+
+def test_linked_project_missing_hooks_named_with_one_command(fake_ao, tmp_path,
+                                                             monkeypatch, capsys):
+    from tide import doctor
+
+    mgmt, cfg = _linked_project(tmp_path, full=False)
+    _seed(fake_ao, tmp_path, {"mgmt": (mgmt, cfg)})
+    assert cli.main(["ao", "ensure", "--all", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "already reach" not in out
+    assert "lacks tide hooks" in out and "ask-gate" in out
+    assert "`cd {0} && tide install-hooks`".format(mgmt) in out
+    res = doctor.check_ao_worktree_hooks(tmp_path / "none")
+    assert res.status == doctor.STATUS_WARN
+    assert "mgmt (нет:" in res.detail and "ask-gate" in res.detail
+    assert "tide install-hooks" in res.detail
+    assert fake_ao()["projects"]["mgmt"]["config"] == cfg  # read-only
+    monkeypatch.chdir(mgmt)
+    assert cli.main(["install-hooks"]) == 0
+    assert doctor.ao_linked_missing_hooks() == []

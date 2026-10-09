@@ -17,12 +17,17 @@ from . import ao
 
 
 def _describe(res: "ao.EnsureResult", dry_run: bool) -> str:
-    if not res.changed:
-        head = "{0}: ok — hooks already reach its sessions".format(res.pid)
-    else:
-        head = "{0}: {1} {2}".format(res.pid, "would add" if dry_run else "added",
-                                     "; ".join(res.added))
-    return "\n".join([head] + ["  ! " + n for n in res.notes])
+    lines = []
+    if res.changed:
+        lines.append("{0}: {1} {2}".format(res.pid, "would add" if dry_run else "added",
+                                           "; ".join(res.added)))
+    elif not res.missing:
+        lines.append("{0}: ok — hooks already reach its sessions".format(res.pid))
+    if res.missing:
+        # SOC-101 cand 276: the link reaches the sessions, the hooks are not in it
+        lines.append("{0}: .claude is linked, but its settings.json lacks tide hooks: "
+                     "{1} — `{2}`".format(res.pid, ", ".join(res.missing), res.cure))
+    return "\n".join(lines + ["  ! " + n for n in res.notes])
 
 
 def _targets(args) -> List[dict]:

@@ -343,49 +343,69 @@ def check_roster_worktrees(control_home: Optional[Path] = None) -> CheckResult:
     )
 
 
-# tide's hooks an AO session cannot live without (SOC-98/SOC-101 F9): the board's
-# binding, the handoff flip + words of the owner, the context ladder, and the
-# ask-gate (SOC-108: a dialog with nobody in the window wedges the session).
-AO_WORKTREE_HOOKS = (install.SESSION_START_CMD, install.HANDOFF_CONFIRM_CMD,
-                     install.CONTEXT_WATCH_CMD, install.ASK_GATE_CMD)
-
-
-def ao_projects_without_hooks() -> List[str]:
-    """AO projects with a ``.tide`` whose config would NOT bring tide's hooks into
-    a fresh session worktree (no ``postCreate`` / ``.claude`` symlink) — the cause
-    behind a hook-less worktree; the cure is ``tide ao ensure`` (SOC-101 п.1).
+def _ao_ensure_results() -> list:
+    """``ao.ensure_hooks(dry_run)`` for every AO project with a ``.tide``.
     Best-effort: no AO / any AO error → [] (doctor reports, never fails on it)."""
     try:
         from .adapters import ao
 
         if not ao.ao_available():
             return []
-        return [p["id"] for p in ao.list_projects()
-                if p.get("path") and (Path(p["path"]) / ".tide").is_dir()
-                and ao.ensure_hooks(p, dry_run=True).changed]
+        return [ao.ensure_hooks(p, dry_run=True) for p in ao.list_projects()
+                if p.get("path") and (Path(p["path"]) / ".tide").is_dir()]
     except Exception:  # noqa: BLE001
         return []
 
 
+def ao_projects_without_hooks(results: Optional[list] = None) -> List[str]:
+    """AO projects with a ``.tide`` whose config would NOT bring tide's hooks into
+    a fresh session worktree (no ``postCreate`` / ``.claude`` symlink) — the cause
+    behind a hook-less worktree; the cure is ``tide ao ensure`` (SOC-101 п.1)."""
+    results = _ao_ensure_results() if results is None else results
+    return [r.pid for r in results if r.changed]
+
+
+def ao_linked_missing_hooks(results: Optional[list] = None) -> List[str]:
+    """AO projects whose sessions get ``.claude`` by link while the main
+    settings.json it points at lacks tide hooks (SOC-101, cand 276) — each as
+    ``<pid> (нет: …) — `<one command>```."""
+    results = _ao_ensure_results() if results is None else results
+    return ["{0} (нет: {1}) — `{2}`".format(r.pid, ", ".join(r.missing), r.cure)
+            for r in results if r.missing]
+
+
 def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
-                            unwired: Optional[List[str]] = None) -> CheckResult:
+                            unwired: Optional[List[str]] = None,
+                            linked: Optional[List[str]] = None) -> CheckResult:
     """Warn when a live AO session worktree of a tide project lacks tide's hooks.
 
     New raises get them from the AO ``postCreate`` step (``tide install-hooks
     --worktree``); worktrees cut before it — or by hand in AO — may still miss them.
     Live = the worktree dir exists (AO removes it with the session). A tide project =
-    the worktree carries ``.tide``. Lists ``<project>/<session> (нет: …)``; the fix is
-    ``tide install-hooks --worktree`` inside it, or the next raise. *unwired* (default:
-    asked from AO) — tide projects whose AO config lacks the ``postCreate`` step, so
-    every NEXT session comes hook-less too: named with the cure ``tide ao ensure``.
+    the worktree carries ``.tide``. Every hook of :data:`harness.TIDE_HOOKS` is
+    looked up in the settings.json the session actually sees (through a ``.claude``
+    link too). Lists ``<project>/<session> (нет: …)``; the fix is ``tide
+    install-hooks --worktree`` inside it (a link → merged into the main tree), or the
+    next raise. *unwired* (default: asked from AO) — tide projects whose AO config
+    lacks the ``postCreate`` step, so every NEXT session comes hook-less too: named
+    with the cure ``tide ao ensure``. *linked* (default: asked from AO) — projects
+    whose ``.claude`` link points at a main settings.json without all the hooks.
     """
-    if unwired is None:
-        unwired = ao_projects_without_hooks()
-    cure = ("; AO-проекты без postCreate (новые сессии тоже придут без хуков): {0} — "
-            "`tide ao ensure --all`".format(", ".join(unwired)) if unwired else "")
+    if unwired is None or linked is None:
+        results = _ao_ensure_results()
+        unwired = ao_projects_without_hooks(results) if unwired is None else unwired
+        linked = ao_linked_missing_hooks(results) if linked is None else linked
+    cures = []
+    if unwired:
+        cures.append("AO-проекты без postCreate (новые сессии тоже придут без хуков): "
+                     "{0} — `tide ao ensure --all`".format(", ".join(unwired)))
+    if linked:
+        cures.append(".claude по ссылке, а в главном settings.json не хватает хуков: "
+                     "{0}".format("; ".join(linked)))
+    cure = "".join("; " + c for c in cures)
     root = Path(worktrees_root) if worktrees_root is not None else paths.ao_worktrees_root()
     if not root.is_dir():
-        if unwired:
+        if cures:
             return CheckResult("ao-worktrees", STATUS_WARN, cure.lstrip("; "))
         return CheckResult("ao-worktrees", STATUS_OK, "AO worktrees: none here")
     bad: List[str] = []
@@ -395,16 +415,7 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
         if not (wt / ".tide").exists():
             continue
         seen += 1
-        try:
-            data = install._load(install.settings_path(wt))
-        except install.InstallError:
-            data = {}
-        hooks = data.get(install.HOOKS_KEY) if isinstance(data, dict) else None
-        hooks = hooks if isinstance(hooks, dict) else {}
-        present = {h.get("command") for groups in hooks.values() if isinstance(groups, list)
-                   for g in groups if isinstance(g, dict)
-                   for h in (g.get(install.HOOKS_KEY) or []) if isinstance(h, dict)}
-        missing = [c.replace("tide hook ", "") for c in AO_WORKTREE_HOOKS if c not in present]
+        missing = install.missing_hooks_at(install.settings_path(wt))
         if missing:
             bad.append("{0}/{1} (нет: {2})".format(wt.parent.name, wt.name, ", ".join(missing)))
     if bad:
@@ -412,7 +423,7 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
             "ao-worktrees", STATUS_WARN,
             "без хуков tide: {0} — доедут при следующем подъёме или "
             "`tide install-hooks --worktree` в каталоге{1}".format("; ".join(bad), cure))
-    if unwired:
+    if cures:
         return CheckResult("ao-worktrees", STATUS_WARN, cure.lstrip("; "))
     return CheckResult("ao-worktrees", STATUS_OK,
                        "хуки tide во всех {0} AO-worktree tide-проектов".format(seen))

@@ -36,6 +36,7 @@ from ..harness import (  # noqa: F401 — public re-exports
     USER_PROMPT_EVENT,
     _command_present,
     _hook_block,
+    TIDE_HOOKS,
     _load,
     install_hooks,
     install_hooks_in_worktree,
@@ -48,6 +49,8 @@ from ..harness import (  # noqa: F401 — public re-exports
     merge_stop_context_watch,
     merge_stop_nudge,
     merge_user_prompt,
+    missing_hooks,
+    missing_hooks_at,
     settings_path,
 )
 from . import edit_gate, role_gate, session_start
@@ -102,8 +105,10 @@ def _cmd_install_worktree() -> int:
     except Exception as exc:  # noqa: BLE001 — never fail the spawn over hooks
         print("tide: worktree hooks skipped: {0}".format(exc), file=sys.stderr)
         return 0
-    if path is None:
-        print("tide: .claude is a link to the main tree — hooks already there")
+    if (Path(os.getcwd()) / CLAUDE_DIRNAME).is_symlink():
+        print("tide: .claude is a link to the main tree — {0}{1}".format(
+            "hooks merged into " + str(path) if notes else "all hooks already in " + str(path),
+            "".join("\n  + " + n for n in notes)))
     else:
         print("tide: hooks wired in {0}{1}".format(
             path, "".join("\n  + " + n for n in notes) or " (already wired)"))

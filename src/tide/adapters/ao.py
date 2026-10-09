@@ -473,6 +473,14 @@ class EnsureResult:
     changed: bool = False
     added: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # SOC-101 cand 276: ``.claude`` is linked into the sessions, but the main
+    # settings.json it points at lacks these tide hooks (short names).
+    missing: List[str] = field(default_factory=list)
+
+    @property
+    def cure(self) -> str:
+        """The one command that wires :attr:`missing` into the main tree."""
+        return "cd {0} && tide install-hooks".format(shlex.quote(self.path))
 
 
 def ensure_hooks(proj: dict, *, dry_run: bool = False) -> EnsureResult:
@@ -487,6 +495,10 @@ def ensure_hooks(proj: dict, *, dry_run: bool = False) -> EnsureResult:
         return res
     current = proj.get("config") or {}
     want = hooks_config(current, tree=tree)
+    if ".claude" in (want.get("symlinks") or []):
+        # a link is not proof: the sessions see exactly the main settings.json
+        from .. import harness
+        res.missing = harness.missing_hooks_at(harness.settings_path(tree))
     if want == current:
         return res
     for key in ("symlinks", "postCreate"):
