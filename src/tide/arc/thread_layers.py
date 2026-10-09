@@ -160,6 +160,29 @@ def write_main(thread_dir: Path, items: List[str], *, replace: bool = False) -> 
     return added
 
 
+# F65: слои, которые ``tide thread layer`` ЗАМЕНЯЕТ целиком (прежнее — в журнал).
+# «Где мы» — снимок положения: дописанный, он копил противоречия (SOC-106 In Review
+# и Done, разные счёты в одном сиде). Ожидание и опыт — ленты, дописываются.
+REPLACE_KEYS = ("where",)
+JOURNAL_HEAD = "## журнал слоёв"
+
+
+def _journal(lines: List[str], name: str, stamp: str, old: List[str]) -> List[str]:
+    """Прежние строки слоя → раздел ``## журнал слоёв`` goal-файла (вне ``## where
+    we are`` — сборщик сида его не читает). Свежая запись — сверху раздела."""
+    entry = ["### {0} — заменено {1}".format(name, stamp)] + old + [""]
+    at = next((i for i, ln in enumerate(lines)
+               if ln.strip().lower() == JOURNAL_HEAD), -1)
+    if at < 0:
+        while lines and not lines[-1].strip():
+            lines = lines[:-1]
+        return lines + ["", JOURNAL_HEAD] + entry
+    rest = lines[at + 1:]
+    while rest and not rest[0].strip():
+        rest = rest[1:]
+    return lines[:at + 1] + entry + rest
+
+
 def write_layers(goal_path: Path, values: Dict[str, str], *,
                  now: Optional[datetime] = None) -> List[str]:
     """Вписать строки в слои ``## where we are`` goal-файла нити (SOC-101 F53).
@@ -167,7 +190,9 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
     *values* — ``{ключ слоя контракта: текст}`` (``expectation`` / ``where`` /
     ``experience``). Каркаса нет — досевается (:func:`seed_skeleton`). Строка
     ``- ДД.ММ ЧЧ:ММ — текст`` встаёт в конец слоя, заглушка ``<…>`` слоя уходит,
-    живые строки остаются. Ровно те секции, что читают :func:`empty_layers` и
+    живые строки остаются — кроме «где мы» (:data:`REPLACE_KEYS`, F65): его тело
+    заменяется одной новой строкой, прежние строки уходят в ``## журнал слоёв``
+    с датой замены. Ровно те секции, что читают :func:`empty_layers` и
     сборщик сида. Вернуть имена слоёв, куда вписано."""
     goal_path = Path(goal_path)
     values = {k: " ".join(str(v or "").split()) for k, v in values.items()}
@@ -193,9 +218,14 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
             body.pop()
         while body and not body[0].strip():
             body.pop(0)
+        old = []
+        if key in REPLACE_KEYS:  # F65: «где мы» — снимок, а не лента
+            old, body = [ln for ln in body if ln.strip()], []
         body.append("- {0} — {1}".format(stamp, values[key]))
         tail = [""] if stop < len(lines) else []
         lines = lines[:head + 1] + body + tail + lines[stop:]
+        if old:
+            lines = _journal(lines, contract.name(key), stamp, old)
         done.append(contract.name(key))
     _io.atomic_write(goal_path, "\n".join(lines).rstrip("\n") + "\n")
     return done
