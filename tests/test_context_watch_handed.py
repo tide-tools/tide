@@ -28,9 +28,10 @@ def _hand_over(world):
 def test_handed_over_session_is_told_once_not_asked_for_handoff(world):
     _hand_over(world)
     first = cw.watch_reason(world["proj"], _payload(world, 900_000))
-    assert first == ("tide: нить передана proj — seam · 02 · proj-7 — хендофф от тебя "
-                     "больше не нужен. Новое не начинай: доведи то, что уже в работе, "
-                     "и перешли итоги ей.")
+    assert first.startswith("tide: нить передана proj — seam · 02 · proj-7 — хендофф от "
+                            "тебя больше не нужен. Новое не начинай: доведи то, что уже "
+                            "в работе, и перешли итоги ей.")
+    assert "ты передала нить, контекст 900 тыс." in first  # SOC-98: ступень 500 тем же блоком
     assert cw.AUTO_CMD not in first
     # once: later stops are silent, whatever the context
     assert cw.watch_reason(world["proj"], _payload(world, 950_000)) is None
@@ -41,7 +42,8 @@ def test_handed_over_session_is_told_once_not_asked_for_handoff(world):
 def test_told_even_below_the_threshold(world):
     # it is not about the context any more — the thread moved on
     _hand_over(world)
-    assert "нить передана" in cw.watch_reason(world["proj"], _payload(world, 10_000))
+    assert cw.watch_reason(world["proj"], _payload(world, 10_000)) == cw.handed_over_text(
+        "proj — seam · 02 · proj-7")
 
 
 def test_not_handed_over_keeps_the_ladder(world):

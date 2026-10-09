@@ -22,8 +22,10 @@
 Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
 здесь, env: ``$TIDE_CTX_SOFT`` / ``$TIDE_CTX_HARD`` / ``$TIDE_CTX_ALARM``
 (``$TIDE_CTX_NUDGE`` — старый синоним мягкого). Субагенты хендофф не делают (у них
-SubagentStop). Молчит: вне tide-проекта, без арки-сессии, у растворённой или уже
-передавшей сессии, на продолжении после блока (``stop_hook_active``). Любая
+SubagentStop). Молчит: вне tide-проекта, без арки-сессии, на продолжении после
+блока (``stop_hook_active``). Растворённая или уже передавшая сессия хендофф не
+получает, но контекст её считается (SOC-98): на 300 тыс. — пинг «доведи воркера,
+перешли итог, замолчи», на 500 — ещё и тревога менеджеру «закрой её». Любая
 ошибка — молчаливый exit 0.
 """
 
@@ -264,6 +266,86 @@ def fill_tokens(payload: dict, session: str) -> Optional[int]:
     return int(res["tokens"]) if res else None
 
 
+def _session_name(entry: Path) -> str:
+    """``designer · 03 · <ao-id>`` — заголовок паспорта без префикса проекта."""
+    try:
+        from ..launcher import reception
+        title = reception._title(entry, entry.name)
+    except Exception:  # noqa: BLE001
+        title = entry.name
+    return title.split(" — ", 1)[1] if " — " in title else title
+
+
+def _handed_at(entry: Path, session: str) -> str:
+    """Когда сессия отдала нить: штамп ``handed-off``, иначе приём оффера, иначе
+    первое напоминание. → ``ЧЧ:ММ`` (или как записано), ``""`` — неизвестно."""
+    pp = entry / "arc.md"
+    raw = (fields.read_field(pp, HANDED_OFF_FIELD) or "").strip()
+    if not raw:
+        try:
+            from .. import handoff_queue as hq
+            rec = hq.is_dissolved(paths.control_home(), session) or {}
+            raw = str(rec.get("taken-at") or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+    if not raw:
+        raw = (fields.read_field(pp, HANDED_TOLD_FIELD) or "").strip()
+    raw = raw.split(" ", 1)[0]
+    try:
+        return datetime.fromisoformat(raw).strftime("%H:%M")
+    except ValueError:
+        return raw
+
+
+def handed_ping_text(tokens: int) -> str:
+    return ("tide: ты передала нить, контекст {0}: доведи воркера, перешли итог новой "
+            "и замолчи.".format(_k(tokens)))
+
+
+def handed_alarm_text(entry: Path, session: str, tokens: int) -> str:
+    return "сессия {0} передала нить в {1}, контекст {2} — закрой её".format(
+        _session_name(entry), _handed_at(entry, session) or "?", _k(tokens))
+
+
+def _alert_manager(root: Path, entry: Path, text: str) -> None:
+    """Тревога менеджеру тем же путём, что ступень 500 лестницы (``route=manager``);
+    нет ``$TIDE_ALERT_CMD`` — напрямую ``ao send`` менеджеру (как signal_stall)."""
+    from ..launcher import autohandoff as _ah
+
+    if _ah.send_alert(text, route=ROUTE_MANAGER, source=alert_source(root, entry)) is None:
+        _ah.tell_manager(text)
+
+
+def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
+                 now: Optional[datetime]) -> Optional[str]:
+    """SOC-98: сессия, отдавшая нить, растёт дальше — на 300 тыс. пинг ей, на 500 —
+    ещё и тревога менеджеру. Ступень 200 ей не нужна (передача уже сделана).
+    Один пинг на ступень — тот же штамп ``ctx-ping``."""
+    tokens = fill_tokens(payload, session)
+    if tokens is None:
+        return None
+    ladder = list(thresholds())
+    reached = sum(1 for t in ladder if tokens >= t)
+    if reached < 2:
+        return None
+    pp = entry / "arc.md"
+    if _pinged_rank(pp, ladder) >= reached:
+        return None
+    step = ladder[reached - 1]
+    fields.set_field(pp, CTX_PING_FIELD, "{0} {1} {2}".format(
+        _kn(step), (now or datetime.now()).isoformat(timespec="seconds"), tokens))
+    try:
+        if reached >= 3:
+            _alert_manager(root, entry, handed_alarm_text(entry, session, tokens))
+        else:
+            _send("hard", root, entry, "сессия {0} передала нить, а контекст {1} тыс. "
+                  "— пинг: доведи воркера и замолчи".format(
+                      slug.entry_slug(entry.name), _kn(tokens)))
+    except Exception:  # noqa: BLE001 — a signal must never break the ping
+        pass
+    return handed_ping_text(tokens)
+
+
 def watch_reason(root: Path, payload: dict, *,
                  now: Optional[datetime] = None) -> Optional[str]:
     """Причина блока остановки — или None. Один пинг на ступень, штамп ``ctx-ping``."""
@@ -274,10 +356,12 @@ def watch_reason(root: Path, payload: dict, *,
     if payload.get("stop_hook_active"):
         return None
     told = handed_over_reason(entry, session, now=now)
-    if told is not None:
-        return told or None
-    if _stood_down(entry, session):
-        return None
+    if told is not None or _stood_down(entry, session):
+        # отдала нить: хендофф не требуем, но контекст считаем (SOC-98) —
+        # напоминание о передаче и пинг ступени — одним блоком
+        ping = _handed_ping(root, entry, session, payload, now)
+        parts = [t for t in (told, ping) if t]
+        return "\n".join(parts) or None
     tokens = fill_tokens(payload, session)
     if tokens is None:
         return None

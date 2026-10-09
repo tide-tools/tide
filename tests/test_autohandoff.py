@@ -229,7 +229,10 @@ def test_watch_without_alert_cmd_still_pings(world):
 
 def test_watch_stands_down_after_handing_over(world):
     fields.set_field(world["sess"] / "arc.md", ah.HANDED_OFF_FIELD, "2026-10-09 → 01-x")
-    assert cw.watch_reason(world["proj"], _payload(world, 900_000)) is None
+    # хендофф больше не требуем; контекст считаем (SOC-98) — один пинг, без AUTO_CMD
+    r = cw.watch_reason(world["proj"], _payload(world, 900_000))
+    assert r and "ты передала нить" in r and cw.AUTO_CMD not in r
+    assert cw.watch_reason(world["proj"], _payload(world, 950_000)) is None
 
 
 def test_watch_thresholds_from_env(world, monkeypatch):
@@ -390,8 +393,9 @@ def test_auto_spawns_and_successor_inherits_chain(world, monkeypatch, capsys):
     seed = (born / "input" / "handoff-seed.md").read_text(encoding="utf-8")
     assert "пишу тесты сторожа" in seed and "последняя реплика Гриши" in seed
     assert fields.read_field(world["sess"] / "arc.md", ah.HANDED_OFF_FIELD)
-    # передавшая сессия — сторож молчит
-    assert cw.watch_reason(world["proj"], _payload(world, 900_000)) is None
+    # передавшая сессия — хендофф не требуем, только пинг ступени (SOC-98)
+    r = cw.watch_reason(world["proj"], _payload(world, 900_000))
+    assert r and cw.AUTO_CMD not in r
 
 
 def test_auto_stands_on_open_question_and_signals(world, monkeypatch, capsys):
