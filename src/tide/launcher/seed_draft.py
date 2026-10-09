@@ -1270,6 +1270,29 @@ def mark_closed(lines: Sequence[str], live) -> List[str]:
     return out
 
 
+# F51: номера задач не только из пульсов — из цели нити и из прошлого сида. Скрытый
+# ключ тел блоков (render_draft его не печатает): ``[(источник, текст)]``.
+LINEAR_SOURCES = "_linear_sources"
+
+
+def mark_linear_source(lines: Sequence[str], seen_text: str,
+                       sources: Sequence["tuple[str, str]"]) -> List[str]:
+    """Строке задачи, которой нет в тексте сида и пульсах, — откуда она: «(из цели
+    нити)», «(из прошлого сида)». Молча номер не выпадает и не появляется."""
+    have = set(linear_keys(seen_text))
+    out = []
+    for ln in lines:
+        keys = linear_keys(ln)
+        tag = ""
+        if keys and keys[0] not in have:
+            for name, text in sources:
+                if keys[0] in linear_keys(text):
+                    tag = " (из {0})".format(name)
+                    break
+        out.append(ln + tag)
+    return out
+
+
 def review_awaiting(live) -> List[str]:
     """Задачи Linear на проверке (F48) — пункты «ждёт Гришу»: In Review ждёт приёмки
     (Гриша смотрит, Done ставит проверяющий уровнем выше). *live* не словарь — []."""
@@ -1310,10 +1333,13 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
         out[JOURNAL] = block_journal(context, budget=budget, source=source)
         # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
-        hay = render_draft(out, header=header) + "\n" + "\n".join(context)
+        seen = render_draft(out, header=header) + "\n" + "\n".join(context)
+        sources = list(out.get(LINEAR_SOURCES) or [])
+        hay = seen + "".join("\n" + text for _name, text in sources)
         live = linear_states(linear_keys(hay))
-        out[LINEAR] = block_links(hay, status_text="\n".join(reversed(list(context))),
-                                  live=live)
+        out[LINEAR] = mark_linear_source(
+            block_links(hay, status_text="\n".join(reversed(list(context))), live=live),
+            seen, sources)
         if AWAITING in out:  # F48: задачи на проверке ждут Гришу
             out[AWAITING] = _merge_lines(awaiting, review_awaiting(live))
             if AWAITING in plain:
@@ -2089,6 +2115,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  + contract.find_body(seed_in, "experience")))
         + [topic_pointer(root, thread_entry)],
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
+        LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
+                         ("прошлого сида", "\n".join(contract.find_body(seed_in, "linear")))],
     }
 
 

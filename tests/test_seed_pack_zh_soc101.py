@@ -175,3 +175,25 @@ def test_map_skips_empty_main_and_adds_code_and_tests(tmp_path):
                                     encoding="utf-8")
     assert "«главное»" in "\n".join(seed_draft.collected_map(tmp_path, sess, thread,
                                                              transcripts=[]))
+
+
+# --- F51: задачи Linear — и из цели нити, и из прошлого сида -------------------------
+
+def test_linear_keys_from_thread_goal_and_previous_seed(monkeypatch):
+    live = {"SOC-40": ("Todo", "unstarted"), "SOC-51": ("Done", "completed"),
+            "SOC-112": ("In Review", "started"), "SOC-90": ("Canceled", "canceled")}
+    monkeypatch.setattr(seed_draft, "linear_states", lambda keys: live)
+    bodies = {seed_draft.WHERE: ["- SOC-112 мобильная"],
+              seed_draft.LINEAR_SOURCES: [
+                  ("цели нити", "Доска tide; ведёт SOC-51 и SOC-40"),
+                  ("прошлого сида", "- SOC-90 — https://x/SOC-90\n- SOC-112 — https://x")]}
+    text = seed_draft.seal(bodies, context=[])
+    block = text.split("## задачи Linear", 1)[1].split("\n## ", 1)[0]
+    assert "- SOC-40 — https://linear.app/socaseinpoint/issue/SOC-40 — Todo (из цели нити)" \
+        in block
+    assert "SOC-112 — https://linear.app/socaseinpoint/issue/SOC-112 — In Review\n" in block
+    assert "  - SOC-51 — https://linear.app/socaseinpoint/issue/SOC-51 — закрыта (Done) " \
+           "(из цели нити)" in block
+    assert "  - SOC-90 — https://linear.app/socaseinpoint/issue/SOC-90 — закрыта (Canceled) " \
+           "(из прошлого сида)" in block
+    assert "_linear_sources" not in text and "цели нити\", " not in text
