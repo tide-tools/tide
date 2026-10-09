@@ -226,6 +226,8 @@ _DECISION_STATUS = re.compile(
     r"(?<!\w)(в силе|done|сделано|выполнено|отменено|отменили|принято|правило|"
     r"not done|не сделано|в работе|ждёт|ждет)(?!\w)", re.IGNORECASE)
 DECISION_NO_STATUS = "(статус: не указан)"
+# Метки, чей последний пункт режется по концу фразы (C4/F39).
+_SENTENCE_LABELS = ("decisions", "experience")
 # «Хвосты:», «Открыто:» (tails) и «Не вживую:» (unverified) — один раздел сида.
 _TAIL_KEYS = ("tails", "unverified")
 TAILS_KEY = "tails"
@@ -261,6 +263,10 @@ def labeled_pulses(context: Sequence[str]) -> Dict[str, List[str]]:
                 if target == TAILS_KEY:
                     piece = first_sentence(piece)
                 items = [piece] if key == "unverified" else _ITEM_SPLIT.split(piece)
+                if key in _SENTENCE_LABELS and items:
+                    # C4/F39: последний пункт метки кончается своей фразой — дальше
+                    # в пульсе рассказ («… «прочитано как да». Адреса: …»)
+                    items[-1] = first_sentence(items[-1])
                 for item in items:
                     item = item.strip().rstrip(".;").strip()
                     if not item:
@@ -317,6 +323,36 @@ def fold_lines(lines: Sequence[str]) -> List[str]:
             continue
         out.append(ln)
         keys.append(k)
+    return out
+
+
+SIMILAR_SHARE = 0.8  # доля слов короткой строки в длинной — один и тот же урок
+SIMILAR_MIN_WORDS = 3
+
+
+def _sig_words(line: str) -> set:
+    return {w for w in norm_line(line).split() if len(w) >= 3}
+
+
+def fold_similar(lines: Sequence[str]) -> List[str]:
+    """Свернуть один урок, записанный разными словами (F39, опыт): короткая строка,
+    чьи слова (3+ знака, не меньше :data:`SIMILAR_MIN_WORDS`) на
+    :data:`SIMILAR_SHARE` лежат в другой, уступает более полной — на месте первой."""
+    out: List[str] = []
+    for ln in fold_lines(lines):
+        w = _sig_words(ln)
+        hit = None
+        for i, prev in enumerate(out):
+            pw = _sig_words(prev)
+            small, big = (w, pw) if len(w) <= len(pw) else (pw, w)
+            if len(small) >= SIMILAR_MIN_WORDS and \
+                    len(small & big) >= SIMILAR_SHARE * len(small):
+                hit = i
+                break
+        if hit is None:
+            out.append(ln)
+        elif len(_sig_words(ln)) > len(_sig_words(out[hit])):
+            out[hit] = ln
     return out
 
 
@@ -898,7 +934,7 @@ def block_experience(candidate_nums: Sequence[str],
     «отвергнуто» этой сессии пишет курирующий — подсказка, а не выдуманный текст.
     """
     # F39: метка ПЕРЕДАЧИ, слой нити и прошлый сид пишут один урок разными знаками
-    out: List[str] = fold_lines(
+    out: List[str] = fold_similar(
         [ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)])
     gists = candidate_gists or {}
     if candidate_nums and gists:
