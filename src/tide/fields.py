@@ -54,7 +54,9 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "deferred",
         "dismissed",    # hand-retired head: the session left focus, its trace stays
         "dissolved",    # the origin gave its thread away (offer taken) — I6 mechanics
+        "deliverable",  # session: what the human will get (``tide offload --deliverable``)
         "dropped",      # candidate drop stamp (honest board age; candidate 89)
+        "eta",          # session: when it will deliver, ISO with offset (``tide offload --eta``)
         "ended",        # SessionEnd stamp — the claude conversation finished
         "from",
         "held",         # thread set aside by hand (☾) — reversible, board-only gesture

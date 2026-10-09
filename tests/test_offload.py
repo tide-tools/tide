@@ -497,3 +497,43 @@ def test_summary_does_not_disturb_cursor_or_context(tmp_project, session):
     assert "сделал раз" in text
     cursor = text.partition(offload.CURSOR_SECTION)[2].partition("\n## ")[0].strip()
     assert cursor == "делаю два"
+
+
+# --- --eta / --deliverable (паспорт: когда сдаст и что получит человек) ------
+
+def test_parse_eta_formats():
+    from datetime import datetime
+    now = datetime(2026, 10, 9, 15, 30).astimezone()
+    today = offload.parse_eta("12:05", now=now)          # past → stays today (overdue)
+    assert today.startswith("2026-10-09T12:05:00") and today[19] in "+-"
+    assert offload.parse_eta("31.12 09:00", now=now).startswith("2026-12-31T09:00:00")
+    assert offload.parse_eta("2026-10-10T18:00:00+03:00") == "2026-10-10T18:00:00+03:00"
+    assert offload.parse_eta("2026-10-10T18:00")[19] in "+-"   # naive → local offset
+    assert offload.parse_eta("-") == offload.parse_eta("none") == ""
+    with pytest.raises(offload.OffloadError):
+        offload.parse_eta("завтра")
+
+
+def test_cli_offload_eta_and_deliverable_replace_and_clear(tmp_project, session, monkeypatch):
+    monkeypatch.chdir(tmp_project)
+    arc = session / "arc.md"
+    assert cli.main(["offload", "otliv", "--eta", "18:00",
+                     "--deliverable", "скрин экрана «в работе»"]) == 0
+    assert fields.read_field(arc, "eta").startswith(
+        fields.read_field(arc, "offloaded-at")[:10] + "T18:00:00")
+    assert fields.read_field(arc, "deliverable") == "скрин экрана «в работе»"
+    assert cli.main(["offload", "otliv", "--eta", "2026-10-10T09:30:00+03:00",
+                     "--deliverable", "PR #171", "сдвинул срок"]) == 0
+    text = arc.read_text(encoding="utf-8")
+    assert text.count("\neta: ") == 1 and text.count("\ndeliverable: ") == 1
+    assert fields.read_field(arc, "eta") == "2026-10-10T09:30:00+03:00"
+    assert fields.read_field(arc, "deliverable") == "PR #171"
+    assert cli.main(["offload", "otliv", "--eta", "-", "--deliverable", "-"]) == 0
+    assert fields.read_field(arc, "eta") is None
+    assert fields.read_field(arc, "deliverable") is None
+
+
+def test_offload_deliverable_is_cut_to_one_short_line(tmp_project, session):
+    offload.offload(tmp_project, "otliv", deliverable="очень " * 30)
+    value = fields.read_field(session / "arc.md", "deliverable")
+    assert len(value) <= offload.DELIVERABLE_MAX and value.endswith("…")

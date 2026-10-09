@@ -34,6 +34,10 @@ CURSOR_SECTION = "## cursor — resume here"
 NEXT_SECTION = "## next"
 SUMMARY_SECTION = "## summary"
 OFFLOADED_FIELD = "offloaded-at"
+ETA_FIELD = "eta"
+DELIVERABLE_FIELD = "deliverable"
+DELIVERABLE_MAX = 60
+_CLEAR_WORDS = ("-", "none")
 CLAUDE_SESSION_FIELD = "claude-session"
 
 # The nudge window: workspace moved but the passport untouched for this long →
@@ -91,10 +95,54 @@ def find_session_by_claude_id(root: Path, session_id: str) -> Optional[Path]:
     return None
 
 
+# --- eta / deliverable --------------------------------------------------------
+
+def parse_eta(raw: str, now: Optional[datetime] = None) -> str:
+    """Normalize an ``--eta`` value to ISO with the local offset; ``""`` = clear.
+
+    Accepts ``HH:MM`` (today, local — an already-past time stays today: it is
+    then overdue, never rolled to tomorrow), ``DD.MM HH:MM`` (this year) or a
+    full ISO stamp (naive → local offset). ``-``/``none`` clears the field.
+    """
+    value = " ".join((raw or "").split())
+    if value.lower() in _CLEAR_WORDS:
+        return ""
+    base = (now or datetime.now()).astimezone()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    m2 = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.? (\d{1,2}):(\d{2})", value)
+    try:
+        if m:
+            dt = base.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                              second=0, microsecond=0)
+        elif m2:
+            dt = datetime(base.year, int(m2.group(2)), int(m2.group(1)),
+                          int(m2.group(3)), int(m2.group(4))).astimezone()
+        else:
+            dt = datetime.fromisoformat(value)
+            dt = dt.astimezone() if dt.tzinfo is None else dt
+    except ValueError:
+        raise OffloadError(
+            "offload: --eta {0!r} not understood — use HH:MM, 'DD.MM HH:MM', "
+            "ISO, or '-' to clear".format(raw)
+        ) from None
+    return dt.isoformat(timespec="seconds")
+
+
+def clean_deliverable(raw: str) -> str:
+    """One line, ≤ ~60 chars (cut with «…»); ``-``/``none`` → ``""`` = clear."""
+    value = " ".join((raw or "").split())
+    if value.lower() in _CLEAR_WORDS:
+        return ""
+    if len(value) > DELIVERABLE_MAX:
+        value = value[:DELIVERABLE_MAX - 1].rstrip() + "…"
+    return value
+
+
 # --- the offload write -------------------------------------------------------
 
 def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
-            next_steps: str = "", summary: str = "") -> Path:
+            next_steps: str = "", summary: str = "",
+            eta: Optional[str] = None, deliverable: Optional[str] = None) -> Path:
     """Append *note* to ``## context``; optionally reset cursor, ``## next``, summary.
 
     ФОРМА ЗАПИСИ (закон доски, 07.07 — «агенты пишут так, чтобы можно
@@ -108,10 +156,19 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
     поэтому у живых сессий он стоял шаблонной болванкой, и оркестратор не мог
     отличить арку с тремя отчётами дня от пустой. Строка живёт здесь, а не в
     ``## context``: context — журнал (растёт), summary — витрина (переписывается).
+
+    *eta* / *deliverable* — КОГДА сессия сдаст и ЧТО человек получит: поля
+    паспорта ``eta:`` (ISO со смещением) и ``deliverable:``, переписываются,
+    не копятся. ``None`` — не трогать, ``-``/``none`` — стереть.
     """
-    if not any(s.strip() for s in (note or "", cursor or "", next_steps or "", summary or "")):
+    if eta is not None:
+        eta = parse_eta(eta)
+    if deliverable is not None:
+        deliverable = clean_deliverable(deliverable)
+    if eta is None and deliverable is None and not any(
+            s.strip() for s in (note or "", cursor or "", next_steps or "", summary or "")):
         raise OffloadError(
-            "offload: nothing to write — pass a note and/or --cursor/--next/--summary "
+            "offload: nothing to write — pass a note and/or --cursor/--next/--summary/--eta/--deliverable "
             "(правило: одна строка «где стою / что решил / что дальше»)"
         )
     entry = find_session(Path(root), ref)
@@ -121,12 +178,13 @@ def offload(root: Path, ref: str, *, note: str = "", cursor: str = "",
             "offload: no open session matching {0!r}. Open sessions: {1}".format(ref, names)
         )
     return write_pulse(entry, note=note, cursor=cursor, next_steps=next_steps,
-                       summary=summary)
+                       summary=summary, eta=eta, deliverable=deliverable)
 
 
 def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
                 next_steps: str = "", summary: str = "",
-                now: Optional[datetime] = None) -> Path:
+                now: Optional[datetime] = None,
+                eta: Optional[str] = None, deliverable: Optional[str] = None) -> Path:
     """Write a pulse to a KNOWN session dir — the resolution-free core of :func:`offload`.
 
     Callers that already hold the exact session dir MUST use this, not ``offload(root,
@@ -173,6 +231,13 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
         _replace_section(passport, NEXT_SECTION, " ".join(next_steps.split()))
     if (summary or "").strip():
         _replace_section(passport, SUMMARY_SECTION, " ".join(summary.split()))
+    for key, value in ((ETA_FIELD, eta), (DELIVERABLE_FIELD, deliverable)):
+        if value is None:
+            continue
+        if value:
+            fields.set_field(passport, key, value)
+        else:
+            fields.remove_field(passport, key)
     fields.set_field(passport, OFFLOADED_FIELD, _now_iso(now))
     return passport
 
@@ -376,7 +441,9 @@ def _cmd_offload(args) -> int:
         print(verdict.reason, file=sys.stderr)
         return 1
     passport = offload(root, args.session, note=note, cursor=cursor,
-                       next_steps=next_steps, summary=summary)
+                       next_steps=next_steps, summary=summary,
+                       eta=getattr(args, "eta", None),
+                       deliverable=getattr(args, "deliverable", None))
     print("tide: offloaded → {0}".format(passport))
     if verdict is not None:
         print(verdict.reason, file=sys.stderr)
@@ -485,6 +552,12 @@ def register(subparsers) -> None:
     p.add_argument("--summary",
                    help="ONE line: what this arc holds, for whoever is choosing "
                         "which arc to open — rewritten, not appended")
+    p.add_argument("--eta",
+                   help="WHEN you will deliver: HH:MM (today; past = overdue), "
+                        "'DD.MM HH:MM' or ISO — stored as ISO, rewritten; '-' clears")
+    p.add_argument("--deliverable",
+                   help="WHAT the human will get, one short line (<=60 chars: "
+                        "'PR #171', 'screenshot of the screen') — rewritten; '-' clears")
     p.add_argument("note", nargs="*", help="context note: what you decided or "
                                            "did, in plain words")
     p.set_defaults(func=_cmd_offload, _cmd="offload")
