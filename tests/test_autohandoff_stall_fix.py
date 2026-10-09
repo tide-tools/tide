@@ -150,3 +150,148 @@ def test_auto_stop_reaches_manager_end_to_end(world, monkeypatch, capsys, mgr):
     (rec,) = hq.list_offers(world["home"])
     ((handle, text),) = mgr
     assert handle == "management-15" and "tide pickup {0}".format(rec["name"]) in text
+
+
+# --- 3. автоподъём вставшей нити через 30 мин ------------------------------------------
+
+def _offer(world, slug="seam-x"):
+    seed = world["tmp"] / "seed.md"
+    seed.write_text("# сид\n", encoding="utf-8")
+    path = hq.offer(world["home"], slug, arc="{0}/01-s1".format(world["thread"].name),
+                    project="proj", seed=str(seed))
+    return next(r for r in hq.list_offers(world["home"]) if r["name"] == path.stem)
+
+
+@pytest.fixture
+def raise_spy(monkeypatch, mgr):
+    """Подъём, сон, TG и ao перехвачены; ничего настоящего."""
+    spy = {"raised": [], "slept": [], "alerts": []}
+    monkeypatch.setattr(ah, "_raise_offer", lambda home, key: spy["raised"].append(key)
+                        or {"ok": True, "action": "spawned", "detail": "fake"})
+    monkeypatch.setattr(ah, "send_alert", lambda text, **kw: spy["alerts"].append(
+        (kw.get("route"), text)) or 0)
+    spy["mgr"] = mgr
+    return spy
+
+
+def test_autoraise_after_env(monkeypatch):
+    monkeypatch.delenv(ah.AUTORAISE_ENV, raising=False)
+    assert ah.autoraise_after() == 1800
+    for off in ("0", "off", "OFF", "no"):
+        monkeypatch.setenv(ah.AUTORAISE_ENV, off)
+        assert ah.autoraise_after() == 0
+    monkeypatch.setenv(ah.AUTORAISE_ENV, "90")
+    assert ah.autoraise_after() == 90
+
+
+def test_autoraise_raises_untaken_offer_and_tells(world, raise_spy):
+    rec = _offer(world)
+    out = ah.run_autoraise(world["home"], rec["name"], after=1800, thread="seam",
+                           sleep=raise_spy["slept"].append)
+    assert out["action"] == "raised" and raise_spy["raised"] == [rec["name"]]
+    assert sum(raise_spy["slept"]) == 1800 and max(raise_spy["slept"]) <= ah.AUTORAISE_POLL
+    ((route, text),) = raise_spy["alerts"]
+    assert route == ah.ROUTE_HUMAN
+    assert "нить seam стояла 30 мин" in text and "поднял" in text and rec["name"] in text
+    ((handle, mtext),) = raise_spy["mgr"]
+    assert handle == "management-15" and mtext == text
+
+
+def test_autoraise_exits_quietly_once_taken(world, raise_spy):
+    rec = _offer(world)
+    calls = []
+
+    def sleep(sec):
+        calls.append(sec)
+        if len(calls) == 2:  # ответили на второй минуте
+            hq.take(world["home"], rec["name"], session="sid-x")
+    out = ah.run_autoraise(world["home"], rec["name"], after=1800, thread="seam",
+                           sleep=sleep)
+    assert out["action"] == "skip" and out["state"] == "taken"
+    assert len(calls) == 2  # вышел сразу, не досыпал 30 минут
+    assert not raise_spy["raised"] and not raise_spy["alerts"] and not raise_spy["mgr"]
+
+
+def test_autoraise_skips_gone_offer(world, raise_spy):
+    out = ah.run_autoraise(world["home"], "999-net", after=60, sleep=raise_spy["slept"].append)
+    assert out["state"] == "gone" and not raise_spy["slept"] and not raise_spy["raised"]
+
+
+def test_autoraise_failed_pickup_still_tells(world, raise_spy, monkeypatch):
+    rec = _offer(world)
+    monkeypatch.setattr(ah, "_raise_offer", lambda home, key: {
+        "ok": False, "action": "failed", "detail": "адаптер умер"})
+    out = ah.run_autoraise(world["home"], rec["name"], after=0, thread="seam")
+    assert out["action"] == "failed"
+    ((_route, text),) = raise_spy["alerts"]
+    assert "адаптер умер" in text and "tide pickup {0}".format(rec["name"]) in text
+
+
+def test_signal_stall_schedules_detached_autoraise(world, mgr, monkeypatch):
+    spawned = []
+    monkeypatch.setenv(ah.AUTORAISE_ENV, "1800")
+    monkeypatch.setattr(ah, "_spawn_autoraise",
+                        lambda home, offer, thread, after: spawned.append(
+                            (home, offer, thread, after)) or 4242)
+    out = ah.signal_stall(world["proj"], world["thread"], "вопрос висит",
+                          offer="12-seam", home=world["home"])
+    assert out["autoraise"] == {"after": 1800, "pid": 4242}
+    assert spawned == [(world["home"], "12-seam", "seam", 1800)]
+    ((_h, text),) = mgr
+    assert "через 30 мин tide поднимет сам" in text
+
+
+def test_signal_stall_autoraise_off_or_no_offer(world, mgr, monkeypatch):
+    spawned = []
+    monkeypatch.setattr(ah, "_spawn_autoraise", lambda *a: spawned.append(a) or 1)
+    monkeypatch.setenv(ah.AUTORAISE_ENV, "off")
+    assert ah.signal_stall(world["proj"], world["thread"], "x", offer="12-seam",
+                           home=world["home"])["autoraise"]["pid"] is None
+    monkeypatch.setenv(ah.AUTORAISE_ENV, "1800")
+    assert ah.signal_stall(world["proj"], world["thread"], "x")["autoraise"]["pid"] is None
+    assert not spawned
+
+
+def test_spawn_autoraise_is_detached(monkeypatch, tmp_path):
+    seen = {}
+
+    class _P:
+        pid = 77
+
+    def fake_popen(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return _P()
+    monkeypatch.setattr(ah.subprocess, "Popen", fake_popen)
+    assert ah._spawn_autoraise(tmp_path, "12-seam", "seam", 1800) == 77
+    assert seen["argv"][1:] == ["-m", "tide", "handoffs", "autoraise", "12-seam",
+                                "--after", "1800", "--home", str(tmp_path),
+                                "--thread", "seam"]
+    assert seen["kw"]["start_new_session"] is True
+
+
+def test_stalled_auto_handoff_schedules_autoraise_end_to_end(world, monkeypatch, mgr):
+    pp = world["sess"] / "arc.md"
+    fields.set_field(pp, ah.AUTO_CHAIN_FIELD, "3")
+    fields.set_field(pp, ah.PROGRESS_MARK_FIELD, "0")
+    spawned = []
+    monkeypatch.setenv(ah.AUTORAISE_ENV, "1800")
+    monkeypatch.setattr(ah, "_spawn_autoraise", lambda home, offer, thread, after:
+                        spawned.append((Path(home).resolve(), offer)) or 1)
+    monkeypatch.setattr(pickup, "get_adapter", lambda name=None: _Fake())
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SID)
+    assert cli.main(["handoff", "continue", "--auto"]) == 0
+    (rec,) = hq.list_offers(world["home"])
+    assert spawned == [(world["home"].resolve(), rec["name"])]
+
+
+def test_autoraise_cli_is_wired_and_hidden(world, raise_spy, capsys):
+    rec = _offer(world)
+    hq.take(world["home"], rec["name"], session="sid-x")
+    assert cli.main(["handoffs", "autoraise", rec["name"], "--after", "0",
+                     "--home", str(world["home"])]) == 0
+    assert '"state": "taken"' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["handoffs", "--help"])
+    help_lines = capsys.readouterr().out.splitlines()
+    # в списке команд с описаниями её нет (в строке usage argparse перечисляет все)
+    assert not any(ln.strip().startswith("autoraise") for ln in help_lines)

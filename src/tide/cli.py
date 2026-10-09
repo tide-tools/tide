@@ -485,6 +485,7 @@ def _register_handoffs(sub) -> None:
     # launcher.handoff.register_offer_spawn teaches `offer` to raise the fresh session
     # right away (decision 07 handoff-autospawn) — composed here for the same reason.
     from .handoff_queue import register as register_handoffs
+    from .launcher.autohandoff import register_autoraise
     from .launcher.handoff import register_offer_spawn
     from .launcher.handoff_audit import register_audit
     from .launcher.seed_draft import register_draft
@@ -493,6 +494,7 @@ def _register_handoffs(sub) -> None:
     register_draft(hsub)
     register_audit(hsub)  # SOC-101 п.3: what a seed lacks, section by section
     register_offer_spawn(hsub)
+    register_autoraise(hsub)  # скрытая: автоподъём вставшей нити (signal_stall)
 
 
 def _register_offload(sub) -> None:

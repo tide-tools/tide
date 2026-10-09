@@ -27,6 +27,13 @@
 ``ao send`` по адресу ``tide whois manager`` (контракт v1: стоп не молчит).
 Ту же внешнюю команду зовёт сторож контекста (route ``log`` / ``manager``).
 
+**Автоподъём** (слово менеджера 09.10): вставшая нить не стоит вечно. Сигнал
+запускает отсоединённый ``tide handoffs autoraise <оффер> --after N``
+(``$TIDE_AUTORAISE_AFTER``, по умолчанию 1800 с; ``0``/``off`` — выключено). Он
+опрашивает оффер раз в :data:`AUTORAISE_POLL` с: взяли/сняли — тихо выходит
+сразу; через N секунд оффер всё ещё висит — тот же подъём, что ``tide pickup``,
+и сообщение Грише (route=human) и менеджеру (``ao send``).
+
 Чистые функции (``count_progress``, ``open_questions``, ``decide``,
 ``build_auto_seed``) — без argparse; :func:`run_auto` — оркестрация.
 """
@@ -38,6 +45,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +64,9 @@ PROGRESS_MARK_FIELD = "progress-mark"  # пункты+пульсы нити на
 HANDED_OFF_FIELD = "handed-off"        # эта сессия уже передала нить (хук молчит)
 
 ALERT_CMD_ENV = "TIDE_ALERT_CMD"
+AUTORAISE_ENV = "TIDE_AUTORAISE_AFTER"  # сек до автоподъёма вставшей нити; 0/off — нет
+AUTORAISE_DEFAULT = 1800
+AUTORAISE_POLL = 30  # как часто автоподъём смотрит, не взяли ли оффер
 ROUTE_HUMAN = "human"  # «нить встала» — Грише; лестница контекста шлёт log/manager
 
 DIALOG_TAIL = 12  # = seed_draft.DIALOG_TAIL (хвост диалога в сиде)
@@ -304,22 +315,28 @@ def build_auto_seed(session_entry: Path) -> str:
 # --- сигнал ------------------------------------------------------------------
 
 def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
-                 source: str = "",
+                 source: str = "", home: Optional[Path] = None,
                  now: Optional[datetime] = None) -> Dict[str, object]:
     """«Нить встала»: артефакт на стол доски + ``$TIDE_ALERT_CMD`` с
     ``TIDE_ALERT_ROUTE=human``, если задана (:func:`send_alert`), + сразу
     менеджеру ``ao send`` (:func:`tell_manager`) — стоп не молчит, даже когда
-    внешней команды в env нет.
+    внешней команды в env нет. Есть оффер — заводится автоподъём
+    (:func:`schedule_autoraise`); *home* — control-home, где висит оффер.
 
     Никогда не падает: сигнал — уведомление, не шаг, от которого зависит передача.
-    Возвращает ``{"artifact": путь|None, "alert": код|None, "manager": {...}}``.
+    Возвращает ``{"artifact": путь|None, "alert": код|None, "manager": {...},
+    "autoraise": {"after": сек, "pid": pid|None}}``.
     """
     tslug = slug.entry_slug(Path(thread_dir).name)
     caption = "нить {0} встала: нужен ты".format(tslug)
+    plan = schedule_autoraise(home, offer, tslug) if offer else {"after": 0, "pid": None}
     how = ("оффер {0} висит — ▶ на доске или tide pickup {0}, когда разберёшься"
            .format(offer) if offer else "новую сессию не поднимал")
+    if plan.get("pid"):
+        how += "; без ответа через {0} мин подниму сам".format(int(plan["after"]) // 60)
     content = "{0}.\n{1}.".format(detail, how)
-    out: Dict[str, object] = {"artifact": None, "alert": None, "manager": None}
+    out: Dict[str, object] = {"artifact": None, "alert": None, "manager": None,
+                              "autoraise": plan}
     try:
         out["artifact"] = _artifact.new_artifact(
             root, caption, "message", content, from_arc=tslug, now=now)
@@ -328,8 +345,11 @@ def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
     text = "{0} — {1}".format(caption, content.replace("\n", " "))
     out["alert"] = send_alert(text, route=ROUTE_HUMAN, source=source or tslug,
                               extra_env={"TIDE_ALERT_THREAD": tslug})
-    out["manager"] = tell_manager(stall_manager_text(
-        Path(root).name, tslug, detail, offer=offer))
+    mtext = stall_manager_text(Path(root).name, tslug, detail, offer=offer)
+    if plan.get("pid"):
+        mtext += "; без ответа через {0} мин tide поднимет сам".format(
+            int(plan["after"]) // 60)
+    out["manager"] = tell_manager(mtext)
     return out
 
 
@@ -402,6 +422,139 @@ def send_alert(text: str, *, route: str, source: str = "",
         return proc.returncode
     except (OSError, ValueError, subprocess.SubprocessError):
         return -1
+
+
+# --- автоподъём вставшей нити --------------------------------------------------
+
+def autoraise_after() -> int:
+    """Пауза автоподъёма из ``$TIDE_AUTORAISE_AFTER`` (сек); 0 — выключено."""
+    raw = (os.environ.get(AUTORAISE_ENV) or "").strip().lower()
+    if not raw:
+        return AUTORAISE_DEFAULT
+    if raw in ("0", "off", "no", "false", "нет"):
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return AUTORAISE_DEFAULT
+
+
+def _spawn_autoraise(home: Path, offer: str, thread: str, after: int) -> Optional[int]:
+    """Отсоединённый ``tide handoffs autoraise`` (своя сессия процессов — не
+    умрёт вместе с передающей сессией) → pid."""
+    argv = [sys.executable, "-m", "tide", "handoffs", "autoraise", offer,
+            "--after", str(after), "--home", str(home), "--thread", thread]
+    proc = subprocess.Popen(argv, cwd=str(home), start_new_session=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True)
+    return proc.pid
+
+
+def schedule_autoraise(home: Optional[Path], offer: str, thread: str) -> Dict[str, object]:
+    """Завести автоподъём оффера *offer*. Выключен / нет оффера / не вышло —
+    ``pid: None``. Никогда не падает."""
+    after = autoraise_after()
+    out: Dict[str, object] = {"after": after, "pid": None}
+    if not offer or after <= 0:
+        return out
+    try:
+        where = Path(home) if home is not None else paths.control_home()
+        out["pid"] = _spawn_autoraise(where, offer, thread, after)
+    except Exception:  # noqa: BLE001 — a signal must never break the handoff
+        out["pid"] = None
+    return out
+
+
+def _offer_state(home: Path, key: str):
+    """``("offered"|"taken"|"gone", запись|None)`` — висит ли оффер *key* невзятым."""
+    from .. import handoff_queue as hq
+
+    rec = next((r for r in hq.list_offers(home) if r["name"] == key), None)
+    if rec is None:
+        return "gone", None
+    taken = str(rec.get("taken_at") or "").strip() not in ("", "-")
+    if rec.get("status") != hq.STATUS_OFFERED or taken:
+        return "taken", rec
+    return "offered", rec
+
+
+def _raise_offer(home: Path, key: str) -> Dict[str, object]:
+    """Тот же подъём, что ``tide pickup <key>`` (:func:`tide.launcher.pickup.run_pickup`)."""
+    from . import pickup
+
+    try:
+        return pickup.run_pickup(home, key)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "action": "failed", "detail": str(exc)}
+
+
+def run_autoraise(home: Path, key: str, *, after: int, thread: str = "",
+                  poll: int = AUTORAISE_POLL, sleep=time.sleep) -> Dict[str, object]:
+    """Ждать *after* сек; оффер всё ещё не взят — поднять самому и сказать.
+
+    Оффер смотрится каждые *poll* сек: взяли (``taken-at``) или сняли — выходим
+    сразу и молча (процесс не висит после ответа). Резерв ▶ свежий — подъём уже
+    идёт, тоже выходим. Иначе :func:`_raise_offer` + Грише (route=human) +
+    менеджеру (``ao send``). Никогда не падает.
+    """
+    home = Path(home)
+    waited = 0
+    state, rec = _offer_state(home, key)
+    while state == "offered" and waited < after:
+        step = min(max(1, poll), after - waited)
+        sleep(step)
+        waited += step
+        state, rec = _offer_state(home, key)
+    out: Dict[str, object] = {"key": key, "waited": waited, "state": state,
+                              "action": "skip"}
+    if state != "offered":
+        return out
+    reserved = str(rec.get("pickup_session") or "").strip()
+    if reserved and reserved != "-" and not rec.get("pickup_stale"):
+        out["state"] = "launching"
+        return out
+    who = thread or slug.entry_slug(str(rec.get("arc") or "").rsplit("/", 1)[0]) or key
+    mins = waited // 60
+    res = _raise_offer(home, key)
+    out["action"] = "raised" if res.get("ok") else "failed"
+    out["pickup"] = res
+    if res.get("ok"):
+        text = ("tide: нить {0} стояла {1} мин без ответа — поднял новую сессию сам, "
+                "оффер {2}".format(who, mins, key))
+    else:
+        text = ("tide: нить {0} стоит {1} мин без ответа, оффер {2} — поднять сам не "
+                "вышло ({3}); подними: tide pickup {2}".format(
+                    who, mins, key, res.get("detail") or "без подробностей"))
+    out["text"] = text
+    out["alert"] = send_alert(text, route=ROUTE_HUMAN, source="{0}/{1}".format(
+        str(rec.get("project") or ""), who), extra_env={"TIDE_ALERT_THREAD": who})
+    out["manager"] = tell_manager(text)
+    return out
+
+
+def _cmd_autoraise(args) -> int:
+    import json
+
+    from .. import paths as _paths
+
+    home = Path(args.home) if args.home else _paths.control_home()
+    out = run_autoraise(home, args.key, after=max(0, int(args.after)),
+                        thread=args.thread or "")
+    print(json.dumps({k: v for k, v in out.items() if k != "pickup"},
+                     ensure_ascii=False, default=str))
+    return 0
+
+
+def register_autoraise(hsub) -> None:
+    """Скрытая ``tide handoffs autoraise`` — её запускает :func:`schedule_autoraise`."""
+    ap = hsub.add_parser("autoraise")
+    ap.add_argument("key")
+    ap.add_argument("--after", type=int, default=AUTORAISE_DEFAULT)
+    ap.add_argument("--home", default=None)
+    ap.add_argument("--thread", default="")
+    ap.set_defaults(func=_cmd_autoraise, _cmd="handoffs autoraise")
+    # не светить в help группы: внутренняя команда, не для рук
+    hsub._choices_actions = [a for a in hsub._choices_actions if a.dest != "autoraise"]
 
 
 # --- оркестрация -------------------------------------------------------------
@@ -477,6 +630,7 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
     if not decision.spawn:
         res.signal = signal_stall(owner, thread, decision.detail,
                                   offer=offer.stem if offer else "",
+                                  home=offer.parents[2] if offer else None,
                                   source="{0}/{1}/{2}".format(
                                       owner.name, slug.entry_slug(thread.name),
                                       slug.entry_slug(entry.name)))
@@ -502,5 +656,6 @@ def render_dry_run(res: AutoResult) -> str:
 __all__ = ["AUTO_CHAIN_FIELD", "AutoHandoffError", "AutoResult", "CHAIN_LIMIT",
            "Decision", "HANDED_OFF_FIELD", "PROGRESS_MARK_FIELD", "build_auto_seed",
            "count_progress", "decide", "decide_for", "open_items", "open_questions",
-           "is_mechanical_pulse", "layers_warning", "render_dry_run", "run_auto",
+           "is_mechanical_pulse", "layers_warning", "register_autoraise",
+           "run_autoraise", "schedule_autoraise", "render_dry_run", "run_auto",
            "send_alert", "signal_stall", "stall_manager_text", "tell_manager"]

@@ -129,6 +129,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # the CLI must never open a real terminal / AO session. Tests of the auto-spawn
     # delenv this and inject a fake adapter.
     monkeypatch.setenv("TIDE_HANDOFF_NO_SPAWN", "1")
+    # A stalled auto-handoff schedules a DETACHED `tide handoffs autoraise` (it
+    # would outlive the test, then raise a session and message people): off.
+    monkeypatch.setenv("TIDE_AUTORAISE_AFTER", "off")
     monkeypatch.setenv("TIDE_GLOBAL_SETTINGS", str(tmp_path / "global-claude-settings.json"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # `tide init` delivers the skills as part of the install (work 49) — point the
