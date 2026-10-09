@@ -24,6 +24,7 @@ wire the thin CLI + hook handlers.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -626,6 +627,23 @@ def _cmd_multiples(args) -> int:
     return 1
 
 
+AO_SESSION_ENV = "AO_SESSION_ID"
+
+
+def _session_candidates(home: Path, session: Optional[str]) -> List[str]:
+    """The sids THIS session may confirm under: its own claude id, and — inside the
+    desktop Agent Orchestrator, which mints claude's id itself — every tide sid the
+    launcher recorded against this AO session (``$AO_SESSION_ID`` = the handle)."""
+    out = [session] if session else []
+    ao = (os.environ.get(AO_SESSION_ENV) or "").strip()
+    if ao:
+        from . import registry
+        for sid, e in registry.read(home).items():
+            if ((e or {}).get("handle") or "").strip() == ao and sid not in out:
+                out.append(sid)
+    return out
+
+
 def cmd_handoff_confirm(args) -> int:
     """``tide hook handoff-confirm`` — UserPromptSubmit: confirm THIS session's handoff.
 
@@ -645,9 +663,12 @@ def cmd_handoff_confirm(args) -> int:
             session = payload.get("session_id") or payload.get("session")
         except (ValueError, OSError):
             session = None
-        if not session:
-            return 0
-        claimed = confirm_for_session(paths.control_home(), session)
+        home = paths.control_home()
+        claimed = None
+        for sid in _session_candidates(home, session):
+            claimed = confirm_for_session(home, sid)
+            if claimed:
+                break
         if claimed:
             print("tide: handoff {0} confirmed — picked up here".format(claimed["name"]))
     except Exception as exc:  # noqa: BLE001  a hook must never raise

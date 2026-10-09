@@ -57,9 +57,71 @@ def find_tide_root(start: Optional[Path] = None) -> Optional[Path]:
     the ``.tide`` dir. *start* defaults to the current working directory.
     """
     here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    mapped = ao_main_path(here)
+    if mapped is not None:
+        here = mapped
     for candidate in (here, *here.parents):
         if (candidate / TIDE_DIR).is_dir():
             return candidate
+    return None
+
+
+# --- Agent Orchestrator worktrees ------------------------------------------
+# The desktop AO runs every session in a fresh git worktree under
+# ``$AO_DATA_DIR/worktrees`` (default ``~/.ao/data/worktrees``). A repo that commits
+# its ``.tide/`` hands that worktree a STALE copy of every arc — a session there
+# would read and write the wrong ``.tide``. So a path inside an AO worktree is
+# mapped to the same relative path inside the repo's MAIN tree before the climb.
+# The main tree comes from git itself (the worktree's ``.git`` file → its gitdir →
+# ``commondir``); ``$TIDE_PROJECT_ROOT`` (set per AO project by the ao adapter) is
+# the fallback when the git pointers can't be read.
+
+AO_DATA_ENV = "AO_DATA_DIR"
+PROJECT_ROOT_ENV = "TIDE_PROJECT_ROOT"
+
+
+def ao_worktrees_root() -> Path:
+    base = os.environ.get(AO_DATA_ENV) or str(Path.home() / ".ao" / "data")
+    return Path(base).expanduser() / "worktrees"
+
+
+def _git_main_tree(worktree: Path) -> Optional[Path]:
+    """Main tree of a LINKED worktree (``.git`` is a file), else None."""
+    try:
+        text = (worktree / ".git").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text[len("gitdir:"):].strip())
+    if not gitdir.is_absolute():
+        gitdir = (worktree / gitdir)
+    try:
+        rel = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+        common = (gitdir / rel).resolve() if not Path(rel).is_absolute() else Path(rel)
+    except OSError:
+        common = gitdir.parent.parent  # <main>/.git/worktrees/<name> → <main>/.git
+    return common.parent if common.name == ".git" else None
+
+
+def ao_main_path(here: Path) -> Optional[Path]:
+    """*here* inside an AO worktree → the same spot in the main tree; else None."""
+    try:
+        root = ao_worktrees_root().resolve()
+        here.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    for cand in (here, *here.parents):
+        if cand == root:
+            break
+        if (cand / ".git").is_file():
+            main = _git_main_tree(cand)
+            if main is None:
+                env = (os.environ.get(PROJECT_ROOT_ENV) or "").strip()
+                main = Path(env).expanduser() if env else None
+            if main is None or not main.is_dir():
+                return None
+            return main.resolve() / here.relative_to(cand)
     return None
 
 

@@ -23,10 +23,13 @@ from typing import Optional, Tuple
 
 from . import harness
 from .adapters import (
+    ENV_ADAPTER,
     SETTINGS_KEY,
     AdapterError,
+    auto_adapter_name,
     available_adapters,
-    default_adapter_name,
+    global_adapter_name,
+    global_settings_path,
 )
 
 # Why each one gets picked, in the person's terms — not the implementation's.
@@ -34,23 +37,55 @@ WHY = {
     "orca": "Orca is on PATH — the author's own terminal manager, and the richest fit",
     "macos": "this is a Mac without Orca — sessions open in Terminal.app",
     "tmux": "no macOS terminal here — sessions open as tmux panes",
+    "ao": "the desktop Agent Orchestrator — each session in its own AO worktree "
+          "(the project is registered in AO on first launch)",
 }
 # Said only when the detected choice is not the recommended one, and only when
 # acting on it is actually possible.
 ORCA_NOTE = "orca (recommended by tide's author) would be used instead if installed"
 
 
-def chosen(root: Path) -> Tuple[str, bool]:
-    """The adapter this project will use: ``(name, pinned_by_hand)``."""
+def chosen_layer(root: Path) -> Tuple[str, str]:
+    """The adapter this project will use and WHERE it came from:
+    ``(name, "env"|"project"|"global"|"auto")``."""
+    import os
+    env = (os.environ.get(ENV_ADAPTER) or "").strip()
+    if env:
+        return env.lower(), "env"
     settings = _settings(root)
     value = settings.get(SETTINGS_KEY) if isinstance(settings, dict) else None
     if isinstance(value, str) and value.strip():
-        return value.strip().lower(), True
-    return default_adapter_name(), False
+        return value.strip().lower(), "project"
+    try:
+        from . import paths
+        home = paths.control_home(root)
+    except Exception:  # noqa: BLE001 — no control-home: skip that layer
+        home = None
+    if home is not None and Path(home).resolve() != Path(root).resolve():
+        hv = _settings(home).get(SETTINGS_KEY)
+        if isinstance(hv, str) and hv.strip():
+            return hv.strip().lower(), "control-home"
+    g = global_adapter_name()
+    if g:
+        return g, "global"
+    return auto_adapter_name(), "auto"
 
 
-def why(name: str, pinned: bool) -> str:
+def chosen(root: Path) -> Tuple[str, bool]:
+    """The adapter this project will use: ``(name, pinned_by_hand)``."""
+    name, layer = chosen_layer(root)
+    return name, layer != "auto"
+
+
+def why(name: str, pinned, layer: str = "") -> str:
     """One clause explaining the choice, for printing after the name."""
+    if layer == "env":
+        return "set by ${0}".format(ENV_ADAPTER)
+    if layer == "control-home":
+        return "pinned in the control-home's .claude/settings.json (pickup/menu/spark/return)"
+    if layer == "global":
+        return "pinned globally in {0} — {1}".format(global_settings_path(),
+                                                      WHY.get(name, ""))
     if pinned:
         return "pinned in this project's .claude/settings.json"
     return WHY.get(name, "auto-detected")
@@ -58,8 +93,9 @@ def why(name: str, pinned: bool) -> str:
 
 def announce_lines(root: Path) -> list:
     """What a command prints so the choice is met, not stumbled over."""
-    name, pinned = chosen(root)
-    out = ["terminal: {0} — {1}".format(name, why(name, pinned))]
+    name, layer = chosen_layer(root)
+    pinned = layer != "auto"
+    out = ["terminal: {0} — {1}".format(name, why(name, pinned, layer))]
     if not pinned and name != "orca":
         out.append("  ({0})".format(ORCA_NOTE))
     out.append("  change it: tide terminal-adapter --set {0}".format(
@@ -99,6 +135,53 @@ def unpin(root: Path) -> Optional[Path]:
     return path
 
 
+def pin_global(name: str) -> Path:
+    """Write *name* as the GLOBAL default into ``~/.claude/settings.json``.
+
+    Merge-safe and conservative: that file is the human's whole Claude config, so an
+    unreadable one is NOT overwritten (error instead); otherwise one key is set and
+    everything else is written back untouched (a ``.bak`` copy rides along).
+    """
+    key = (name or "").strip().lower()
+    if key not in available_adapters():
+        raise AdapterError(
+            "unknown terminal adapter {0!r} — available: {1}".format(
+                name, ", ".join(available_adapters())))
+    path = global_settings_path()
+    data: dict = {}
+    if path.is_file():
+        raw = path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(raw or "{}")
+        except ValueError:
+            raise AdapterError("{0} is not valid JSON — not touching it".format(path))
+        if not isinstance(data, dict):
+            raise AdapterError("{0} is not a JSON object — not touching it".format(path))
+        path.with_name(path.name + ".bak").write_text(raw, encoding="utf-8")
+    data[SETTINGS_KEY] = key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tide-tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def unpin_global() -> Optional[Path]:
+    """Drop the global pin; None when nothing was pinned there."""
+    path = global_settings_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or SETTINGS_KEY not in data:
+        return None
+    del data[SETTINGS_KEY]
+    tmp = path.with_name(path.name + ".tide-tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
 def _settings(root: Path) -> dict:
     """Parse the project settings.json; ``{}`` when absent or unreadable."""
     path = harness.settings_path(Path(root))
@@ -115,12 +198,25 @@ def _settings(root: Path) -> dict:
 
 def _cmd_terminal(args) -> int:
     root = Path.cwd()
+    if getattr(args, "global_", False):
+        if getattr(args, "auto", False):
+            path = unpin_global()
+            print("tide terminal-adapter: {0}".format(
+                "global pin removed" if path else "nothing was pinned globally"))
+            return 0
+        if getattr(args, "set", None):
+            path = pin_global(args.set)
+            print("tide terminal-adapter: {0} — pinned globally in {1}".format(
+                args.set.strip().lower(), path))
+            print("  (a project pin or $TIDE_ADAPTER still wins; "
+                  "undo: tide terminal-adapter --auto --global)")
+            return 0
     if getattr(args, "auto", False):
         path = unpin(root)
-        name, _ = chosen(root)
+        name, layer = chosen_layer(root)
         print("tide terminal-adapter: {0}".format(
             "pin removed — back to auto-detect" if path else "nothing was pinned"))
-        print("  now: {0} — {1}".format(name, why(name, False)))
+        print("  now: {0} — {1}".format(name, why(name, layer != "auto", layer)))
         return 0
     if getattr(args, "set", None):
         path = pin(root, args.set)
@@ -136,11 +232,14 @@ def register(subparsers) -> None:
     """Add the top-level ``terminal`` command to *subparsers* (called by cli.py)."""
     p = subparsers.add_parser(
         "terminal-adapter",
-        help="which terminal opens your sessions (orca|macos|tmux) — show or pin it",
+        help="which terminal opens your sessions (orca|macos|tmux|ao) — show or pin it",
     )
     p.add_argument("--set", metavar="NAME",
                    help="pin one for this project ({0})".format(
                        "|".join(available_adapters())))
     p.add_argument("--auto", action="store_true",
                    help="remove the pin — go back to auto-detect")
+    p.add_argument("--global", action="store_true", dest="global_",
+                   help="with --set/--auto: the user-wide default in ~/.claude/settings.json "
+                        "(every project without its own pin)")
     p.set_defaults(func=_cmd_terminal, _cmd="terminal-adapter")

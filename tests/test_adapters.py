@@ -69,9 +69,9 @@ def test_unknown_adapter_raises_listing_available():
     assert "orca" in msg and "tmux" in msg and "macos" in msg
 
 
-def test_available_adapters_lists_three_in_order():
-    """Registry now contains orca → macos → tmux in that insertion order."""
-    assert adapters.available_adapters() == ["orca", "macos", "tmux"]
+def test_available_adapters_lists_four_in_order():
+    """Registry contains orca → macos → tmux → ao in that insertion order."""
+    assert adapters.available_adapters() == ["orca", "macos", "tmux", "ao"]
 
 
 def test_resolve_from_settings_reads_terminal_adapter_key(monkeypatch):
@@ -327,3 +327,94 @@ def test_spawn_result_defaults():
 def test_safe_title_is_never_empty():
     assert base.safe_title("") == "tide"
     assert base.safe_title("a b/c") == "a-b-c"
+
+
+# --- layers: env > project pin > GLOBAL pin > auto (AO as the global default) -----
+
+import json as _json
+import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+
+from tide import terminal_choice
+from tide.launcher import menu as _menu
+
+
+def _fake_ao_bin(tmp_path, monkeypatch, present=True):
+    p = tmp_path / "ao-bin"
+    if present:
+        p.write_text("#!/bin/sh\nexit 0\n")
+        p.chmod(0o755)
+    monkeypatch.setenv("TIDE_AO_BIN", str(p))
+
+
+def _global(tmp_path, data):
+    g = _Path(_os.environ["TIDE_GLOBAL_SETTINGS"])
+    g.write_text(_json.dumps(data))
+    return g
+
+
+def test_global_pin_makes_ao_the_default_everywhere(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    _fake_ao_bin(tmp_path, monkeypatch)
+    _global(tmp_path, {"terminal_adapter": "ao", "model": "x"})
+    assert adapters.default_adapter_name() == "ao"
+    assert adapters.get_adapter().name == "ao"
+    assert _menu.resolve_adapter_name(tmp_path, None) == "ao"
+    assert terminal_choice.chosen_layer(tmp_path) == ("ao", "global")
+
+
+def test_global_ao_without_the_app_falls_back_to_auto(tmp_path, monkeypatch):
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+    _fake_ao_bin(tmp_path, monkeypatch, present=False)
+    _global(tmp_path, {"terminal_adapter": "ao"})
+    assert adapters.default_adapter_name() == "orca"
+    assert _menu.resolve_adapter_name(tmp_path, None) is None
+
+
+def test_env_beats_project_beats_global(tmp_path, monkeypatch):
+    _fake_ao_bin(tmp_path, monkeypatch)
+    _global(tmp_path, {"terminal_adapter": "ao"})
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text('{"terminal_adapter": "tmux"}')
+    assert _menu.resolve_adapter_name(tmp_path, None) == "tmux"
+    assert adapters.configured_adapter_name(None, tmp_path) == "tmux"
+    monkeypatch.setenv("TIDE_ADAPTER", "macos")
+    assert _menu.resolve_adapter_name(tmp_path, None) == "macos"
+    assert adapters.default_adapter_name() == "macos"
+    assert _menu.resolve_adapter_name(tmp_path, "orca") == "orca"  # --adapter wins
+
+
+def test_pin_global_is_merge_safe(tmp_path, monkeypatch):
+    g = _global(tmp_path, {"hooks": {"Stop": [1]}, "model": "opus"})
+    terminal_choice.pin_global("ao")
+    data = _json.loads(g.read_text())
+    assert data == {"hooks": {"Stop": [1]}, "model": "opus", "terminal_adapter": "ao"}
+    assert _json.loads(g.with_name(g.name + ".bak").read_text())["model"] == "opus"
+    terminal_choice.unpin_global()
+    assert "terminal_adapter" not in _json.loads(g.read_text())
+
+
+def test_pin_global_refuses_a_broken_file(tmp_path):
+    g = _Path(_os.environ["TIDE_GLOBAL_SETTINGS"])
+    g.write_text("{not json")
+    with pytest.raises(adapters.AdapterError):
+        terminal_choice.pin_global("ao")
+    assert g.read_text() == "{not json"
+    with pytest.raises(adapters.AdapterError):
+        terminal_choice.pin_global("nope")
+
+
+def test_why_names_ao():
+    assert "Agent Orchestrator" in terminal_choice.WHY["ao"]
+
+
+def test_terminal_adapter_shows_the_control_home_pin(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text('{"terminal_adapter": "tmux"}')
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    assert terminal_choice.chosen_layer(proj) == ("tmux", "control-home")

@@ -39,6 +39,7 @@ REGISTRY_FILENAME = "terminals.json"
 # (`claude --resume` after a reboot) register itself just like a tide-spawned one.
 ENV_TERMINAL_HANDLE = "ORCA_TERMINAL_HANDLE"
 ENV_SESSION_ID = "CLAUDE_CODE_SESSION_ID"
+ENV_AO_SESSION = "AO_SESSION_ID"
 
 # orca create/list MUST run in the SAME environment or a created terminal is invisible to
 # a later list (the registry then reads it as dead — a known footgun). A minimal PATH that
@@ -87,8 +88,10 @@ def self_pair(env: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
     both are absent and the caller simply does nothing.
     """
     e = os.environ if env is None else env
-    return ((e.get(ENV_SESSION_ID) or "").strip(),
-            (e.get(ENV_TERMINAL_HANDLE) or "").strip())
+    # Inside the desktop Agent Orchestrator there is no Orca pane; the AO session id
+    # is the handle the ao adapter focuses/restores/sends to.
+    handle = (e.get(ENV_TERMINAL_HANDLE) or "").strip() or (e.get(ENV_AO_SESSION) or "").strip()
+    return ((e.get(ENV_SESSION_ID) or "").strip(), handle)
 
 
 def forget(home: Path, sid: str) -> None:

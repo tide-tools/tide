@@ -1100,15 +1100,12 @@ def _read_settings(root: Path) -> Optional[dict]:
 
 
 def resolve_adapter_name(root: Path, override: Optional[str]) -> Optional[str]:
-    """Pick the adapter name: explicit *override* wins, else the settings pin, else None."""
+    """Pick the adapter name: explicit *override* > ``$TIDE_ADAPTER`` > the settings
+    pin in *root* > the global ``~/.claude/settings.json`` pin > None (auto)."""
     if override:
         return override
-    settings = _read_settings(root)
-    if isinstance(settings, dict):
-        value = settings.get(SETTINGS_KEY)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+    from ..adapters import configured_adapter_name
+    return configured_adapter_name(root)
 
 
 # --- launch preview (pure) -------------------------------------------------
@@ -1397,7 +1394,7 @@ def register(subparsers) -> None:
         action="store_true",
         help="include archived projects in the pick-list (default: active only)",
     )
-    p.add_argument("--adapter", help="terminal adapter (orca|macos|tmux; default: pinned in settings, else auto-detect)")
+    p.add_argument("--adapter", help="terminal adapter (orca|macos|tmux|ao; default: $TIDE_ADAPTER, else pinned in settings — project, then global ~/.claude — else auto-detect)")
     p.add_argument("--role", help="session role (default: orchestrator)")
     p.add_argument(
         "--thread",
@@ -1456,7 +1453,7 @@ def register(subparsers) -> None:
                     help="the session's FIRST turn, in your words (default: the wired "
                          "▶ trigger — close the start-gate, build a plan). One line: "
                          "a newline would submit it early")
-    sp.add_argument("--adapter", help="terminal adapter (orca|macos|tmux; default: pinned in settings, else auto-detect)")
+    sp.add_argument("--adapter", help="terminal adapter (orca|macos|tmux|ao; default: $TIDE_ADAPTER, else pinned in settings — project, then global ~/.claude — else auto-detect)")
     sp.add_argument("--role", help="session role (default: orchestrator)")
     sp.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="build the arc + launch command without opening a terminal")

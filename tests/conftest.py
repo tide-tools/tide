@@ -106,6 +106,14 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # inherited the developer's pane handle would write the runner's own terminal into
     # whatever registry the test points at. Drop both — a test has no terminal.
     monkeypatch.delenv("ORCA_TERMINAL_HANDLE", raising=False)
+    # Agent Orchestrator: the runner's own AO session id / data dir must not leak in,
+    # and the developer's GLOBAL terminal-adapter pin (~/.claude/settings.json) or a
+    # $TIDE_ADAPTER must not reroute a test's launches into a real app.
+    monkeypatch.delenv("AO_SESSION_ID", raising=False)
+    monkeypatch.delenv("AO_DATA_DIR", raising=False)
+    monkeypatch.delenv("TIDE_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("TIDE_ADAPTER", raising=False)
+    monkeypatch.setenv("TIDE_GLOBAL_SETTINGS", str(tmp_path / "global-claude-settings.json"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # `tide init` delivers the skills as part of the install (work 49) — point the
     # target at a per-test tmp dir so no test can ever link into the developer's

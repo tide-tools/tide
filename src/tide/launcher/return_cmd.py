@@ -27,12 +27,15 @@ from pathlib import Path
 from typing import Optional
 
 from .. import paths, registry
-from ..adapters import get_adapter
+from ..adapters import configured_adapter_name, get_adapter
 # Mac-specific by nature, and honest on every other platform: without ioreg the probe
 # answers False, so tmux/Linux returns carry the field as "not locked" and read as before.
 from ..adapters.orca import screen_locked as _screen_locked
 from . import menu as _menu
 
+# Shipped adapters whose handles are not Orca's: an Orca `term_…` handle met under
+# one of them is tried in Orca itself before anything is respawned.
+_FOREIGN = ("ao", "macos", "tmux")
 _SID_RE = re.compile(r"[0-9a-fA-F-]{8,64}$")
 
 
@@ -80,7 +83,7 @@ def run_return(
     if not _SID_RE.fullmatch(s):
         return {"ok": False, "action": "failed", "handle": "",
                 "detail": "return: bad sid {0!r}".format(sid)}
-    adapter = get_adapter(adapter_name)
+    adapter = get_adapter(adapter_name or configured_adapter_name(project, control_home))
 
     # One schema, said out loud: legacy arc-keyed records cannot name a session, so
     # they are dropped rather than silently half-honoured (cand 144).
@@ -97,8 +100,13 @@ def run_return(
             # makes. Before this the dry run reported `resumed` unconditionally and
             # so could never show a focus, which is what made the duplicate look
             # like a decision to respawn when the registry was in fact fine.
-            live = registry.orca_live_handles()
-            if not live or handle in live:
+            probe = getattr(adapter, "focusable", None)
+            if callable(probe):
+                would_focus = bool(probe(handle))  # read-only (ao: session get)
+            else:
+                live = registry.orca_live_handles()
+                would_focus = not live or handle in live
+            if would_focus:
                 out = {"ok": True, "action": "focused", "handle": handle,
                        "detail": "dry-run: would focus the session's terminal" + note}
                 if word:
@@ -106,14 +114,14 @@ def run_return(
                     out["said"] = False
                     out["detail"] += " and give it the turn"
                 return out
-        elif adapter.focus(handle):
+        elif (native := _focus_any(adapter, handle)) is not None:
             out = {"ok": True, "action": "focused", "handle": handle,
                    "detail": "focused the session's terminal" + note,
                    "screen_locked": _screen_locked()}
             if word:
                 # Вкладку подняли — теперь дать ей ХОД. Не вышло — говорим прямо:
                 # окно перед человеком есть, а агент реплику не услышал.
-                out["said"] = adapter.say(handle, word)
+                out["said"] = native.say(handle, word)
                 out["detail"] += (" and gave it the turn" if out["said"]
                                   else "; the turn did NOT reach it — say it yourself")
             return out
@@ -124,13 +132,20 @@ def run_return(
             registry.forget_handle(control_home, handle)
 
     tab = re.sub(r"\s+", " ", title or "").strip()[:48] or "resume-{0}".format(s[:8])
+    first_turn = word
+    if getattr(adapter, "name", "") == "ao":
+        # AO cannot `claude --resume` an outside conversation: the respawn is a NEW
+        # chat, so it is pointed at the session's arc to pick the thread back up.
+        where = "арка сессии: {0} — прочитай её arc.md (курсор, контекст) и продолжай " \
+                "оттуда".format(arc) if arc else ""
+        first_turn = " ".join(p for p in (where, word) if p)
     command = _menu.build_launch(
         Path(project),
         control_home=control_home,
         session_id=s,
         resume=True,
         dry_run=dry_run,
-        user_prompt=word,
+        user_prompt=first_turn,
     )
     res = adapter.spawn(command=command, cwd=str(project), title=tab, dry_run=dry_run)
     if not res.ok:
@@ -146,6 +161,37 @@ def run_return(
         # каналом: посылать её в терминал, который ещё грузится, некуда.
         out["said"] = not dry_run
     return out
+
+
+def _focus_any(adapter, handle: str):
+    """Focus via the configured adapter, else via the handle's native one; return the
+    adapter that succeeded (it also carries the turn), or None."""
+    if adapter.focus(handle):
+        return adapter
+    if _native_focus(adapter, handle):
+        return _native_adapter(adapter, handle)
+    return None
+
+
+def _native_adapter(adapter, handle: str):
+    """The adapter that owns *handle* (an Orca ``term_…`` tab under a non-orca default)."""
+    if getattr(adapter, "name", "") in _FOREIGN and (handle or "").startswith("term_"):
+        from ..adapters.orca import OrcaAdapter
+        return OrcaAdapter()
+    return adapter
+
+
+def _native_focus(adapter, handle: str) -> bool:
+    """A handle born in ANOTHER terminal (an Orca ``term_…`` tab, while the default is
+    now AO) is tried in its own terminal before anything is respawned: a live Orca
+    session must be focused, not duplicated in AO (canon №1 — one working session)."""
+    if getattr(adapter, "name", "") not in _FOREIGN or not (handle or "").startswith("term_"):
+        return False
+    try:
+        from ..adapters.orca import OrcaAdapter
+        return OrcaAdapter().focus(handle)
+    except Exception:  # noqa: BLE001 — no orca here just means "not alive there"
+        return False
 
 
 def cmd_return(args) -> int:
@@ -182,7 +228,8 @@ def register(subparsers) -> None:
     rp.add_argument("--dir", required=True, help="the project dir the session runs in")
     rp.add_argument("--arc", default="", help="the session's arc path (legacy registry key tolerance)")
     rp.add_argument("--title", default="", help="human tab title for a respawn")
-    rp.add_argument("--adapter", default=None, help="terminal adapter (default: auto)")
+    rp.add_argument("--adapter", default=None,
+                    help="terminal adapter (default: $TIDE_ADAPTER, project/global pin, else auto)")
     rp.add_argument("--say", default="", metavar="TEXT",
                     help="give the session a TURN as well as a window: type TEXT into "
                          "its live terminal and submit it (a respawn rides it in as the "

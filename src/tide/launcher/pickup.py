@@ -95,7 +95,8 @@ def register(subparsers) -> None:
              "flips to taken on the session's first message — one path with the menu)",
     )
     pp.add_argument("key", help="the offer's name from `tide handoffs list`")
-    pp.add_argument("--adapter", default=None, help="terminal adapter (default: auto)")
+    pp.add_argument("--adapter", default=None,
+                    help="terminal adapter (default: $TIDE_ADAPTER, project/global pin, else auto)")
     pp.add_argument("--dry-run", action="store_true", dest="dry_run", help="build, don't execute")
     pp.add_argument("--json", action="store_true", help="machine-readable result (additive fields only)")
     pp.set_defaults(func=cmd_pickup, _cmd="pickup")
