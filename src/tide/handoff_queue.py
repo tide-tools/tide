@@ -162,6 +162,9 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
         "understood_goal": _get(text, UNDERSTOOD_GOAL),
         "first_pulse": _get(text, FIRST_PULSE),
         "first_pulse_at": _get(text, FIRST_PULSE_AT),
+        # КАК поднялась сессия (SOC-121, tide.launcher.raise_log): auto|autoraise|board|pickup
+        "raised_by": _get(text, "raised-by"),
+        "raised_at": _get(text, "raised-at"),
     }
     rec["pickup_stale"] = _reserve_is_stale(rec)
     return rec

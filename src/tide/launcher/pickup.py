@@ -15,7 +15,7 @@ from typing import Optional
 
 from .. import handoff_queue, paths
 from ..adapters import get_adapter
-from . import menu as _menu
+from . import menu as _menu, raise_log as _raise_log
 
 
 def in_flight(control_home: Path, record: dict, adapter) -> Optional[dict]:
@@ -64,8 +64,15 @@ def run_pickup(
     *,
     adapter_name: Optional[str] = None,
     dry_run: bool = False,
+    raised_by: str = _raise_log.PICKUP,
+    raised_after: Optional[int] = None,
 ) -> dict:
-    """Launch the OFFERED handoff *key* → ``{ok, action, detail}`` (the --json contract)."""
+    """Launch the OFFERED handoff *key* → ``{ok, action, detail}`` (the --json contract).
+
+    *raised_by* — кто жмёт (SOC-121): ``pickup`` руками, ``board`` (▶ доски
+    передаёт ``--by board``), ``auto`` (:func:`tide.launcher.handoff.spawn_offer`),
+    ``autoraise`` (*raised_after* — сек ожидания). Пишется в оффер и
+    ``state/raises.log`` самой дверью (:func:`tide.launcher.menu.launch_handoff`)."""
     record = next(
         (r for r in handoff_queue.list_offers(control_home, status=handoff_queue.STATUS_OFFERED)
          if r["name"] == key),
@@ -78,6 +85,8 @@ def run_pickup(
     if not dry_run:
         busy = in_flight(control_home, record, adapter)
         if busy is not None:
+            _raise_log.log(control_home, key, raised_by,
+                           "уже поднимается ({0}) — дубль не поднимаю".format(busy["action"]))
             return busy
     res = _menu.launch_handoff(
         record,
@@ -85,6 +94,8 @@ def run_pickup(
         control_home=control_home,
         adapter=adapter,
         dry_run=dry_run,
+        raised_by=raised_by,
+        raised_after=raised_after,
     )
     return {"ok": bool(res.ok), "action": "spawned" if res.ok else "failed",
             "detail": res.detail or "", "handle": str(res.ref or "") if res.ok else "",
@@ -97,6 +108,7 @@ def cmd_pickup(args) -> int:
         args.key,
         adapter_name=getattr(args, "adapter", None),
         dry_run=bool(getattr(args, "dry_run", False)),
+        raised_by=getattr(args, "by", None) or _raise_log.PICKUP,
     )
     if getattr(args, "json", False):
         print(json.dumps(out, ensure_ascii=False))
@@ -115,5 +127,9 @@ def register(subparsers) -> None:
     pp.add_argument("--adapter", default=None,
                     help="terminal adapter (default: $TIDE_ADAPTER, project/global pin, else auto)")
     pp.add_argument("--dry-run", action="store_true", dest="dry_run", help="build, don't execute")
+    pp.add_argument("--by", choices=(_raise_log.PICKUP, _raise_log.BOARD),
+                    default=_raise_log.PICKUP,
+                    help="who presses: pickup (hand, default) | board (the board's ▶) — "
+                         "goes to the offer's raised-by: and state/raises.log")
     pp.add_argument("--json", action="store_true", help="machine-readable result (additive fields only)")
     pp.set_defaults(func=cmd_pickup, _cmd="pickup")

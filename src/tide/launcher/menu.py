@@ -30,7 +30,7 @@ from ..adapters import SETTINGS_KEY, SpawnResult, get_adapter, resolve_from_sett
 from ..adapters.base import persist_seed
 from ..arc import stream
 from ..arc.stream import StreamError
-from . import context, seed, select
+from . import context, raise_log as _raise_log, seed, select
 
 # Placeholder seed-file token used in dry-run (nothing is persisted to disk then),
 # so the printed command shows the @<seed-file> shape without a real temp path.
@@ -805,8 +805,17 @@ def launch_handoff(
     role: str = DEFAULT_ROLE,
     skip_permissions: bool = True,
     dry_run: bool = False,
+    raised_by: str = "board",
+    raised_after: Optional[int] = None,
+    via: str = "",
 ) -> SpawnResult:
     """Pick up a handoff: launch its owning project's session seeded from the distil.
+
+    *raised_by* — КАК поднимается сессия (SOC-121, :mod:`tide.launcher.raise_log`):
+    ``board`` (▶ доски / tide menu, *via* — уточнение), ``pickup``, ``auto``,
+    ``autoraise`` (*raised_after* — сколько секунд ждал). Идёт в стартовый промпт
+    словами, а после настоящего запуска — в оффер (``raised-by:``/``raised-at:``)
+    и строкой в ``state/raises.log``.
 
     Resolves the offer's project to its roster path and opens a fresh session there
     seeded by the handoff seed file (``--append-system-prompt`` so it starts already
@@ -849,12 +858,12 @@ def launch_handoff(
     keep_title = (" Заголовок сессии «{0}» уже стоит — не меняй его: в старт-гейте "
                   "ставь только цель.".format(title) if title else "")
     pickup_trigger = (
-        "Ты — свежая сессия, принявшая нить «{0}» по тёплому хендоффу (▶ с доски). "
+        "Ты — свежая сессия, принявшая нить «{0}» по тёплому хендоффу ({2}). "
         "НЕ отчитывайся о состоянии — первым же ходом выполни инструкцию системного "
         "промпта: прими нить (прочитай дистилл прошлой сессии, продолжи с точки "
         "хендоффа), закрой старт-гейт первым tide offload.{1} Приём подтверждает сама "
         "сессия — разрешения на приём не спрашивай."
-    ).format(slug, keep_title)
+    ).format(slug, keep_title, _raise_log.how(raised_by, after=raised_after, via=via))
     # ONE launch path (wave 3): sid pinned before spawn, the offer RESERVED for that
     # sid — the flip to taken happens on the session's first message (signed A:
     # reception is real only when the terminal actually said hello; a failed spawn
@@ -876,6 +885,11 @@ def launch_handoff(
     )
     if res.ok and not dry_run and title:
         _name_with_ao_id(session_dir, title, adapter, res.ref)
+    if not dry_run:
+        _raise_log.note_raise(control_home, record, raised_by,
+                              handle=str(res.ref or "") if res.ok else "",
+                              adapter=getattr(adapter, "name", ""), ok=bool(res.ok),
+                              detail=res.detail or "", via=via)
     return res
 
 
@@ -1252,6 +1266,7 @@ def cmd_menu(args) -> int:
                 nav[1], all_entries, control_home=root,
                 adapter=adapter, role=role,
                 skip_permissions=skip_permissions, dry_run=dry_run,
+                raised_by=_raise_log.BOARD, via="tide menu",
             )
             flag = "ok" if res.ok else "FAILED"
             print("tide: handoff {0} [{1}] {2}".format(nav[1]["slug"], flag, res.detail))

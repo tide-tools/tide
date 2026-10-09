@@ -166,7 +166,7 @@ def _offer(world, slug="seam-x"):
 def raise_spy(monkeypatch, mgr):
     """Подъём, сон, TG и ao перехвачены; ничего настоящего."""
     spy = {"raised": [], "slept": [], "alerts": []}
-    monkeypatch.setattr(ah, "_raise_offer", lambda home, key: spy["raised"].append(key)
+    monkeypatch.setattr(ah, "_raise_offer", lambda home, key, **kw: spy["raised"].append(key)
                         or {"ok": True, "action": "spawned", "detail": "fake"})
     monkeypatch.setattr(ah, "send_alert", lambda text, **kw: spy["alerts"].append(
         (kw.get("route"), text)) or 0)
@@ -219,7 +219,7 @@ def test_autoraise_skips_gone_offer(world, raise_spy):
 
 def test_autoraise_failed_pickup_still_tells(world, raise_spy, monkeypatch):
     rec = _offer(world)
-    monkeypatch.setattr(ah, "_raise_offer", lambda home, key: {
+    monkeypatch.setattr(ah, "_raise_offer", lambda home, key, **kw: {
         "ok": False, "action": "failed", "detail": "адаптер умер"})
     out = ah.run_autoraise(world["home"], rec["name"], after=0, thread="seam")
     assert out["action"] == "failed"

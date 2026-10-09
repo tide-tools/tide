@@ -2465,7 +2465,7 @@ class Handler(BaseHTTPRequestHandler):
         # у меню — sid до спавна, резерв оффера за sid (флип на первом ходе сессии,
         # подпись A), scoped-MCP команда, запись реестра. Крупнейший дубль доски
         # (инлайновый orca create + ручной claude + venv-мост _confirm_pickup) умер.
-        ok, out = self._tide(["tide", "pickup", key, "--json"], timeout=60)
+        ok, out = self._tide(["tide", "pickup", key, "--json", "--by", "board"], timeout=60)
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()

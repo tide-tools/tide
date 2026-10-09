@@ -492,9 +492,13 @@ def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None,
     from .. import handoff_queue
     from . import pickup
 
+    from . import raise_log
+
     saved = {k: os.environ.pop(k) for k in _DETACH_ENV if k in os.environ}
     try:
-        out = pickup.run_pickup(Path(home), key, adapter_name=adapter_name)
+        # raised-by: auto — подъём жмёт сам хендофф, не человек (SOC-121)
+        out = pickup.run_pickup(Path(home), key, adapter_name=adapter_name,
+                                raised_by=raise_log.AUTO)
     except Exception as exc:  # noqa: BLE001  a spawn failure must not break the handoff
         out = {"ok": False, "action": "failed", "detail": str(exc) or type(exc).__name__}
     finally:
@@ -508,6 +512,8 @@ def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None,
         except Exception:  # noqa: BLE001  best-effort — the offer itself is intact
             pass
     if out.get("action") == NOT_ALIVE:
+        raise_log.log(Path(home), key, raise_log.AUTO, "не ожила: {0}".format(
+            out.get("detail") or "сигнала нет"))
         _tell_origin(Path(home), key, NOT_ALIVE_LINE)
         from . import reception  # Грише одно сообщение: не поднялась
         reception.announce_not_alive(Path(home), key)

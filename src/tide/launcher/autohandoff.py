@@ -478,12 +478,14 @@ def _offer_state(home: Path, key: str):
     return "offered", rec
 
 
-def _raise_offer(home: Path, key: str) -> Dict[str, object]:
-    """Тот же подъём, что ``tide pickup <key>`` (:func:`tide.launcher.pickup.run_pickup`)."""
-    from . import pickup
+def _raise_offer(home: Path, key: str, *, after: int = 0) -> Dict[str, object]:
+    """Тот же подъём, что ``tide pickup <key>`` (:func:`tide.launcher.pickup.run_pickup`),
+    но с ``raised-by: autoraise`` — оффер и промпт знают, что подняла не рука."""
+    from . import pickup, raise_log
 
     try:
-        return pickup.run_pickup(home, key)
+        return pickup.run_pickup(home, key, raised_by=raise_log.AUTORAISE,
+                                 raised_after=after)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "failed", "detail": str(exc)}
 
@@ -497,9 +499,15 @@ def run_autoraise(home: Path, key: str, *, after: int, thread: str = "",
     идёт, тоже выходим. Иначе :func:`_raise_offer` + Грише (route=human) +
     менеджеру (``ao send``). Никогда не падает.
     """
+    from .. import handoff_queue as hq
+    from . import raise_log
+
     home = Path(home)
     waited = 0
     state, rec = _offer_state(home, key)
+    # журнал подъёма (SOC-121): ожидание и решение автоподъёма — в state/raises.log
+    raise_log.log(home, key, raise_log.AUTORAISE, "autoraise: жду {0} сек{1}".format(
+        after, " · нить {0}".format(thread) if thread else ""))
     while state == "offered" and waited < after:
         step = min(max(1, poll), after - waited)
         sleep(step)
@@ -508,14 +516,21 @@ def run_autoraise(home: Path, key: str, *, after: int, thread: str = "",
     out: Dict[str, object] = {"key": key, "waited": waited, "state": state,
                               "action": "skip"}
     if state != "offered":
+        dropped = state == "gone" or (rec or {}).get("status") == hq.STATUS_DROPPED
+        raise_log.log(home, key, raise_log.AUTORAISE, "autoraise: оффер {0} через {1} сек "
+                      "— выхожу".format("снят" if dropped else "взят", waited))
         return out
     reserved = str(rec.get("pickup_session") or "").strip()
     if reserved and reserved != "-" and not rec.get("pickup_stale"):
         out["state"] = "launching"
+        raise_log.log(home, key, raise_log.AUTORAISE,
+                      "autoraise: резерв свежий ({0}) — подъём уже идёт, выхожу".format(reserved))
         return out
     who = thread or slug.entry_slug(str(rec.get("arc") or "").rsplit("/", 1)[0]) or key
     mins = waited // 60
-    res = _raise_offer(home, key)
+    raise_log.log(home, key, raise_log.AUTORAISE,
+                  "autoraise: {0} сек без ответа — поднимаю сам".format(waited))
+    res = _raise_offer(home, key, after=waited)
     out["action"] = "raised" if res.get("ok") else "failed"
     out["pickup"] = res
     if res.get("ok"):
