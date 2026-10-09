@@ -17,7 +17,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from . import io as _io, paths, registry
 
@@ -140,7 +140,7 @@ def _read_ao_stash(control_home: Path) -> Dict[str, Dict[str, str]]:
 def remember_ao_sid(control_home: Path, ao_id: str, sid: str) -> bool:
     """Stash ``ao_id → real claude sid`` (SessionStart's payload). True when written."""
     a, s = (ao_id or "").strip(), (sid or "").strip()
-    if not a or not s or is_side_sid(s):
+    if not a or not s or is_side_sid(s) or _unproven_newcomer(control_home, a, s):
         return False
     data = _read_ao_stash(control_home)
     if (data.get(a) or {}).get("sid") == s:
@@ -231,6 +231,48 @@ def _ao_chat_dirs(ao_id: str) -> Set[str]:
     return out
 
 
+def _unproven_newcomer(control_home: Path, ao_id: str, sid: str,
+                       env: Optional[Dict[str, str]] = None) -> bool:
+    """*sid* has no chat on disk yet, while AO session *ao_id* already has a proven one.
+
+    The SDK host's service chat fires SessionStart before its transcript (and the
+    «Summarize…» prompt that unmasks it) is written — live 09.10 music-3 stashed
+    bafb0781 that way. Such a newcomer is not trusted over a working chat: a real new
+    chat (AO restarted the agent) proves itself on its first prompt, when
+    ``handoff-confirm`` relinks with the transcript already on disk."""
+    if _chat_dirs(sid, env):
+        return False
+    prev = ((_read_ao_stash(control_home).get(ao_id) or {}).get("sid") or "").strip()
+    return bool(prev) and prev != sid and bool(_chat_dirs(prev, env)) \
+        and not is_side_sid(prev, env)
+
+
+# The AO launch turn (:func:`tide.adapters.ao.build_prompt`) names the arc's seed and
+# the pre-pick it was launched under — the chat's own proof of which passport it owns.
+_LAUNCH_SEED_RE = re.compile(r"Прочитай файл (\S+) целиком")
+_LAUNCH_PIN_RE = re.compile(r'"session_id":\s*"([0-9A-Fa-f-]{36})"')
+
+
+def _launch_claim(sid: str, env: Optional[Dict[str, str]] = None
+                  ) -> Tuple[Optional[Path], str]:
+    """``(passport, pre-pick)`` named by the first prompt of chat *sid*; ``(None, "")``
+    when its launch turn names no seed (not a tide launch, or no chat on disk)."""
+    from . import context_fill
+
+    e = os.environ if env is None else env
+    base = Path(e.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    path = context_fill.transcript_for(sid, base)
+    if path is None:
+        return None, ""
+    prompt = context_fill.transcript_head(path)["prompt"] or ""
+    m = _LAUNCH_SEED_RE.search(prompt)
+    if not m:
+        return None, ""
+    pp = Path(m.group(1)).parent.parent / "arc.md"
+    pin = _LAUNCH_PIN_RE.search(prompt)
+    return (pp if pp.is_file() else None), (pin.group(1) if pin else "")
+
+
 def _passport_of(arc: str) -> Optional[Path]:
     p = Path(arc or "")
     if not str(arc or "").strip():
@@ -267,11 +309,19 @@ def ao_relink(
     Passports found: the registry arc, the handoff seed's session, and — with
     *project_root* — any session pinning the stale id. Idempotent; silent no-op when
     nothing matches. Returns the ids rewritten (pre-picks first).
+
+    **Launch claim** — the registry is not the only witness: a double raise of one
+    offer (live 09.10, music-3 + music-4) leaves the pre-pick on the OTHER AO handle,
+    where the loop above never looks. The real chat's first prompt names the seed of
+    its arc (:func:`_launch_claim`), so that passport is claimed for *real* when it
+    pins nothing, a pre-pick (no chat), or a service chat — never another working chat.
+    A service chat never relinks at all, nor does a chat not yet on disk while this
+    AO session already has a proven one (:func:`_unproven_newcomer`).
     """
     from . import fields, handoff_queue  # lazy: keep sessions light for the hooks
 
     a, r = (ao_id or "").strip(), (real or "").strip()
-    if not a or not r or is_side_sid(r, env):
+    if not a or not r or is_side_sid(r, env) or _unproven_newcomer(control_home, a, r, env):
         return []
     reg = registry.read(control_home)
     on_handle = [s.strip() for s, e in reg.items()
@@ -292,6 +342,19 @@ def ao_relink(
             here = _ao_chat_dirs(a)
         if here and not (dirs & here):
             cont.append(s)
+
+    claim_pp, _pin = _launch_claim(r, env)
+    claimed_by: Dict[str, Path] = {}  # stale pin → the passport the launch turn names
+    if claim_pp is not None:
+        cur = (fields.read_field(claim_pp, "claude-session") or "").strip()
+        if cur != r and (not cur or not _chat_dirs(cur, env) or is_side_sid(cur, env)):
+            if not cur:
+                fields.set_field(claim_pp, "claude-session", r)
+                fields.remove_field(claim_pp, "ended")
+            else:
+                claimed_by[cur] = claim_pp
+                if cur not in pre and cur not in cont:
+                    pre.append(cur)
     if not pre and not cont:
         return []
 
@@ -315,6 +378,9 @@ def ao_relink(
                 pp = Path(seed).parent.parent / "arc.md"
                 if pp.is_file():
                     passports.append(pp)
+        if p in claimed_by:
+            passports.append(claimed_by[p])
+            arc_for_real = arc_for_real or str(claimed_by[p].parent)
         if project_root is not None:
             from .offload import find_session_by_claude_id
             found = find_session_by_claude_id(Path(project_root), p)

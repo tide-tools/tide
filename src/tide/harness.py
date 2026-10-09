@@ -23,8 +23,9 @@ in :mod:`tide.hooks.install` — the thin adapter above this module.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from . import io as _io
 from .arc.stream import StreamError
@@ -250,3 +251,36 @@ def install_hooks(root: Path) -> Tuple[Path, List[str]]:
     if notes:
         _io.atomic_write(path, json.dumps(data, indent=2) + "\n")
     return path, notes
+
+
+def install_hooks_in_worktree(tree: Path) -> Tuple[Optional[Path], List[str]]:
+    """Wire tide's hooks into an AO worktree's OWN ``.claude/settings.json``.
+
+    AO cuts each session's worktree from the COMMITTED repo: where ``.claude`` lives
+    in git (music, mitehq, nochnaya-smena) it is not symlinked to the main tree, so
+    the hooks :func:`install_hooks` merged there never reach the session (live 09.10:
+    no context-watch in music-3..7, no tide hooks at all in mitehq-1). AO runs this
+    as the project's ``postCreate`` — before the agent starts, so the very first
+    SessionStart already fires. A symlinked ``.claude`` IS the main tree's: skipped.
+
+    The edit must never ride a commit of the project: a tracked settings.json is
+    marked ``skip-worktree`` in this worktree's index. Returns ``(path, notes)``;
+    ``(None, [])`` when skipped.
+    """
+    tree = Path(tree)
+    if (tree / CLAUDE_DIRNAME).is_symlink():
+        return None, []
+    path, notes = install_hooks(tree)
+    if notes:
+        rel = str(path.relative_to(tree))
+        if _git_ok(tree, "ls-files", "--error-unmatch", "--", rel):
+            _git_ok(tree, "update-index", "--skip-worktree", "--", rel)
+    return path, notes
+
+
+def _git_ok(cwd: Path, *args: str) -> bool:
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True,
+                              timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False

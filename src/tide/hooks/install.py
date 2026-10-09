@@ -36,6 +36,7 @@ from ..harness import (  # noqa: F401 — public re-exports
     _hook_block,
     _load,
     install_hooks,
+    install_hooks_in_worktree,
     merge_hooks,
     merge_pre_tool_use,
     merge_role_gate,
@@ -54,6 +55,8 @@ from . import edit_gate, role_gate, session_start
 def _cmd_install_hooks(args) -> int:
     from .. import paths
 
+    if getattr(args, "worktree", False):
+        return _cmd_install_worktree()
     root = paths.require_tide_root()
     path, notes = install_hooks(root)
     print("tide: hooks wired in {0}".format(path))
@@ -65,11 +68,37 @@ def _cmd_install_hooks(args) -> int:
     return 0
 
 
+def _cmd_install_worktree() -> int:
+    """``--worktree``: the AO ``postCreate`` step — wire THIS directory, as is.
+
+    No climb to the main tree (that mapping is exactly what strands the worktree),
+    and always exit 0: a failed postCreate fails AO's whole spawn."""
+    import os
+    import sys
+    from pathlib import Path
+
+    try:
+        path, notes = install_hooks_in_worktree(Path(os.getcwd()))
+    except Exception as exc:  # noqa: BLE001 — never fail the spawn over hooks
+        print("tide: worktree hooks skipped: {0}".format(exc), file=sys.stderr)
+        return 0
+    if path is None:
+        print("tide: .claude is a link to the main tree — hooks already there")
+    else:
+        print("tide: hooks wired in {0}{1}".format(
+            path, "".join("\n  + " + n for n in notes) or " (already wired)"))
+    return 0
+
+
 def register(subparsers) -> None:
     """Add the top-level ``install-hooks`` command (called by cli.py)."""
     p = subparsers.add_parser(
         "install-hooks",
         help="wire the Claude Code hooks into .claude/settings.json (merge-safe)",
+    )
+    p.add_argument(
+        "--worktree", action="store_true",
+        help="wire the current directory itself (AO postCreate in a session worktree)",
     )
     p.set_defaults(func=_cmd_install_hooks, _cmd="install-hooks")
 

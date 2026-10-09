@@ -36,7 +36,10 @@ TRANSLATES the launcher's argv instead of carrying it verbatim:
 The project is registered on the fly (``ao project add``) and its config merged —
 never replaced (``set-config`` replaces the whole object, so we read, merge, write):
 env ``TIDE_HOME`` (control-home) / ``TIDE_PROJECT_ROOT`` (main tree) / ``TIDE_ROLE``,
-symlinks for UNTRACKED ``.claude`` / ``.tide`` (hooks + rules reach the worktree),
+symlinks for UNTRACKED ``.claude`` / ``.tide`` (hooks + rules reach the worktree);
+a TRACKED ``.claude`` can't be linked, so a ``postCreate`` step
+(``tide install-hooks --worktree``) merges tide's hooks into the worktree's own copy
+before the agent starts;
 ``defaultBranch`` when the repo has no remote HEAD.
 
 The worktree carries the COMMITTED copy of the repo — including a committed
@@ -62,6 +65,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -339,6 +343,18 @@ def find_project(path: Path) -> Optional[dict]:
     return None
 
 
+# AO postCreate step that wires tide's hooks into a session worktree whose .claude
+# is the repo's committed copy (not a symlink) — see harness.install_hooks_in_worktree.
+POST_CREATE_MARK = "install-hooks --worktree"
+
+
+def post_create_command() -> Optional[str]:
+    """``<abs tide> install-hooks --worktree``, or None when tide isn't on PATH (AO
+    fails the whole spawn on a postCreate that can't run, so never guess a path)."""
+    tide = shutil.which("tide")
+    return "{0} {1}".format(shlex.quote(tide), POST_CREATE_MARK) if tide else None
+
+
 def _untracked_present(tree: Path, rel: str) -> bool:
     """*rel* exists in the main tree and git tracks nothing under it."""
     if not (tree / rel).exists():
@@ -363,6 +379,11 @@ def desired_config(current: dict, *, tree: Path, control_home: Optional[str],
             links.append(rel)
     if links:
         cfg["symlinks"] = links
+    if ".claude" not in links:
+        cmd = post_create_command()
+        hooks = list(cfg.get("postCreate") or [])
+        if cmd and not any(POST_CREATE_MARK in str(c) for c in hooks):
+            cfg["postCreate"] = hooks + [cmd]
     if skip_permissions:
         ac = dict(cfg.get("agentConfig") or {})
         ac["permissions"] = BYPASS
