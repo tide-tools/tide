@@ -932,6 +932,76 @@ def decision_done(rec: Dict[str, object], closed_works: Sequence[str] = ()) -> s
     return ""
 
 
+# F69: решение без статуса в метке пульса больше не печатается с «(статус: не
+# указан)» — шум: статус задачи берётся из Linear (seal), правило — из decisions.md.
+_NO_STATUS_SUFFIX = re.compile(r"\s*" + re.escape(DECISION_NO_STATUS))
+# Номер решения нити в начале строки: «07 Tencent — …» (метка), «07 — …» (decisions.md).
+_DECISION_NUM = re.compile(r"^\s*(?:[-*]\s+)?(\d{2})\b")
+DECISION_TWIN_SHARE = 0.5   # доля слов короткой строки — то же решение под тем же номером
+
+
+def _decision_num(line: str) -> str:
+    m = _DECISION_NUM.match(line or "")
+    return m.group(1) if m else ""
+
+
+def fold_decisions(lines: Sequence[str]) -> List[str]:
+    """Блок «решения» без дублей и без «(статус: не указан)» (SOC-101 F69).
+
+    Метка «Решения: 07 Tencent — …» ПЕРЕДАЧИ и решение 07 нити — одно решение:
+    строки с одним номером NN, делящие :data:`DECISION_TWIN_SHARE` значимых слов
+    короткой, сливаются в более полную. Без номера — то же решение другими словами
+    (:func:`fold_similar`)."""
+    clean = [_NO_STATUS_SUFFIX.sub("", ln) for ln in lines]
+    out: List[str] = []
+    for ln in fold_similar(clean):
+        num, w = _decision_num(ln), _sig_words(ln)
+        hit = None
+        for i, prev in enumerate(out):
+            if not num or _decision_num(prev) != num:
+                continue
+            pw = _sig_words(prev)
+            small, big = (w, pw) if len(w) <= len(pw) else (pw, w)
+            if len(small & big) >= max(REVOKE_MIN_WORDS, DECISION_TWIN_SHARE * len(small)):
+                hit = i
+                break
+        if hit is None:
+            out.append(ln)
+        elif len(w) > len(_sig_words(out[hit])):
+            out[hit] = ln
+    return out
+
+
+_NOT_DONE_SUFFIX = re.compile(r"\s*\(not done\)")
+
+
+def mark_decision_linear(lines: Sequence[str], live) -> List[str]:
+    """Статус решения с задачей Linear — из Linear, как в блоке «задачи Linear»
+    (SOC-101 F69): «01 — SOC-100 … (not done)» при SOC-100 Done врало. *live* —
+    ответ :func:`linear_states`; не словарь (сверки не было, Linear не ответил) —
+    строки как есть. «(not done)» заменяется статусом; правило («в силе») остаётся
+    правилом, статус задачи — рядом."""
+    if not isinstance(live, dict):
+        return list(lines)
+    out: List[str] = []
+    for ln in lines:
+        keys = linear_keys(ln)
+        got = [(k, live[k]) for k in keys if k in live]
+        if not got:
+            out.append(ln)
+            continue
+        first_closed = got[0][1][1] in CLOSED_TYPES
+        tag = "{0}в Linear: {1}".format(
+            "done — " if first_closed else "",
+            "; ".join("{0} — {1}".format(k, name or kind) for k, (name, kind) in got))
+        if _NOT_DONE_SUFFIX.search(ln):
+            ln = _NOT_DONE_SUFFIX.sub(" ({0})".format(tag), ln, count=1)
+        else:
+            ln = "{0} ({1})".format(ln.rstrip(), tag)
+        out.append(ln)
+    return out
+
+
 def block_decisions(records: Sequence[Dict[str, object]],
                     closed_works: Sequence[str] = ()) -> List[str]:
     """Решения нити: ``NN — what (status)``, сначала accepted, потом done.
@@ -1492,6 +1562,7 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     out[JOURNAL], out[LINEAR] = [], []
     plain = {k: list(out[k]) for k in MARK_CLOSED_IN if k in out}
     awaiting = list(out.get(AWAITING) or [])
+    decisions = list(out.get(DECISIONS) or [])
     share = JOURNAL_SHARE
     rest = len(render_draft(out, header=header))
     tail = raw_pulse_chars(context, clip=clip)
@@ -1513,6 +1584,8 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         for k, body in plain.items():  # F43: закрытые в Linear — помечены на месте
             if k in out:
                 out[k] = mark_closed(body, live)
+        if DECISIONS in out:  # F69: статус решения с задачей — из Linear
+            out[DECISIONS] = mark_decision_linear(decisions, live)
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
                           if not _PASS_RE.match(ln.strip())) - share * len(text)
@@ -2489,11 +2562,11 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             _candidate_gists(root, nums)),
         # F63: решения копятся, как опыт (F22): метки пульсов → решения нити →
         # решения входного сида (снятые — с причиной)
-        DECISIONS: _merge_lines(
+        DECISIONS: fold_decisions(_merge_lines(
             labels.get("decisions", []), decisions,
             inherit_decisions(contract.find_body(seed_in, "decisions"),
                               labels.get("decisions", []) + decisions,
-                              _thread_decisions(root, thread_entry))),
+                              _thread_decisions(root, thread_entry)))),
         AWAITING: _merge_lines(
             labels.get("awaiting", []),
             mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
