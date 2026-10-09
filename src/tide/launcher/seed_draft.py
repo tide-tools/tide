@@ -63,6 +63,7 @@ _KEEP = "\x00"
 # до строки, но не тонет — счёт и путь к полной записи в паспорте.
 JOURNAL_SHARE = 0.3
 JOURNAL_CLIP = 160
+JOURNAL_GIST = 72
 
 
 class SeedDraftError(StreamError):
@@ -193,7 +194,7 @@ def work_line(rec: Dict[str, object]) -> str:
 
 def block_cursor(cursor: Sequence[str], context: Sequence[str],
                  *, works: Sequence[Dict[str, object]] = (),
-                 tail: int = PULSE_TAIL) -> List[str]:
+                 tail: int = PULSE_TAIL, clip: int = 0) -> List[str]:
     """Курсор: тело ``## cursor``, живые работы нити, хвост пульса — СВЕЖИЕ СВЕРХУ.
 
     Курсор — где мы стоим; работы под ним — что нить держит открытым прямо
@@ -211,8 +212,37 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
         lines.append(work_line(rec))
     pulse = live_lines(context)
     for ln in reversed(pulse[-tail:] if tail > 0 else pulse):
-        lines.append(ln if ln.lstrip().startswith("-") else "- {0}".format(ln))
+        ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
+        if clip and len(ln) > clip:
+            ln = ln[: clip - 1].rstrip() + "…"
+        lines.append(ln)
     return lines
+
+
+def raw_pulse_chars(context: Sequence[str], tail: int = PULSE_TAIL, clip: int = 0) -> int:
+    """Сколько знаков сырого пульса несёт курсор (его хвост из *tail* строк)."""
+    pulse = live_lines(context)
+    return sum(min(len(ln) + 3, clip or len(ln) + 3)
+               for ln in (pulse[-tail:] if tail > 0 else pulse))
+
+
+LINEAR_URL_ENV = "TIDE_LINEAR_ISSUE_URL"
+LINEAR_URL_DEFAULT = "https://linear.app/socaseinpoint/issue/{key}"
+_ISSUE_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+
+
+def block_links(text: str, prefixes: Sequence[str] = ("SOC",)) -> List[str]:
+    """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
+
+    Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
+    искать, где это. Адрес — ``$TIDE_LINEAR_ISSUE_URL`` (шаблон с ``{key}``)."""
+    tmpl = (os.environ.get(LINEAR_URL_ENV) or "").strip() or LINEAR_URL_DEFAULT
+    seen: List[str] = []
+    for key in _ISSUE_RE.findall(text or ""):
+        if key.split("-", 1)[0] in prefixes and key not in seen:
+            seen.append(key)
+    seen.sort(key=lambda k: int(k.rsplit("-", 1)[1]))
+    return ["- {0} — {1}".format(k, tmpl.format(key=k)) for k in seen]
 
 
 def block_next(nxt: Sequence[str]) -> List[str]:
@@ -330,31 +360,51 @@ def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
     ]
 
 
+_PULSE_STAMP = re.compile(r"^-?\s*\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})(?::\d{2})?\s*[—-]?\s*")
+
+
+def pulse_gist(line: str, limit: int = JOURNAL_GIST) -> str:
+    """Строка пульса сжато: ``- ЧЧ:ММ — первая фраза`` до *limit* знаков.
+
+    Дата у пульсов одной сессии почти всегда одна, а первая фраза — это и есть
+    сделанный шаг; хвост строки (детали, пути) лежит в паспорте целиком."""
+    raw = line.strip().lstrip("-").strip()
+    m = _PULSE_STAMP.match("- " + raw)
+    stamp, rest = (m.group(1) + " — ", raw[m.end() - 2:]) if m else ("", raw)
+    first = re.split(r"(?<=[.;!?])\s|\s·\s", rest, maxsplit=1)[0].strip()
+    text = "- " + stamp + first
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 def block_journal(context: Sequence[str], *, budget: int, source: str = "",
-                  tail: int = PULSE_TAIL, clip: int = JOURNAL_CLIP) -> List[str]:
+                  tail: int = PULSE_TAIL) -> List[str]:
     """Пульс старше хвоста курсора — не тонет (SOC-101 F5).
 
     Курсор несёт последние *tail* строк; всё, что старше, идёт сюда свежим сверху:
-    целиком, пока влезает в *budget* знаков, дальше строкой до *clip* знаков, а
-    что не влезло и так — счётом и путём к полной записи (*source*). Пусто — когда
-    старше хвоста ничего нет.
+    целиком, пока влезает в *budget* знаков, иначе сжатой строкой
+    (:func:`pulse_gist`); что не влезло и так — счётом и путём к полной записи
+    (*source*). Пусто — когда старше хвоста ничего нет.
     """
     older = live_lines(context)
     older = older[:-tail] if tail > 0 else []
     if not older:
         return []
+    full = [ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
+            for ln in reversed(older)]
+    if sum(len(ln) + 1 for ln in full) <= budget:
+        return full  # влезает целиком — ничего не сжимаем
     out: List[str] = []
-    used = clipped = left = 0
-    for ln in reversed(older):
-        ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
-        if used + len(ln) > budget:
-            short = ln[: clip - 1].rstrip() + "…" if len(ln) > clip else ln
-            if short == ln or used + len(short) > budget:
-                left += 1
-                continue
-            ln, clipped = short, clipped + 1
-        out.append(ln)
-        used += len(ln)
+    pointer = "- (сжато строк: 00, не вошло: 00 — полностью: {0})".format(
+        source or "## context паспорта сессии")
+    used, clipped, left = len(pointer) + 1, 0, 0  # указатель тоже в бюджете
+    for ln in full:  # не влезает — ВСЕ строки сжатыми, чтобы дошло больше шагов
+        short = pulse_gist(ln)
+        if used + len(short) + 1 > budget:
+            left += 1
+            continue
+        clipped += short != ln
+        out.append(short)
+        used += len(short) + 1
     if clipped or left:
         out.append("- (сжато строк: {0}, не вошло: {1} — полностью: {2})".format(
             clipped, left, source or "## context паспорта сессии"))
@@ -517,7 +567,8 @@ def predecessor_thread(root: Path, thread_entry: Path) -> Optional[Path]:
     return None
 
 
-def draft_bodies(root: Path, session_entry: Path) -> Dict[str, List[str]]:
+def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
+                 ) -> Dict[str, List[str]]:
     """Тела семи блоков для *session_entry* с диска — общее у черновика и автохендоффа."""
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
@@ -537,7 +588,8 @@ def draft_bodies(root: Path, session_entry: Path) -> Dict[str, List[str]]:
         "финал": block_final(_goal_of(thread_entry), _goal_of(session_entry)),
         "курсор": block_cursor(section_body(passport, "cursor"),
                                section_body(passport, "context"),
-                               works=_thread_works(root, thread_entry)),
+                               works=_thread_works(root, thread_entry),
+                               clip=pulse_clip),
         "дальше": block_next(section_body(passport, "next")),
         "решения": decisions,
         "опыт": block_experience(nums, section_body(seed_in, "опыт"),

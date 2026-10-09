@@ -104,15 +104,27 @@ def test_f3_f4_experience_and_entry_map_inherited_from_the_input_seed(scene):
 
 # --- F5: журнал не тонет, но ≤ 30% тела ------------------------------------------
 
+def _raw_share(seed: str) -> float:
+    """Доля сырого журнала в сиде: строки пульса в курсоре + секция журнала."""
+    cur = seed.partition("## курсор\n")[2].partition("\n## ")[0]
+    journal = seed.partition("## журнал сессии — старше курсора\n")[2].partition("\n## ")[0]
+    raw = sum(len(ln) + 1 for ln in cur.splitlines() if ln.startswith("- 20")) + len(journal)
+    return raw / len(seed)
+
+
 def test_f5_older_pulse_survives_within_the_share(scene):
-    for i in range(40):
-        offload.write_pulse(scene["sess"], note="шаг {0:02d} ".format(i) + "х" * 300)
+    # замер до правки (main · 01 → 02): из 36 пульс-строк дошли 5, журнал занял 68% сида
+    _set_where(scene["thread"], "### где мы\n" + "".join(
+        "- сделано: пункт {0} доведён до приёмки и сдан\n".format(i) for i in range(30)))
+    for i in range(36):
+        offload.write_pulse(scene["sess"], note="шаг {0:02d}: ".format(i) + "детали " * 30)
     seed = ah.build_auto_seed(scene["sess"])
-    journal = seed.partition("## журнал сессии — старше курсора\n\n")[2]
-    assert journal, "старый пульс пропал молча"
-    assert len(journal) <= 0.3 * len(seed) + 400  # + строка-указатель
-    assert "шаг 34" in journal                      # самое свежее из старого — целиком/сжато
-    assert "полностью: " in journal and "arc.md (## context)" in journal
+    assert _raw_share(seed) <= 0.30
+    journal = seed.partition("## журнал сессии — старше курсора\n\n")[2].partition("\n## ")[0]
+    assert "шаг 30" in journal                       # самое свежее из старого — дошло сжатым
+    reached = sum(1 for i in range(36) if "шаг {0:02d}".format(i) in seed)
+    assert reached > 5
+    assert "не вошло:" in journal and "arc.md (## context)" in journal  # остальное не молча
 
 
 def test_f5_journal_keeps_everything_when_it_fits():
@@ -247,3 +259,17 @@ def test_soc72_session_start_stamps_passport_and_renames_ao(scene, monkeypatch):
     assert got == "proj — shov · 01 · proj-5"
     assert fields.read_field(pp, "title") == "proj — shov · 01 · proj-5"
     assert _Ao.renamed == ("proj-5", "proj — shov · 01 · proj-5")
+
+
+# --- приёмка: SOC-N со ссылками ---------------------------------------------------
+
+def test_linear_issues_in_the_seed_get_links_once(scene, monkeypatch):
+    monkeypatch.delenv(seed_draft.LINEAR_URL_ENV, raising=False)
+    offload.write_pulse(scene["sess"], note="SOC-62 сдан; жду SOC-101 и SOC-62 ещё раз",
+                        cursor="приёмка SOC-101")
+    seed = ah.build_auto_seed(scene["sess"])
+    links = seed.partition("## задачи Linear\n\n")[2].splitlines()
+    assert links == ["- SOC-62 — https://linear.app/socaseinpoint/issue/SOC-62",
+                     "- SOC-101 — https://linear.app/socaseinpoint/issue/SOC-101"]
+    monkeypatch.setenv(seed_draft.LINEAR_URL_ENV, "https://l.example/i/{key}")
+    assert seed_draft.block_links("см. SOC-7, ABC-1") == ["- SOC-7 — https://l.example/i/SOC-7"]

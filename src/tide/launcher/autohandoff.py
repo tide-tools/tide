@@ -251,7 +251,10 @@ def build_auto_seed(session_entry: Path) -> str:
     session_entry = Path(session_entry)
     root = _project_root(session_entry)
     thread = thread_of(session_entry)
-    bodies = seed_draft.draft_bodies(root, session_entry)
+    passport = seed_draft.sections(seed_draft._read(session_entry / "arc.md"))
+    context = seed_draft.section_body(passport, "context")
+    clip = seed_draft.JOURNAL_CLIP  # хвост пульса в курсоре — тоже сырой журнал (F5)
+    bodies = seed_draft.draft_bodies(root, session_entry, pulse_clip=clip)
     bodies["опыт"] = [ln for ln in bodies.get("опыт", []) if "<!--" not in ln]
     bodies["карта входа"] = [ln for ln in bodies.get("карта входа", []) if "<!--" not in ln]
     bodies["карта входа"].append(
@@ -267,7 +270,6 @@ def build_auto_seed(session_entry: Path) -> str:
         # _pickup_goal берёт цель новой сессии отсюда
         header.append("следующий шаг: {0}".format(nxt[0]))
     text = seed_draft.render_draft(bodies, header="\n".join(header))
-    passport = seed_draft.sections(seed_draft._read(session_entry / "arc.md"))
     extra: List[str] = ["## где мы — нить", ""]
     extra += where_we_are(thread) or [seed_draft.EMPTY]
     extra += ["", "## итог прошлой сессии", ""]
@@ -277,15 +279,33 @@ def build_auto_seed(session_entry: Path) -> str:
     extra += open_items(root, thread) or [seed_draft.EMPTY]
     extra += ["", "## хвост диалога", ""]
     extra += _dialog.tail(thread, DIALOG_TAIL) or [seed_draft.EMPTY]
-    body = text.rstrip() + "\n\n" + "\n".join(extra) + "\n"
-    # журнал — не больше JOURNAL_SHARE от всего тела: budget = доля / (1 − доля) от остального
+    # Сырой журнал (хвост пульса в курсоре + старший журнал) — не больше JOURNAL_SHARE
+    # тела: J ≤ (share·R − T) / (1 − share), R — тело без журнала, T — хвост в курсоре.
+    body_len = len(text) + sum(len(ln) + 1 for ln in extra)
+    if seed_draft.raw_pulse_chars(context, clip=clip) > seed_draft.JOURNAL_SHARE * body_len / 2:
+        clip = seed_draft.JOURNAL_GIST  # хвост съел бы бюджет старшего журнала — короче
+        bodies["курсор"] = seed_draft.draft_bodies(
+            root, session_entry, pulse_clip=clip)["курсор"]
+        text = seed_draft.render_draft(bodies, header="\n".join(header))
+    return _finish(text, extra, context, session_entry,
+                   seed_draft.raw_pulse_chars(context, clip=clip))
+
+
+def _finish(text: str, extra: List[str], context: List[str], session_entry: Path,
+            tail: int) -> str:
+    """Тело + журнал старше курсора в бюджете доли + ссылки на задачи Linear."""
+    from . import seed_draft
+
     share = seed_draft.JOURNAL_SHARE
+    body = text.rstrip() + "\n\n" + "\n".join(extra) + "\n"
     journal = seed_draft.block_journal(
-        seed_draft.section_body(passport, "context"),
-        budget=int(len(body) * share / (1 - share)),
+        context, budget=max(0, int((share * len(body) - tail) / (1 - share))),
         source="{0} (## context)".format(session_entry / "arc.md"))
     if journal:
         body += "\n## журнал сессии — старше курсора\n\n" + "\n".join(journal) + "\n"
+    links = seed_draft.block_links(body)
+    if links:
+        body += "\n## задачи Linear\n\n" + "\n".join(links) + "\n"
     return body
 
 
