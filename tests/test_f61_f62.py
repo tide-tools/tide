@@ -136,3 +136,14 @@ def test_layer_without_any_flag_errors(tmp_project, monkeypatch):
     with pytest.raises(tl.LayersError) as e:
         tl.cmd_layer(type("A", (), {"target": "seam"})())
     assert "--main" in str(e.value)
+
+
+def test_split_main_keeps_session_names_f70():
+    """SOC-143 F70: «роль · NN» в --main — имя сессии, не разделитель."""
+    assert tl.split_main(["сдавать: менеджеру и main · 05 tide-stack-31; вид — через "
+                          "designer · 09 · не дублировать: X"]) == [
+        "сдавать: менеджеру и main · 05 tide-stack-31; вид — через designer · 09",
+        "не дублировать: X"]
+    assert tl.split_main(["сдавать (main · 05, tide-stack-31) · проверка"]) == [
+        "сдавать (main · 05, tide-stack-31)", "проверка"]
+    assert tl.split_main(["шаг 1 · шаг 2 · шаг 1"]) == ["шаг 1", "шаг 2"]

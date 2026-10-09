@@ -24,7 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import handoff_contract as contract, io as _io, paths, resolve
+from .. import handoff_contract as contract, io as _io, name_dots as _name_dots, \
+    paths, resolve
 from . import plan_main as _plan_main, stream as _stream
 from .stream import StreamError
 
@@ -110,10 +111,12 @@ def exit_warning(thread_dir: Path) -> Optional[str]:
 
 def split_main(values) -> List[str]:
     """Значения ``--main`` (флаг можно повторять) → строки «главного»: каждое ещё
-    режется по « · », пробелы схлопываются, пустые и повторы уходят."""
+    режется по « · », пробелы схлопываются, пустые и повторы уходят. Имя сессии
+    «роль · NN» («main · 05», «designer · 09») не рвётся (SOC-143 F70) — тот же
+    разборщик, что у сида (:func:`tide.name_dots.split_dots`)."""
     out: List[str] = []
     for v in values or []:
-        for part in " ".join(str(v or "").split()).split(" · "):
+        for part in _name_dots.split_dots(" ".join(str(v or "").split())):
             part = part.strip().strip("·").strip()
             if part and part not in out:
                 out.append(part)
