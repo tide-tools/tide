@@ -1693,7 +1693,51 @@ def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
         tail = raw_pulse_chars(context, clip=clip)
         if tail <= JOURNAL_SHARE * len(text) / 2:
             break
-    return text
+    return local_times(text)
+
+
+# SOC-143 F86: в одном блоке «ушёл ~21:55 UTC» рядом с местными 19:2x — холодная
+# читала это как несходство времени. Сид — в местном времени машины: «ЧЧ:ММ UTC»,
+# «ЧЧ:ММ:ССZ», ISO «…T22:20:32Z» (и с датой «09.10 20:36 UTC») переводятся.
+_UTC_ISO = re.compile(r"(?<![\w-])(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?"
+                      r"(?:\.\d+)?(?:Z|\+00:?00)(?![\w:])")
+_UTC_HM = re.compile(r"(?<![\w:./])(?:(\d{2})\.(\d{2})(?:\.(\d{4}))?\s+)?"
+                     r"(\d{1,2}):(\d{2})(?::(\d{2}))?(?:Z(?!\w)|\s?(?:UTC|GMT)(?![\w+-]))")
+
+
+def local_times(text: str, now=None) -> str:
+    """UTC-время в тексте сида → местное (пояс машины), без пометки пояса: весь
+    сид — в местном (F86). Дата без года — год *now*; без даты — сегодняшняя
+    (для смещения пояса). Секунды и дата сохраняются, если были."""
+    from datetime import datetime, timezone
+
+    now = now or datetime.now()
+
+    def conv(y, mo, d, h, mi, sec):
+        try:
+            utc = datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec or 0),
+                           tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        return utc.astimezone().replace(tzinfo=None)
+
+    def iso(m):
+        t = conv(*m.groups())
+        if t is None:
+            return m.group(0)
+        return t.strftime("%Y-%m-%dT%H:%M" + (":%S" if m.group(6) else ""))
+
+    def hm(m):
+        dd, mm, yy, h, mi, sec = m.groups()
+        t = conv(yy or now.year, mm or now.month, dd or now.day, h, mi, sec)
+        if t is None:
+            return m.group(0)
+        out = t.strftime("%H:%M" + (":%S" if sec else ""))
+        if dd:
+            out = t.strftime("%d.%m" + (".%Y" if yy else "")) + " " + out
+        return out
+
+    return _UTC_HM.sub(hm, _UTC_ISO.sub(iso, text or ""))
 
 
 def warn_missing_map(context: Sequence[str], stream=None) -> bool:

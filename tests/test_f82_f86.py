@@ -188,3 +188,26 @@ def test_incoming_orders_pair16(project, msk, tmp_path, monkeypatch):
                                mail_reads=sd.mail_reads(old.parents[1], "tide-stack-28"))
     assert after == []
 
+
+# --- F86: местное время ---------------------------------------------------------
+
+@pytest.mark.parametrize("raw,want", [
+    ("ушёл ~21:55 UTC, management-20", "ушёл ~18:55, management-20"),
+    ("сдал итог в 22:22:30Z", "сдал итог в 19:22:30"),
+    ("ack 2026-10-09T22:20:42Z", "ack 2026-10-09T19:20:42"),
+    ("(tg 3523, 09.10 20:36 UTC; facts.md)", "(tg 3523, 09.10 17:36; facts.md)"),
+    ("09.10 01:30 UTC", "08.10 22:30"),
+    ("- 2026-10-09T19:21:07 — курсор", "- 2026-10-09T19:21:07 — курсор"),
+    ("местное 19:20, хеш 1c1c3d705e1b", "местное 19:20, хеш 1c1c3d705e1b"),
+    ("/x/y/12:30Z.md", "/x/y/12:30Z.md"),
+])
+def test_local_times(msk, raw, want):
+    assert sd.local_times(raw, now=datetime(2026, 10, 9, 19, 0)) == want
+
+
+def test_seal_budgeted_local(msk):
+    """Весь сид (и «где мы», и сырой журнал) — в местном времени."""
+    ctx = ["- 2026-10-09T19:20:07 — курсор → ❓ про настройки ушёл ~21:55 UTC"]
+    text = sd.seal_budgeted(lambda clip: {sd.WHERE: [ctx[0]]}, context=ctx)
+    assert "UTC" not in text
+    assert "~18:55" in text
