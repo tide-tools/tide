@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tide import cli, decisions_tg as dt, truth
+from tide import cli, decisions_tg as dt, truth, truth_edits as edits
 
 SLUG = "01-tema"
 
@@ -101,11 +101,14 @@ def test_replaced_with_superseded_by_is_valid():
 
 # --- журнал -----------------------------------------------------------------
 
-def _journal(tdir: Path, *rows) -> Path:
+def _journal(tdir: Path, *rows, raw: bool = False) -> Path:
+    """Журнал из *rows*; записи — с src/valid_from на диске (как пишет decide),
+    *raw* — как есть (старый вид без них)."""
     tdir.mkdir(parents=True, exist_ok=True)
     p = tdir / dt.JOURNAL_FILE
-    p.write_text("".join((r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)) + "\n"
-                         for r in rows), encoding="utf-8")
+    p.write_text("".join((r if isinstance(r, str) else json.dumps(
+        r if raw else dt.normalize(r), ensure_ascii=False)) + "\n" for r in rows),
+        encoding="utf-8")
     return p
 
 
@@ -197,6 +200,8 @@ def world(tmp_path, monkeypatch):
     (home / "roster.md").write_text(
         "# tide roster\n" + "".join("{0} | {1}\n".format(n, r) for n, r in roots.items()),
         encoding="utf-8")
+    for d in (a, b):
+        edits.baseline(d)  # стартовая строка журнала правок
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.setenv("TIDE_HOME", str(home))
@@ -441,3 +446,128 @@ def test_add_decision_row_inserts_at_section_end():
     lines = ["# Ф", "", "## Решения", "", "- a · `tg:1`", "", "## Факты", "", "- b"]
     out = dt.add_decision_row(lines, "- new · `tg:2`")
     assert out[4:6] == ["- a · `tg:1`", "- new · `tg:2`"] and out[-1] == "- b"
+
+
+# --- SOC-130 шаг 3: журнал правок, дубль id, src на диске, decide без вопроса ---
+
+def test_check_catches_missing_src_on_disk(tmp_path):
+    p = _journal(tmp_path / SLUG, rec(), raw=True)
+    _, errs = dt.load(p, "alpha")
+    assert any("нет на диске: src, valid_from" in e for e in errs), errs
+
+
+def test_duplicate_id_counted_like_summary(world, capsys):
+    a = world["alpha"] / ".tide" / "topics" / SLUG
+    _journal(a, rec(), rec(decision="делаем иначе"))
+    (a / "facts.md").write_text(FACTS.format(
+        extra="- решение: делаем иначе — ответ «да» · 09.10.2026 · `tg:100`, `tg:101`\n"),
+        encoding="utf-8")
+    edits.baseline(a, reason="тест", force=True)
+    res = dt.check_topic("alpha", a)
+    assert res["decisions"] == 1
+    assert any("действующих строк 2, а действующих решений в журнале 1" in e
+               for e in res["errors"])
+    assert res["notes"] == ["tg-100-1: строк 2 (1, 2) без superseded_by — правка записи, "
+                            "действует строка 2"]
+    # старую строку пометили — счёт сходится, сводка считает так же
+    text = (a / "facts.md").read_text(encoding="utf-8").replace(
+        "ответ «да» · 09", "ответ «да» (заменено → tg-100-1, новая версия) · 09", 1)
+    (a / "facts.md").write_text(text, encoding="utf-8")
+    edits.baseline(a, reason="тест", force=True)
+    res = dt.check_topic("alpha", a)
+    assert res["errors"] == [] and res["decisions"] == 1
+    assert truth.topic_info("alpha", a)["decisions"] == 1
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 0 and "правка записи: tg-100-1" in out
+
+
+def test_decide_writes_edits_row(pult_world, capsys, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-keeper")
+    tdir = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    rc, out = _decide(capsys, "--q", "500", "--a", "501", "--decision", "да")
+    assert rc == 0, out
+    rows = edits.read_rows(tdir)
+    assert [r["action"] for r in rows] == ["baseline", "decide"]
+    last = rows[-1]
+    assert last["id"] == "tg-500" and last["src"] == "tg:501" and last["session"] == "sid-keeper"
+    assert last["files"] == ["decisions-tg.jsonl", "facts.md"]
+    assert last["before"] == rows[0]["after"] and last["after"] == edits.state(tdir)
+    assert edits.check_dir(tdir) == []
+
+
+def test_edit_without_journal_caught_and_blocks_decide(pult_world, capsys):
+    tdir = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    with (tdir / "facts.md").open("a", encoding="utf-8") as fh:
+        fh.write("\n## Факты (новые сверху)\n\n- приписка мимо журнала\n")
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 1 and "facts.md: правка без журнала" in out
+    before = (tdir / dt.JOURNAL_FILE).read_bytes()
+    rc = cli.main(["truth", "decide", "--topic", "alpha/" + SLUG, "--q", "500", "--a", "501",
+                   "--decision", "x"])
+    err = capsys.readouterr().err
+    assert rc == 1 and "без журнала правка не проходит" in err
+    assert (tdir / dt.JOURNAL_FILE).read_bytes() == before
+    # признать расхождение можно только по имени темы и с причиной
+    rc = cli.main(["truth", "baseline", "--project", "alpha"])
+    assert rc == 1 and "признать" in capsys.readouterr().out
+    rc = cli.main(["truth", "baseline", "--topic", "alpha/" + SLUG, "--reason", "приписка человека"])
+    assert rc == 0
+    capsys.readouterr()
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 0, out
+    assert edits.read_rows(tdir)[-1]["note"] == "приписка человека"
+
+
+def test_chain_break_inside_journal_caught(world):
+    a = world["alpha"] / ".tide" / "topics" / SLUG
+    first = edits.state(a)
+    (a / "facts.md").write_text("подмена\n", encoding="utf-8")
+    edits.append(a, "edit", {**first, "facts.md": "0" * 16}, edits.state(a))
+    errs = edits.check_dir(a)
+    assert len(errs) == 1 and ":2: правка без журнала между строками — facts.md" in errs[0]
+
+
+def test_no_journal_is_error_until_baseline(world, capsys):
+    (world["alpha"] / ".tide" / "topics" / SLUG / edits.EDITS_FILE).unlink()
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 1 and "нет журнала правок" in out and "tide truth baseline" in out
+    rc, out = _run(capsys, "baseline", "--project", "alpha")
+    assert rc == 0 and "alpha/01-tema: baseline" in out
+    rc, out = _run(capsys, "baseline", "--project", "alpha")
+    assert "сходится — не трогаю" in out
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 0
+
+
+def test_decide_no_question(pult_world, capsys):
+    tdir = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    rc = cli.main(["truth", "decide", "--topic", "alpha/" + SLUG, "--no-question", "--a", "701",
+                   "--decision", "x"])
+    assert rc == 1 and "--no-question требует --note" in capsys.readouterr().err
+    rc = cli.main(["truth", "decide", "--topic", "alpha/" + SLUG, "--no-question", "--a", "999",
+                   "--decision", "x", "--note", "голос"])
+    assert rc == 1 and "ответа tg:999 нет среди входящих" in capsys.readouterr().err
+    rc, out = _decide(capsys, "--no-question", "--a", "701", "--decision", "решили голосом",
+                      "--note", "голос без реплая")
+    assert rc == 0, out
+    new = json.loads((tdir / dt.JOURNAL_FILE).read_text(encoding="utf-8").splitlines()[-1])
+    assert new["id"] == "tg-701" and new["question"] is None and new["src"] == "tg:701"
+    assert new["note"] == "голос без реплая"
+    assert (tdir / "facts.md").read_text(encoding="utf-8").rstrip().endswith(
+        "· 08.10.2026 · `tg:701`")
+    rc, out = _run(capsys, "check", "--project", "alpha")
+    assert rc == 0, out
+    assert dt.validate(dict(new, note=None)) == ["question null: нужна note — почему решение без вопроса"]
+
+
+def test_skip_verb_journaled(pult_world, capsys):
+    d = pult_world["management"] / ".tide" / "topics"
+    edits.baseline(d)
+    rc, out = _run(capsys, "skip", "--q", "600", "--a", "602", "--reason", "повтор")
+    assert rc == 0 and "записано" in out
+    assert (600, 602) in dt.load_skip(d / dt.SKIP_FILE)
+    assert edits.read_rows(d)[-1]["action"] == "skip" and edits.check_dir(d) == []
+    rc = cli.main(["truth", "skip", "--q", "600", "--a", "602", "--reason", "ещё"])
+    assert rc == 1 and "уже в" in capsys.readouterr().err
+    rc, out = _run(capsys, "check", "--project", "management")
+    assert rc == 0 and "management/(decisions-skip.jsonl): ок 2 пропусков" in out

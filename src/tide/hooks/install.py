@@ -166,6 +166,14 @@ def register_hook_group(subparsers) -> None:
     from .ask_gate import cmd_ask_gate  # lazy: keep hook wiring import-light
     ag.set_defaults(func=cmd_ask_gate, _cmd="hook ask-gate")
 
+    tg = hsub.add_parser(
+        "truth-gate",
+        help="PreToolUse/PostToolUse: decisions-tg.jsonl / facts.md / decisions-skip.jsonl "
+             "of topics — only the context-keeper holder edits them, every edit journaled",
+    )
+    from .truth_gate import cmd_truth_gate  # lazy: keep hook wiring import-light
+    tg.set_defaults(func=cmd_truth_gate, _cmd="hook truth-gate")
+
     hc = hsub.add_parser(
         "handoff-confirm",
         help="UserPromptSubmit: first message confirms a picked-up handoff offer",

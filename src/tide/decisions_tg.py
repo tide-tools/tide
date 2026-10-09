@@ -11,7 +11,9 @@
     date           str   день решения, ``YYYY-MM-DD``
     project        str   проект ростера (= проект, в чьём корне лежит журнал)
     topic          str   slug темы (= имя каталога темы)
-    question       obj   ``{tg: int, ask: str, at: ISO, text: str}`` — что спросили
+    question       obj|null  ``{tg: int, ask: str, at: ISO, text: str}`` — что спросили;
+                         null — решение без вопроса (голос без реплая, реплай на
+                         своё же сообщение), тогда ``note`` обязана сказать почему
     answer         obj   ``{tg: [int, …], at: ISO, text: str}`` — что ответил человек
     decision       str   решение своими словами, одной фразой
     handed_to      [str] кому передано исполнять
@@ -24,7 +26,8 @@
     valid_from     ISO   с какого момента решение действует; по умолчанию answer.at
 
 Все моменты (``question.at``, ``answer.at``, ``valid_from``) — ISO с поясом.
-У старых строк нет ``src`` и ``valid_from`` — :func:`normalize` их дополняет.
+У старых строк нет ``src`` и ``valid_from`` — :func:`normalize` их дополняет
+в памяти, а ``tide truth check`` требует их на диске.
 
 Последняя по id главнее: если в журнале несколько строк с одним ``id``,
 действует последняя (так правят запись — дописывают её новую версию).
@@ -69,6 +72,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from . import truth
+from . import truth_edits as edits
 
 JOURNAL_FILE = "decisions-tg.jsonl"
 DECISIONS_HEAD = "## Решения"
@@ -160,7 +164,10 @@ def validate(rec, project: Optional[str] = None, topic: Optional[str] = None) ->
 
     q = rec.get("question")
     if has("question"):
-        if not isinstance(q, dict):
+        if q is None:
+            if not (isinstance(rec.get("note"), str) and rec["note"].strip()):
+                errs.append("question null: нужна note — почему решение без вопроса")
+        elif not isinstance(q, dict):
             errs.append("question: нужен объект")
         else:
             if not _is_int(q.get("tg")):
@@ -207,15 +214,22 @@ def validate(rec, project: Optional[str] = None, topic: Optional[str] = None) ->
 
 # --- журнал -----------------------------------------------------------------
 
-def load(path: Path, project: Optional[str] = None,
-         topic: Optional[str] = None) -> Tuple[List[Dict], List[str]]:
+DISK_KEYS = ("src", "valid_from")
+
+
+def load(path: Path, project: Optional[str] = None, topic: Optional[str] = None,
+         lines_by_id: Optional[Dict[str, List[int]]] = None) -> Tuple[List[Dict], List[str]]:
     """Журнал *path* → ``(решения, ошибки)``.
 
     Каждая строка нормализуется (:func:`normalize`) и проверяется
     (:func:`validate`); ошибка — ``файл:строка: текст``. Решения — по одному на
     id, действует последняя строка с этим id; порядок — по первому появлению id.
     У каждого решения ключ ``_line`` — номер его действующей строки.
-    *topic* по умолчанию — имя каталога журнала.
+    *topic* по умолчанию — имя каталога журнала. *lines_by_id* (если дан)
+    наполняется номерами всех строк каждого id.
+
+    ``src`` и ``valid_from`` обязаны лежать на диске: :func:`normalize`
+    дописывает их только в памяти, и без этой проверки строка без них прошла бы.
     """
     path = Path(path)
     topic = topic if topic is not None else path.parent.name
@@ -239,9 +253,15 @@ def load(path: Path, project: Optional[str] = None,
         rec = normalize(raw)
         errs.extend("{0}:{1}: {2}".format(path, i, e)
                     for e in validate(rec, project, topic))
+        absent = [k for k in DISK_KEYS if k not in raw]
+        if absent:
+            errs.append("{0}:{1}: нет на диске: {2} (при чтении дописаны, в файле их нет)"
+                        .format(path, i, ", ".join(absent)))
         rid = rec.get("id")
         if isinstance(rid, str) and rid:
             rec["_line"] = i
+            if lines_by_id is not None:
+                lines_by_id.setdefault(rid, []).append(i)
             by_id[rid] = rec  # последняя по id главнее; место — первое
     return list(by_id.values()), errs
 
@@ -308,22 +328,69 @@ def check_facts(facts_path: Path, records: List[Dict],
 
 # --- обход ------------------------------------------------------------------
 
-def check_topic(project: str, tdir: Path) -> Optional[Dict]:
-    """Проверка одной темы: ``{project, slug, decisions, errors}``.
+def live_rows(facts_lines: List[str]) -> List[Tuple[int, str]]:
+    """Строки «## Решения» без пометки «заменено →» — действующие решения."""
+    return [(i, ln) for i, ln in (decision_rows(facts_lines) or [])
+            if truth.REPLACED_MARK not in ln]
 
-    None — у темы нет ни журнала, ни секции «## Решения» (проверять нечего).
+
+def duplicates(lines_by_id: Dict[str, List[int]], records: List[Dict]) -> List[str]:
+    """Пометки о повторных id: правка записи (последняя строка главнее).
+
+    Не ошибка — так схема правит запись; что правка прошла через журнал,
+    сверяет журнал правок, а лишнюю строку в «## Решения» ловит счёт.
+    """
+    by = {r.get("id"): r for r in records}
+    out = []
+    for rid, nums in lines_by_id.items():
+        if len(nums) < 2:
+            continue
+        r = by.get(rid) or {}
+        if r.get("status") == "заменено" and r.get("superseded_by"):
+            continue
+        out.append("{0}: строк {1} ({2}) без superseded_by — правка записи, действует "
+                   "строка {3}".format(rid, len(nums), ", ".join(map(str, nums)), nums[-1]))
+    return out
+
+
+def check_topic(project: str, tdir: Path) -> Optional[Dict]:
+    """Проверка одной темы: ``{project, slug, decisions, replaced, errors, notes}``.
+
+    ``decisions`` — действующие решения (``принято``, последняя строка по id);
+    столько же должно быть строк «## Решения» без «заменено →» — так же считает
+    сводка ``tide truth``. Ещё сверяется журнал правок (:mod:`tide.truth_edits`).
+    None — у темы нет ни журнала, ни facts.md, ни журнала правок.
     """
     tdir = Path(tdir)
     jp = tdir / JOURNAL_FILE
     fp = tdir / truth.FACTS_FILE
     has_journal = jp.is_file()
-    facts_lines = truth._read_lines(fp) if fp.is_file() else []
-    if not has_journal and decision_rows(facts_lines) is None:
+    if not (has_journal or fp.is_file() or (tdir / edits.EDITS_FILE).is_file()):
         return None
-    records, errs = load(jp, project, tdir.name) if has_journal else ([], [])
+    facts_lines = truth._read_lines(fp) if fp.is_file() else []
+    lines_by_id: Dict[str, List[int]] = {}
+    records, errs = load(jp, project, tdir.name, lines_by_id) if has_journal else ([], [])
     errs = errs + check_facts(fp, records, jp)
+    active = [r for r in records if r.get("status") != "заменено"]
+    live = live_rows(facts_lines)
+    if (has_journal or live) and len(live) != len(active):
+        errs.append("{0}: в «{1}» действующих строк {2}, а действующих решений в журнале {3} "
+                    "— лишнюю строку пометь «({4} …)»".format(
+                        fp, DECISIONS_HEAD, len(live), len(active), truth.REPLACED_MARK))
+    errs = errs + edits.check_dir(tdir)
     return {"project": project, "slug": tdir.name, "dir": str(tdir),
-            "decisions": len(records), "errors": errs}
+            "decisions": len(active), "replaced": len(records) - len(active),
+            "errors": errs, "notes": duplicates(lines_by_id, records)}
+
+
+def check_skip_root(project: str, root: Path) -> Optional[Dict]:
+    """Журнал правок ``.tide/topics/`` (там decisions-skip.jsonl)."""
+    d = Path(root) / ".tide" / truth.TOPICS_DIRNAME
+    if not ((d / SKIP_FILE).is_file() or (d / edits.EDITS_FILE).is_file()):
+        return None
+    return {"project": project, "slug": "(" + SKIP_FILE + ")", "dir": str(d),
+            "decisions": 0, "replaced": 0, "skips": len(read_jsonl(d / SKIP_FILE)),
+            "errors": edits.check_dir(d), "notes": []}
 
 
 def check(projs: List[Tuple[str, Path]]) -> List[Dict]:
@@ -331,6 +398,10 @@ def check(projs: List[Tuple[str, Path]]) -> List[Dict]:
     out = []
     for t in truth.list_topics(projs, show_all=True):
         res = check_topic(t["project"], Path(t["dir"]))
+        if res is not None:
+            out.append(res)
+    for name, root in projs:
+        res = check_skip_root(name, root)
         if res is not None:
             out.append(res)
     return out
@@ -342,12 +413,16 @@ def render_check(results: List[Dict]) -> str:
     out = []
     for r in results:
         head = "{0}/{1}".format(r["project"], r["slug"])
+        what = ("{0} пропусков".format(r["skips"]) if "skips" in r
+                else "{0} решений".format(r["decisions"]))
+        if r.get("replaced"):
+            what += " (+{0} заменено)".format(r["replaced"])
         if not r["errors"]:
-            out.append("{0}: ок {1} решений".format(head, r["decisions"]))
+            out.append("{0}: ок {1}".format(head, what))
         else:
-            out.append("{0}: ошибок {1} ({2} решений)".format(
-                head, len(r["errors"]), r["decisions"]))
+            out.append("{0}: ошибок {1} ({2})".format(head, len(r["errors"]), what))
             out.extend("  " + e for e in r["errors"])
+        out.extend("  правка записи: " + n for n in r.get("notes") or [])
     bad = sum(len(r["errors"]) for r in results)
     out.append("итого: тем {0}, решений {1}, ошибок {2}".format(
         len(results), sum(r["decisions"] for r in results), bad))
@@ -684,24 +759,30 @@ def _parse_answers(raw) -> List[int]:
 def build_record(pult: Pult, project: str, slug: str, q: int, answers: List[int],
                  decision: str, rid: Optional[str] = None, handed_to=None, soc=None,
                  note: Optional[str] = None, supersedes: Optional[str] = None) -> Dict:
-    """Запись решения: тексты и моменты — из журнала пульта."""
-    if q not in pult.out:
+    """Запись решения: тексты и моменты — из журнала пульта.
+
+    *q* None — решение без вопроса: ``question: null``, id по первому ответу.
+    """
+    if q is not None and q not in pult.out:
         raise truth.TruthError("decide: вопроса tg:{0} нет среди исходящих журнала пульта "
                                "(текст и время вопроса взять неоткуда)".format(q))
     missing = [a for a in answers if a not in pult.inc]
     if missing:
         raise truth.TruthError("decide: ответа {0} нет среди входящих журнала пульта".format(
             ", ".join("tg:{0}".format(a) for a in missing)))
-    qr = pult.out[q]
     ars = [pult.inc[a] for a in answers]
     a_at = max((r.get("ts", "") for r in ars), key=_ts_key)
     day = local_dt(a_at)
+    question = None
+    if q is not None:
+        qr = pult.out[q]
+        question = {"tg": q, "ask": pult.ask_of(q), "at": qr.get("ts", ""),
+                    "text": pult.text_of(qr)}
     rec = {
-        "id": rid or "tg-{0}".format(q),
+        "id": rid or "tg-{0}".format(q if q is not None else answers[0]),
         "date": day.date().isoformat() if day else "",
         "project": project, "topic": slug,
-        "question": {"tg": q, "ask": pult.ask_of(q), "at": qr.get("ts", ""),
-                     "text": pult.text_of(qr)},
+        "question": question,
         "answer": {"tg": list(answers), "at": a_at,
                    "text": " / ".join(pult.text_of(r) for r in ars)},
         "decision": decision, "handed_to": list(handed_to or []), "soc": list(soc or []),
@@ -714,8 +795,8 @@ def build_record(pult: Pult, project: str, slug: str, q: int, answers: List[int]
 def facts_row(rec: Dict, fact: Optional[str] = None) -> str:
     """Строка «## Решения»: ``- решение: … — ответ Гриши «…» · DD.MM.YYYY · `tg:q`, `tg:a```."""
     y, m, d = rec["date"].split("-")
-    nums = [rec["question"]["tg"]] + [n for n in rec["answer"]["tg"]
-                                      if n != rec["question"]["tg"]]
+    q = (rec.get("question") or {}).get("tg")
+    nums = ([q] if q is not None else []) + [n for n in rec["answer"]["tg"] if n != q]
     refs = ", ".join("`tg:{0}`".format(n) for n in nums)
     body = fact.strip() if fact else "решение: {0} — ответ Гриши «{1}»".format(
         rec["decision"], short(rec["answer"]["text"], SHORT_FACT))
@@ -749,13 +830,13 @@ def add_decision_row(lines: List[str], row: str) -> List[str]:
 def mark_replaced(lines: List[str], old: Dict, new_id: str) -> Tuple[List[str], Optional[int]]:
     """Пометка «(заменено → new_id)» у строки старого решения; номер строки (с 0) или None."""
     rows = decision_rows(lines) or []
-    tgs = [n for n in old.get("answer", {}).get("tg", []) if _is_int(n)]
+    tgs = [n for n in (old.get("answer") or {}).get("tg", []) if _is_int(n)]
     cands = [(i - 1, ln) for i, ln in rows
              if truth.REPLACED_MARK not in ln
              and any("`tg:{0}`".format(n) in ln for n in tgs)]
     if not cands:
         return list(lines), None
-    q = old.get("question", {}).get("tg")
+    q = (old.get("question") or {}).get("tg")
     head = (old.get("decision") or "")[:40]
     cands.sort(key=lambda c: ("`tg:{0}`".format(q) not in c[1], head not in c[1]))
     idx, ln = cands[0]
@@ -772,13 +853,15 @@ def _dump(rec: Dict) -> str:
                       ensure_ascii=False)
 
 
-def decide(pult: Pult, topic: Dict, q: int, answers: List[int], decision: str,
+def decide(pult: Pult, topic: Dict, q: Optional[int], answers: List[int], decision: str,
            rid: Optional[str] = None, handed_to=None, soc=None, note: Optional[str] = None,
            supersedes: Optional[str] = None, fact: Optional[str] = None,
            dry_run: bool = False) -> Dict:
     """Записать решение в журнал темы и «## Решения». Ошибка — :class:`truth.TruthError`.
 
-    Возвращает ``{journal, facts, lines, facts_row, marked, written}``.
+    Запись идёт через журнал правок (:func:`tide.truth_edits.guard`): файлы
+    темы разошлись с ним — ничего не пишется. Возвращает
+    ``{journal, facts, lines, facts_row, marked, written}``.
     """
     tdir = Path(topic["dir"])
     jp, fp = tdir / JOURNAL_FILE, tdir / truth.FACTS_FILE
@@ -829,16 +912,25 @@ def decide(pult: Pult, topic: Dict, q: int, answers: List[int], decision: str,
            "written": False}
     if dry_run:
         return res
-    prefix = ""
-    if jp.is_file():
-        cur = jp.read_text(encoding="utf-8")
-        if cur and not cur.endswith("\n"):
-            prefix = "\n"
-    with jp.open("a", encoding="utf-8") as fh:
-        fh.write(prefix + "".join(ln + "\n" for ln in res["lines"]))
-    fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        with edits.guard(tdir, "decide", rid=rec["id"], src=rec.get("src"),
+                         note=("заменяет " + supersedes) if supersedes else None):
+            _append_lines(jp, res["lines"])
+            fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except edits.EditsError as e:
+        raise truth.TruthError("decide: " + str(e))
     res["written"] = True
     return res
+
+
+def _append_lines(path: Path, lines: List[str]) -> None:
+    prefix = ""
+    if path.is_file():
+        cur = path.read_text(encoding="utf-8")
+        if cur and not cur.endswith("\n"):
+            prefix = "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(prefix + "".join(ln + "\n" for ln in lines))
 
 
 def render_decide(res: Dict) -> str:
@@ -856,14 +948,22 @@ def render_decide(res: Dict) -> str:
 
 def cmd_decide(args) -> int:
     """``tide truth decide --topic P/NN-slug --q N --a M[,K] --decision "…" […]``."""
-    need = [f for f, v in (("--topic", args.d_topic), ("--q", args.d_q), ("--a", args.d_a),
+    no_q = bool(getattr(args, "d_no_question", False))
+    need = [f for f, v in (("--topic", args.d_topic), ("--a", args.d_a),
                            ("--decision", args.d_decision)) if v in (None, "")]
+    if not no_q and args.d_q is None:
+        need.insert(1, "--q (или --no-question)")
     if need:
         raise truth.TruthError("decide: нужны {0}".format(", ".join(need)))
+    if no_q and args.d_q is not None:
+        raise truth.TruthError("decide: --q и --no-question вместе нельзя")
+    if no_q and not (args.d_note or "").strip():
+        raise truth.TruthError("decide: --no-question требует --note «почему без вопроса»")
     projs = truth.resolve_projects(None)
     topic = resolve_topic(projs, args.d_topic)
     pult = _pult(args, projs)
-    res = decide(pult, topic, int(args.d_q), _parse_answers(args.d_a), args.d_decision,
+    res = decide(pult, topic, None if no_q else int(args.d_q), _parse_answers(args.d_a),
+                 args.d_decision,
                  rid=args.d_id, handed_to=args.d_handed_to, soc=args.d_soc, note=args.d_note,
                  supersedes=args.d_supersedes, fact=args.d_fact, dry_run=args.d_dry_run)
     if getattr(args, "as_json", False):
@@ -871,6 +971,105 @@ def cmd_decide(args) -> int:
     else:
         print(render_decide(res))
     return 0
+
+
+# --- tide truth skip / baseline ----------------------------------------------
+
+def skip(projs: List[Tuple[str, Path]], q: int, a: int, reason: str,
+         dry_run: bool = False) -> Dict:
+    """Пара *q*→*a* сознательно без решения: строка в decisions-skip.jsonl
+    management (через журнал правок)."""
+    if not (reason or "").strip():
+        raise truth.TruthError("skip: нужна --reason — почему пару не пишут")
+    d = management_root(projs) / ".tide" / truth.TOPICS_DIRNAME
+    path = d / SKIP_FILE
+    if (q, a) in load_skip(path):
+        raise truth.TruthError("skip: пара {0} → {1} уже в {2}".format(q, a, path))
+    row = {"q_tg": q, "a_tg": a, "reason": reason.strip(),
+           "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    line = json.dumps(row, ensure_ascii=False)
+    res = {"file": str(path), "line": line, "written": False}
+    if dry_run:
+        return res
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        with edits.guard(d, "skip", src="tg:{0}".format(a), note=reason.strip()):
+            _append_lines(path, [line])
+    except edits.EditsError as e:
+        raise truth.TruthError("skip: " + str(e))
+    res["written"] = True
+    return res
+
+
+def cmd_skip(args) -> int:
+    """``tide truth skip --q N --a M --reason "…"``."""
+    if args.d_q is None or not args.d_a:
+        raise truth.TruthError("skip: нужны --q и --a")
+    answers = _parse_answers(args.d_a)
+    if len(answers) != 1:
+        raise truth.TruthError("skip: --a — один номер ответа")
+    res = skip(truth.resolve_projects(None), int(args.d_q), answers[0],
+               getattr(args, "d_reason", None) or "", dry_run=args.d_dry_run)
+    print(("записано" if res["written"] else "dry-run: ничего не записано")
+          + "\n{0}:\n+ {1}".format(res["file"], res["line"]))
+    return 0
+
+
+def baseline_dirs(projs: List[Tuple[str, Path]]) -> List[Tuple[str, Path]]:
+    """``[(имя для вывода, каталог)]``: темы с охраняемыми файлами + ``.tide/topics``."""
+    out = []
+    for t in truth.list_topics(projs, show_all=True):
+        out.append(("{0}/{1}".format(t["project"], t["slug"]), Path(t["dir"])))
+    for name, root in projs:
+        d = Path(root) / ".tide" / truth.TOPICS_DIRNAME
+        if (d / SKIP_FILE).is_file() or (d / edits.EDITS_FILE).is_file():
+            out.append(("{0}/({1})".format(name, SKIP_FILE), d))
+    return out
+
+
+def cmd_baseline(args) -> int:
+    """``tide truth baseline [--project P] [--topic P/slug --reason "…"] [--dry-run]``.
+
+    Без --topic — стартовая строка во все каталоги без журнала правок. С --topic
+    и --reason — признать расхождение файлов темы с журналом правок как есть.
+    """
+    reason = (getattr(args, "d_reason", None) or "").strip() or None
+    projs = truth.resolve_projects(getattr(args, "project", None))
+    if args.d_topic:
+        q = args.d_topic.strip()
+        if q.endswith("(" + SKIP_FILE + ")") or q.endswith("/topics"):
+            name = q.split("/", 1)[0]
+            dirs = [x for x in baseline_dirs(projs) if x[0] == "{0}/({1})".format(name, SKIP_FILE)]
+            if not dirs:
+                raise truth.TruthError("baseline: у {0} нет {1}".format(name, SKIP_FILE))
+        else:
+            t = resolve_topic(projs, q)
+            dirs = [("{0}/{1}".format(t["project"], t["slug"]), Path(t["dir"]))]
+    else:
+        if reason:
+            raise truth.TruthError("baseline: --reason только вместе с --topic")
+        dirs = baseline_dirs(projs)
+    rc = 0
+    for name, d in dirs:
+        last = edits.last_after(d)
+        cur = edits.state(d)
+        if last is not None and last == cur:
+            print("{0}: журнал правок сходится — не трогаю".format(name))
+            continue
+        if all(v is None for v in cur.values()) and last is None:
+            continue
+        if last is not None and not (args.d_topic and reason):
+            print("{0}: файлы разошлись с журналом правок — признать: "
+                  "tide truth baseline --topic {0} --reason \"…\"".format(name))
+            rc = 1
+            continue
+        if args.d_dry_run:
+            print("{0}: dry-run — записал бы baseline {1}".format(name, cur))
+            continue
+        row = edits.baseline(d, reason=reason, force=bool(args.d_topic and reason))
+        if row is not None:
+            print("{0}: baseline → {1}".format(name, Path(d) / edits.EDITS_FILE))
+    return rc
 
 
 def add_arguments(p) -> None:
@@ -883,6 +1082,9 @@ def add_arguments(p) -> None:
                    help="inbox/decide: журнал событий log.jsonl (иначе ${0})".format(LOG_ENV))
     p.add_argument("--topic", dest="d_topic", metavar="ПРОЕКТ/NN-slug", help="decide: тема")
     p.add_argument("--q", dest="d_q", type=int, metavar="N", help="decide: tg вопроса")
+    p.add_argument("--no-question", dest="d_no_question", action="store_true",
+                   help="decide: ответ без вопроса в журнале пульта (голос без реплая, "
+                        "реплай на своё сообщение); нужна --note «почему»")
     p.add_argument("--a", dest="d_a", metavar="N[,M…]", help="decide: tg ответа(ов)")
     p.add_argument("--decision", dest="d_decision", help="decide: решение одной фразой")
     p.add_argument("--id", dest="d_id", help="decide: id (по умолчанию tg-<q>)")
@@ -894,5 +1096,8 @@ def add_arguments(p) -> None:
     p.add_argument("--supersedes", dest="d_supersedes", metavar="ID",
                    help="decide: id решения, которое это заменяет")
     p.add_argument("--fact", dest="d_fact", help="decide: свой текст строки facts.md")
+    p.add_argument("--reason", dest="d_reason",
+                   help="skip: почему пару не пишут; baseline --topic: почему признаём "
+                        "расхождение с журналом правок")
     p.add_argument("--dry-run", dest="d_dry_run", action="store_true",
                    help="decide: показать, что запишет, и ничего не писать")

@@ -17,6 +17,10 @@
                                        с «## Решения» (:mod:`tide.decisions_tg`)
     tide truth inbox [--since D]       ответы человека в TG, у которых нет решения
     tide truth decide --topic … --q N --a M --decision "…"   запись решения
+                                       (--no-question --note "…" — ответ без вопроса)
+    tide truth skip --q N --a M --reason "…"   пара сознательно без решения
+    tide truth baseline [--project P]  стартовая строка журнала правок тем
+                                       (edits.jsonl, :mod:`tide.truth_edits`)
 
 Поиск живыми словами: запрос режется на слова, служебные («что», «где», «по»…)
 выбрасываются, каждое слово сводится к основе (``передача`` → ``переда``) и ищется
@@ -304,7 +308,8 @@ def topic_info(project: str, tdir: Path) -> Dict:
         "topic": str(tdir / TOPIC_FILE) if topic_lines else "",
         "facts_file": str(facts_path) if has_facts else "",
         "facts": count_points(sections),
-        "decisions": len(sections["decisions"]),
+        # действующие решения — без «заменено →»; так же считает tide truth check
+        "decisions": sum(1 for _, ln in sections["decisions"] if not _is_replaced(ln)),
         "replaced": sum(1 for _, ln in sections["facts"] if _is_replaced(ln)),
         "checked": checked,
         "status": status,
@@ -966,7 +971,7 @@ def _project(args, topics: List[Dict]) -> int:
 
 
 def _cmd_truth(args) -> int:
-    if args.topic in ("check", "inbox", "decide") and not args.grep:
+    if args.topic in ("check", "inbox", "decide", "skip", "baseline") and not args.grep:
         from . import decisions_tg  # лениво: decisions_tg сам импортирует truth
         return getattr(decisions_tg, "cmd_" + args.topic)(args)
     project = getattr(args, "project", None)
@@ -1066,7 +1071,9 @@ def register(subparsers) -> None:
                    help="тема: slug, номер, часть slug/заголовка, проект/slug или имя проекта; "
                         "check — сверка журналов решений decisions-tg.jsonl (код 1 при ошибках); "
                         "inbox — ответы человека в TG без решения; "
-                        "decide — записать решение в тему (журнал + «## Решения»)")
+                        "decide — записать решение в тему (журнал + «## Решения»); "
+                        "skip — пара без решения в decisions-skip.jsonl; "
+                        "baseline — стартовая строка журнала правок edits.jsonl")
     p.add_argument("--grep", nargs="+", metavar="СЛОВО",
                    help="поиск живыми словами: основы слов, сначала строки со всеми")
     p.add_argument("--project", help="только этот проект ростера")
