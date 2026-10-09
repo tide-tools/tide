@@ -525,6 +525,14 @@ def _register_lookback(sub) -> None:
     register_lookback(sub)
 
 
+def _register_truth(sub) -> None:
+    # context-keeper (SOC-106, решение 3): «что сказал человек» по темам —
+    # .tide/topics/*/facts.md в корнях проектов ростера; только чтение.
+    from .truth import register as register_truth
+
+    register_truth(sub)
+
+
 def _register_canon(sub) -> None:
     # U2: real canon group (init/rev/merge live; status stubbed for U8).
     # ``cannon`` is a hidden CLI alias registered inside commands.register().
@@ -623,6 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_offload(subparsers)
     _register_whois(subparsers)
     _register_lookback(subparsers)
+    _register_truth(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)
 
