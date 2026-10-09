@@ -2430,6 +2430,83 @@ def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> L
         return []
 
 
+MAIL_MAX = 8                    # потолок строк почты в «в работе прямо сейчас»
+MAIL_FIRST = 120                # первая строка письма — не длиннее
+# Формат почты нити (SOC-143, tide.mail): <нить>/inbox/NNN-от-<кто>.md + журнал
+# inbox/log.jsonl (sent/ack). tide.mail — край (edge), launcher его не импортирует
+# (tests/test_layers.py) — здесь только чтение того же формата.
+_MAIL_LETTER = re.compile(r"^(\d{3,})-от-(.+)\.md$")
+
+
+def _mail_unread(thread_entry: Path) -> List[Dict[str, str]]:
+    """Непрочитанные письма нити: ``[{num, sender, first}]`` по номеру."""
+    import json
+
+    box = Path(thread_entry) / "inbox"
+    if not box.is_dir():
+        return []
+    evs = []
+    log = box / "log.jsonl"
+    if log.is_file():
+        for ln in log.read_text(encoding="utf-8").splitlines():
+            try:
+                ev = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(ev, dict):
+                evs.append(ev)
+    acked = {str(e.get("num")) for e in evs if e.get("ev") == "ack"}
+    sent = {str(e.get("num")): e for e in evs if e.get("ev") == "sent"}
+    out = []
+    for f in sorted(box.iterdir()):
+        m = _MAIL_LETTER.match(f.name)
+        if not m or not f.is_file() or m.group(1) in acked:
+            continue
+        ev = sent.get(m.group(1), {})
+        first = str(ev.get("first") or "")
+        if not first:
+            body = _read(f).split("\n---\n", 1)[-1]
+            first = next((x.strip() for x in body.splitlines() if x.strip()), "")
+        out.append({"num": m.group(1), "sender": str(ev.get("from") or m.group(2)),
+                    "first": first})
+    return out
+
+
+def _mail_address(thread_entry: Path) -> str:
+    """``проект/нить`` для команды чтения — как :func:`tide.mail.address_of`."""
+    from .. import roster, slug as _slug
+
+    name = _slug.entry_slug(Path(thread_entry).name)
+    proj_root = Path(thread_entry).parent.parent.parent
+    try:
+        for entry in roster.read_roster(paths.control_home()):
+            if Path(entry["path"]).expanduser().resolve() == proj_root.resolve():
+                return "{0}/{1}".format(entry["name"], name)
+    except Exception:  # noqa: BLE001 — нет ростера: адрес короткий
+        pass
+    return name
+
+
+def thread_mail(thread_entry: Path, limit: int = MAIL_MAX) -> List[str]:
+    """Непрочитанные письма нити (SOC-143) — строками «в работе прямо сейчас»:
+    номер, отправитель, первая строка и команда ``tide mail read <проект>/<нить>
+    NNN``. Писем нет — []. Никогда не падает."""
+    try:
+        letters = _mail_unread(Path(thread_entry))
+        if not letters:
+            return []
+        addr = _mail_address(Path(thread_entry))
+    except Exception:  # noqa: BLE001 — сид важнее почты
+        return []
+    out = ["- почта: непрочитанное письмо {0} от {1}: {2} — tide mail read {3} {0}".format(
+        r["num"], r["sender"], clip_words(r["first"] or "(без первой строки)", MAIL_FIRST),
+        addr) for r in letters[:limit]]
+    if len(letters) > limit:
+        out.append("- почта: ещё непрочитанных {0} — tide mail ls {1}".format(
+            len(letters) - limit, addr))
+    return out
+
+
 def block_unanswered(thread_entry: Path, n: int = DIALOG_TAIL) -> List[str]:
     """Неотвеченные реплики Гриши: хвост диалога нити; журнал есть, а реплик в нём
     нет — так и сказано, со счётом отброшенных уведомлений харнесса (SOC-101 F33:
@@ -2540,7 +2617,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                             session_workers(session_entry),
                             session_incoming(session_entry,
                                              section_body(passport, "context")),
-                            _auto.open_items(root, thread_entry))
+                            _auto.open_items(root, thread_entry),
+                            thread_mail(thread_entry))
     return {
         # F57: «главное» — тоже слой нити (plan.md): «Кому сдавать: … management-12»
         MAIN: (mark_stale_manager(block_main(
