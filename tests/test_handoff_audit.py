@@ -181,3 +181,62 @@ def test_audit_unknown_offer_or_missing_seed(tmp_control_home, monkeypatch, caps
     hq.offer(tmp_control_home, "noseed", arc="-", project="p", seed="-")
     assert cli.main(["handoffs", "audit", "noseed"]) == 1
     assert "нет сида" in capsys.readouterr().err
+
+
+def _append_context(passport, *lines):
+    text = passport.read_text(encoding="utf-8")
+    head, sep, tail = text.partition("## context\n")
+    if not sep:
+        text = text.rstrip() + "\n\n## context\n" + "\n".join(lines) + "\n"
+    else:
+        text = head + sep + "\n".join(lines) + "\n" + tail
+    passport.write_text(text, encoding="utf-8")
+
+
+def test_first_pulse_is_the_very_first_real_one_after_take(tmp_control_home):
+    """Живой аудит 09.10: оффер 227 принят в 04:34, а «первым пульсом» стоял пульс
+    05:00 — первый после свежего коммита. Нужен самый первый настоящий."""
+    sess = _world(tmp_control_home)
+    hq.take(tmp_control_home, "main", session="sid-y")
+    rec = hq.list_offers(tmp_control_home)[0]
+    taken = rec["taken_at"]
+    # штамп оффера — поздний пульс (как на живом аудите)
+    hq._set_field(rec["path"], hq.FIRST_PULSE, "поздний пульс после коммита")
+    hq._set_field(rec["path"], hq.FIRST_PULSE_AT, "2099-01-01T00:00:00")
+    _append_context(sess / "arc.md",
+                    "- 2000-01-01T00:00:00 — до приёма: не в счёт")
+    text = (sess / "arc.md").read_text(encoding="utf-8")
+    later = "- {0} — старт-гейт: цель — сверить сид".format("2099-01-01T00:00:01")
+    (sess / "arc.md").write_text(text.rstrip() + "\n" + later + "\n", encoding="utf-8")
+    found = hq.first_real_pulse(sess / "arc.md", taken)
+    assert found == ("старт-гейт: цель — сверить сид", "2099-01-01T00:00:01")
+    und = _by_key(ha.audit(tmp_control_home, "main"))["understood"]
+    assert und["first_pulse"] == "старт-гейт: цель — сверить сид"
+    assert und["first_pulse_at"] == "2099-01-01T00:00:01"
+
+
+def test_first_pulse_skips_mechanical_reception_line(tmp_path):
+    p = tmp_path / "arc.md"
+    p.write_text("# x\n\n## context\n"
+                 "- 2026-10-09T04:34:26 — нить принята — шов приёма закрыт механикой\n"
+                 "- 2026-10-09T04:34:55 — старт-гейт: цель ясна\n"
+                 "- 2026-10-09T05:00:24 — поздний\n"
+                 "## next\nx\n", encoding="utf-8")
+    assert hq.first_real_pulse(p, "2026-10-09T04:34:26") == (
+        "старт-гейт: цель ясна", "2026-10-09T04:34:55")
+    assert hq.first_real_pulse(p, "2026-10-09T05:00:00")[0] == "поздний"
+    assert hq.first_real_pulse(p, "2026-10-10T00:00:00") is None
+
+
+def test_note_first_pulse_stamps_earliest_pulse_from_disk(tmp_control_home):
+    """Механика стампа: если до первого дошедшего до кода пульса были другие —
+    штампуется самый ранний из паспорта, с его временем."""
+    sess = _world(tmp_control_home)
+    hq.take(tmp_control_home, "main", session="sid-z")
+    text = (sess / "arc.md").read_text(encoding="utf-8").rstrip()
+    (sess / "arc.md").write_text(
+        text + "\n- 2099-01-01T00:00:01 — ранний пульс\n"
+        "- 2099-01-01T00:00:09 — текущий пульс\n", encoding="utf-8")
+    rec = hq.note_first_pulse(tmp_control_home, sess, note="текущий пульс")
+    assert rec["first_pulse"] == "ранний пульс"
+    assert rec["first_pulse_at"] == "2099-01-01T00:00:01"

@@ -153,17 +153,27 @@ def audit_decisions(records: Sequence[Dict[str, object]], seed_text: str,
 
 # Пульс, который пишет механика приёма (handoff_queue._stamp_reception), — не
 # содержимое прошлой сессии, сиду его нести незачем.
-_MECHANICAL = ("шов приёма закрыт механикой",)
+_MECHANICAL = (hq._MECHANICAL_MARK,)
 
 
 def _own(lines: Sequence[str]) -> List[str]:
     return [ln for ln in lines if not any(m in ln for m in _MECHANICAL)]
 
 
-def audit_understood(rec: Dict[str, object], title: str) -> Dict[str, object]:
-    """Понятая цель (SOC-101 п.2): записал ли приём цель и первый пульс."""
+def audit_understood(rec: Dict[str, object], title: str,
+                     passport: Optional[Path] = None) -> Dict[str, object]:
+    """Понятая цель (SOC-101 п.2): записал ли приём цель и первый пульс.
+
+    Первый пульс — самый первый настоящий пульс принявшей сессии после приёма,
+    с её паспорта (*passport*); штамп ``first-pulse:`` оффера — запасной: его
+    ставил первый пульс, дошедший до кода, а не первый вообще."""
     goal = str(rec.get("understood_goal") or "-")
     pulse = str(rec.get("first_pulse") or "-")
+    pulse_at = str(rec.get("first_pulse_at") or "-")
+    if passport is not None and rec.get("status") == hq.STATUS_TAKEN:
+        found = hq.first_real_pulse(passport, rec.get("taken_at"))
+        if found:
+            pulse, pulse_at = found
     have = [x for x in (goal, pulse) if x != "-"]
     missing = []
     if goal == "-":
@@ -179,8 +189,7 @@ def audit_understood(rec: Dict[str, object], title: str) -> Dict[str, object]:
             "present": len(have), "compressed": 0, "missing": missing,
             "goal": None if goal == "-" else goal,
             "first_pulse": None if pulse == "-" else pulse,
-            "first_pulse_at": None if str(rec.get("first_pulse_at") or "-") == "-"
-            else rec.get("first_pulse_at")}
+            "first_pulse_at": None if pulse_at == "-" else pulse_at}
 
 
 # --- чтение диска ------------------------------------------------------------
@@ -278,7 +287,8 @@ def audit(home: Path, key: str) -> Dict[str, object]:
         "expectation": audit_section("expectation", titles["expectation"], expectation,
                                      seed_text),
         "dialog": audit_section("dialog", titles["dialog"], tail, seed_text),
-        "understood": audit_understood(rec, titles["understood"]),
+        "understood": audit_understood(rec, titles["understood"],
+                                       session_dir / "arc.md"),
     }
     return {
         "offer": rec["name"], "status": rec["status"], "created": rec.get("created"),

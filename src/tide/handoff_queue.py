@@ -379,11 +379,55 @@ def _stamp_reception(rec: Dict[str, object], *, session: Optional[str]) -> None:
         # (cand 78, caught live). ``session_dir`` is the seed's own session, unambiguous.
         _offload.write_pulse(
             session_dir,
-            note="нить принята — шов приёма закрыт механикой",
+            note=RECEPTION_PULSE,
             cursor="принял нить, ориентируюсь по сиду",
         )
     except Exception:  # noqa: BLE001  a stray pulse must never break a pickup
         pass
+
+
+# Пульс, который пишет механика приёма, — не понимание принявшей сессии.
+RECEPTION_PULSE = "нить принята — шов приёма закрыт механикой"
+_MECHANICAL_MARK = "шов приёма закрыт механикой"
+_PULSE_LINE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s*—\s*(.+?)\s*$")
+
+
+def _parse_iso(raw: object) -> Optional[datetime]:
+    try:
+        ts = datetime.fromisoformat(str(raw or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts.astimezone().replace(tzinfo=None) if ts.tzinfo else ts
+
+
+def first_real_pulse(passport: Path, since: object = None):
+    """Самый первый НАСТОЯЩИЙ пульс сессии в ``## context`` её паспорта — не
+    раньше *since* (``taken-at`` оффера) и не механический «нить принята».
+    → ``(текст, ISO-штамп)`` или None.
+
+    Не по штампу ``first-pulse:`` оффера: его ставил первый пульс, который
+    дошёл до кода (SOC-101: на живом аудите это был пульс после свежего
+    коммита, через полчаса и десяток пульсов после приёма)."""
+    try:
+        text = Path(passport).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    cutoff = _parse_iso(since)
+    in_ctx = False
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            in_ctx = ln.strip() == "## context"
+            continue
+        if not in_ctx:
+            continue
+        m = _PULSE_LINE.match(ln)
+        if not m or _MECHANICAL_MARK in m.group(2):
+            continue
+        ts = _parse_iso(m.group(1))
+        if cutoff is not None and (ts is None or ts < cutoff):
+            continue
+        return _one_line(m.group(2)), m.group(1)
+    return None
 
 
 def _one_line(text: str) -> str:
@@ -429,10 +473,21 @@ def note_first_pulse(home: Path, session_dir: Path, *, note: str = "",
         except OSError:
             continue
         changed = _note_goal(r, target / "arc.md")
-        if words and str(r.get("first_pulse") or "-") == "-":
-            _set_field(r["path"], FIRST_PULSE, words)
-            _set_field(r["path"], FIRST_PULSE_AT, _now())
-            changed = True
+        if str(r.get("first_pulse") or "-") == "-":
+            # самый первый настоящий пульс после приёма — с диска, не «этот»:
+            # пульсы до появления этой механики тоже считаются (SOC-101)
+            found = first_real_pulse(target / "arc.md", r.get("taken_at"))
+            if found:
+                text, at = found
+                # это и есть текущий пульс — тогда его курсор (он точнее ноты)
+                current = text == _one_line(note) or (words and text.endswith(words))
+                words = words if current else text
+            else:
+                at = _now()
+            if words:
+                _set_field(r["path"], FIRST_PULSE, words)
+                _set_field(r["path"], FIRST_PULSE_AT, at)
+                changed = True
         return _parse(r["path"]) if changed else None
     return None
 
