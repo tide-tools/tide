@@ -32,7 +32,8 @@ Every arc is `input/ → workspace/ → output/`:
 ## Опыт и эскалация (SOC-157)
 - Наступил на граблю — сразу `tide thread layer --exp "…"`, не ждать передачи.
 - Не справляешься (критерий — `tide escalate --help`: неудачные попытки одного шага,
-  стоп без прогресса, задача вне роли/прав) — `tide escalate --what … --tried … --need …`.
+  стоп без прогресса (ждать ответа Гриши/менеджера — не застревание), задача вне
+  роли/прав (отказ role-gate — отдай сабагенту, это не повод)) — `tide escalate --what … --tried … --need …`.
 
 ## Drift
 If the SessionStart board flags **drift** on your arc (canon moved since the arc was stamped),
