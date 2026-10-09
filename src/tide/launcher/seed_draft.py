@@ -1913,6 +1913,79 @@ def is_closing_reply(text: str) -> bool:
     return bool(_RESULT_RE.search(text or "")) and not _PROMISE_RE.search(text or "")
 
 
+# SOC-101 F60: закрытое входящее не выдаётся за открытое. Ответ отправителю
+# закрывает, если он не голая квитанция («получен», «принято, спасибо») и не
+# обещание («пришлю к 16:00»): та работа ещё в полёте (F29). Пульс, назвавший id
+# отправителя после доставки, — тоже закрытие: сессия его записала.
+_ACK_RE = re.compile(r"получ|приня|принял|спасибо|благодар|\bок\b|дошл|увидел",
+                     re.IGNORECASE)
+_WAIT_RE = re.compile(r"запрос|запрош|жд[уёе]|ждём|просил|\bк\s+\d{1,2}:\d{2}",
+                      re.IGNORECASE)
+RECEIPT_MAX = 60               # короче — квитанция, а не ответ по делу
+_MESSAGE_ARG_RE = re.compile(r"--message[ =]+(.*)$", re.S)
+_QUOTED_WS_RE = re.compile(r"\"(?:\\.|[^\"\\])*\s(?:\\.|[^\"\\])*\"|'[^']*\s[^']*'", re.S)
+
+# Письмо без просьбы — не поручение (F60): благодарность, «нить передана»,
+# «теперь ведёт …», «доклады — сюда». Есть просьба, находка или вопрос — поручение.
+_INFO_RE = re.compile(
+    r"спасибо|благодар|нить\s+\S+\s+передана|нить\s+передана|теперь\s+(?:\S+\s+)?"
+    r"вед[её]т|ведёт\s+теперь|вместо\s+[\w-]+-\d+|дальше\s+пиши|доклады\b[^.]*сюда|"
+    r"адрес[а]?\s+сменил", re.IGNORECASE)
+_ASK_RE = re.compile(
+    r"прошу|просьб|нужн|надо\b|сделай|сделать|поручени|поручаю|провер|почин|чини|"
+    r"пришли|срочн|\bбаг|дефект|находк|возьми|положи|добавь|покажи|ответь|"
+    r"срок|задач[уа]\b|\?", re.IGNORECASE)
+
+
+def reply_message(text: str) -> str:
+    """Текст сообщения из ``ao send … --message "…"`` (без кавычек); не команда —
+    как есть."""
+    m = _MESSAGE_ARG_RE.search(text or "")
+    if not m:
+        return (text or "").strip()
+    return m.group(1).strip().strip("\"'").strip()
+
+
+def is_receipt(text: str) -> bool:
+    """Голая квитанция: короткое «получен / принято / спасибо» без итога."""
+    msg = " ".join(reply_message(text).split())
+    return len(msg) <= RECEIPT_MAX and bool(_ACK_RE.search(msg)) and \
+        not _RESULT_RE.search(msg)
+
+
+def closes_by_reply(text: str) -> bool:
+    """Ответ отправителю закрывает входящее (F60): итог — всегда; квитанция и
+    обещание — нет (F29); любой другой ответ по делу — да."""
+    if is_closing_reply(text):
+        return True
+    msg = reply_message(text)
+    return not (_PROMISE_RE.search(msg) or is_receipt(msg))
+
+
+def is_info_letter(body: str) -> bool:
+    """Информационное письмо без просьбы (благодарность, «нить передана», «теперь
+    ведёт …») — не поручение (F60)."""
+    return bool(_INFO_RE.search(body or "")) and not _ASK_RE.search(body or "")
+
+
+def pulse_names_sender(who: str, at, pulses: Sequence["tuple"]) -> bool:
+    """Пульс не раньше доставки называет id отправителя (``tide-stack-24``, без
+    хвоста uds) — сессия входящее записала (F60). ``tide-stack-2`` не совпадает с
+    ``tide-stack-24``."""
+    key = sender_key(who)
+    if not key:
+        return False
+    rx = re.compile(r"(?<![\w-]){0}(?!\d)".format(re.escape(key)), re.IGNORECASE)
+    for p_at, line in pulses:
+        if p_at < at.replace(second=0, microsecond=0):
+            continue
+        # фраза «запросила у X, жду к 15:15» — ожидание от X, а не запись его письма
+        if any(rx.search(sent) and not _WAIT_RE.search(sent)
+               for sent in _SENT_END.split(line)):
+            return True
+    return False
+
+
 def _carry_words(text: str) -> set:
     return {w.lower().strip("._/-") for w in _CARRY_WORD.findall(text or "")}
 
@@ -1980,7 +2053,10 @@ def _replies(row: dict) -> List["tuple[str, str]"]:
                         str(inp.get("message") or "")))
         elif b.get("name") == "Bash":
             cmd = str(inp.get("command") or "")
-            for m in _AO_SEND_RE.finditer(cmd):
+            # адресат — из самой команды, не из текста письма: «ao send --session X»
+            # внутри кавычек --message — упоминание, а не ответ X (F60)
+            bare = _QUOTED_WS_RE.sub('""', cmd)
+            for m in _AO_SEND_RE.finditer(bare):
                 out.append((sender_key(m.group(1)), cmd))
     return out
 
@@ -1993,9 +2069,11 @@ def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = 
     Берутся доставки AO (``<ao-session-delivery …>[from X]``, и пачкой в одной
     реплике, и внутри ``<pasted_content>``) и межсессионная почта
     (``<cross-session-message … from-name="X">``); уведомления харнесса (F17) —
-    нет. Не берутся закрытые: сессия ответила отправителю итогом
-    (:func:`is_closing_reply`; «получен» не закрывает) или записала их пульсом из
-    *context* (:func:`carried_by_pulse`). Свежие сверху, не больше
+    нет. Не берутся закрытые (F60): сессия ответила отправителю по делу
+    (:func:`closes_by_reply`; квитанция «получен» и обещание не закрывают), пульс
+    после доставки назвал id отправителя (:func:`pulse_names_sender`) или несёт её
+    суть (:func:`carried_by_pulse`); и не поручения — письма без просьбы
+    (:func:`is_info_letter`). Свежие сверху, не больше
     :data:`INCOMING_MAX`, остальное — счётом и путём к транскрипту."""
     if transcript is None:
         return []
@@ -2027,8 +2105,10 @@ def incoming_orders(transcript: Optional[Path], since, context: Sequence[str] = 
                 found.append((at, who, body))
     pulses = _pulse_stamps(context)
     found = [(at, who, body) for at, who, body in found
-             if not any(r_at >= at and to == sender_key(who) and is_closing_reply(text)
-                        for r_at, to, text in replies)
+             if not is_info_letter(body)
+             and not any(r_at >= at and to == sender_key(who) and closes_by_reply(text)
+                         for r_at, to, text in replies)
+             and not pulse_names_sender(who, at, pulses)
              and not carried_by_pulse(who, body, at, pulses)]
     found.sort(key=lambda r: r[0], reverse=True)
     out = ["- поручено мне — от {0} в {1}: {2}".format(
