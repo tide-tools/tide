@@ -46,3 +46,27 @@ def test_rendered_seed_has_no_dash_with_open_orders():
     text = seed_draft.render_draft(bodies)
     tails = text.split("## " + seed_draft.TAILS, 1)[1].split("\n## ", 1)[0]
     assert TAILS_NONE not in tails and "поручение от management-16" in tails
+
+
+# --- F57 -------------------------------------------------------------------------
+
+def test_main_layer_handover_line_is_marked():
+    line = ("- Кому сдавать: текущий менеджер — адрес в ~/.tide/manager.json (на 09.10 — "
+            "management-12, «management — main · 02»). Замершим (management-9) не писать.")
+    got = seed_draft.mark_stale_manager([line], current="management-17")
+    assert got == [line + " (устарело: менеджер сейчас management-17)"]
+    # «management-12 (main · 02)» и «менеджер — management-12» — тоже адрес
+    for ln in ("- менеджер — management-12", "- сдаём management-12 (main · 02)"):
+        assert seed_draft.mark_stale_manager([ln], current="management-17")[0].endswith(
+            "(устарело: менеджер сейчас management-17)")
+    # повторно не помечается
+    assert seed_draft.mark_stale_manager(got, current="management-18") == got
+
+
+def test_provenance_forms_stay_unmarked():
+    lines = ["- 09.10 (через менеджера management-9, постановка нити): соткать документ",
+             "- 09.10 (TG, через management-9): «пусть начнёт с памяти»",
+             "- 09.10 ~05:05 (окно менеджера management-9, цитатой): «там где меня достать»",
+             "- слово Гриши от management-16: «да»"]
+    assert seed_draft.mark_stale_manager(lines, current="management-17") == lines
+

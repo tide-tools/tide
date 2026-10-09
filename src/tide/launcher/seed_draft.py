@@ -2114,7 +2114,19 @@ def block_unanswered(thread_entry: Path, n: int = DIALOG_TAIL) -> List[str]:
 
 # Адрес менеджера в строке слоя; «через management-11» / «от management-11» — это
 # происхождение слов (кто донёс), не адрес — не устаревает.
-_MANAGER_ID = re.compile(r"(?<!через )(?<!от )\bmanagement-\d+\b")
+_MANAGER_ID = re.compile(r"\bmanagement-\d+\b")
+# Происхождение (F57): «через management-9», «через менеджера management-9»,
+# «окно менеджера management-9», «от management-16» — кто донёс слова, не адрес.
+_PROVENANCE_HEAD = re.compile(
+    r"(?:\b(?:через|от|из)|\bокн[оаеу]?)(?:\s+(?:менеджера|сессии|окна|окно|main))*\s*$",
+    re.IGNORECASE)
+STALE_MARK = "(устарело: менеджер сейчас"
+
+
+def manager_addresses(line: str) -> set:
+    """AO-id менеджеров, которые в *line* стоят адресом (не происхождением)."""
+    return {m.group(0) for m in _MANAGER_ID.finditer(line)
+            if not _PROVENANCE_HEAD.search(line[max(0, m.start() - 40):m.start()])}
 
 
 def current_manager_id() -> str:
@@ -2136,8 +2148,8 @@ def mark_stale_manager(lines: Sequence[str], current: Optional[str] = None) -> L
         return list(lines)
     out = []
     for ln in lines:
-        ids = set(_MANAGER_ID.findall(ln))
-        if ids and cur not in ids:
+        ids = manager_addresses(ln)
+        if ids and cur not in ids and STALE_MARK not in ln:
             ln = "{0} (устарело: менеджер сейчас {1})".format(ln.rstrip(), cur)
         out.append(ln)
     return out
@@ -2192,7 +2204,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                              section_body(passport, "context")),
                             _auto.open_items(root, thread_entry))
     return {
-        MAIN: (block_main(thread_entry, contract.find_body(seed_in, "main"), pred)
+        # F57: «главное» — тоже слой нити (plan.md): «Кому сдавать: … management-12»
+        MAIN: (mark_stale_manager(block_main(
+                   thread_entry, contract.find_body(seed_in, "main"), pred))
                or [contract.empty_line(contract.block("main"))]) + [manager_line()],
         EXPECTATION: block_expectation(
             mark_stale_manager(layer(lays, "expectation")), _stream.passport_path(thread_entry),
