@@ -49,6 +49,10 @@ ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
 ASK_GATE_CMD = "tide hook ask-gate"
 ASK_GATE_MATCHER = "AskUserQuestion"
+# SOC-108: PermissionRequest → сообщить Грише в TG, ничего не решая. НЕ входит в
+# merge_hooks/TIDE_HOOKS: раскатка = настройки Claude, решает Гриша (merge_perm_notify).
+PERMISSION_REQUEST_EVENT = "PermissionRequest"
+PERM_NOTIFY_CMD = "tide hook perm-notify"
 HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 OFFLOAD_NUDGE_CMD = "tide hook offload-nudge"
 CONTEXT_WATCH_CMD = "tide hook context-watch"
@@ -184,6 +188,21 @@ def merge_ask_gate(hooks: dict) -> bool:
     groups.append(
         {"matcher": ASK_GATE_MATCHER, HOOKS_KEY: [_hook_block(ASK_GATE_CMD)]}
     )
+    return True
+
+
+def merge_perm_notify(hooks: dict) -> bool:
+    """Append the PermissionRequest perm-notify entry to *hooks*; return changed.
+
+    SOC-108: the hook only REPORTS a pending permission dialog to the human's
+    Telegram — it never allows or denies. Deliberately NOT part of
+    :func:`merge_hooks` (that runs on every AO spawn): wiring it is a Claude
+    settings change, made only on the human's word. No-op when already wired.
+    """
+    groups = hooks.setdefault(PERMISSION_REQUEST_EVENT, [])
+    if _command_present(groups, PERM_NOTIFY_CMD):
+        return False
+    groups.append({HOOKS_KEY: [_hook_block(PERM_NOTIFY_CMD)]})
     return True
 
 

@@ -14,6 +14,9 @@ Modules (U10):
   ask_gate.py       — `tide hook ask-gate` (PreToolUse, AskUserQuestion): in an AO
                       session with no live human reply for 10 min, deny the dialog
                       and send the question to the manager (SOC-108).
+  perm_notify.py    — `tide hook perm-notify` (PermissionRequest): in an AO session,
+                      report the pending permission dialog to the human's Telegram;
+                      never decides (SOC-108). Not wired by install-hooks.
 
 ``cli.py`` wires the human ``install-hooks`` command and the internal ``hook``
 dispatch group via :func:`tide.hooks.install.register` /

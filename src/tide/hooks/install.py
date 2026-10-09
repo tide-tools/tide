@@ -16,6 +16,8 @@ from __future__ import annotations
 from ..harness import (  # noqa: F401 — public re-exports
     ASK_GATE_CMD,
     ASK_GATE_MATCHER,
+    PERM_NOTIFY_CMD,
+    PERMISSION_REQUEST_EVENT,
     CLAUDE_DIRNAME,
     CONTEXT_WATCH_CMD,
     EDIT_GATE_CMD,
@@ -41,6 +43,7 @@ from ..harness import (  # noqa: F401 — public re-exports
     install_hooks,
     install_hooks_in_worktree,
     merge_ask_gate,
+    merge_perm_notify,
     merge_hooks,
     merge_pre_tool_use,
     merge_role_gate,
@@ -173,6 +176,14 @@ def register_hook_group(subparsers) -> None:
     )
     from .truth_gate import cmd_truth_gate  # lazy: keep hook wiring import-light
     tg.set_defaults(func=cmd_truth_gate, _cmd="hook truth-gate")
+
+    pn = hsub.add_parser(
+        "perm-notify",
+        help="PermissionRequest: report a pending permission dialog to the human's "
+             "Telegram; never allows or denies (SOC-108)",
+    )
+    from .perm_notify import cmd_perm_notify  # lazy: keep hook wiring import-light
+    pn.set_defaults(func=cmd_perm_notify, _cmd="hook perm-notify")
 
     hc = hsub.add_parser(
         "handoff-confirm",
