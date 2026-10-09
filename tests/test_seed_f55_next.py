@@ -4,7 +4,7 @@ from __future__ import annotations
 from tide.launcher import seed_draft
 
 
-# --- «слово · NN» + дата/союз — имя, не разделитель -------------------------------
+# --- «роль · NN» + любое продолжение — имя, не разделитель (F58) ---------------------
 
 def test_name_dot_before_date_is_kept():
     out = seed_draft.block_next(["(а) SOC-105 после F55–F57 · сверка SOC-105 с main · 04 12.10"])
@@ -20,10 +20,17 @@ def test_name_dot_before_conjunction_is_kept():
         "- (а) SOC-105 после F55–F57"]
 
 
-def test_new_action_after_number_still_splits():
-    assert seed_draft.block_next(["прогнать тесты · 3 шага дописать"]) == \
-        ["- прогнать тесты", "- 3 шага дописать"]
+def test_f58_name_dot_with_word_after_number_is_kept():
+    # acceptance-06 §9 F58, S:88–89
+    out = seed_draft.block_next(["ждать · да designer · 08 на ready-v3 → management-18 · ручка"])
+    assert out == ["- ждать", "- да designer · 08 на ready-v3 → management-18", "- ручка"]
+
+
+def test_verb_number_or_date_before_number_still_splits():
     assert seed_draft.block_next(["шаг 1 · шаг 2"]) == ["- шаг 1", "- шаг 2"]
+    assert seed_draft.block_next(["проверить · 10 тестов"]) == ["- проверить", "- 10 тестов"]
+    assert seed_draft.block_next(["сдать F57 · 12.10 сверка"]) == \
+        ["- сдать F57", "- 12.10 сверка"]
 
 
 def test_old_name_cases_unchanged():
@@ -31,3 +38,4 @@ def test_old_name_cases_unchanged():
         ["- написать designer · 02 (tide-stack-20)", "- проверить"]
     assert seed_draft.block_next(["спросить designer · 06 = app-development-22 · ждать"]) == \
         ["- спросить designer · 06 = app-development-22", "- ждать"]
+
