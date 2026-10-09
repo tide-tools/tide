@@ -1,8 +1,10 @@
 """tide.launcher.reception — Грише в Telegram: приём нити состоялся (или нет).
 
-Слово Гриши (tg 3119): на каждый приём — ровно одно короткое сообщение. Форма
-(замечание management-14 на msg 3171 — сырой хвост сида Гриша не читает): три
-строки — «<новая> приняла у · MM», «Взято: …» (одна строка), «Потеряно: …». Повод — первый
+Слово Гриши (tg 3119): на каждый приём — ровно одно короткое сообщение: кто какую
+нить от кого принял, что передано, что взято, что потерялось. Форма (замечание
+management-14 на msg 3171 — сырой хвост сида Гриша не читает): до четырёх строк —
+«<новая> приняла у · MM», «Передано: …» (из пульса ПЕРЕДАЧА старой), «Взято: …»
+(целыми фразами), «Потеряно: …» (сверка разделов + открытые хвосты сида). Повод — первый
 настоящий пульс принявшей сессии (тот, что пишет ``first-pulse:`` в оффер):
 к нему уже есть и понятая цель, и аудит сида. Если принимающая так и не
 поднялась (SOC-101 F25) — одно сообщение «не поднялась, нить остаётся у …».
@@ -22,9 +24,10 @@ control-home. Метка ``announced:`` в оффере — второй раз 
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from .. import fields, handoff_queue as hq, paths
 from ..arc import stream as _stream
@@ -59,8 +62,57 @@ def clip(text: str, limit: int = FIELD_MAX) -> str:
     return cut.rstrip(" ,;:—-·") + "…"
 
 
-TAKEN_MAX = 120                  # «Взято» — одна строка, режем по слову
+TAKEN_MAX = 200                  # «Взято» — целые фразы, не больше стольких знаков
+PASSED_MAX = 140                 # «Передано»: «где мы» целыми фразами …
+FLIGHT_MAX = 100                 # … и «в полёте»
 LOST_MAX = 100
+TAILS_MAX = 90                   # первый открытый хвост в «Потеряно»
+
+# Конец фразы: «.», «!», «?» (или «…») и пробел. Строчная буква следом — тоже новая
+# фраза (агенты начинают с имён: «main · 04 подтвердила»), кроме сокращений.
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+_ABBREV = re.compile(r"(?:^|\s)(?:т\.е|т\.к|т\.д|т\.п|см|напр|др|ср|стр|гл|п|e\.g|i\.e|vs|etc)\.$",
+                     re.IGNORECASE)
+# «Принял(а) нить X у 03 (оффер 263).» — то же, что первая строка сообщения.
+_ECHO_TAKE = re.compile(r"^принял[аи]?\s+(?:нить|оффер|хендофф)\b", re.IGNORECASE)
+
+
+def sentences(text: str) -> List[str]:
+    line = " ".join((text or "").split())
+    out: List[str] = []
+    for part in _SENTENCE_END.split(line):
+        if not part.strip():
+            continue
+        if out and _ABBREV.search(out[-1]):
+            out[-1] = out[-1] + " " + part
+        else:
+            out.append(part)
+    return out
+
+
+def clip_sentences(text: str, limit: int, *, enough: int = 60) -> str:
+    """Целые фразы, а не обрубок посреди слова (SOC-101 F41): первая фраза целиком;
+    пока набрано меньше *enough* знаков — следующая, если влезает в *limit*. Фраза
+    длиннее *limit* — по слову, с «…» (:func:`clip`)."""
+    parts = sentences(text)
+    if not parts:
+        return ""
+    out = parts[0]
+    if len(out) > limit:
+        return clip(out, limit)
+    for nxt in parts[1:]:
+        if len(out) >= enough or len(out) + 1 + len(nxt) > limit:
+            break
+        out = out + " " + nxt
+    return out
+
+
+def taken_text(text: str) -> str:
+    """«Взято»: без эха «Принял нить … у 03» (это уже первая строка), целыми фразами."""
+    parts = sentences(text)
+    while len(parts) > 1 and _ECHO_TAKE.match(parts[0]):
+        parts = parts[1:]
+    return clip_sentences(" ".join(parts), TAKEN_MAX) or "—"
 
 
 def _base(title: str) -> str:
@@ -83,23 +135,37 @@ def _short_old(new_title: str, old_title: str) -> str:
 LOST_SCOPE = "по сверке разделов"
 
 
-def lost_line(lost: Optional[List[str]]) -> str:
+def lost_line(lost: Optional[List[str]], tails: Sequence[str] = ()) -> str:
     """Хвост строки «Потеряно: …» — с мерой, а не голым «ничего».
 
-    *lost* — пропавшие разделы; ``None`` — сверка не прошла (тогда не «ничего»)."""
+    *lost* — пропавшие разделы; ``None`` — сверка не прошла (тогда не «ничего»).
+    *tails* — пункты блока «## открытые хвосты» сида (F36/F41): сверка разделов их
+    не ловит, а по сути это и есть недоделанное — называем число и первый."""
     if lost is None:
-        return "сверка разделов не прошла — не знаю"
-    if not lost:
-        return LOST_SCOPE + " — ничего"
-    return clip("{0}: {1}".format(LOST_SCOPE, ", ".join(lost)), LOST_MAX)
+        head = "сверка разделов не прошла — не знаю"
+    elif not lost:
+        head = LOST_SCOPE + " — ничего"
+    else:
+        head = clip("{0}: {1}".format(LOST_SCOPE, ", ".join(lost)), LOST_MAX)
+    tails = [t for t in tails if t.strip()]
+    if not tails:
+        return head
+    more = " (и ещё {0})".format(len(tails) - 1) if len(tails) > 1 else ""
+    return "{0}; открытых хвостов {1}: {2}{3}".format(
+        head, len(tails), clip(tails[0], TAILS_MAX), more)
 
 
 def reception_text(*, new_title: str, old_title: str, taken: str,
-                   lost: Optional[List[str]]) -> str:
-    """Три строки Грише: кто у кого принял, что взято, что потеряно."""
-    return "{new} приняла у {old}\nВзято: {taken}\nПотеряно: {lost}".format(
-        new=new_title, old=_short_old(new_title, old_title),
-        taken=clip(taken or "—", TAKEN_MAX), lost=lost_line(lost))
+                   lost: Optional[List[str]], passed: str = "",
+                   tails: Sequence[str] = ()) -> str:
+    """До четырёх строк Грише: кто у кого принял, что передано, что взято, что
+    потеряно. Нет *passed* — строки «Передано» нет (старую не нашли)."""
+    lines = ["{0} приняла у {1}".format(new_title, _short_old(new_title, old_title))]
+    if passed and passed.strip():
+        lines.append("Передано: " + clip(passed, PASSED_MAX + FLIGHT_MAX + 12))
+    lines.append("Взято: " + taken_text(taken or "—"))
+    lines.append("Потеряно: " + lost_line(lost, tails))
+    return "\n".join(lines)
 
 
 def not_alive_text(new_title: str, old_title: str) -> str:
@@ -154,8 +220,124 @@ def _lost(home: Path, key: str) -> Optional[List[str]]:
             if s.get("status") == handoff_audit.MISSING and s.get("key") != "understood"]
 
 
+TAILS_HEAD = "## открытые хвосты"
+_NO_TAILS = re.compile(r"^[-—–\s]*(?:нет|ничего|—|-)?[.\s]*$", re.IGNORECASE)
+
+
+def _seed_text(rec: Dict[str, object]) -> str:
+    seed = str(rec.get("seed") or "-")
+    if seed == "-":
+        return ""
+    try:
+        return Path(seed).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def seed_section(text: str, head: str) -> List[str]:
+    """Строки раздела сида «## <head>…» (до следующего «## »); нет раздела — []."""
+    out: List[str] = []
+    inside = False
+    for ln in (text or "").splitlines():
+        if ln.startswith("## "):
+            inside = ln.strip().lower().startswith(head.lower())
+            continue
+        if inside and ln.strip():
+            out.append(ln.rstrip())
+    return out
+
+
+def open_tails(seed_text: str) -> List[str]:
+    """Пункты блока «## открытые хвосты» сида: что красное, не проверено вживую,
+    обещано. Блока нет или в нём «нет»/прочерк/заглушка — пусто (поведение прежнее)."""
+    items: List[str] = []
+    for ln in seed_section(seed_text, TAILS_HEAD):
+        s = ln.strip()
+        if ln[:1].isspace() or s.startswith(("<", "(")):
+            continue  # продолжение пункта, заглушка, строка-источник
+        body = s[2:].strip() if s.startswith(("- ", "* ")) else s
+        if not _NO_TAILS.match(body):
+            items.append(body)
+    return items
+
+
+# Метки, после которых в пульсе ПЕРЕДАЧА лежит «что передано»: «Где мы:» — первым,
+# «В полёте:» — следом. Текст метки — до следующей метки (любой из контракта).
+_PASSED_LABELS = (("где мы", re.compile(r"где\s+мы\s*:\s*", re.IGNORECASE)),
+                  ("в полёте", re.compile(r"в\s+пол[её]те\s*:\s*", re.IGNORECASE)))
+
+
+def _label_piece(text: str, label_re) -> str:
+    from .. import handoff_contract as contract
+
+    m = label_re.search(text)
+    if m is None:
+        return ""
+    if contract._LABEL_RE is None:
+        contract._LABEL_RE = contract._label_re()
+    rest = text[m.end():]
+    nxt = contract._LABEL_RE.search(" " + rest)
+    piece = rest if nxt is None else rest[:max(nxt.start() - 1, 0)]
+    return piece.strip().rstrip(".;").strip()
+
+
+def passed_from_note(note: str) -> str:
+    """«Передано» из пульса ПЕРЕДАЧА старой: «Где мы:» целыми фразами + «в полёте: …».
+    Меток нет — текст после шапки «ПЕРЕДАЧА …». Пусто — нечего сказать."""
+    text = " ".join((note or "").split())
+    where = _label_piece(text, _PASSED_LABELS[0][1])
+    flight = _label_piece(text, _PASSED_LABELS[1][1])
+    if not where and not flight:
+        from .. import handoff_contract as contract
+        head = contract.pulse_head(text)
+        body = sentences(head)[1:] if head else []  # первая фраза — «ПЕРЕДАЧА a → b»
+        where = " ".join(body)
+    out = clip_sentences(where, PASSED_MAX) if where else ""
+    if flight:
+        flight = clip_sentences(flight, FLIGHT_MAX)
+        out = "{0}; в полёте: {1}".format(out.rstrip("."), flight) if out else (
+            "в полёте: " + flight)
+    return out
+
+
+def _last_pass_note(passport: Path) -> str:
+    """Самый свежий пульс ПЕРЕДАЧА в ``## context`` паспорта старой (без штампа)."""
+    from .. import handoff_contract as contract
+
+    try:
+        text = Path(passport).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    found = ""
+    inside = False
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            inside = ln.strip().lower().startswith("## context")
+            continue
+        if inside and ln.strip() and contract.is_pass_note(ln.strip()):
+            found = ln.strip()
+    return re.sub(r"^-?\s*\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*", "", found)
+
+
+def passed_text(home: Path, rec: Dict[str, object], seed_text: str = "") -> str:
+    """Что передающая отдала: её пульс ПЕРЕДАЧА; нет его — «где мы» сида."""
+    try:
+        from .handoff import _origin_entry
+        origin = _origin_entry(Path(home), rec)
+    except Exception:  # noqa: BLE001
+        origin = None
+    if origin is not None:
+        got = passed_from_note(_last_pass_note(origin / "arc.md"))
+        if got:
+            return got
+    where = [ln.strip()[2:].strip() if ln.strip().startswith("- ") else ln.strip()
+             for ln in seed_section(seed_text, "## где мы") if not ln.startswith("  ")]
+    return clip_sentences(" ".join(where[:2]), PASSED_MAX) if where else ""
+
+
 def compose_reception(home: Path, rec: Dict[str, object]) -> str:
     new, old = titles(home, rec)
+    seed_text = _seed_text(rec)
     taken = ""
     for key in ("understood_goal", "first_pulse"):  # цель старт-гейта / курсор
         v = str(rec.get(key) or "-").strip()
@@ -165,8 +347,13 @@ def compose_reception(home: Path, rec: Dict[str, object]) -> str:
     if not taken:
         sess = _session_of(rec)
         taken = (fields.read_field(sess / "arc.md", "goal") or "").strip() if sess else ""
+    try:
+        passed = passed_text(home, rec, seed_text)
+    except Exception:  # noqa: BLE001 — без «Передано» сообщение всё равно уходит
+        passed = ""
     return reception_text(new_title=new, old_title=old, taken=taken or "—",
-                          lost=_lost(home, str(rec["name"])))
+                          lost=_lost(home, str(rec["name"])), passed=passed,
+                          tails=open_tails(seed_text))
 
 
 def _log(home: Path, line: str) -> None:
@@ -364,6 +551,7 @@ def wrap_offload(sub) -> None:
 
 
 __all__ = ["ANNOUNCED", "CLOSE_PROPOSED", "announce_not_alive", "announce_reception",
-           "clip", "close_text", "lost_line", "propose_close",
+           "clip", "clip_sentences", "close_text", "lost_line", "open_tails",
+           "passed_from_note", "passed_text", "propose_close",
            "compose_reception", "not_alive_text", "reception_text", "send", "titles",
            "wrap_offload"]

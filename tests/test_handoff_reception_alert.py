@@ -113,11 +113,11 @@ def test_no_alert_cmd_skips_quietly_and_logs(seam, monkeypatch):
 
 
 def _assert_short(msg):
-    assert len(msg.splitlines()) <= 3, msg
-    assert len(msg) <= 300, (len(msg), msg)
+    assert len(msg.splitlines()) <= 4, msg
+    assert len(msg) <= 600, (len(msg), msg)
 
 
-def test_reception_message_is_three_short_lines():
+def test_reception_message_is_short_lines():
     long = "слово " * 100
     msg = reception.reception_text(
         new_title="tide-stack — handoffs · 03 · tide-stack-21",
@@ -127,7 +127,7 @@ def test_reception_message_is_three_short_lines():
     first, taken, lost = msg.splitlines()
     assert first == "tide-stack — handoffs · 03 · tide-stack-21 приняла у · 02"
     assert taken.startswith("Взято: ") and taken.endswith("…")
-    assert len(taken) <= len("Взято: ") + 120
+    assert len(taken) <= len("Взято: ") + reception.TAKEN_MAX
     assert lost.startswith("Потеряно: ")
     ok = reception.reception_text(new_title="A — t · 02", old_title="B — u · 05",
                                   taken="t", lost=[])
@@ -232,3 +232,82 @@ def test_notify_default_and_garbage_mean_all(monkeypatch):
     assert reception.notify_mode() == "all"
     monkeypatch.setenv(reception.NOTIFY_ENV, "loud")
     assert reception.notify_mode() == "all"
+
+
+# --- F41: «Передано», «Взято» целыми фразами, открытые хвосты в «Потеряно» ----------
+
+def test_reception_has_passed_line_and_whole_sentences():
+    msg = reception.reception_text(
+        new_title="A — t · 04", old_title="A — t · 03",
+        taken="Принял нить t у 03 (оффер 263). main · 04 подтвердила: поручений нет. "
+              "Цель: сдать SOC-101 через перемер.",
+        lost=[], passed="SOC-101 In Progress; в полёте: перемер")
+    first, passed, taken, lost = msg.splitlines()
+    assert first == "A — t · 04 приняла у · 03"
+    assert passed == "Передано: SOC-101 In Progress; в полёте: перемер"
+    # эхо «Принял нить … у 03» выкинуто — оно и так в первой строке; фразы целые
+    assert taken == "Взято: main · 04 подтвердила: поручений нет. Цель: сдать SOC-101 через перемер."
+    assert lost == "Потеряно: по сверке разделов — ничего"
+
+
+def test_taken_cuts_on_sentence_not_mid_word():
+    long = ("main · 04 подтвердила: старшая по нити, поручений нет; моя приёмка — вторая "
+            "пара промера SOC-101 у continuity-audit · 02 (tide-stack-20). " + "слово " * 60)
+    out = reception.taken_text(long)
+    assert out.endswith("(tide-stack-20).")
+    assert reception.sentences("см. файл. Дальше т.е. так. Конец") == [
+        "см. файл.", "Дальше т.е. так.", "Конец"]
+
+
+PASS_NOTE = ("ПЕРЕДАЧА handoffs · 03 → 04. Где мы: SOC-101 (Linear In Progress). Первая пара "
+             "«с замечаниями» — main 03→04 (оффер 260). По её §9 сдан пакет Д: " + "x " * 80 +
+             ". В полёте: перемер continuity-audit · 02 — вердикт придёт новой. Ждёт Гришу: "
+             "SOC-57. Карта: /a — зачем")
+
+
+def test_passed_from_pass_note():
+    out = reception.passed_from_note(PASS_NOTE)
+    assert out == ("SOC-101 (Linear In Progress). Первая пара «с замечаниями» — main 03→04 "
+                   "(оффер 260); в полёте: перемер continuity-audit · 02 — вердикт придёт новой")
+    assert reception.passed_from_note("") == ""
+
+
+def test_live_passed_from_old_pass_pulse(seam, sent):
+    offload.write_pulse(seam["old"], note=PASS_NOTE)
+    assert _pulse() == 0
+    msg = sent[0]["text"]
+    _assert_short(msg)
+    assert msg.splitlines()[1].startswith("Передано: SOC-101 (Linear In Progress).")
+
+
+def test_live_passed_falls_back_to_seed_where(seam, sent):
+    assert _pulse() == 0
+    assert sent[0]["text"].splitlines()[1] == "Передано: шаг 3 из 7"
+
+
+TAILS = """
+## открытые хвосты
+- tide verify --portable красный
+- Д2 не проверено вживую
+  (продолжение пункта)
+- обещано: сверка C4 с Linear
+"""
+
+
+def test_open_tails_parsed_and_absent_or_empty_is_nothing():
+    assert reception.open_tails(SEED + TAILS) == [
+        "tide verify --portable красный", "Д2 не проверено вживую",
+        "обещано: сверка C4 с Linear"]
+    assert reception.open_tails(SEED) == []
+    assert reception.open_tails(SEED + "\n## открытые хвосты\n- нет\n") == []
+    assert reception.open_tails(SEED + "\n## открытые хвосты\n—\n\n## окружение\n- x\n") == []
+
+
+def test_lost_names_open_tails_not_nothing(seam, sent):
+    seed = seam["new"] / "input" / "handoff-seed.md"
+    seed.write_text(SEED + TAILS, encoding="utf-8")
+    assert _pulse() == 0
+    lost = sent[0]["text"].splitlines()[-1]
+    assert lost.startswith("Потеряно: по сверке разделов")
+    assert lost.endswith("; открытых хвостов 3: tide verify --portable красный (и ещё 2)")
+    assert "Потеряно: по сверке разделов — ничего" + "\n" not in sent[0]["text"]
