@@ -447,6 +447,21 @@ def _retell_warning(rec, passport: Path, blob: str) -> Optional[str]:
         return None
 
 
+def _pass_map_warning(note: str) -> None:
+    """Пульс «ПЕРЕДАЧА» без метки «Карта:» (SOC-101 C11) — предупредить передающую
+    сессию сразу, в stderr, а не только на сборке сида. Метка — начало ноты (F24),
+    распознавание и текст — те же, что у ``seed_draft.warn_missing_map`` (оба из
+    :mod:`tide.handoff_contract`: offload — домен и сборщик-лаунчер звать не может).
+    Не блок: пульс уже записан, rc не меняется."""
+    try:
+        from . import handoff_contract
+        if handoff_contract.pass_note_without_map(" ".join((note or "").split())):
+            print("tide: внимание — {0}".format(handoff_contract.MAP_WARNING),
+                  file=sys.stderr)
+    except Exception:  # noqa: BLE001 — предупреждение не смеет уронить пульс
+        return
+
+
 def _main_gate(root: Path, ref: str):
     """Старт-гейт «главного» нити (решение Гриши № 24) — :func:`tide.arc.plan_main.gate`
     для сессии *ref*; None — молчим (или сессия не нашлась: ошибку скажет offload)."""
@@ -488,6 +503,7 @@ def _cmd_offload(args) -> int:
     warn = _closure_word_warning(passport, " ".join((note, cursor, next_steps)))
     if warn:
         print(warn, file=sys.stderr)
+    _pass_map_warning(note)
     return 0
 
 

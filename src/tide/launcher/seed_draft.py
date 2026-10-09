@@ -382,9 +382,9 @@ def last_pass_index(pulse: Sequence[str]) -> Optional[int]:
 
 
 # Метка «ПЕРЕДАЧА» — начало ноты пульса (после штампа), а не слово в тексте:
-# «передача работы 117 фактов» — обычный пульс.
-_PASS_RE = re.compile(r"^-?\s*(?:\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*|\d{2}:\d{2}\s*[—-]\s*)?"
-                      r"ПЕРЕДАЧА\b", re.IGNORECASE)
+# «передача работы 117 фактов» — обычный пульс. Живёт в контракте: ``tide offload``
+# распознаёт так же (C11).
+_PASS_RE = contract.PASS_RE
 
 
 def is_protected_pulse(pulse: Sequence[str], i: int) -> bool:
@@ -722,9 +722,7 @@ def block_experience(candidate_nums: Sequence[str],
 
 
 COLLECTED = "(карта собрана сборщиком)"
-MAP_WARNING = ("в пульсе ПЕРЕДАЧА нет метки «Карта:» — карту входа собрал сборщик; "
-               "впиши её в ноту: tide offload \"ПЕРЕДАЧА. … Карта: <абс. путь> — зачем; "
-               "<путь> — зачем; <путь> — зачем\"")
+MAP_WARNING = contract.MAP_WARNING
 
 
 def block_entry_map(inherited: Sequence[str] = (), labeled: Sequence[str] = (),
@@ -755,8 +753,8 @@ def pass_without_map(context: Sequence[str]) -> bool:
     """Последний пульс «ПЕРЕДАЧА» есть, а метки «Карта:» в нём нет (C11)."""
     notes = pulse_notes(context)
     for _stamp, note in reversed(notes):
-        if _PASS_RE.match(note):
-            return "entry_map" not in contract.pulse_labels(note)
+        if contract.is_pass_note(note):
+            return contract.pass_note_without_map(note)
     return False
 
 

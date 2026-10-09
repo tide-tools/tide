@@ -157,6 +157,31 @@ def test_cli_offload_roundtrip(tmp_project, session, monkeypatch, capsys):
     assert "решение принято" in text
 
 
+@pytest.mark.parametrize("note, warned", [
+    ("ПЕРЕДАЧА. Ждёт Гришу: ответ по C11. В полёте: тесты.", True),
+    ("ПЕРЕДАЧА. Ждёт Гришу: ничего. Карта: /a — зачем; /b — зачем; /c — зачем", False),
+    ("обычный пульс: передача работы 117 фактов", False),
+])
+def test_cli_offload_warns_pass_without_map(tmp_project, session, monkeypatch, capsys,
+                                             note, warned):
+    """SOC-101 C11: ПЕРЕДАЧА без «Карта:» — предупреждение сразу, в stderr; rc 0."""
+    monkeypatch.chdir(tmp_project)
+    assert cli.main(["offload", "otliv", note]) == 0
+    err = capsys.readouterr().err
+    assert ("нет метки «Карта:»" in err) is warned
+    assert note.split()[0] in (session / "arc.md").read_text(encoding="utf-8")
+
+
+def test_pass_map_warning_swallows_errors(monkeypatch, capsys):
+    from tide import handoff_contract
+
+    def boom(*_a, **_k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(handoff_contract, "pass_note_without_map", boom)
+    offload._pass_map_warning("ПЕРЕДАЧА. без карты")
+    assert capsys.readouterr().err == ""
+
+
 # --- the Stop-hook nudge -----------------------------------------------------
 
 def _pin(session_dir: Path, claude_id: str) -> None:

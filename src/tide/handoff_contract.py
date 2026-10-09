@@ -24,6 +24,7 @@ SOC-101): двенадцать обязательных блоков и «гла
 
 from __future__ import annotations
 
+import re
 from typing import Dict, Iterable, NamedTuple, Optional, Sequence, Tuple
 
 # Как доска мерит блок: прозовый — есть/нет, списочный — счётом пунктов.
@@ -231,6 +232,27 @@ def pulse_labels(note: str) -> Dict[str, list]:
             continue
         out.setdefault(group.rsplit("_", 1)[0], []).append(piece)
     return out
+
+
+# Метка «ПЕРЕДАЧА» — начало ноты пульса (после штампа), а не слово в тексте (F24):
+# «передача работы 117 фактов» — обычный пульс. Одно место: сборщик сида
+# (:mod:`tide.launcher.seed_draft`) и ``tide offload`` (C11) распознают одинаково.
+PASS_RE = re.compile(r"^-?\s*(?:\d{4}-\d{2}-\d{2}T[\d:]+\s*[—-]\s*|\d{2}:\d{2}\s*[—-]\s*)?"
+                     r"ПЕРЕДАЧА\b", re.IGNORECASE)
+
+MAP_WARNING = ("в пульсе ПЕРЕДАЧА нет метки «Карта:» — карту входа собрал сборщик; "
+               "впиши её в ноту: tide offload \"ПЕРЕДАЧА. … Карта: <абс. путь> — зачем; "
+               "<путь> — зачем; <путь> — зачем\"")
+
+
+def is_pass_note(note: str) -> bool:
+    """Нота пульса — передача (метка «ПЕРЕДАЧА» в начале, F24)."""
+    return bool(PASS_RE.match((note or "").strip()))
+
+
+def pass_note_without_map(note: str) -> bool:
+    """Нота — ПЕРЕДАЧА, а метки «Карта:» в ней нет (C11)."""
+    return is_pass_note(note) and "entry_map" not in pulse_labels(note)
 
 
 def pulse_head(note: str) -> str:
