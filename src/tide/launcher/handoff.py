@@ -31,6 +31,7 @@ orchestration; :func:`cmd_handoff` is the thin CLI handler wired by ``cli.py``.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -230,6 +231,39 @@ class HandoffResult:
         return bool(self.spawn and self.spawn.get("ok"))
 
 
+_MANAGER_CLAUSE = re.compile(r"[,;]?\s*отчитыва\w*\s+менеджеру\s+[^,;.\n]+")
+
+
+def _seat(thread_entry: Path, session_dir: Path) -> str:
+    """«нить · NN» сессии нити (номер — из имени папки)."""
+    num = slug.strip_marker(Path(session_dir).name).split("-", 1)[0]
+    return "{0} · {1}".format(slug.entry_slug(Path(thread_entry).name), num)
+
+
+def _who_line(thread_entry: Path, session_born: Path, from_slug: str) -> str:
+    """«ты — main · 04, продолжаешь после main · 03» (SOC-101 F32): прежнее
+    «продолжаешь сессию: main-3» читалось как «ты — main-3»."""
+    me = _seat(thread_entry, session_born)
+    if not from_slug or from_slug == "-":
+        return "ты — {0}".format(me)
+    prev = ""
+    arcs = Path(thread_entry) / "arcs"
+    for d in (sorted(arcs.iterdir()) if arcs.is_dir() else []):
+        if d.is_dir() and d != Path(session_born) and (
+                slug.entry_slug(d.name) == from_slug or d.name == from_slug):
+            prev = _seat(thread_entry, d)
+    return "ты — {0}, продолжаешь после {1}".format(me, prev or "сессии {0}".format(from_slug))
+
+
+def _manager_header_line() -> str:
+    from .. import whois
+
+    addr = whois.manager_address()
+    if addr:
+        return "отчитываешься менеджеру: {0} (tide whois manager на момент сборки)".format(addr)
+    return "отчитываешься менеджеру: адрес — tide whois manager (сейчас не нашёлся)"
+
+
 def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
     """Prepend the thread's THROUGHLINE to a seed so the idea survives the chain.
 
@@ -262,10 +296,13 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         rules = ("правила: работа → в workspace/ своей арки · "
                  "пульс по ходу → tide offload · передать дальше → /handoff")
         lines = ["## нить (throughline — держи за шагом)"]
+        # SOC-101 F32: адрес менеджера в goal: нити устаревает (ao-control при живом
+        # management-14) — вырезаем его из цели и даём живой через tide.whois.
+        goal = _MANAGER_CLAUSE.sub("", goal)
         if goal:
-            lines.append("идёт к: {0}".format(goal))
-        if from_slug and from_slug != "-":
-            lines.append("продолжаешь сессию: {0}".format(from_slug))
+            lines.append("идёт к: {0}".format(goal.strip()))
+        lines.append(_who_line(thread_entry, session_born, from_slug))
+        lines.append(_manager_header_line())
         lines.append(rules)
         return "{0}\n---\n\n{1}".format("\n".join(lines), distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff

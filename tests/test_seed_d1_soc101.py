@@ -259,3 +259,26 @@ def test_fetch_builds_one_query_per_team(monkeypatch):
 ])
 def test_gist_keeps_session_names_and_rules(line, want):
     assert seed_draft.pulse_gist(line, limit=200) == want
+
+
+# --- F32: шапка сида — кто ты и кому отчитываешься ----------------------------------
+
+def test_seed_header_says_who_you_are_and_live_manager(tmp_project, monkeypatch):
+    from tide import fields, whois
+    from tide.arc import stream
+    from tide.launcher import handoff
+
+    monkeypatch.setattr(whois, "manager_address", lambda default="": "management-14")
+    thread = stream.new_thread(
+        tmp_project, "main", goal="главная нить tide-stack: ведёт работу проекта и управляет "
+        "нитями handoffs и board, отчитывается менеджеру ao-control")
+    old = stream.new_session(tmp_project, "main", "main-3", goal="шаг")
+    new = stream.new_session(tmp_project, "main", "main-4", goal="шаг")
+    fields.set_field(new / "arc.md", "from", "main-3")
+    head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
+    assert head[1] == ("идёт к: главная нить tide-stack: ведёт работу проекта и управляет "
+                       "нитями handoffs и board")
+    assert head[2] == "ты — main · {0}, продолжаешь после main · {1}".format(
+        new.name.split("-")[0], old.name.split("-")[0])
+    assert head[3] == "отчитываешься менеджеру: management-14 (tide whois manager на момент сборки)"
+    assert "ao-control" not in "\n".join(head) and "продолжаешь сессию" not in "\n".join(head)
