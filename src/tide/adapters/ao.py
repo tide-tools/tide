@@ -538,6 +538,33 @@ def _control_home() -> Optional[str]:
         return None
 
 
+AO_DB_ENV = "TIDE_AO_DB"
+
+
+def ao_db_path() -> Path:
+    """AO's sqlite database (``$TIDE_AO_DB`` overrides; tests point it at tmp)."""
+    raw = (os.environ.get(AO_DB_ENV) or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".ao" / "data" / "ao.db"
+
+
+def _db_agent_session_id(handle: str) -> str:
+    """``sessions.agent_session_id`` of *handle*, read-only; '' on any trouble."""
+    db = ao_db_path()
+    if not db.is_file():
+        return ""
+    import sqlite3
+    try:
+        con = sqlite3.connect("file:{0}?mode=ro".format(db), uri=True, timeout=2)
+        try:
+            row = con.execute("SELECT agent_session_id FROM sessions WHERE id = ?",
+                              (handle,)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return ""
+    return str(row[0] or "").strip() if row else ""
+
+
 def bring_app_up() -> None:
     """Best-effort: bring the AO desktop app to the front (no per-session focus verb)."""
     try:
@@ -626,6 +653,38 @@ class AoAdapter(TerminalAdapter):
         exited (``activity.state != "exited"``)."""
         s = self.session(handle)
         return bool(s) and not s.get("isTerminated") and not _agent_exited(s)
+
+    def agent_session_id(self, handle: str) -> str:
+        """claude's own id inside AO session *handle* — the FIRST SIGNAL of the agent
+        (SOC-101 F25). AO fills it once claude actually started; a fresh session that
+        hangs on the folder-trust question has none. ``ao session get --json`` does
+        not show it, so the session JSON is tried first (a future AO may) and the AO
+        database is read READ-ONLY after. '' when unknown."""
+        h = (handle or "").strip()
+        if not h:
+            return ""
+        s = self.session(h) or {}
+        for key in ("agentSessionId", "agent_session_id"):
+            v = str(s.get(key) or "").strip()
+            if v:
+                return v
+        return _db_agent_session_id(h)
+
+    def first_signal(self, handle: str) -> bool:
+        """The agent of *handle* is up for real: AO session live, agent not exited,
+        and claude's id already known (:meth:`agent_session_id`)."""
+        return self.alive(handle) and bool(self.agent_session_id(handle))
+
+    def resume_agent(self, handle: str) -> bool:
+        """``ao session resume-agent <id>`` — one revive of a stuck/exited agent."""
+        h = (handle or "").strip()
+        if not h or not ao_available():
+            return False
+        try:
+            _call(["session", "resume-agent", h], timeout=120)
+        except (AoError, subprocess.SubprocessError, OSError):
+            return False
+        return True
 
     def focusable(self, handle: str) -> bool:
         """Read-only prediction of :meth:`focus`: AO knows the session (live OR

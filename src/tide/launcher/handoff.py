@@ -431,13 +431,20 @@ def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Op
         return None
 
 
-def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None) -> dict:
+def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None,
+                live_timeout: Optional[float] = None) -> dict:
     """Raise the fresh session for offer *key* NOW — the board's ▶, pressed by tide.
 
     Delegates to :func:`tide.launcher.pickup.run_pickup` (the one door: in-flight
     guard → reserve → spawn → registry record), so the AO real-sid relink and the
     first-prompt confirm work exactly as after a hand-pressed ▶. Runs with the old
     session's identity scrubbed from the environment (:data:`_DETACH_ENV`).
+
+    A spawn is NOT a reception (SOC-101 F25): with an adapter that can probe the
+    agent (AO) the fresh session must give its first signal within *live_timeout*
+    seconds (default :data:`LIVE_TIMEOUT`, ``$TIDE_HANDOFF_LIVE_TIMEOUT``); else one
+    ``resume-agent`` and another wait; else ``action: not-alive`` — the old session
+    is told (and gets a pulse line) that the thread stays with it.
 
     Never raises. On failure the reservation the attempt made is undone, so the
     offer is a plain ``offered`` record again — ▶ by hand works as before.
@@ -454,12 +461,141 @@ def spawn_offer(home: Path, key: str, *, adapter_name: Optional[str] = None) -> 
         out = {"ok": False, "action": "failed", "detail": str(exc) or type(exc).__name__}
     finally:
         os.environ.update(saved)
+    if out.get("ok") and out.get("action") == "spawned":
+        out = _await_alive(Path(home), key, out, adapter_name=adapter_name,
+                           timeout=live_timeout)
     if not out.get("ok"):
         try:
             handoff_queue.unreserve(Path(home), key)
         except Exception:  # noqa: BLE001  best-effort — the offer itself is intact
             pass
+    if out.get("action") == NOT_ALIVE:
+        _tell_origin(Path(home), key, NOT_ALIVE_LINE)
     return out
+
+
+# --- живость принимающей (SOC-101 F25) -----------------------------------------
+# `ao spawn` ok — ещё не приём: свежая сессия Claude может зависнуть на вопросе о
+# доверии папке, а первый `ao send` роняет её в exited. Передача засчитывается,
+# только когда AO показал живого агента с claude-id (первый сигнал) — или сессия
+# уже сама подтвердила приём. Нет сигнала — один resume-agent; нет и тогда —
+# резерв снят, старая сессия держит нить.
+
+LIVE_TIMEOUT = 90.0                       # секунд на первый сигнал (на попытку)
+LIVE_TIMEOUT_ENV = "TIDE_HANDOFF_LIVE_TIMEOUT"
+LIVE_POLL = 3.0
+NOT_ALIVE = "not-alive"
+NOT_ALIVE_LINE = "приём не состоялся — не замирай, нить твоя"
+
+# подменяются в тестах: время и сон не настоящие
+_clock = None
+_sleep = None
+
+
+def _live_timeout(given: Optional[float]) -> float:
+    import os
+
+    if given is not None:
+        return max(0.0, float(given))
+    raw = (os.environ.get(LIVE_TIMEOUT_ENV) or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else LIVE_TIMEOUT
+    except ValueError:
+        return LIVE_TIMEOUT
+
+
+def _offer_taken(home: Path, key: str) -> bool:
+    from .. import handoff_queue
+    try:
+        return handoff_queue._resolve(home, key).get("status") == handoff_queue.STATUS_TAKEN
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _wait_signal(adapter, handle: str, home: Path, key: str, timeout: float) -> bool:
+    import time
+
+    clock = _clock or time.monotonic
+    sleep = _sleep or time.sleep
+    deadline = clock() + timeout
+    while True:
+        try:
+            if _offer_taken(home, key) or adapter.first_signal(handle):
+                return True
+        except Exception:  # noqa: BLE001 — a flaky probe is «not yet», not death
+            pass
+        if clock() >= deadline:
+            return False
+        sleep(LIVE_POLL)
+
+
+def _await_alive(home: Path, key: str, out: dict, *, adapter_name: Optional[str],
+                 timeout: Optional[float]) -> dict:
+    """Ждать первого сигнала принимающей; → *out* как есть или ``not-alive``."""
+    from . import pickup
+
+    handle = str(out.get("handle") or "").strip()
+    if not handle:
+        return out
+    try:
+        adapter = pickup.get_adapter(adapter_name or out.get("adapter") or None)
+    except Exception:  # noqa: BLE001
+        return out
+    if not callable(getattr(adapter, "first_signal", None)):
+        return out  # адаптер без пробы живости (orca, tmux) — как раньше
+    limit = _live_timeout(timeout)
+    if _wait_signal(adapter, handle, home, key, limit):
+        return out
+    resumed = False
+    revive = getattr(adapter, "resume_agent", None)
+    if callable(revive):
+        try:
+            resumed = bool(revive(handle))
+        except Exception:  # noqa: BLE001
+            resumed = False
+        if _wait_signal(adapter, handle, home, key, limit):
+            out = dict(out)
+            out["detail"] = (out.get("detail") or "") + " (поднялась после resume-agent)"
+            return out
+    return {"ok": False, "action": NOT_ALIVE, "handle": handle,
+            "adapter": out.get("adapter") or "",
+            "detail": "AO {0} не подала сигнала за {1:g} с{2} — агент не поднялся "
+                      "(вопрос о доверии папке?)".format(
+                          handle, limit,
+                          " и после resume-agent" if resumed else
+                          " (resume-agent не прошёл)" if callable(revive) else "")}
+
+
+def _origin_entry(home: Path, rec: dict) -> Optional[Path]:
+    """Сессия-арка, отдавшая оффер *rec* (по ``from-session`` в проекте ростера)."""
+    from .. import offload, roster as _roster
+    sid = str(rec.get("from_session") or "").strip()
+    if not sid or sid == "-":
+        return None
+    entry = next((e for e in _roster.read_roster(home)
+                  if e["name"] == rec.get("project")), None)
+    if entry is None:
+        return None
+    return offload.find_session_by_claude_id(Path(entry["path"]).expanduser(), sid)
+
+
+def _tell_origin(home: Path, key: str, text: str) -> None:
+    """Строка пульса в паспорт старой сессии — чтобы и доска, и она сама видели."""
+    try:
+        from .. import handoff_queue, offload
+        rec = handoff_queue._resolve(home, key)
+        origin = _origin_entry(home, rec)
+        if origin is not None:
+            offload.write_pulse(origin, note="{0} (оффер {1})".format(text, key))
+    except Exception:  # noqa: BLE001 — запись не смеет сорвать хендофф
+        pass
+
+
+def not_alive_line(spawn: dict, key: str) -> str:
+    """Старой сессии, когда принимающая не поднялась: нить остаётся у неё (F25)."""
+    return ("{0}. {1}. Оффер {2} висит без резерва: ▶ на доске или 'tide pickup {2}', "
+            "когда разберёшься; в новую AO-сессию ao send не шли.".format(
+                NOT_ALIVE_LINE, spawn.get("detail") or "сигнала нет", key))
 
 
 def handed_over_line(spawn: dict) -> str:
@@ -625,6 +761,8 @@ def run_handoff(
     if result.handed_over:
         result.notes.append("offer {0}: {1} — {2}".format(
             key, result.spawn.get("action"), result.spawn.get("detail") or ""))
+    elif result.spawn.get("action") == NOT_ALIVE:
+        pass  # последней строкой скажет CLI (not_alive_line)
     else:
         result.notes.append(
             "offer hung: {0} — новую сессию сам поднять не вышло ({1}); оффер ждёт "
@@ -694,9 +832,16 @@ def cmd_handoff_auto(args) -> int:
         print("tide: новую сессию НЕ поднимаю — {0}. Гриша получил сигнал; "
               "остановись и жди его слова.".format(d.detail))
         return 0
+    _print_outcome(result)
+    return 0
+
+
+def _print_outcome(result: "HandoffResult") -> None:
+    """LAST line on purpose: the old session reads it — stops, or keeps the thread."""
     if result.handed_over:
         print("tide: {0}".format(handed_over_line(result.spawn)))
-    return 0
+    elif result.spawn and result.spawn.get("action") == NOT_ALIVE and result.offer_path:
+        print("tide: {0}".format(not_alive_line(result.spawn, result.offer_path.stem)))
 
 
 def cmd_handoff(args) -> int:
@@ -719,9 +864,7 @@ def cmd_handoff(args) -> int:
     print(result.candidate_reminder)
     for note in result.notes:
         print("  {0}".format(note))
-    if result.handed_over:
-        # LAST line on purpose: the old session reads it and stops (decision 07).
-        print("tide: {0}".format(handed_over_line(result.spawn)))
+    _print_outcome(result)  # decision 07 + SOC-101 F25
     return 0
 
 
@@ -730,6 +873,8 @@ def report_spawn(spawn: dict, key: str) -> None:
     if spawn.get("ok"):
         print("  offer {0}: {1} — {2}".format(key, spawn.get("action"), spawn.get("detail") or ""))
         print("tide: {0}".format(handed_over_line(spawn)))
+    elif spawn.get("action") == NOT_ALIVE:
+        print("tide: {0}".format(not_alive_line(spawn, key)))
     else:
         print("  новую сессию сам поднять не вышло ({0}); оффер {1} ждёт в очереди: "
               "▶ на доске, 'tide menu' или 'tide pickup {1}'".format(

@@ -361,8 +361,12 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
         adapter_name=adapter_name, born_fields=born)
     offer = getattr(res.handoff, "offer_path", None)
     stamp = datetime.now().isoformat(timespec="seconds")
-    fields.set_field(entry / "arc.md", HANDED_OFF_FIELD,
-                     "{0} → {1}".format(stamp, offer.stem if offer else mode))
+    tried = getattr(res.handoff, "spawn", None)
+    if not (tried and not res.handoff.handed_over):
+        # подъём пробовали и он не вышел (в т.ч. принимающая не подала сигнала,
+        # SOC-101 F25) — нить у этой сессии: «уже передала» не штампуем
+        fields.set_field(entry / "arc.md", HANDED_OFF_FIELD,
+                         "{0} → {1}".format(stamp, offer.stem if offer else mode))
     if not decision.spawn:
         res.signal = signal_stall(owner, thread, decision.detail,
                                   offer=offer.stem if offer else "",
