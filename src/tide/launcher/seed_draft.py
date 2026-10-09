@@ -1147,6 +1147,27 @@ def mark_closed(lines: Sequence[str], live) -> List[str]:
     return out
 
 
+def review_awaiting(live) -> List[str]:
+    """Задачи Linear на проверке (F48) — пункты «ждёт Гришу»: In Review ждёт приёмки
+    (Гриша смотрит, Done ставит проверяющий уровнем выше). *live* не словарь — []."""
+    if not isinstance(live, dict):
+        return []
+    out = []
+    for key in sorted(live, key=lambda k: int(k.rsplit("-", 1)[1])):
+        name = str((live.get(key) or ("", ""))[0] or "")
+        if "review" in name.lower():
+            out.append("- {0} на проверке ({1}) — предлагаю: посмотреть и сказать слово "
+                       "через менеджера; Done ставит проверяющий".format(key, name))
+    return out
+
+
+def next_for_grisha(nxt_lines: Sequence[str]) -> List[str]:
+    """Шаги ``--next``, которые зовут Гришу («дать Грише на проверку»), — в «ждёт
+    Гришу» (F48)."""
+    return ["{0} (из следующего шага)".format(ln.rstrip())
+            for ln in nxt_lines if re.search(r"Гриш", ln)]
+
+
 def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = "",
          source: str = "", clip: int = 0) -> str:
     """Дописать вычисляемые блоки и отрендерить: сырой журнал и задачи Linear.
@@ -1158,6 +1179,7 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     out = dict(bodies)
     out[JOURNAL], out[LINEAR] = [], []
     plain = {k: list(out[k]) for k in MARK_CLOSED_IN if k in out}
+    awaiting = list(out.get(AWAITING) or [])
     share = JOURNAL_SHARE
     rest = len(render_draft(out, header=header))
     tail = raw_pulse_chars(context, clip=clip)
@@ -1169,6 +1191,10 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         live = linear_states(linear_keys(hay))
         out[LINEAR] = block_links(hay, status_text="\n".join(reversed(list(context))),
                                   live=live)
+        if AWAITING in out:  # F48: задачи на проверке ждут Гришу
+            out[AWAITING] = _merge_lines(awaiting, review_awaiting(live))
+            if AWAITING in plain:
+                plain[AWAITING] = list(out[AWAITING])
         for k, body in plain.items():  # F43: закрытые в Linear — помечены на месте
             if k in out:
                 out[k] = mark_closed(body, live)
@@ -1923,7 +1949,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         DECISIONS: _merge_lines(labels.get("decisions", []), decisions),
         AWAITING: _merge_lines(
             labels.get("awaiting", []), layer_named(lays, "ждёт гришу", "ждет гришу"),
-            block_awaiting(_auto.open_questions(root, thread_entry), works)),
+            block_awaiting(_auto.open_questions(root, thread_entry), works),
+            next_for_grisha(block_next(section_body(passport, "next")))),
         NEXT: block_next(section_body(passport, "next")),
         INFLIGHT: _merge_lines(labels.get("inflight", []),
                                session_workers(session_entry),

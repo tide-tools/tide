@@ -123,3 +123,22 @@ def test_manager_decision_phrases_are_not_grisha_quotes():
     assert seed_draft.grisha_quotes(ctx) == [
         "- слово Гриши: «ответы = решения, пара вопрос→ответ» (цитата из пульса "
         "2026-10-09 13:46)"]
+
+
+# --- F48: «ждёт Гришу» — задачи In Review и шаги «дать Грише» ------------------------
+
+def test_in_review_and_next_for_grisha_reach_awaiting(monkeypatch):
+    live = {"SOC-112": ("In Review", "started"), "SOC-107": ("Todo", "unstarted")}
+    monkeypatch.setattr(seed_draft, "linear_states", lambda keys: live)
+    bodies = {
+        seed_draft.AWAITING: seed_draft.next_for_grisha(seed_draft.block_next(
+            ["проверить снимки; ссылку tg:// дать Грише на проверку · таймлайн SOC-107"])),
+        seed_draft.WHERE: ["- SOC-112 мобильная v2, SOC-107 таймлайн"],
+    }
+    text = seed_draft.seal(bodies, context=[])
+    block = text.split("## ждёт Гришу", 1)[1].split("\n## ", 1)[0]
+    assert "- проверить снимки; ссылку tg:// дать Грише на проверку (из следующего шага)" \
+        in block
+    assert ("- SOC-112 на проверке (In Review) — предлагаю: посмотреть и сказать слово "
+            "через менеджера; Done ставит проверяющий") in block
+    assert "SOC-107" not in block
