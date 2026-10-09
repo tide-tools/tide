@@ -188,6 +188,53 @@ def announce_not_alive(home: Path, key: str) -> Optional[str]:
         return None
 
 
+# --- предложение закрыть старую — менеджеру (контракт v2 §3 п.4) -----------------
+
+CLOSE_PROPOSED = "close-proposed"   # метка в оффере: «<штамп> · <кому> · sent|…»
+
+
+def close_text(old_title: str, new_title: str) -> str:
+    return ("{0} передала нить {1}, приём подтверждён; закрыть {0}?".format(
+        old_title, new_title))
+
+
+def _ao_adapter():
+    from ..adapters.ao import AoAdapter
+    return AoAdapter()
+
+
+def propose_close(home: Path, key: str) -> Optional[str]:
+    """После приёма — ``ao send`` менеджеру (адрес — :func:`tide.whois.manager`):
+    «<старая> передала нить <новой>, приём подтверждён; закрыть <старую>?». Не
+    старой сессии самой (она не закрывается сама) — тому, кто закрывает. Один раз:
+    метка ``close-proposed:`` в оффере. → итог или None (уже предложено/не принят)."""
+    try:
+        rec = hq._resolve(Path(home), key)
+        if rec.get("status") != hq.STATUS_TAKEN or not hq._transfers_thread(rec):
+            return None
+        path = Path(str(rec["path"]))
+        if hq._get(path.read_text(encoding="utf-8"), CLOSE_PROPOSED) != "-":
+            return None
+        stamp = datetime.now().isoformat(timespec="seconds")
+        hq._set_field(path, CLOSE_PROPOSED, stamp)  # метка ДО отправки
+        new, old = titles(home, rec)
+        text = close_text(old, new)
+        try:
+            from .. import whois
+            to = whois.manager(home=Path(home)).get("ao_session", "")
+        except Exception:  # noqa: BLE001
+            to = ""
+        if not to:
+            outcome = "no-manager"
+        else:
+            outcome = "sent" if _ao_adapter().say(to, text) else "not-delivered"
+        _log(home, "предложение закрыть → {0} ({1}): {2}".format(to or "?", outcome, text))
+        hq._set_field(path, CLOSE_PROPOSED, "{0} · {1} · {2}".format(stamp, to or "-", outcome))
+        return outcome
+    except Exception:  # noqa: BLE001 — предложение не смеет сорвать пульс
+        return None
+
+
 # --- после пульса (компонуется в cli: offload — домен и launcher не видит) ----------
 
 def _taken_offer_for(home: Path, session_dir: Path) -> Optional[Dict[str, object]]:
@@ -249,6 +296,7 @@ def wrap_offload(sub) -> None:
             if (rec and before in (None, "-") and _fresh(rec)
                     and str(rec.get("first_pulse") or "-") != "-"):
                 announce_reception(home, str(rec["name"]))
+                propose_close(home, str(rec["name"]))
         except Exception:  # noqa: BLE001
             pass
         return rc
@@ -256,6 +304,7 @@ def wrap_offload(sub) -> None:
     p.set_defaults(func=_offload_and_announce)
 
 
-__all__ = ["ANNOUNCED", "announce_not_alive", "announce_reception", "clip",
+__all__ = ["ANNOUNCED", "CLOSE_PROPOSED", "announce_not_alive", "announce_reception",
+           "clip", "close_text", "propose_close",
            "compose_reception", "not_alive_text", "reception_text", "send", "titles",
            "wrap_offload"]
