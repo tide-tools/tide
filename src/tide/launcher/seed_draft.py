@@ -60,6 +60,8 @@ UNANSWERED = contract.name("unanswered")
 ENTRY_MAP = contract.name("entry_map")
 ENVIRONMENT = contract.name("environment")
 JOURNAL = contract.name("journal")
+# Раздел вне контракта (SOC-101 C12/F40): печатается сразу после «где мы».
+TAILS = contract.TAILS_NAME
 
 # Пустой источник → видимая дыра, а не выдуманный абзац: «— <почему пусто>».
 EMPTY = contract.EMPTY
@@ -75,7 +77,8 @@ _HEAD_RE = re.compile(r"^##\s+(.+?)\s*$")
 _NEXT_SEP = "·"
 # «·» inside a session's name is not a list separator (SOC-101 F8): «проект — нить ·
 # 04», «ao-and-order · 04», «… · 01 · tide-stack-8» (SOC-72) stay whole.
-_NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]))"
+# F37: «… · 02 (tide-stack-20)» — имя с AO-id в скобках — тоже целое.
+_NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]|\s*\())"
                        r"|(?<=\b\d{2})\s·\s(?=[A-Za-z][\w.-]*-\d+\b)")
 _KEEP = "\x00"
 # «проект — нить · NN» с любым хвостом (SOC-101): «management — main · 02 через ao
@@ -213,40 +216,153 @@ def pulse_notes(context: Sequence[str]) -> List["tuple[str, str]"]:
     return out
 
 
+# F38: «…; предлагаю — …» — рекомендация к пункту, а не новый пункт.
+_ITEM_SPLIT = re.compile(r";\s+(?!предлага)", re.IGNORECASE)
+# Конец фразы: точка/!/? и пробел перед заглавной, цифрой, кавычкой, скобкой.
+_SENT_END = re.compile(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ0-9«\"(])")
+# C4: статус решения, записанный словами в самой метке.
+_DECISION_STATUS = re.compile(
+    r"(?<!\w)(в силе|done|сделано|выполнено|отменено|отменили|принято|правило|"
+    r"not done|не сделано|в работе|ждёт|ждет)(?!\w)", re.IGNORECASE)
+DECISION_NO_STATUS = "(статус: не указан)"
+# «Хвосты:», «Открыто:» (tails) и «Не вживую:» (unverified) — один раздел сида.
+_TAIL_KEYS = ("tails", "unverified")
+TAILS_KEY = "tails"
+
+
+def first_sentence(text: str) -> str:
+    """Первая фраза куска (до «. Заглавная»): метка хвоста — до конца своей фразы,
+    дальше в пульсе обычно уже рассказ (F40: «Не вживую: …; …. Д1 ещё работает»)."""
+    return _SENT_END.split(text or "", maxsplit=1)[0].strip()
+
+
 def labeled_pulses(context: Sequence[str]) -> Dict[str, List[str]]:
     """Размеченное в нотах пульсов → строки блоков сида (SOC-101 F22).
 
     «Ждёт Гришу: … В полёте: … Опыт: … Решения: …» в ноте ``tide offload`` раньше
     доходили до сида строкой журнала (обрезанной до 72 знаков). Теперь кусок
     метки — пункты своего блока: кусок режется по «; » на пункты, у каждого —
-    время пульса. Состояние (ждёт Гришу, в полёте, ожидание) — из самого свежего
-    пульса с меткой; опыт и решения — из всех, свежие сверху, без повторов.
+    время пульса; «; предлагаю — …» остаётся при своём пункте (F38). Состояние
+    (ждёт Гришу, в полёте, ожидание) — из самого свежего пульса с меткой; опыт,
+    решения и хвосты — из всех, свежие сверху, без повторов (сравнение
+    нормализованное — F39). Решение без статуса в тексте — с пометкой
+    :data:`DECISION_NO_STATUS` (C4). Хвосты (C12/F40) — ключ :data:`TAILS_KEY`:
+    «Хвосты:»/«Открыто:» по пунктам, «Не вживую:» — строкой целиком.
     """
     out: Dict[str, List[str]] = {}
     for stamp, note in reversed(pulse_notes(context)):
         for key, pieces in contract.pulse_labels(note).items():
             if key in _STATE_LABELS and key in out:
                 continue  # состояние уже взято из более свежего пульса
-            lines = out.setdefault(key, [])
+            target = TAILS_KEY if key in _TAIL_KEYS else key
+            lines = out.setdefault(target, [])
             for piece in pieces:
-                for item in re.split(r";\s+", piece):
+                if target == TAILS_KEY:
+                    piece = first_sentence(piece)
+                items = [piece] if key == "unverified" else _ITEM_SPLIT.split(piece)
+                for item in items:
                     item = item.strip().rstrip(".;").strip()
                     if not item:
                         continue
+                    if key == "unverified":
+                        item = "не вживую: " + item
+                    if key == "decisions" and not _DECISION_STATUS.search(item):
+                        item += " " + DECISION_NO_STATUS
                     line = "- {0}{1}".format(item, " (пульс {0})".format(stamp) if stamp else "")
-                    if not any(item == x.split(" (пульс ")[0][2:] for x in lines):
+                    if not any(norm_line(line) == norm_line(x) for x in lines):
                         lines.append(line)
     return out
 
 
-def _merge_lines(*groups: Sequence[str]) -> List[str]:
-    """Склеить источники блока по порядку, без повторов и без строк-дыр."""
+# Хвост строки сида, который не меняет её смысла: «(пульс ЧЧ:ММ)», «(статус: …)».
+_LINE_SUFFIX = re.compile(r"\s*\((?:пульс|статус:)[^()]*\)\s*$")
+FOLD_MIN = 15  # короче — не сворачиваем «вложенным»: «ao send» не съест чужую строку
+
+
+def norm_line(line: str) -> str:
+    """Строка сида для сравнения (F39): без маркера списка и хвоста «(пульс …)»,
+    в нижнем регистре, без бэктиков и пунктуации, пробелы схлопнуты."""
+    s = re.sub(r"^\s*[-*]\s+", "", line or "")
+    while True:
+        t = _LINE_SUFFIX.sub("", s)
+        if t == s:
+            break
+        s = t
+    s = re.sub(r"[^\w\s]", " ", s.lower().replace("ё", "е"))
+    return " ".join(s.split())
+
+
+def fold_lines(lines: Sequence[str]) -> List[str]:
+    """Свернуть повторы (F39): одинаковые по :func:`norm_line` — одна строка
+    (первая); строка, целиком вложенная в другую, уступает более полной (на месте
+    первой из них). Пустые строки и дыры (``—``) выкидываются."""
     out: List[str] = []
-    for g in groups:
-        for ln in g:
-            if ln.strip() and not is_hole(ln) and ln not in out:
-                out.append(ln)
+    keys: List[str] = []
+    for ln in lines:
+        if not ln.strip() or is_hole(ln):
+            continue
+        k = norm_line(ln)
+        if not k:
+            continue
+        pad = " {0} ".format(k)
+        if any(k == e or (len(k) >= FOLD_MIN and pad in " {0} ".format(e)) for e in keys):
+            continue
+        hits = [i for i, e in enumerate(keys)
+                if len(e) >= FOLD_MIN and " {0} ".format(e) in pad]
+        if hits:
+            out[hits[0]], keys[hits[0]] = ln, k
+            for i in reversed(hits[1:]):
+                del out[i], keys[i]
+            continue
+        out.append(ln)
+        keys.append(k)
     return out
+
+
+def _merge_lines(*groups: Sequence[str]) -> List[str]:
+    """Склеить источники блока по порядку, без повторов и без строк-дыр; повтор —
+    и тот же пункт другими знаками (F39, :func:`fold_lines`)."""
+    return fold_lines([ln for g in groups for ln in g])
+
+
+# Маркеры хвоста в пульсе без меток (C12/F40): то, что не сделано или не проверено.
+_TAIL_MARKERS = re.compile(r"красн|не\s+вживую|не\s+провер|хвост", re.IGNORECASE)
+
+
+_NO_TAILS = {"нет", "ничего", "хвостов нет", "нет хвостов", "никаких", "не осталось"}
+
+
+def block_tails(context: Sequence[str], labeled: Sequence[str] = ()) -> List[str]:
+    """Открытые хвосты (SOC-101 C12/F40) — целиком, а не обрезками журнала.
+
+    Источник первый — метки «Хвосты:», «Открыто:», «Не вживую:» в пульсах сессии
+    (:func:`labeled_pulses`, все пульсы, свежие сверху). Меток нет ни в одном
+    пульсе — фразы с маркерами хвоста («красный», «не вживую», «не проверен»,
+    «хвост») из ПЕРЕДАЧИ и последних :data:`PULSE_TAIL` пульсов. Нет и их — [] (раздел
+    скажет прочерком, что проверено)."""
+    if labeled:
+        # «Хвосты: нет» — честный прочерк; самый свежий такой — перекрывает старшие
+        first = labeled[0]
+        if norm_line(first) in _NO_TAILS:
+            stamp = re.search(r"\(пульс ([^()]*)\)\s*$", first)
+            return [contract.TAILS_NONE, "(хвостов нет — так сказано в пульсе{0})".format(
+                " " + stamp.group(1) if stamp else "")]
+        return [ln for ln in labeled if norm_line(ln) not in _NO_TAILS]
+    notes = pulse_notes(context)
+    pulse = live_lines(context)
+    idx = set(range(max(0, len(notes) - PULSE_TAIL), len(notes)))
+    passed = last_pass_index(pulse)
+    if passed is not None:
+        idx.add(passed)
+    out: List[str] = []
+    for i in sorted(idx, reverse=True):
+        stamp, note = notes[i]
+        for sent in _SENT_END.split(note):
+            sent = sent.strip().rstrip(".").strip()
+            if sent and _TAIL_MARKERS.search(sent):
+                out.append("- {0}{1} (маркер в пульсе)".format(
+                    sent, " (пульс {0})".format(stamp) if stamp else ""))
+    return fold_lines(out)
 
 
 def block_final(thread_goal: str, session_goal: str) -> List[str]:
@@ -265,14 +381,16 @@ def block_final(thread_goal: str, session_goal: str) -> List[str]:
 
 
 def block_expectation(layer_lines: Sequence[str], goal_file: Optional[Path] = None,
-                      pulse_lines: Sequence[str] = ()) -> List[str]:
+                      pulse_lines: Sequence[str] = (),
+                      quotes: Sequence[str] = ()) -> List[str]:
     """Ожидание Гриши: слой нити ДОСЛОВНО и с датой (SOC-101, пакет Г п.5).
 
     Раньше блок склеивал ``goal:`` нити и ``goal:`` сессии — это цель, а не слово
     Гриши, и она устаревала (адресат management-7 давно закрыт). Теперь: строки
     слоя «### ожидание Гриши» как есть + строка-источник с путём и датой правки
-    goal-файла. Слой пуст — метка «Ожидание Гриши:» самого свежего пульса; нет и
-    её — пусто (блок скажет, какие источники проверены).
+    goal-файла. Слой пуст — метка «Ожидание Гриши:»/«Ожидание:» самого свежего
+    пульса; нет и её — цитаты Гриши с датой из пульсов (*quotes*, C1,
+    :func:`grisha_quotes`); нет и их — пусто (блок скажет, какие источники проверены).
     """
     lines = [ln for ln in layer_lines if ln.strip()]
     if lines:
@@ -285,7 +403,31 @@ def block_expectation(layer_lines: Sequence[str], goal_file: Optional[Path] = No
                 day = "дата правки неизвестна"
             lines.append("- (слой нити дословно: {0} · правлен {1})".format(goal_file, day))
         return lines
-    return list(pulse_lines)
+    if pulse_lines:
+        return list(pulse_lines)
+    return list(quotes)
+
+
+# C1: цитата Гриши в пульсе — «Гриша/Гриши/Гришу …» и текст в «ёлочках» в одной фразе.
+_GRISHA_QUOTE = re.compile(r"Гриш\w*.*«[^«»]{8,}»|«[^«»]{8,}».*Гриш\w*")
+
+
+def grisha_quotes(*contexts: Sequence[str], limit: int = 5) -> List[str]:
+    """Цитаты Гриши с датой из пульсов (C1): фраза, где есть «Гриш…» и «…» (8+ знаков),
+    с полным штампом пульса — свежие сверху, без повторов, не больше *limit*."""
+    out: List[str] = []
+    for context in contexts:
+        for ln in reversed(live_lines(context)):
+            m = _FULL_STAMP.match(ln.strip())
+            if not m:
+                continue  # без даты — не цитата с датой
+            note = ln.strip()[m.end():].lstrip(" —-").strip()
+            for sent in _SENT_END.split(_keep_name_dots(note)):
+                sent = sent.replace(_KEEP, " · ").strip().rstrip(".").strip()
+                if _GRISHA_QUOTE.search(sent):
+                    out.append("- {0} (цитата из пульса {1})".format(
+                        sent, m.group(1).replace("T", " ")[:16]))
+    return fold_lines(out)[:limit]
 
 
 def _work_order(rec: Dict[str, object]) -> "tuple[int, str]":
@@ -361,7 +503,7 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
         ln = pulse[i]
         ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
         if clip and len(ln) > clip and not is_protected_pulse(pulse, i):
-            ln = ln[: clip - 1].rstrip() + "…"
+            ln = clip_words(ln, clip)
         if passed is not None and i < passed:
             ln += " " + BEFORE_PASS  # F34: старше ПЕРЕДАЧИ — не спорит с ней молча
         lines.append(ln)
@@ -704,13 +846,14 @@ def block_experience(candidate_nums: Sequence[str],
     сутью, а не голым номером: сид читают без контекста (SOC-74). Грабли, петли и
     «отвергнуто» этой сессии пишет курирующий — подсказка, а не выдуманный текст.
     """
-    out: List[str] = list(dict.fromkeys(
-        ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)))
+    # F39: метка ПЕРЕДАЧИ, слой нити и прошлый сид пишут один урок разными знаками
+    out: List[str] = fold_lines(
+        [ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)])
     gists = candidate_gists or {}
     if candidate_nums and gists:
         for num in sorted(set(candidate_nums), key=lambda n: (int(n), n)):
             line = "- кандидат {0} — {1}".format(num, gists.get(num) or "без описания")
-            if line not in out:
+            if norm_line(line) not in {norm_line(x) for x in out}:
                 out.append(line)
     elif candidate_nums:
         out.append("- кандидаты сессии: {0}".format(_nums_phrase(candidate_nums)))
@@ -789,6 +932,46 @@ _GIST_NAME_DOT = re.compile(r"\s·\s(?=(?:\d{2}|NN)\b)")
 _GIST_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ0-9«\"(])|\s·\s")
 
 
+def clip_words(text: str, limit: int) -> str:
+    """*text* не длиннее *limit* знаков, с «…» — по границе слова (F40: «3389076 F…»,
+    «82d24a…» резали хеш посреди). Слово длиннее половины лимита режется как есть."""
+    if len(text) <= limit:
+        return text
+    cut = text[: max(1, limit - 1)]
+    sp = cut.rfind(" ")
+    if sp > limit // 2:
+        cut = cut[:sp]
+    return cut.rstrip(" ,;:·—–-") + "…"
+
+
+def _short_stamp(line: str) -> str:
+    """Строка пульса со штампом ``ЧЧ:ММ`` вместо полного: ``- 08:52 — …``."""
+    raw = line.strip().lstrip("-").strip()
+    m = _PULSE_STAMP.match("- " + raw)
+    return "- " + ((m.group(1) + " — " + raw[m.end() - 2:]) if m else raw)
+
+
+def journal_line(line: str, limit: int) -> str:
+    """Строка журнала в *limit* знаков: штамп ``ЧЧ:ММ`` и сколько влезет, по словам."""
+    return clip_words(_short_stamp(line), limit)
+
+
+def _fill_limit(lengths: Sequence[int], avail: int, floor: int) -> int:
+    """Наибольший потолок L ≥ *floor*, при котором Σ min(len, L)+1 ≤ *avail*
+    (короткие строки идут целиком, их остаток бюджета достаётся длинным)."""
+    top = max(lengths) if lengths else floor
+    if sum(n + 1 for n in lengths) <= avail:
+        return top
+    lo, hi = floor, top
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if sum(min(n, mid) + 1 for n in lengths) <= avail:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def pulse_gist(line: str, limit: int = JOURNAL_GIST) -> str:
     """Строка пульса сжато: ``- ЧЧ:ММ — первая фраза`` до *limit* знаков.
 
@@ -801,8 +984,7 @@ def pulse_gist(line: str, limit: int = JOURNAL_GIST) -> str:
     # режем только по концу предложения или по « · » между фразами
     first = _GIST_SPLIT.split(_keep_name_dots(_GIST_NAME_DOT.sub(_KEEP, rest)),
                               maxsplit=1)[0].replace(_KEEP, " · ").strip()
-    text = "- " + stamp + first
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+    return clip_words("- " + stamp + first, limit)
 
 
 def block_journal(context: Sequence[str], *, budget: int, source: str = "",
@@ -811,8 +993,10 @@ def block_journal(context: Sequence[str], *, budget: int, source: str = "",
 
     Курсор несёт последние *tail* строк; всё, что старше, идёт сюда свежим сверху:
     целиком, пока влезает в *budget* знаков, иначе сжатой строкой
-    (:func:`pulse_gist`); что не влезло и так — счётом и путём к полной записи
-    (*source*). Пусто — когда старше хвоста ничего нет.
+    (:func:`journal_line`): потолок строки — сколько даёт бюджет на все строки
+    (F40), но не меньше :data:`JOURNAL_GIST`, режется по словам; что не влезло и
+    так — счётом и путём к полной записи (*source*). Пусто — когда старше хвоста
+    ничего нет.
     """
     pulse = live_lines(context)
     n_old = max(0, len(pulse) - tail) if tail > 0 else 0
@@ -827,11 +1011,13 @@ def block_journal(context: Sequence[str], *, budget: int, source: str = "",
     pointer = "- (сжато строк: 00, не вошло: 00 — полностью: {0})".format(
         source or "## context паспорта сессии")
     used, clipped, left = len(pointer) + 1, 0, 0  # указатель тоже в бюджете
+    limit = _fill_limit([len(_short_stamp(ln)) for i, ln in full if i not in keep],
+                        budget - used, JOURNAL_GIST)
     for i, ln in full:  # не влезает — ВСЕ строки сжатыми, чтобы дошло больше шагов
         if i in keep:
             out.append(ln)  # ПЕРЕДАЧА — целиком и вне бюджета
             continue
-        short = pulse_gist(ln)
+        short = journal_line(ln, limit)
         if used + len(short) + 1 > budget:
             left += 1
             continue
@@ -848,9 +1034,10 @@ def block_environment(env: Sequence[str]) -> List[str]:
     """Окружение: секция входного сида этой сессии, как есть.
 
     Между сессиями окружение почти не меняется — наследуем целиком, а курирующий
-    правит только дифф (что умерло / что родилось).
+    правит только дифф (что умерло / что родилось). Голый прочерк прошлого сида
+    («—» без слова) не наследуется: пустой блок скажет причину (F23).
     """
-    return live_lines(env)
+    return [ln for ln in live_lines(env) if ln.strip(" -\t—–")]
 
 
 # --- сборка (чистое) --------------------------------------------------------
@@ -880,7 +1067,34 @@ def render_draft(bodies: Dict[str, List[str]], *, header: str = "") -> str:
         body = [ln for ln in bodies.get(b.name, []) if ln.strip()] \
             or [contract.empty_line(b)]
         lines += ["## {0}".format(b.name), "", *body, ""]
+        if b.key == "where" and TAILS in bodies:
+            # C12/F40: хвосты — сразу за «где мы», вне контракта, пустой — со словом
+            tails = [ln for ln in bodies[TAILS] if ln.strip()] \
+                or [contract.TAILS_NONE, contract.TAILS_EMPTY]
+            lines += ["## {0}".format(TAILS), "", *tails, ""]
     return "\n".join(lines).rstrip() + "\n"
+
+
+# Блоки, где номер задачи, закрытой в Linear, помечается на месте (F43): там его
+# читают как живую работу — шаг плана, «ждёт Гришу», открытый хвост.
+MARK_CLOSED_IN = (MAIN, AWAITING, TAILS)
+
+
+def mark_closed(lines: Sequence[str], live) -> List[str]:
+    """Пометить в *lines* номера задач, закрытых в Linear (F43): к строке —
+    «(SOC-57 — Done в Linear)». *live* — ответ :func:`linear_states`; не словарь
+    (сверки не было / Linear не ответил) — строки как есть."""
+    if not isinstance(live, dict):
+        return list(lines)
+    out: List[str] = []
+    for ln in lines:
+        closed = []
+        for key in linear_keys(ln):
+            name, kind = live.get(key, ("", ""))
+            if kind in CLOSED_TYPES and key not in closed:
+                closed.append("{0} — {1} в Linear".format(key, name or "закрыта"))
+        out.append(ln + (" ({0})".format("; ".join(closed)) if closed else ""))
+    return out
 
 
 def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = "",
@@ -893,6 +1107,7 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     сиде, со ссылкой."""
     out = dict(bodies)
     out[JOURNAL], out[LINEAR] = [], []
+    plain = {k: list(out[k]) for k in MARK_CLOSED_IN if k in out}
     share = JOURNAL_SHARE
     rest = len(render_draft(out, header=header))
     tail = raw_pulse_chars(context, clip=clip)
@@ -901,8 +1116,12 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         out[JOURNAL] = block_journal(context, budget=budget, source=source)
         # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
         hay = render_draft(out, header=header) + "\n" + "\n".join(context)
+        live = linear_states(linear_keys(hay))
         out[LINEAR] = block_links(hay, status_text="\n".join(reversed(list(context))),
-                                  live=linear_states(linear_keys(hay)))
+                                  live=live)
+        for k, body in plain.items():  # F43: закрытые в Linear — помечены на месте
+            if k in out:
+                out[k] = mark_closed(body, live)
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
                           if not _PASS_RE.match(ln.strip())) - share * len(text)
@@ -1072,7 +1291,7 @@ def block_main(thread_entry: Path, inherited: Sequence[str] = (),
 
     own = plan_main.live_lines(thread_entry)
     if own:
-        return ["- " + ln.lstrip("-* ").strip() for ln in own]
+        return ["- " + ln.lstrip("-* ").strip() for ln in own] + plan_patches(thread_entry)
     kept = [ln for ln in live_lines(inherited) if not is_hole(ln) and "<!--" not in ln
             and not ln.lstrip("- ").startswith("менеджер")]  # адрес считается заново
     if kept:
@@ -1083,6 +1302,22 @@ def block_main(thread_entry: Path, inherited: Sequence[str] = (),
             return ["- {0} (из нити-предшественницы {1})".format(
                 ln.lstrip("-* ").strip(), pred.name) for ln in theirs]
     return []
+
+
+PATCHES_HEAD = "патчи"
+
+
+def plan_patches(thread_entry: Path) -> List[str]:
+    """Раздел «## патчи» plan.md нити — в «главное» (F42): там уточнения Гриши к
+    шагам (расход = токены + субагенты, шаги 3а–3в), и сборщик их терял. Строки
+    как есть, под строкой-заголовком с путём; раздела нет / пуст — []."""
+    plan = Path(thread_entry) / "plan.md"
+    body = [ln.rstrip() for ln in section_body(sections(_read(plan)), PATCHES_HEAD)
+            if ln.strip() and not ln.strip().startswith("<")]
+    if not body:
+        return []
+    return ["- патчи плана (уточнения к шагам выше — сильнее их; {0} ## патчи):".format(
+        plan.resolve())] + ["  " + ln if not ln.startswith(" ") else ln for ln in body]
 
 
 TOPICS_DIRNAME = "topics"
@@ -1366,7 +1601,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         if inherited:
             decisions += ["- из нити-предшественницы {0}:".format(pred.name)]
             decisions += ["  " + ln for ln in inherited]
-    labels = labeled_pulses(section_body(passport, "context"))
+    context = section_body(passport, "context")
+    labels = labeled_pulses(context)
     summary = prose_lines(section_body(passport, "summary"))
     where = layer(lays, "where") + block_cursor(
         section_body(passport, "cursor"), section_body(passport, "context"),
@@ -1378,8 +1614,11 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                or [contract.empty_line(contract.block("main"))]) + [manager_line()],
         EXPECTATION: block_expectation(
             layer(lays, "expectation"), _stream.passport_path(thread_entry),
-            labels.get("expectation", [])),
+            labels.get("expectation", []),
+            grisha_quotes(context, section_body(
+                sections(_read(_stream.passport_path(thread_entry))), "context"))),
         WHERE: where,
+        TAILS: block_tails(context, labels.get(TAILS_KEY, [])),
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
         # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.
         EXPERIENCE: block_experience(

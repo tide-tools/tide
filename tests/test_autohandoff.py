@@ -345,7 +345,10 @@ def test_auto_seed_from_the_arc(world, monkeypatch):
     assert "<!--" not in seed
     # все блоки контракта, по порядку, каждый своим заголовком
     heads = [ln[3:] for ln in seed.splitlines() if ln.startswith("## ")]
-    assert heads == list(handoff_contract.NAMES)
+    # + «открытые хвосты» (C12/F40) — вне контракта, сразу за «где мы»
+    names = list(handoff_contract.NAMES)
+    names.insert(names.index("где мы") + 1, handoff_contract.TAILS_NAME)
+    assert heads == names
     inflight = seed.partition("## в работе прямо сейчас\n\n")[2].partition("\n## ")[0]
     assert "работа 07 · 2. второй пункт" in inflight
     # нет журнала — посев без хвоста, не падение: блок на месте, с причиной
