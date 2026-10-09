@@ -355,6 +355,56 @@ def _thread_screen_pointer(root: Path, session: Optional[str]) -> List[str]:
         return []
 
 
+# SOC-101 п.4: the model sees only the first ~2 KB of a SessionStart hook's
+# output (live tide-stack: 14.8k chars, the role ~16 KB down — never seen). So the
+# HEAD — health line, who-am-I (session · thread · goal · cursor), role — comes
+# first and stays inside HEAD_BUDGET bytes; the long STREAM board goes below.
+HEAD_BUDGET = 1536
+WHOAMI_CLIP = 120
+
+
+def _clip(text: str, limit: int = WHOAMI_CLIP) -> str:
+    t = " ".join((text or "").split())
+    return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
+
+
+def _whoami(root: Path, session: Optional[str]) -> List[str]:
+    """Who this session is: its passport title, project/thread/session, the
+    thread's goal and the cursor — clipped to fit the head. Without a matching
+    session — one line naming the project. Never raises."""
+    entry = None
+    try:
+        if session:
+            from .. import offload
+
+            entry = offload.find_session_by_claude_id(Path(root), session)
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        entry = None
+    if entry is None:
+        return ["tide · проект {0} · сессия не привязана к нити".format(Path(root).name)]
+    lines: List[str] = []
+    try:
+        from .. import placeholders
+        from ..arc import stream as _stream
+        from ..launcher import seed_draft
+
+        passport = entry / "arc.md"
+        thread = entry.parents[1]
+        title = (fields.read_field(passport, "title") or "").strip()
+        lines.append("tide · ты: {0} (проект {1} · нить {2} · сессия {3})".format(
+            _clip(title or entry.name, 80), Path(root).name, thread.name, entry.name))
+        goal = (fields.read_field(_stream.passport_path(thread), "goal") or "").strip()
+        if not placeholders.is_blind_goal(goal, slug.entry_slug(thread.name)):
+            lines.append("tide · цель нити: {0}".format(_clip(goal)))
+        cursor = seed_draft.live_lines(seed_draft.section_body(
+            seed_draft.sections(seed_draft._read(passport)), "cursor"))
+        if cursor:
+            lines.append("tide · курсор: {0}".format(_clip(cursor[0])))
+    except Exception:  # noqa: BLE001
+        return lines or ["tide · сессия {0}".format(entry.name)]
+    return lines
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
     """Render the SessionStart text: health line + board + role reminder + warnings.
@@ -365,16 +415,20 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
     is resolved by :func:`cmd_session_start`.
     """
     root = Path(root)
-    # The Светофор (tier-0 health) rides at the very top — the one line seen first.
+    # HEAD (SOC-101 п.4) — inside HEAD_BUDGET bytes: the Светофор (tier-0 health),
+    # who this session is, its role; then the Mickey-17 alarm and the thread-screen
+    # pointer. Everything long (STREAM, decisions, warnings) goes below.
     lines: List[str] = _svetofor_line(root)
-    if lines:
-        lines.append("")
+    lines += _whoami(root, session)
+    lines.append(_role_reminder(role))
+    lines += _multiple_warnings(session)
+    lines += _thread_screen_pointer(root, session)
+    lines.append("")
     # Cold entry shows LIVE work only: closed threads are finished history (live:
     # 18 of 23 STREAM rows) and belong to `tide status`, not to the opening breath.
-    lines += [board.render_board(root, include_closed=False), "", _role_reminder(role)]
-    lines += _thread_screen_pointer(root, session)
+    lines.append(board.render_board(root, include_closed=False))
 
-    # cand 128-A: the current nit's OPEN decisions ride in right below the role, so
+    # cand 128-A: the current nit's OPEN decisions ride in right below the board, so
     # an in-place/resume session sees what's already concluded and doesn't re-decide
     # it. Silent when there are none (best-effort, never breaks the session).
     decisions = _session_decisions(root, session)
@@ -387,7 +441,6 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
         + _deferred_warnings(root)
         + _readme_drift_warnings(root)
         + _arc_first_warnings(root, role)
-        + _multiple_warnings(session)
     )
     if warnings:
         lines.append("")

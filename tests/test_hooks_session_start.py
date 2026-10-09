@@ -536,3 +536,47 @@ def test_session_start_never_pins_a_side_chat(tmp_project, tmp_path, monkeypatch
     monkeypatch.setattr(session_start, "_hook_session", lambda: sid)
     assert session_start.cmd_session_start(None) == 0
     assert not (fields.read_field(s / "arc.md", "claude-session") or "").strip()
+
+
+# --- SOC-101 п.4: role + who-am-I inside the first 2 KB (the model sees no more) --
+
+def _big_world(tmp_project):
+    from tide import fields
+
+    for i in range(40):  # a STREAM far longer than 2 KB
+        stream.new_thread(tmp_project, "нить-{0}".format(i),
+                          goal="длинная живая цель нити номер {0} ".format(i) * 4)
+    stream.new_thread(tmp_project, "handoffs", goal="аудит хендоффов " * 20)
+    sess = stream.new_session(tmp_project, "handoffs", "audit")
+    fields.set_field(sess / "arc.md", "claude-session", "sid-head")
+    fields.set_field(sess / "arc.md", "title", "tide-stack — handoffs · 02 · tide-stack-12")
+    from tide import offload
+    offload.write_pulse(sess, cursor="чиню порядок вывода SessionStart " * 20)
+    return sess
+
+
+@pytest.mark.parametrize("role,marker", [("orchestrator", "role: ORCHESTRATOR"),
+                                         ("worker", "role: WORKER")])
+def test_role_and_whoami_ride_in_the_first_2kb(tmp_project, role, marker):
+    sess = _big_world(tmp_project)
+    out = session_start.render(tmp_project, role, session="sid-head")
+    raw = out.encode("utf-8")
+    assert len(raw) > 4 * 2048                       # the board really is long
+    head = raw[:2048].decode("utf-8", errors="ignore")
+    assert marker in head
+    assert "tide · ты: tide-stack — handoffs · 02 · tide-stack-12" in head
+    assert sess.name in head and "@handoffs" in head
+    assert "tide · цель нити: аудит хендоффов" in head
+    assert "tide · курсор: чиню порядок вывода" in head
+    # the head proper (up to the role reminder's end) fits HEAD_BUDGET
+    role_end = out.index(session_start._role_reminder(role)) + len(
+        session_start._role_reminder(role))
+    assert len(out[:role_end].encode("utf-8")) <= session_start.HEAD_BUDGET
+    assert out.index("STREAM") > role_end
+
+
+def test_whoami_without_a_session_names_the_project(tmp_project):
+    out = session_start.render(tmp_project, "worker")
+    head = out.split("STREAM")[0]
+    assert "tide · проект {0} · сессия не привязана к нити".format(tmp_project.name) in head
+    assert "role: WORKER" in head
