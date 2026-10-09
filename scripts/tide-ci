@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# tide-ci — полный pytest репозитория tide на втором компьютере (mac2), SOC-143.
+#
+#   tide-ci                      # весь набор
+#   tide-ci tests/test_work.py   # аргументы уходят в pytest как есть
+#   tide-ci -k seam -x
+#
+# Что делает:
+#   1. rsync рабочего дерева (как есть, с незакоммиченными правками, с .git)
+#      в ~/tide-ci на mac2; --delete только внутри ~/tide-ci, .venv там не трогается.
+#   2. venv ~/tide-ci/.venv на brew python3.12; pip install -e '.[test]' + pytest-xdist
+#      — только если поменялся хеш pyproject.toml/uv.lock (метка .venv/.tide-ci-deps).
+#   3. pytest -q -n auto в чистом окружении (env -i): временный HOME, нет
+#      TIDE_ALERT_CMD / Telegram-токенов / TIDE_HOME — тесты не могут писать людям
+#      и не видят ничей живой tide-home.
+#   4. Одна итоговая строка + список упавших; код возврата = код pytest.
+#
+# Настройка через env: TIDE_CI_HOST (groovamp-mac2), TIDE_CI_DIR (tide-ci, от $HOME на mac2),
+# TIDE_CI_PY (/opt/homebrew/bin/python3.12). Полный лог последнего прогона:
+# ${TMPDIR}/tide-ci-last.log.
+set -uo pipefail
+
+HOST="${TIDE_CI_HOST:-groovamp-mac2}"
+RDIR="${TIDE_CI_DIR:-tide-ci}"
+RPY="${TIDE_CI_PY:-/opt/homebrew/bin/python3.12}"
+
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+SRC="$(cd "$(dirname "$SELF")/.." && pwd)"
+LOG="${TMPDIR:-/tmp}/tide-ci-last.log"
+LOCK="${TMPDIR:-/tmp}/tide-ci.lock"
+
+# Один прогон за раз: ~/tide-ci на mac2 общий.
+waited=0
+until mkdir "$LOCK" 2>/dev/null; do
+  if [ "$waited" -eq 0 ]; then echo "tide-ci: жду другой прогон (замок $LOCK)…" >&2; fi
+  waited=$((waited + 1))
+  if [ "$waited" -gt 1800 ]; then echo "tide-ci: замок занят >30 мин, выхожу" >&2; exit 3; fi
+  sleep 1
+done
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+
+sha="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo '?')"
+if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then sha="${sha}+dirty"; fi
+
+t0=$(date +%s)
+
+RSLOG="${TMPDIR:-/tmp}/tide-ci-rsync.log"
+rsync -a --delete \
+  --exclude '/.venv/' \
+  --exclude '/.git/worktrees/' \
+  --exclude '__pycache__/' \
+  --exclude '.pytest_cache/' \
+  --exclude '*.tmp.*' \
+  --exclude '*.egg-info/' \
+  --exclude '/dist/' \
+  --exclude '/build/' \
+  --exclude '.DS_Store' \
+  -e 'ssh -o BatchMode=yes -o ConnectTimeout=15' \
+  "$SRC/" "$HOST:$RDIR/" > "$RSLOG" 2>&1
+rsrc=$?
+# 24 = файлы исчезли по ходу (живые сессии пишут в дерево) — не повод падать.
+if [ "$rsrc" -ne 0 ] && [ "$rsrc" -ne 24 ]; then
+  echo "tide-ci: rsync на $HOST не прошёл (код $rsrc)" >&2
+  grep -v 'skip excluded file' "$RSLOG" | tail -5 >&2
+  exit 4
+fi
+
+# Аргументы pytest — безопасно в одну строку для удалённого bash.
+qargs=""
+for a in "$@"; do qargs+=" $(printf '%q' "$a")"; done
+
+ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
+  "RDIR=$(printf '%q' "$RDIR") RPY=$(printf '%q' "$RPY") bash -s --$qargs" > "$LOG" 2>&1 <<'REMOTE'
+set -uo pipefail
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8   # ssh приносит C.UTF-8 с основного мака — perl/shasum на нём падают
+cd "$HOME/$RDIR" || exit 90
+stamp="$(cat pyproject.toml uv.lock 2>/dev/null | shasum -a 256 | cut -c1-16)"
+if [ ! -x .venv/bin/python ] || [ "$(cat .venv/.tide-ci-deps 2>/dev/null)" != "$stamp" ]; then
+  echo "tide-ci: ставлю venv ($stamp)"
+  rm -rf .venv
+  "$RPY" -m venv .venv || exit 91
+  .venv/bin/python -m pip install -q --upgrade pip || exit 92
+  .venv/bin/python -m pip install -q -e '.[test]' pytest-xdist || exit 92
+  echo "$stamp" > .venv/.tide-ci-deps
+fi
+ncpu=""
+if .venv/bin/python -c 'import xdist' 2>/dev/null; then ncpu="-n auto"; fi
+# HOME — свежий каталог под /Users/<user> (тесты verify ждут «домашний» вид пути),
+# но вне ~/tide-ci, чтобы подъём по cwd не нашёл .tide репозитория. TMPDIR — свой,
+# короткий системный (длина путей tmp_path влияет на бюджет SessionStart-теста).
+th="$(mktemp -d "$HOME/.tide-ci-home.XXXXXX")"
+tt="$(mktemp -d "${TMPDIR:-/tmp}/tci.XXXXXX")"
+trap 'rm -rf "$th" "$tt"' EXIT
+# Заглушки gh/orca: часть тестов ждёт их на PATH (shutil.which), как на основном
+# маке; заглушка ничего не делает и выходит с 1 — настоящий gh/orca тестам не нужен.
+mkdir -p "$th/bin"
+for t in gh orca; do
+  printf '#!/bin/sh\necho "tide-ci: заглушка %s" >&2\nexit 1\n' "$t" > "$th/bin/$t"
+  chmod +x "$th/bin/$t"
+done
+# env -i: ничего из окружения mac2 (TIDE_ALERT_CMD, токены, TIDE_HOME) в тесты не попадает.
+env -i \
+  PATH="$th/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  HOME="$th" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash TERM=dumb \
+  LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TMPDIR="$tt/" \
+  GIT_AUTHOR_NAME=tide-ci GIT_AUTHOR_EMAIL=tide-ci@localhost \
+  GIT_COMMITTER_NAME=tide-ci GIT_COMMITTER_EMAIL=tide-ci@localhost \
+  GIT_CONFIG_NOSYSTEM=1 PYTHONDONTWRITEBYTECODE=1 \
+  .venv/bin/python -m pytest -q -rfE -p no:cacheprovider $ncpu "$@"
+REMOTE
+rc=$?
+t1=$(date +%s)
+
+python3 - "$LOG" "$sha" "$((t1 - t0))" "$rc" <<'PY'
+import re, sys
+log, sha, secs, rc = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+text = open(log, encoding="utf-8", errors="replace").read()
+lines = text.splitlines()
+summ = ""
+for ln in reversed(lines):
+    if re.search(r"\b(passed|failed|error|errors|no tests ran|skipped)\b.* in [\d.]+s", ln):
+        summ = ln
+        break
+def n(word):
+    m = re.search(r"(\d+) " + word + r"\b", summ)
+    return int(m.group(1)) if m else 0
+p, f, s, e = n("passed"), n("failed"), n("skipped"), n("errors?")
+t = f"{secs // 60}м{secs % 60:02d}с" if secs >= 60 else f"{secs}с"
+err = f" / {e} errors" if e else ""
+if not summ:
+    print(f"tide-ci: прогон не дошёл до итога (код {rc}) · {t} · tide@{sha} — лог: {log}")
+    print("\n".join(lines[-15:]))
+    sys.exit(0)
+print(f"tide-ci: {p} passed / {f} failed / {s} skipped{err} · {t} · tide@{sha}")
+bad = [ln for ln in lines if ln.startswith(("FAILED ", "ERROR "))]
+for ln in bad:
+    print("  " + ln[:200])
+if bad:
+    print(f"  (полный лог: {log})")
+PY
+exit "$rc"
