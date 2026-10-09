@@ -160,6 +160,19 @@ def test_confirm_uses_the_process_env_when_there_is_no_stash(world, monkeypatch)
     assert fields.read_field(world["pp"], "claude-session") == REAL
 
 
+def test_manual_confirm_from_the_ao_prompt_needs_no_id(world, monkeypatch, capsys):
+    # SOC-101 F35: промпт AO больше не вписывает пре-пик — сессия зовёт хук с пустым
+    # stdin, id берётся из её окружения, пре-пик — из реестра по $AO_SESSION_ID
+    _launcher_recorded(world)
+    monkeypatch.setenv("AO_SESSION_ID", AO)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", REAL)
+    monkeypatch.chdir(world["proj"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli.main(["hook", "handoff-confirm"]) == 0
+    assert "confirmed" in capsys.readouterr().out
+    assert _rec(world["home"])["taken_by"] == REAL
+
+
 def test_no_ao_env_leaves_everything_as_before(world, monkeypatch):
     _launcher_recorded(world)
     assert _session_start(monkeypatch, world["proj"], REAL) == 0

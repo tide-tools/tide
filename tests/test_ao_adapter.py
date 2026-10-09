@@ -134,7 +134,9 @@ def test_translate_fresh_carries_seed_sid_role_and_notes_mcp():
     assert spec.role == "orchestrator" and spec.skip_permissions
     assert any("MCP" in n for n in spec.notes)
     assert SEED in spec.prompt and "handoff-confirm" in spec.prompt
-    assert '"session_id": "{0}"'.format(SID) in spec.prompt
+    # F35: пре-пик tide в промпт не вписываем — сессия под AO живёт под другим id
+    assert SID not in spec.prompt
+    assert "tide hook handoff-confirm </dev/null" in spec.prompt
     assert "/main" in spec.prompt and spec.prompt.rstrip().endswith("go now")
 
 

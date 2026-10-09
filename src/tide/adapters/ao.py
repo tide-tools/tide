@@ -200,10 +200,16 @@ def build_prompt(spec: AoLaunch, *, main_tree: Optional[str] = None) -> str:
             "ничего не правь. Команды tide здесь сами смотрят в {0}/.tide.".format(main_tree)
         )
     if spec.session_id and not spec.resumed_from:
+        # SOC-101 F35: не вписывать сюда id. spec.session_id — пре-пик tide, AO
+        # запускает claude под СВОИМ id, и сессия видела в промпте чужой id
+        # (приём 260: 013be01e… при живой ec902aef). Хук сам берёт id этой
+        # сессии из $CLAUDE_CODE_SESSION_ID, а пре-пик — из реестра по $AO_SESSION_ID.
         parts.append(
             "Сначала подтверди приём в tide одной командой: "
-            "`echo '{0}' | tide hook handoff-confirm`.".format(
-                json.dumps({"session_id": spec.session_id}))
+            "`tide hook handoff-confirm </dev/null` — id этой сессии tide возьмёт "
+            "сам. Обычно приём уже подтвердил хук на этом сообщении, тогда команда "
+            "просто молчит; нить твоя станет, когда ты скажешь её своими словами "
+            "первым tide offload."
         )
     if spec.resumed_from:
         parts.append(
