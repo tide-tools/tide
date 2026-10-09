@@ -29,6 +29,11 @@ Every arc is `input/ → workspace/ → output/`:
   canon merge is the only place writes are allowed to converge, and that is not your job.
 - Never edit project files outside an open arc (the edit-gate hook blocks it anyway).
 
+## Опыт и эскалация (SOC-157)
+- Наступил на граблю — сразу `tide thread layer --exp "…"`, не ждать передачи.
+- Не справляешься (критерий — `tide escalate --help`: неудачные попытки одного шага,
+  стоп без прогресса, задача вне роли/прав) — `tide escalate --what … --tried … --need …`.
+
 ## Drift
 If the SessionStart board flags **drift** on your arc (canon moved since the arc was stamped),
 **re-read `CANON.md`** and re-stamp (`tide arc resume <arc>`) before continuing — your output must

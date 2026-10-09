@@ -30,6 +30,10 @@ The session's arc is written as you work:
 - **handoff** — offload, then carry this work-line into a FRESH session in the SAME
   thread (two-stage/pull: it hangs an offer you pick up from `tide menu`).
 - **spark** — offload, then start a NEW thread from an idea that surfaced here.
+- **опыт** — наступил на граблю: сразу `tide thread layer --exp "…"`, не ждать передачи.
+- **escalate** — не справляешься (критерий — в сиде нити и `tide escalate --help`):
+  `tide escalate --what … --tried … --need …` — письмо main проекта, без квитанции —
+  менеджеру.
 
 The **start-gate** in the seed (set-goal + first offload before the first move of work)
 is this same mechanics — it is yours to run, not a human-only turn. handoff and spark

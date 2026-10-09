@@ -66,6 +66,12 @@ LAW_47_PLAN = (
 )
 
 
+def _esc_rules() -> str:
+    """SOC-157: опыт сразу + «не справляешься — tide escalate» (пороги — tide.escalate_rules)."""
+    from .. import escalate_rules as escalate
+    return "**Правила.** " + escalate.EXP_RULE + ". " + escalate.ESCALATE_RULE + "."
+
+
 # --- prompt resolution -----------------------------------------------------
 
 def prompt_file_for_role(role: str) -> Path:
@@ -189,6 +195,8 @@ def build_seed(
                 _START_GATE,
                 "",
                 LAW_47_PLAN,
+                "",
+                _esc_rules(),
                 "",
                 arc_text.strip() if (arc_text and arc_text.strip()) else "(no session passport found)",
             ]

@@ -557,6 +557,10 @@ def _register_mail(sub) -> None:
     from .mail import register as register_mail
 
     register_mail(sub)
+    # SOC-157: `tide escalate` — «не справляюсь» почтой main проекта, без квитанции — менеджеру
+    from .escalate import register as register_escalate
+
+    register_escalate(sub)
 
 
 def _register_lookback(sub) -> None:

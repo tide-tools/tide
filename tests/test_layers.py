@@ -23,7 +23,9 @@ STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
          "handoff_contract",
          # stdlib-only splitter of « · » that keeps session names «роль · NN» whole
          # (imports nothing): the seed and `thread layer --main` cut lines through it
-         "name_dots"}
+         "name_dots",
+         # SOC-157: pure data (imports nothing) — escalation thresholds + seed rule text
+         "escalate_rules"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",

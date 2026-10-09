@@ -177,8 +177,19 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
             "acks": [e for e in mine if e.get("ev") == "ack"],
             "pings": [e for e in mine if e.get("ev") == "ping"],
             "alerted": any(e.get("ev") == "alert" for e in mine),
+            # SOC-157: своё окно до тревоги менеджеру (эскалация) — None у обычного письма
+            "alert_after": _alert_after(sent.get("alert_after")),
+            "kind": str(sent.get("kind") or ""),
         })
     return out
+
+
+def _alert_after(raw: object) -> Optional[float]:
+    try:
+        val = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return val if val > 0 else None
 
 
 def letter(tdir: Path, num: object) -> Dict[str, object]:
@@ -280,8 +291,12 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
 
 def send(ref: str, text: str, *, sender: Optional[str] = None,
          root: Optional[Path] = None, do_ping: bool = True,
-         watch: Optional[bool] = None) -> Dict[str, object]:
-    """Положить письмо в ящик нити, пингнуть ведущую сессию, завести ожидальщика."""
+         watch: Optional[bool] = None, alert_after_min: Optional[float] = None,
+         kind: str = "") -> Dict[str, object]:
+    """Положить письмо в ящик нити, пингнуть ведущую сессию, завести ожидальщика.
+
+    *alert_after_min* (SOC-157, ``tide escalate``): без квитанции столько минут от
+    отправки — ожидальщик сразу шлёт тревогу менеджеру, не дожидаясь повторов."""
     if not (text or "").strip():
         raise MailError("mail: пустое письмо")
     tdir = thread_dir(ref, root)
@@ -292,8 +307,14 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
     head = ("---\nfrom: {0}\nto: {1}\nsent: {2}\nbytes: {3}\nsha256: {4}\n---\n\n").format(
         who, address_of(tdir), at, len(raw), hashlib.sha256(raw).hexdigest())
     num, path = _write_new(inbox(tdir), who, head + body)
-    _append(tdir, {"ev": "sent", "num": num, "at": at, "from": who,
-                   "file": path.name, "bytes": len(raw), "first": _first_line(text)[:200]})
+    sent_ev: Dict[str, object] = {"ev": "sent", "num": num, "at": at, "from": who,
+                                  "file": path.name, "bytes": len(raw),
+                                  "first": _first_line(text)[:200]}
+    if kind:
+        sent_ev["kind"] = kind
+    if _alert_after(alert_after_min):
+        sent_ev["alert_after"] = float(alert_after_min)  # type: ignore[arg-type]
+    _append(tdir, sent_ev)
     out: Dict[str, object] = {"num": num, "path": str(path), "bytes": len(raw), "ping": None,
                               "watcher": None}
     if do_ping:
@@ -336,6 +357,13 @@ def alert_text(tdir: Path, rec: Dict[str, object], minutes: float) -> str:
                      minutes * (MAX_RETRIES + 1), MAX_RETRIES, rec["path"])
 
 
+def escalation_alert_text(tdir: Path, rec: Dict[str, object], minutes: float) -> str:
+    return ("tide: эскалация {0} от {1} в нить {2} без квитанции {3:g} мин — {4}. "
+            "Письмо: {5}. Прочесть: tide mail read {2} {0}"
+            ).format(rec["num"], rec["sender"], address_of(tdir), minutes,
+                     re.sub(r"^эскалация:\s*", "", str(rec["first"])), rec["path"])
+
+
 def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
          minutes: Optional[float] = None) -> str:
     """Один шаг ожидальщика по письму *num* → ``acked`` | ``wait`` | ``retry`` |
@@ -349,6 +377,15 @@ def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
         return "acked"
     if rec["alerted"]:
         return "done"
+    deadline = rec.get("alert_after")
+    sent_at = _parse_iso(rec["sent"])
+    if deadline and sent_at and (now - sent_at).total_seconds() >= float(deadline) * 60:
+        # SOC-157: своё окно письма вышло — тревога менеджеру сразу, без повторов
+        text = escalation_alert_text(tdir, rec, float(deadline))
+        code = send_alert(text, route="manager", source=address_of(tdir))
+        _append(tdir, {"ev": "alert", "num": rec["num"], "at": _iso(now),
+                       "route": "manager", "code": code, "why": "alert_after"})
+        return "alert"
     marks = [_parse_iso(str(p.get("at"))) for p in rec["pings"]]
     marks = [m for m in marks if m] or [_parse_iso(rec["sent"]) or now]
     if (now - max(marks)).total_seconds() < minutes * 60:

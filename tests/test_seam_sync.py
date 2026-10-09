@@ -272,9 +272,12 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     new = stream.new_session(tmp_project, "main", "main-4", goal="шаг")
     fields.set_field(new / "arc.md", "from", "main-3")
     head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
-    assert head[-2].startswith("правила: работа → в workspace/ своей арки")
-    assert head[-1] == ("почта: длинное или важное другой нити — "
+    assert head[-4].startswith("правила: работа → в workspace/ своей арки")
+    assert head[-3] == ("почта: длинное или важное другой нити — "
                         "tide mail send <проект>/<нить>, не ao send")
+    # SOC-157: опыт сразу + «не справляешься — tide escalate»
+    from tide import escalate
+    assert head[-2] == escalate.EXP_RULE and head[-1] == escalate.ESCALATE_RULE
 
 
 # --- поправки живой пары 04→05 ----------------------------------------------------
