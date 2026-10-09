@@ -91,31 +91,40 @@ def _offload_cmd(entry: Path) -> str:
             "\"<что сделал>\"".format(_ref(entry)))
 
 
+def handoff_steps(entry: Path) -> str:
+    """Шаги передачи (SOC-101 F44): пульс ПЕРЕДАЧА со всеми метками, автопередача. Без ПЕРЕДАЧИ сид собирается без карты, ожидания Гриши, «ждёт
+    Гришу», «в полёте» и хвостов — поэтому шаблон готовый, а не «<что сделал>»."""
+    from ..launcher import autohandoff
+
+    return ("  1. пульс ПЕРЕДАЧА — заполни каждую метку (нечего — «нет»):\n"
+            "     {0}\n"
+            "  2. {1}").format(autohandoff.pass_template(entry), AUTO_CMD)
+
+
 def soft_text(entry: Path, tokens: int, soft: int, hard: int) -> str:
     return (
         "tide: контекст сессии {0} токенов (порог передачи {1}) — передача нити "
         "начинается сейчас, не позже. Новое не начинай, доведи текущее действие и:\n"
-        "  1. {2}\n"
-        "  2. {3}\n"
-        "Новая сессия поднимется сама и продолжит с курсора. На {4} — хендофф "
+        "{2}\n"
+        "Новая сессия поднимется сама и продолжит с курсора. На {3} — хендофф "
         "без отсрочек."
-    ).format(_k(tokens), _k(soft), _offload_cmd(entry), AUTO_CMD, _k(hard))
+    ).format(_k(tokens), _k(soft), handoff_steps(entry), _k(hard))
 
 
 def hard_text(entry: Path, tokens: int, hard: int) -> str:
     return (
         "tide: контекст {0} токенов — жёсткий порог {1}. Доведи текущий шаг, новую "
         "работу не бери, хендофф сейчас:\n"
-        "  {2} && {3}"
-    ).format(_k(tokens), _k(hard), _offload_cmd(entry), AUTO_CMD)
+        "{2}"
+    ).format(_k(tokens), _k(hard), handoff_steps(entry))
 
 
 def alarm_text(entry: Path, tokens: int, alarm: int) -> str:
     return (
         "tide: ТРЕВОГА — контекст {0} токенов (порог {1}), а хендоффа нет. Менеджер "
         "получил сигнал. Передай нить немедленно, ничего больше не делая:\n"
-        "  {2} && {3}"
-    ).format(_k(tokens), _k(alarm), _offload_cmd(entry), AUTO_CMD)
+        "{2}"
+    ).format(_k(tokens), _k(alarm), handoff_steps(entry))
 
 
 def _short(entry: Path, tokens: int, level: str) -> str:

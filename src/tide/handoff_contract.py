@@ -219,10 +219,11 @@ def _label_re():
             alts.append(r"(?P<{0}_{1}>{2})".format(key, i, p))
     for i, p in enumerate(PULSE_STOP_LABELS):
         alts.append(r"(?P<stop_{0}>{1})".format(i, p))
-    # Метка стоит в начале ноты или после конца фразы/тире; за ней — «:», между
-    # ними может быть уточнение в скобках («РЕШЕНИЕ ГРИШИ (через …, 09.10):»).
+    # Метка стоит в начале ноты или после конца фразы/тире/точки-разделителя «·»
+    # (шаблон ПЕРЕДАЧИ хука порога пишет метки через « · », SOC-101 F44); за ней —
+    # «:», между ними может быть уточнение в скобках («РЕШЕНИЕ ГРИШИ (через …, 09.10):»).
     return re.compile(
-        r"(?:^|(?<=[.;!?»)\]—])\s+|(?<=\s—)\s)(?:{0})(?:\s*\([^()]*\))?\s*:\s*".format(
+        r"(?:^|(?<=[.;!?»)\]—·])\s+|(?<=\s—)\s)(?:{0})(?:\s*\([^()]*\))?\s*:\s*".format(
             "|".join(alts)), re.IGNORECASE)
 
 
@@ -244,7 +245,7 @@ def pulse_labels(note: str) -> Dict[str, list]:
     for i, m in enumerate(hits):
         group = next(g for g, v in m.groupdict().items() if v is not None)
         end = hits[i + 1].start() if i + 1 < len(hits) else len(text)
-        piece = text[m.end():end].strip().rstrip(".;").strip()
+        piece = text[m.end():end].strip().rstrip(".;·").strip()
         if group.startswith("stop_") or not piece:
             continue
         out.setdefault(group.rsplit("_", 1)[0], []).append(piece)

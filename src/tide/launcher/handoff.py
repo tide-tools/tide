@@ -865,7 +865,8 @@ def cmd_handoff_auto(args) -> int:
     res = autohandoff.run_auto(
         root, mode=mode, session_ref=session_ref,
         dry_run=bool(getattr(args, "dry_run", False)),
-        spawn=_spawn_wanted(args), adapter_name=getattr(args, "adapter", None))
+        spawn=_spawn_wanted(args), adapter_name=getattr(args, "adapter", None),
+        strict=bool(getattr(args, "strict", False)))
     if res.handoff is None:
         print(autohandoff.render_dry_run(res))
         return 0
@@ -1029,4 +1030,8 @@ def register(subparsers) -> None:
     p.add_argument("--session", default=None,
                    help="with --auto: the session arc to hand over (default: the "
                         "caller's own, via $CLAUDE_CODE_SESSION_ID)")
+    p.add_argument("--strict", action="store_true",
+                   help="with --auto: refuse when the session has no ПЕРЕДАЧА pulse in "
+                        "the last $TIDE_HANDOFF_FRESH_MIN minutes (default 30; without "
+                        "--strict it only warns and prints the template)")
     p.set_defaults(func=cmd_handoff, _cmd="handoff")

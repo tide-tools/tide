@@ -572,6 +572,79 @@ def register_autoraise(hsub) -> None:
     hsub._choices_actions = [a for a in hsub._choices_actions if a.dest != "autoraise"]
 
 
+# --- пульс ПЕРЕДАЧА перед автопередачей (SOC-101 F44) ------------------------
+
+# Передача по порогу шла без пульса «ПЕРЕДАЧА» — и всё, что сборщик сида вешает на
+# его метки (карта, ожидание Гриши, ждёт Гришу, в полёте, хвосты), молчало.
+# Шаблон один на хук порога и на ``handoff --auto``.
+PASS_FRESH_ENV = "TIDE_HANDOFF_FRESH_MIN"
+PASS_FRESH_MIN = 30
+PASS_TEMPLATE_NOTE = ("ПЕРЕДАЧА. Где мы: … · Ожидание Гриши: «…» (tg N) · Ждёт Гришу: … · "
+                      "В полёте: … · Хвосты: … · Решения: … · Опыт: … · "
+                      "Карта: <путь> — зачем")
+
+_PULSE_STAMP = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\s*[—-]\s*(.*)$")
+
+
+def session_ref(entry: Path) -> str:
+    """``<нить>/<сессия>`` — адрес сессии для ``tide offload``."""
+    entry = Path(entry)
+    return "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name),
+                            slug.entry_slug(entry.name))
+
+
+def pass_template(entry: Path) -> str:
+    """Готовая команда пульса ПЕРЕДАЧА со всеми метками сида."""
+    return 'tide offload {0} "{1}"'.format(session_ref(entry), PASS_TEMPLATE_NOTE)
+
+
+def pass_fresh_minutes() -> int:
+    raw = (os.environ.get(PASS_FRESH_ENV) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return PASS_FRESH_MIN
+    return value if value > 0 else PASS_FRESH_MIN
+
+
+def fresh_pass_note(entry: Path, *, minutes: Optional[int] = None,
+                    now: Optional[datetime] = None) -> Optional[str]:
+    """Пульс ПЕРЕДАЧА сессии за последние *minutes* минут (текст) — или None."""
+    from .. import handoff_contract
+
+    minutes = pass_fresh_minutes() if minutes is None else minutes
+    now = now or datetime.now()
+    try:
+        text = (Path(entry) / "arc.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for ln in reversed(text.splitlines()):
+        m = _PULSE_STAMP.match(ln.strip())
+        if not m or not handoff_contract.is_pass_note(m.group(2)):
+            continue
+        try:
+            at = datetime.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        if (now - at).total_seconds() <= minutes * 60:
+            return m.group(2)
+    return None
+
+
+def pass_warning(entry: Path, *, strict: bool = False,
+                 now: Optional[datetime] = None) -> Optional[str]:
+    """Нет свежего пульса ПЕРЕДАЧА — предупреждение с готовым шаблоном (None — есть)."""
+    minutes = pass_fresh_minutes()
+    if fresh_pass_note(entry, minutes=minutes, now=now) is not None:
+        return None
+    verdict = ("с --strict передачу не делаю" if strict
+               else "передачу не останавливаю, но сид соберётся без меток")
+    return ("tide: ⚠ нет пульса ПЕРЕДАЧА за последние {0} мин — новая сессия не узнает "
+            "из сида ожидание Гриши, что ждёт его, что в полёте, хвосты и карту ({1}). "
+            "Сначала:\n  {2}\nзатем снова tide handoff continue --auto.".format(
+                minutes, verdict, pass_template(entry)))
+
+
 # --- оркестрация -------------------------------------------------------------
 
 def layers_warning(thread_dir: Path) -> Optional[str]:
@@ -603,25 +676,36 @@ class AutoResult:
     seed: str
     handoff: Optional[object] = None        # HandoffResult, None на dry-run
     warning: Optional[str] = None           # слои нити пусты (SOC-101) — не блок
+    pass_warning: Optional[str] = None      # нет свежего пульса ПЕРЕДАЧА (F44)
     signal: Optional[Dict[str, object]] = None
 
 
 def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] = None,
              dry_run: bool = False, spawn: bool = True,
-             adapter_name: Optional[str] = None) -> AutoResult:
+             adapter_name: Optional[str] = None, strict: bool = False) -> AutoResult:
     """Собрать посев, решить «поднимать / встать», передать.
 
     *dry_run* ничего не пишет (ни оффера, ни дистилла, ни сигнала) — только
-    показывает решение и посев.
+    показывает решение и посев. Нет пульса ПЕРЕДАЧА за :func:`pass_fresh_minutes`
+    минут — предупреждение с шаблоном в stderr (F44); *strict* — отказ (на
+    dry-run только предупреждение: он и так ничего не пишет).
     """
     from . import handoff as _handoff
 
     entry = caller_session_entry(Path(root), session_ref)
+    pass_warn = pass_warning(entry, strict=strict)
+    if pass_warn:
+        print(pass_warn, file=sys.stderr)
+        if strict and not dry_run:
+            raise AutoHandoffError(
+                "handoff --auto --strict: нет пульса ПЕРЕДАЧА за последние {0} мин — "
+                "передача отменена, сначала пульс по шаблону выше".format(
+                    pass_fresh_minutes()))
     thread = thread_of(entry)
     decision = decide_for(entry)
     seed = build_auto_seed(entry)
     res = AutoResult(session=entry, thread=thread, decision=decision, seed=seed,
-                     warning=layers_warning(thread))
+                     warning=layers_warning(thread), pass_warning=pass_warn)
     if res.warning:
         print(res.warning, file=sys.stderr)  # предупреждение, не блок
     if dry_run:
@@ -662,6 +746,11 @@ def render_dry_run(res: AutoResult) -> str:
         "  преемник унаследует: {0}: {1} · {2}: {3}".format(
             AUTO_CHAIN_FIELD, d.chain, PROGRESS_MARK_FIELD, d.progress),
         "  ничего не записано: ни оффера, ни дистилла, ни сигнала",
+    ]
+    if res.pass_warning:
+        lines.append("  ⚠ пульса ПЕРЕДАЧА нет — шаблон: {0}".format(
+            pass_template(res.session)))
+    lines += [
         "",
         res.seed.rstrip(),
     ]
@@ -669,7 +758,9 @@ def render_dry_run(res: AutoResult) -> str:
 
 
 __all__ = ["AUTO_CHAIN_FIELD", "AutoHandoffError", "AutoResult", "CHAIN_LIMIT",
-           "Decision", "HANDED_OFF_FIELD", "PROGRESS_MARK_FIELD", "build_auto_seed",
+           "Decision", "HANDED_OFF_FIELD", "PASS_FRESH_ENV", "PASS_TEMPLATE_NOTE",
+           "PROGRESS_MARK_FIELD", "build_auto_seed", "fresh_pass_note", "pass_template",
+           "pass_warning", "session_ref",
            "count_progress", "decide", "decide_for", "open_items", "open_questions",
            "is_mechanical_pulse", "layers_warning", "register_autoraise",
            "run_autoraise", "schedule_autoraise", "render_dry_run", "run_auto",
