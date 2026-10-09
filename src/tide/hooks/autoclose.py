@@ -241,6 +241,25 @@ def new_text(v: Dict[str, object], at: str) -> str:
             "Нить целиком твоя.".format(v["old"], at))
 
 
+def new_text_gone(v: Dict[str, object]) -> str:
+    """Kill не вышел, но старая уже вышла сама — «закрыта» не говорим (SOC-143)."""
+    return ("tide: старая {0} уже вышла сама (AO: {1}), закрывать не пришлось — воркеров "
+            "нет, итоги пересланы. Нить целиком твоя.".format(v["old"], v.get("gone") or "?"))
+
+
+def manager_text_gone(v: Dict[str, object]) -> str:
+    return ("tide: автозакрытие — {0} передала нить {1} (оффер {2}); kill не вышел ({3}), "
+            "но старая уже вышла сама (AO: {4}) — закрывать не пришлось.".format(
+                v["old"], v["new"], v["offer"], v.get("kill_error") or "?",
+                v.get("gone") or "?"))
+
+
+def manager_text_failed(v: Dict[str, object]) -> str:
+    return ("tide: автозакрытие не вышло: {0}, старая {1} жива — закрой руками "
+            "(ao session kill {2}) или разберись. Оффер {3}, новая {4}.".format(
+                v.get("kill_error") or "?", v["old"], v["old_ao"], v["offer"], v["new"]))
+
+
 def _alert_manager(text: str, source: str) -> None:
     from ..launcher import autohandoff as _ah
     if _ah.send_alert(text, route=ROUTE_MANAGER, source=source) is None:
@@ -260,44 +279,53 @@ def _kill(handle: str):
 def close(home: Path, v: Dict[str, object], *, say=None, alert=None, kill=None,
           now: Optional[datetime] = None,
           session_of: Optional[Callable[[str], Optional[dict]]] = None) -> bool:
-    """Журнал → менеджер → последнее слово новой → ``ao session kill``.
-    Kill не вышел — причина в журнал и в *v* (``kill_error``), статус старой
-    спрашиваем заново: уже вышла — так и пишем (``gone``)."""
+    """Журнал → ``ao session kill`` → тексты по исходу (SOC-143: «закрыта» — только
+    после удачного kill). Kill вышел — менеджеру и новой «закрыта». Не вышел —
+    причина в журнал и в *v* (``kill_error``), статус старой спрашиваем заново:
+    уже вышла (``gone``) — новой «вышла сама, закрывать не пришлось»; жива —
+    новой ничего, менеджеру «автозакрытие не вышло, закрой руками»."""
     at = (now or datetime.now()).strftime("%H:%M")
-    journal(home, str(v["offer"]), "закрываю", str(v["old_ao"]), "→ " + str(v["new_ao"]),
+    offer = str(v["offer"])
+    journal(home, offer, "закрываю", str(v["old_ao"]), "→ " + str(v["new_ao"]),
             str(v["why"]))
-    source = "{0}/autoclose".format(v["offer"])
-    try:
-        (alert or _alert_manager)(manager_text(v, at), source)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        if say is None:
-            from ..adapters.ao import AoAdapter
-            say = AoAdapter().say
-        say(str(v["new_ao"]), new_text(v, at))
-    except Exception:  # noqa: BLE001
-        pass
     res = (kill or _kill)(str(v["old_ao"]))
     ok, why = (res if isinstance(res, tuple) else (bool(res), ""))
-    if ok:
-        journal(home, str(v["offer"]), "kill " + str(v["old_ao"]), "ok")
-        return True
-    v["kill_error"] = why or "ao не сказал причину"
     gone = ""
+    if ok:
+        journal(home, offer, "kill " + str(v["old_ao"]), "ok")
+    else:
+        v["kill_error"] = why or "ao не сказал причину"
+        try:
+            if session_of is None:
+                from ..adapters.ao import AoAdapter
+                session_of = AoAdapter().session
+            gone = ended(session_of(str(v["old_ao"])))
+        except Exception:  # noqa: BLE001
+            gone = ""
+        if gone:
+            v["gone"] = gone
+        journal(home, offer, "kill " + str(v["old_ao"]), "НЕ ВЫШЛО",
+                "причина: " + str(v["kill_error"]),
+                "старая уже вышла (AO: {0})".format(gone) if gone else "старая всё ещё жива")
+    if ok:
+        to_manager, to_new = manager_text(v, at), new_text(v, at)
+    elif gone:
+        to_manager, to_new = manager_text_gone(v), new_text_gone(v)
+    else:
+        to_manager, to_new = manager_text_failed(v), None
     try:
-        if session_of is None:
-            from ..adapters.ao import AoAdapter
-            session_of = AoAdapter().session
-        gone = ended(session_of(str(v["old_ao"])))
+        (alert or _alert_manager)(to_manager, "{0}/autoclose".format(offer))
     except Exception:  # noqa: BLE001
-        gone = ""
-    if gone:
-        v["gone"] = gone
-    journal(home, str(v["offer"]), "kill " + str(v["old_ao"]), "НЕ ВЫШЛО",
-            "причина: " + str(v["kill_error"]),
-            "старая уже вышла (AO: {0})".format(gone) if gone else "старая всё ещё жива")
-    return False
+        pass
+    if to_new is not None:
+        try:
+            if say is None:
+                from ..adapters.ao import AoAdapter
+                say = AoAdapter().say
+            say(str(v["new_ao"]), to_new)
+        except Exception:  # noqa: BLE001
+            pass
+    return ok
 
 
 def sweep(home: Path, *, dry_run: bool = False, skip: Iterable[str] = (),

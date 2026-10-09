@@ -197,10 +197,10 @@ def test_sweep_closes_in_order_once(pair, tmp_path):
               kill=lambda h: calls.append(("kill", h)) or True)
     res = ac.sweep(pair, **kw)
     assert res[0]["closed"] is True
-    assert [c[0] for c in calls] == ["manager", "say", "kill"]
-    assert "old-7" in calls[0][1]
-    assert calls[1][1] == "new-9" and "закрыта в 20:00" in calls[1][2]
-    assert calls[2] == ("kill", "old-7")
+    assert [c[0] for c in calls] == ["kill", "manager", "say"]  # SOC-143: kill первым
+    assert calls[0] == ("kill", "old-7")
+    assert "old-7" in calls[1][1]
+    assert calls[2][1] == "new-9" and "закрыта в 20:00" in calls[2][2]
     log = (paths.state_dir(pair) / ac.LOG).read_text(encoding="utf-8")
     assert "300-30-handoffs · закрываю · old-7" in log and "kill old-7 · ok" in log
     calls.clear()
@@ -456,3 +456,60 @@ def test_kill_error_carries_ao_words(monkeypatch):
         raise ao.AoError("ao session kill: no such session (exit 2)")
     monkeypatch.setattr(ao, "_call", boom)
     assert ac._kill("x") == (False, "ao session kill: no such session (exit 2)")
+
+
+# --- SOC-143: «закрыта» — только после удачного kill (оффер 299, 20:07) ---------------
+
+def _close_run(pair, tmp_path, kill, old_after):
+    seen = {"n": 0}
+
+    def session_of(h):
+        if h != "old-7":
+            return {"status": "idle"}
+        seen["n"] += 1  # первый вопрос — verdict (жива), дальше — после kill
+        return {"status": "idle"} if seen["n"] == 1 else old_after
+
+    calls = []
+    res = ac.sweep(pair, now=NOW, transcript_of=lambda sid: _transcript(tmp_path),
+                   session_of=session_of,
+                   alert=lambda text, src: calls.append(("manager", text)),
+                   say=lambda h, text: calls.append(("say", h, text)) or True,
+                   kill=lambda h: calls.append(("kill", h)) or kill)
+    log = (paths.state_dir(pair) / ac.LOG).read_text(encoding="utf-8")
+    return res[0], calls, log
+
+
+def test_close_ok_says_closed_after_kill(pair, tmp_path):
+    v, calls, log = _close_run(pair, tmp_path, True, {"status": "idle"})
+    assert v["closed"] is True
+    assert [c[0] for c in calls] == ["kill", "manager", "say"]
+    assert "Закрываю старую в 20:00: ao session kill old-7" in calls[1][1]
+    assert "старая handoffs · 04" in calls[2][2] and "закрыта в 20:00" in calls[2][2]
+    assert "Нить целиком твоя." in calls[2][2]
+    assert "kill old-7 · ok" in log
+
+
+def test_close_kill_failed_but_gone_says_exited_itself(pair, tmp_path):
+    v, calls, log = _close_run(pair, tmp_path, (False, "session not running"),
+                               {"status": "exited"})
+    assert v["closed"] is False and v["gone"] == "exited"
+    assert [c[0] for c in calls] == ["kill", "manager", "say"]
+    said = calls[2][2]
+    assert calls[2][1] == "new-9"
+    assert "уже вышла сама (AO: exited), закрывать не пришлось" in said
+    assert "воркеров нет, итоги пересланы. Нить целиком твоя." in said
+    assert "закрыта" not in said
+    assert "kill не вышел (session not running)" in calls[1][1]
+    assert "Закрываю" not in calls[1][1]
+    assert "НЕ ВЫШЛО · причина: session not running" in log
+    assert "старая уже вышла (AO: exited)" in log
+
+
+def test_close_kill_failed_old_alive_tells_new_nothing(pair, tmp_path):
+    v, calls, log = _close_run(pair, tmp_path, (False, "timeout"), {"status": "idle"})
+    assert v["closed"] is False and "gone" not in v
+    assert [c[0] for c in calls] == ["kill", "manager"]  # новой — ни слова
+    m = calls[1][1]
+    assert "автозакрытие не вышло: timeout" in m and "жива" in m
+    assert "закрой руками" in m and "Закрываю" not in m
+    assert "НЕ ВЫШЛО · причина: timeout" in log and "старая всё ещё жива" in log
