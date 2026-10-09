@@ -528,11 +528,79 @@ def _ao_adapter():
     return AoAdapter()
 
 
+CLOSE_DEFERRED = "close-deferred"   # «<штамп> · <почему>» — предложение ждёт воркеров
+DEFERRED_STAMP = "close-proposal.last"
+DEFERRED_THROTTLE_SEC = 120
+
+
+def _old_transcript(sid: str) -> Optional[Path]:
+    from .seed_draft import transcript_path
+    return transcript_path(sid)
+
+
+def _old_workers(transcript: Optional[Path]) -> List[str]:
+    from .seed_draft import background_workers
+    return background_workers(transcript)
+
+
+def close_blockers(home: Path, rec: Dict[str, object]) -> List[str]:
+    """Почему старую ЕЩЁ рано предлагать закрыть (F72, SOC-143) — та же проверка
+    воркеров, что у автозакрытия (:func:`tide.hooks.autoclose.verdict`): живые фоновые
+    воркеры по транскрипту старой, сабагент с промежуточным итогом или возобновлённый
+    (:func:`~tide.hooks.autoclose.interim_workers`), итог, не пересланный новой
+    (:func:`~tide.hooks.autoclose.unforwarded_results`), письма пары в очереди
+    пересылки. Пусто — можно предлагать. Транскрипта нет — проверить нечем, не держим
+    (менеджер решает сам, как до F72). Только чтение."""
+    from ..hooks import autoclose as ac
+
+    home = Path(home)
+    old_sid = str(rec.get("from_session") or "")
+    tr = _old_transcript(old_sid) if old_sid else None
+    if tr is None:
+        return []
+    out: List[str] = []
+    live = _old_workers(tr)
+    if live:
+        out.append("воркеры старой живы ({0}): {1}".format(
+            len(live), "; ".join(ln.lstrip("- ").split(" — ", 1)[0] for ln in live[:3])))
+    interim = ac.interim_workers(tr)
+    if interim:
+        out.append("воркеры старой не сдали итог (промежуточный/возобновлён) ({0}): {1}"
+                   .format(len(interim), "; ".join(interim[:3])))
+    forward_to: List[str] = []
+    try:
+        from ..arc import holder
+        old_ao = holder.ao_handle_for(home, old_sid)
+        new_sid = str(rec.get("taken_by") or "")
+        new_ao = holder.ao_handle_for(home, new_sid) if new_sid else ""
+        from ..hooks.handed_off import successor
+        head_ao = successor(home, rec).get("ao_session", "")
+        forward_to = [a for a in (new_ao, head_ao) if a and a != old_ao]
+    except Exception:  # noqa: BLE001
+        pass
+    taken = ac._parse_iso(rec.get("taken_at"))
+    raised = ac._parse_iso(rec.get("raised_at"))
+    stamps = [t for t in (taken, raised) if t is not None]
+    if stamps and forward_to:
+        left = ac.unforwarded_results(tr, min(stamps), forward_to)
+        if left:
+            out.append("итоги воркеров не пересланы новой: {0}".format(", ".join(left[:3])))
+    queued = ac._pending_for(home, str(rec.get("name") or ""))
+    if queued:
+        out.append("в очереди пересылки {0} писем этой пары".format(queued))
+    return out
+
+
 def propose_close(home: Path, key: str) -> Optional[str]:
     """После приёма — ``ao send`` менеджеру (адрес — :func:`tide.whois.manager`):
     «<старая> передала нить <новой>, приём подтверждён; закрыть <старую>?». Не
     старой сессии самой (она не закрывается сама) — тому, кто закрывает. Один раз:
-    метка ``close-proposed:`` в оффере. → итог или None (уже предложено/не принят)."""
+    метка ``close-proposed:`` в оффере. → итог или None (уже предложено/не принят).
+
+    F72: пока у старой живы воркеры или их итоги не пересланы новой
+    (:func:`close_blockers`) — не предлагаем: метка ``close-deferred:`` и итог
+    ``"deferred"``; предложение уйдёт из :func:`retry_deferred` (хук handoff-confirm),
+    когда условие выполнится."""
     try:
         rec = hq._resolve(Path(home), key)
         if rec.get("status") != hq.STATUS_TAKEN or not hq._transfers_thread(rec):
@@ -540,6 +608,16 @@ def propose_close(home: Path, key: str) -> Optional[str]:
         path = Path(str(rec["path"]))
         if hq._get(path.read_text(encoding="utf-8"), CLOSE_PROPOSED) != "-":
             return None
+        wait = close_blockers(home, rec)
+        if wait:
+            why = "; ".join(wait)
+            prev = hq._get(path.read_text(encoding="utf-8"), CLOSE_DEFERRED)
+            if prev == "-" or prev.split(" · ", 1)[-1] != why:
+                hq._set_field(path, CLOSE_DEFERRED, "{0} · {1}".format(
+                    datetime.now().isoformat(timespec="seconds"), why))
+                _log(home, "предложение закрыть отложено ({0}): {1}".format(
+                    rec.get("name"), why))
+            return "deferred"
         stamp = datetime.now().isoformat(timespec="seconds")
         hq._set_field(path, CLOSE_PROPOSED, stamp)  # метка ДО отправки
         new, old = titles(home, rec)
@@ -558,6 +636,48 @@ def propose_close(home: Path, key: str) -> Optional[str]:
         return outcome
     except Exception:  # noqa: BLE001 — предложение не смеет сорвать пульс
         return None
+
+
+def _deferred_throttled(home: Path) -> bool:
+    p = paths.state_dir(Path(home)) / DEFERRED_STAMP
+    try:
+        if (p.is_file()
+                and datetime.now().timestamp() - p.stat().st_mtime < DEFERRED_THROTTLE_SEC):
+            return True
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+    except OSError:
+        return True
+    return False
+
+
+def retry_deferred(home: Path, *, throttle: bool = True) -> List[str]:
+    """Отложенные предложения закрыть (F72): свежие принятые пары с ``close-deferred:``
+    и без ``close-proposed:`` — снова :func:`propose_close`; уйдёт, когда воркеры
+    старой сдали итоги и те пересланы новой. Зовётся из хука handoff-confirm рядом
+    с автозакрытием, не чаще раза в :data:`DEFERRED_THROTTLE_SEC` с. Старая, взявшая
+    потом другую нить, — снова голова: ей не предлагаем. → ``["<оффер>: <итог>"]``.
+    Никогда не падает."""
+    out: List[str] = []
+    try:
+        home = Path(home)
+        recs = []
+        for r in hq.list_offers(home, status=hq.STATUS_TAKEN):
+            text = Path(str(r["path"])).read_text(encoding="utf-8")
+            if (hq._get(text, CLOSE_DEFERRED) != "-"
+                    and hq._get(text, CLOSE_PROPOSED) == "-" and _fresh(r)):
+                recs.append(r)
+        if not recs or (throttle and _deferred_throttled(home)):
+            return out
+        for r in recs:
+            sid = str(r.get("from_session") or "")
+            if sid and (hq.is_dissolved(home, sid) or {}).get("name") != r.get("name"):
+                continue
+            res = propose_close(home, str(r["name"]))
+            out.append("{0}: {1}".format(r.get("name"), res))
+    except Exception:  # noqa: BLE001 — хук не смеет уронить сессию
+        pass
+    return out
 
 
 # --- после пульса (компонуется в cli: offload — домен и launcher не видит) ----------
@@ -629,7 +749,8 @@ def wrap_offload(sub) -> None:
     p.set_defaults(func=_offload_and_announce)
 
 
-__all__ = ["ANNOUNCED", "CLOSE_PROPOSED", "announce_not_alive", "announce_reception",
+__all__ = ["ANNOUNCED", "CLOSE_DEFERRED", "CLOSE_PROPOSED", "close_blockers",
+           "retry_deferred", "announce_not_alive", "announce_reception",
            "clip", "clip_sentences", "close_text", "lost_line", "open_tails",
            "passed_from_note", "passed_text", "propose_close",
            "compose_reception", "not_alive_text", "reception_text", "send", "titles",

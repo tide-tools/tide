@@ -578,6 +578,9 @@ def cmd_prompt(args) -> int:
             # старая без воркеров закрывается сама — только при $TIDE_AUTOCLOSE_OLD=1
             from . import autoclose
             autoclose.on_prompt(payload)
+            # F72: отложенное «закрыть старую?» — когда воркеры сдали и итоги пересланы
+            from ..launcher import reception
+            reception.retry_deferred(paths.control_home())
             # SOC-143: шов-синк без ответа > 30 мин — одна строка менеджеру на пару
             from .. import seam_sync
             seam_sync.on_prompt()
