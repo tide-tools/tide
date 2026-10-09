@@ -187,6 +187,14 @@ def test_manager_address_fallback(tmp_path):
     assert ask_gate.manager_address(empty) == ask_gate.MANAGER_FALLBACK
 
 
+def test_manager_fallback_main_first_ao_control_reserve(tmp_path):
+    addr = ask_gate.manager_address(tmp_path / "missing.json")
+    main = "«management — main · NN»"
+    reserve = "«management — ao-control · NN»"
+    assert main in addr and reserve in addr
+    assert addr.index(main) < addr.index(reserve)
+
+
 # --- CLI-обёртка ---------------------------------------------------------------
 
 def _run(monkeypatch, capsys, stdin: str):

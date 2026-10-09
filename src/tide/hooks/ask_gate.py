@@ -48,7 +48,11 @@ AO_SESSION_ENV = "AO_SESSION_ID"
 # env или параметр.
 MANAGER_FILE = Path.home() / ".tide" / "manager.json"
 MANAGER_FILE_ENV = "TIDE_MANAGER_FILE"
-MANAGER_FALLBACK = "ListAgents → сессия «management — ao-control · NN» с наибольшим NN"
+# Менеджер переехал в главную нить «main»; ao-control — запасной, если main-сессии нет.
+MANAGER_FALLBACK = (
+    "ListAgents → сессия «management — main · NN» с наибольшим NN; "
+    "если такой нет — «management — ao-control · NN» с наибольшим NN"
+)
 
 BLOCKED_ASKS_FILE = "blocked-asks.jsonl"
 NOT_RECORDED = "не записан"
