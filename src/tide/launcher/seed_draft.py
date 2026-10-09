@@ -960,21 +960,56 @@ def transcript_path(sid: str, projects: Optional[Path] = None) -> Optional[Path]
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
-def _last_pulse_at(context: Sequence[str]):
+def _pulse_stamps(context: Sequence[str]) -> List["tuple"]:
+    """``[(время, строка)]`` пульс-строк с разбираемым штампом, в порядке записи."""
     from datetime import datetime
 
-    for ln in reversed(live_lines(context)):
+    out = []
+    for ln in live_lines(context):
         m = _FULL_STAMP.match(ln.strip())
-        if m:
-            try:
-                return datetime.fromisoformat(m.group(1))
-            except ValueError:
-                continue
-    return None
+        if not m:
+            continue
+        try:
+            out.append((datetime.fromisoformat(m.group(1)), ln))
+        except ValueError:
+            continue
+    return out
+
+
+def _last_pulse_at(context: Sequence[str]):
+    stamps = _pulse_stamps(context)
+    return stamps[-1][0] if stamps else None
+
+
+def incoming_since(context: Sequence[str]):
+    """С какого момента брать входящие (SOC-101 F29): от пульса ПЕРЕД последним
+    «ПЕРЕДАЧА» (её нет — перед последним пульсом). Последним пульсом почти всегда
+    становится сама ПЕРЕДАЧА, и окно «с последнего пульса» выходило пустым: доклад,
+    пришедший за минуту до неё, терял хеши. Пульс один — None (окно по времени)."""
+    stamps = _pulse_stamps(context)
+    if not stamps:
+        return None
+    last = len(stamps) - 1
+    for i in reversed(range(len(stamps))):
+        if _PASS_RE.match(stamps[i][1].strip()):
+            last = i
+            break
+    return stamps[last - 1][0] if last > 0 else None
 
 
 def _user_text(row: dict) -> str:
-    content = (row.get("message") or {}).get("content")
+    """Текст доставки в строке транскрипта: реплика пользователя (``type: user``)
+    или сообщение, пришедшее очередью, пока сессия работала (SOC-101 F28:
+    ``type: attachment`` с ``attachment.type: queued_command`` — ``prompt``)."""
+    if row.get("type") == "attachment":
+        att = row.get("attachment") or {}
+        if not isinstance(att, dict) or att.get("type") != "queued_command":
+            return ""
+        content = att.get("prompt")
+    elif row.get("type") == "user":
+        content = (row.get("message") or {}).get("content")
+    else:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -1003,6 +1038,7 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
     except OSError:
         return []
     found = []
+    seen = set()  # одна доставка бывает и очередью, и репликой — один раз
     for ln in raw.splitlines():
         if "session-delivery" not in ln and "cross-session-message" not in ln:
             continue
@@ -1010,7 +1046,7 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
             row = json.loads(ln)
         except ValueError:
             continue
-        if not isinstance(row, dict) or row.get("type") != "user":
+        if not isinstance(row, dict) or row.get("type") not in ("user", "attachment"):
             continue
         at = _dialog._stamp(str(row.get("timestamp") or ""))
         if at is None or (since is not None and at <= since):
@@ -1019,8 +1055,9 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
         for rx in (_DELIVERY_RE, _CROSS_RE):
             for m in rx.finditer(text):
                 who, body = m.group(1).strip(), " ".join(m.group(2).split())
-                if not body or _dialog.is_harness_notice(body):
+                if not body or _dialog.is_harness_notice(body) or (who, body) in seen:
                     continue
+                seen.add((who, body))
                 found.append((at, who, body))
     found.sort(key=lambda r: r[0], reverse=True)
     out = ["- поручено мне — от {0} в {1}: {2}".format(
@@ -1033,15 +1070,17 @@ def incoming_orders(transcript: Optional[Path], since) -> List[str]:
 
 
 def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
-    """Входящие поручения передающей сессии с последнего пульса (нет пульса —
-    за :data:`INCOMING_LOOKBACK_HOURS`). Никогда не падает."""
+    """Входящие поручения передающей сессии от пульса перед ПЕРЕДАЧЕЙ
+    (:func:`incoming_since`; одного пульса мало — за :data:`INCOMING_LOOKBACK_HOURS`
+    до него или до «сейчас»). Никогда не падает."""
     from datetime import datetime, timedelta
 
     try:
         sid = (fields.read_field(Path(session_entry) / "arc.md",
                                  offload.CLAUDE_SESSION_FIELD) or "").strip()
-        since = _last_pulse_at(context) or (
-            (now or datetime.now()) - timedelta(hours=INCOMING_LOOKBACK_HOURS))
+        since = incoming_since(context) or (
+            (_last_pulse_at(context) or now or datetime.now())
+            - timedelta(hours=INCOMING_LOOKBACK_HOURS))
         return incoming_orders(transcript_path(sid), since)
     except Exception:  # noqa: BLE001 — сид важнее
         return []
