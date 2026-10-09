@@ -675,8 +675,10 @@ def block_decisions(records: Sequence[Dict[str, object]],
             if bool(marks[id(rec)]) is not done:
                 continue
             what = str(rec.get("what") or "").strip() or str(rec.get("slug") or "")
-            out.append("- {0} — {1} ({2})".format(
-                rec.get("num"), what, marks[id(rec)] or "not done"))
+            # C4: правило не «выполняют» — оно действует; «not done» у него — шум
+            mark = marks[id(rec)] or ("правило, в силе" if decision.is_rule(rec)
+                                      else "not done")
+            out.append("- {0} — {1} ({2})".format(rec.get("num"), what, mark))
     return out
 
 

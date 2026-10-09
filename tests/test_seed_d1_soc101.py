@@ -301,3 +301,15 @@ def test_unanswered_says_journal_exists_but_no_words(tmp_project, monkeypatch):
     with open(dialog.dialog_path(thread), "a", encoding="utf-8") as fh:
         fh.write("- 2026-10-09T06:00:00 · Гриша · ao · смерджи PR\n")
     assert seed_draft.block_unanswered(thread)[-1].endswith("смерджи PR")
+
+
+# --- C4: у правил нет «not done» ----------------------------------------------------
+
+def test_rule_decisions_are_not_marked_not_done():
+    recs = [{"num": "03", "what": "топик = родитель", "status": "accepted", "kind": "rule"},
+            {"num": "01", "what": "раскатать контракт", "status": "accepted",
+             "kind": "commitment"}]
+    assert seed_draft.block_decisions(recs) == [
+        "- 03 — топик = родитель (правило, в силе)",
+        "- 01 — раскатать контракт (not done)",
+    ]
