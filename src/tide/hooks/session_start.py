@@ -598,6 +598,10 @@ def _ao_name_by_title(root: Path, session: str, adapter=None) -> Optional[str]:
              or (_stream.thread_session_title(entry) or "").strip())
     if not title or title.startswith("<"):
         return None
+    full = _stream.with_ao_id(title, ao)  # SOC-72: «проект — нить · NN · <AO-id>»
+    if full != title:
+        fields.set_field(entry / "arc.md", "title", full)
+        title = full
     if adapter is None:
         from ..adapters.ao import AoAdapter
         adapter = AoAdapter()

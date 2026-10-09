@@ -53,6 +53,16 @@ PULSE_TAIL = 5
 
 _HEAD_RE = re.compile(r"^##\s+(.+?)\s*$")
 _NEXT_SEP = "·"
+# «·» inside a session's name is not a list separator (SOC-101 F8): «проект — нить ·
+# 04», «ao-and-order · 04», «… · 01 · tide-stack-8» (SOC-72) stay whole.
+_NAME_DOT = re.compile(r"\s·\s(?=\d{2}\b(?:\s·|\s*$|[,;:)]))"
+                       r"|(?<=\b\d{2})\s·\s(?=[A-Za-z][\w.-]*-\d+\b)")
+_KEEP = "\x00"
+
+# Сырой журнал пульса в сиде — не больше этой доли тела (SOC-101 F5): старое сжато
+# до строки, но не тонет — счёт и путь к полной записи в паспорте.
+JOURNAL_SHARE = 0.3
+JOURNAL_CLIP = 160
 
 
 class SeedDraftError(StreamError):
@@ -107,6 +117,13 @@ def live_lines(body: Sequence[str]) -> List[str]:
         ln.rstrip() for ln in body
         if ln.strip() and not ln.strip().startswith("<")
     ]
+
+
+def prose_lines(body: Sequence[str]) -> List[str]:
+    """Как :func:`live_lines`, но заглушка ``<…>`` может тянуться на несколько строк
+    (``## summary`` свежего паспорта) — вырезается целиком."""
+    text = re.sub(r"(?m)^[ \t]*<[^<>]*>[ \t]*$", "", "\n".join(body))
+    return live_lines(text.splitlines())
 
 
 # --- блоки (чистое) ---------------------------------------------------------
@@ -206,14 +223,35 @@ def block_next(nxt: Sequence[str]) -> List[str]:
     """
     items: List[str] = []
     for line in live_lines(nxt):
-        for part in line.split(_NEXT_SEP):
-            part = part.strip(" -\t")
+        for part in _NAME_DOT.sub(_KEEP, line).split(_NEXT_SEP):
+            part = part.replace(_KEEP, " · ").strip(" -\t")
             if part:
                 items.append("- {0}".format(part))
     return items
 
 
-def block_decisions(records: Sequence[Dict[str, object]]) -> List[str]:
+def decision_done(rec: Dict[str, object], closed_works: Sequence[str] = ()) -> str:
+    """Почему решение выполнено (пусто — не выполнено), SOC-101 F7.
+
+    Не только явная строка ``done:``: пруф (``proof:``) — это тоже запись о
+    сделанном, а решение, чья работа (``work:``) закрыта, выполнено её закрытием.
+    """
+    from ..arc import decision  # lazy: decision reaches up into cli (known debt)
+
+    if decision.is_done(rec):
+        return "done"
+    proof = str(rec.get("proof") or "").strip()
+    if proof and proof not in ("—", "-"):
+        return "done по пруфу"
+    work = str(rec.get("work") or "").strip()
+    if work and work not in ("—", "-") and any(
+            w == work or w.split("-", 1)[0] == work for w in closed_works):
+        return "done: работа {0} закрыта".format(work)
+    return ""
+
+
+def block_decisions(records: Sequence[Dict[str, object]],
+                    closed_works: Sequence[str] = ()) -> List[str]:
     """Решения нити: ``NN — what (status)``, сначала accepted, потом done.
 
     Сначала то, что В СИЛЕ и ещё НЕ выполнено — принимающая сессия чаще всего
@@ -227,13 +265,14 @@ def block_decisions(records: Sequence[Dict[str, object]]) -> List[str]:
     live = [r for r in records
             if decision.normalize_status(str(r.get("status") or "")) == decision.ACCEPTED]
     out: List[str] = []
+    marks = {id(r): decision_done(r, closed_works) for r in live}
     for done in (False, True):
         for rec in live:
-            if decision.is_done(rec) is not done:
+            if bool(marks[id(rec)]) is not done:
                 continue
             what = str(rec.get("what") or "").strip() or str(rec.get("slug") or "")
             out.append("- {0} — {1} ({2})".format(
-                rec.get("num"), what, "done" if done else "not done"))
+                rec.get("num"), what, marks[id(rec)] or "not done"))
     return out
 
 
@@ -249,15 +288,25 @@ def _nums_phrase(nums: Sequence[str]) -> str:
     return ", ".join(ordered)
 
 
-def block_experience(candidate_nums: Sequence[str]) -> List[str]:
-    """Опыт: кандидаты этой сессии/нити одной строкой + каркас для агента.
+def block_experience(candidate_nums: Sequence[str],
+                     inherited: Sequence[str] = (),
+                     candidate_gists: Optional[Dict[str, str]] = None) -> List[str]:
+    """Опыт: унаследованный из входного сида + кандидаты сессии + каркас для агента.
 
-    Харнес знает только МЕХАНИЧЕСКУЮ половину — что было уронено кандидатом.
-    Грабли, петли и «отвергнуто» пишет курирующий: отбор тут — работа головы,
-    поэтому оставляем подсказку, а не выдуманный текст.
+    Опыт копится от сессии к сессии (SOC-101 F3): строки «опыта» входного сида
+    переходят дальше как есть, без подсказок куратора. Кандидат — строкой с его
+    сутью, а не голым номером: сид читают без контекста (SOC-74). Грабли, петли и
+    «отвергнуто» этой сессии пишет курирующий — подсказка, а не выдуманный текст.
     """
-    out: List[str] = []
-    if candidate_nums:
+    out: List[str] = [ln for ln in live_lines(inherited)
+                      if "<!--" not in ln and ln.strip(" -") != EMPTY]
+    gists = candidate_gists or {}
+    if candidate_nums and gists:
+        for num in sorted(set(candidate_nums), key=lambda n: (int(n), n)):
+            line = "- кандидат {0} — {1}".format(num, gists.get(num) or "без описания")
+            if line not in out:
+                out.append(line)
+    elif candidate_nums:
         out.append("- кандидаты сессии: {0}".format(_nums_phrase(candidate_nums)))
     out.append(
         "- {0}  <!-- курируй: грабли · петли · «отвергнуто» — <путь> — <почему нет> -->"
@@ -266,17 +315,50 @@ def block_experience(candidate_nums: Sequence[str]) -> List[str]:
     return out
 
 
-def block_entry_map() -> List[str]:
-    """Карта входа: каркас — харнесу нечем, «что читать и зачем» знает пишущий.
+def block_entry_map(inherited: Sequence[str] = ()) -> List[str]:
+    """Карта входа: унаследованная из входного сида + каркас для пишущего.
 
-    Единственный блок контракта, который движок принципиально не собирает: пути
-    он бы насыпал, но сид требует ПОРЯДКА чтения и «зачем» — это знание того,
-    кто сейчас держит контекст.
+    Движок её не собирает: пути он бы насыпал, но сид требует ПОРЯДКА чтения и
+    «зачем» — знание того, кто держит контекст. Карту, которую уже написали,
+    передаём дальше (SOC-101 F4), куратор правит дифф.
     """
-    return [
+    kept = [ln for ln in live_lines(inherited)
+            if "<!--" not in ln and ln.strip(" -") != EMPTY]
+    return kept + [
         "- {0}  <!-- пишет агент: что читать и зачем, в порядке чтения; "
         "кодовый шаг — файл/модуль, команда тестов, процедура выката -->".format(EMPTY)
     ]
+
+
+def block_journal(context: Sequence[str], *, budget: int, source: str = "",
+                  tail: int = PULSE_TAIL, clip: int = JOURNAL_CLIP) -> List[str]:
+    """Пульс старше хвоста курсора — не тонет (SOC-101 F5).
+
+    Курсор несёт последние *tail* строк; всё, что старше, идёт сюда свежим сверху:
+    целиком, пока влезает в *budget* знаков, дальше строкой до *clip* знаков, а
+    что не влезло и так — счётом и путём к полной записи (*source*). Пусто — когда
+    старше хвоста ничего нет.
+    """
+    older = live_lines(context)
+    older = older[:-tail] if tail > 0 else []
+    if not older:
+        return []
+    out: List[str] = []
+    used = clipped = left = 0
+    for ln in reversed(older):
+        ln = ln if ln.lstrip().startswith("-") else "- {0}".format(ln)
+        if used + len(ln) > budget:
+            short = ln[: clip - 1].rstrip() + "…" if len(ln) > clip else ln
+            if short == ln or used + len(short) > budget:
+                left += 1
+                continue
+            ln, clipped = short, clipped + 1
+        out.append(ln)
+        used += len(ln)
+    if clipped or left:
+        out.append("- (сжато строк: {0}, не вошло: {1} — полностью: {2})".format(
+            clipped, left, source or "## context паспорта сессии"))
+    return out
 
 
 def block_environment(env: Sequence[str]) -> List[str]:
@@ -372,6 +454,69 @@ def _session_candidate_nums(root: Path, session_entry: Path,
     return out
 
 
+def _candidate_gists(root: Path, nums: Sequence[str]) -> Dict[str, str]:
+    """Суть кандидата одной фразой: первая строка тела, обрезанная до 160 знаков."""
+    from ..arc import candidate  # lazy: reaches up into cli (known debt)
+
+    want = set(nums)
+    out: Dict[str, str] = {}
+    if not want:
+        return out
+    for item in candidate.list_candidates(root):
+        num = str(item["num"])
+        if num not in want:
+            continue
+        body = [ln.strip() for ln in _read(Path(item["path"])).splitlines()
+                if ln.strip() and not ln.startswith("#")
+                and not re.match(r"^[a-z-]+:\s", ln)]
+        gist = re.split(r"(?<=[.!?])\s", body[0], maxsplit=1)[0] if body else ""
+        out[num] = gist if len(gist) <= 160 else gist[:159].rstrip() + "…"
+    return out
+
+
+def _closed_works(root: Path) -> List[str]:
+    """Имена папок закрытых работ (``__NN-slug__`` или ``status: done``)."""
+    out: List[str] = []
+    wdir = _work.works_dir(root)
+    if not wdir.is_dir():
+        return out
+    for p in wdir.iterdir():
+        if not p.is_dir():
+            continue
+        name = slug.strip_marker(p.name)
+        status = (fields.read_field(p / "work.md", "status") or "").strip()
+        if p.name != name or status == "done":
+            out.append(name)
+    return out
+
+
+def predecessor_thread(root: Path, thread_entry: Path) -> Optional[Path]:
+    """Нить, из которой выросла эта (SOC-101 F7): ``from:`` паспорта нити или
+    ``from:`` её первой сессии, указывающий на сессию ДРУГОЙ нити; None — нет."""
+    refs = [(fields.read_field(_stream.passport_path(thread_entry), "from") or "").strip()]
+    arcs = thread_entry / paths.ARCS_DIRNAME
+    firsts = sorted(p for p in arcs.iterdir() if p.is_dir()) if arcs.is_dir() else []
+    if firsts:
+        refs.append((fields.read_field(firsts[0] / "arc.md", "from") or "").strip())
+    top = paths.arcs_dir(root)
+    for ref in refs:
+        if not ref or ref == "-":
+            continue
+        head = ref.split("/", 1)[0]
+        for cand in (top.iterdir() if top.is_dir() else []):
+            if cand == thread_entry or not cand.is_dir() or not _stream.is_thread(cand):
+                continue
+            if resolve.entry_matches(head, cand.name):
+                return cand
+        try:
+            sess = resolve.find_session(root, ref)
+        except Exception:  # noqa: BLE001 — ambiguous/absent: no predecessor
+            sess = None
+        if sess is not None and sess.parents[1] != thread_entry:
+            return sess.parents[1]
+    return None
+
+
 def draft_bodies(root: Path, session_entry: Path) -> Dict[str, List[str]]:
     """Тела семи блоков для *session_entry* с диска — общее у черновика и автохендоффа."""
     session_entry = Path(session_entry)
@@ -379,16 +524,25 @@ def draft_bodies(root: Path, session_entry: Path) -> Dict[str, List[str]]:
     passport = sections(_read(session_entry / "arc.md"))
     seed_in = sections(_read(session_entry / "input" / INPUT_SEED_NAME))
 
+    nums = _session_candidate_nums(root, session_entry, thread_entry)
+    closed = _closed_works(root)
+    decisions = block_decisions(_thread_decisions(root, thread_entry), closed)
+    pred = predecessor_thread(root, thread_entry)
+    if pred is not None:
+        inherited = block_decisions(_thread_decisions(root, pred), closed)
+        if inherited:
+            decisions += ["- из нити-предшественницы {0}:".format(pred.name)]
+            decisions += ["  " + ln for ln in inherited]
     return {
         "финал": block_final(_goal_of(thread_entry), _goal_of(session_entry)),
         "курсор": block_cursor(section_body(passport, "cursor"),
                                section_body(passport, "context"),
                                works=_thread_works(root, thread_entry)),
         "дальше": block_next(section_body(passport, "next")),
-        "решения": block_decisions(_thread_decisions(root, thread_entry)),
-        "опыт": block_experience(
-            _session_candidate_nums(root, session_entry, thread_entry)),
-        "карта входа": block_entry_map(),
+        "решения": decisions,
+        "опыт": block_experience(nums, section_body(seed_in, "опыт"),
+                                 _candidate_gists(root, nums)),
+        "карта входа": block_entry_map(section_body(seed_in, "карта входа")),
         "окружение": block_environment(section_body(seed_in, "окружение")),
     }
 

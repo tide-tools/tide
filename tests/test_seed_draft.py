@@ -237,7 +237,7 @@ def test_build_draft_maps_every_source_to_its_block(tmp_project, session):
     assert "- принять работу 16" in out and "- чекнуть шаг 2" in out
     assert "- 02 — воркеры видны только через работу (not done)" in out
     assert "- 01 — контракт сида: семь блоков (done)" in out
-    assert "- кандидаты сессии: 01" in out
+    assert "- кандидат 01 — " in out                         # суть, не голый номер (SOC-74)
     assert "- доска = launchd-служба на :8452" in out          # окружение как есть
     # решения: open идёт ПЕРЕД settled
     assert out.index("- 02 — воркеры") < out.index("- 01 — контракт")

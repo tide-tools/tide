@@ -111,9 +111,9 @@ def _pult_log(path: Path, rows) -> Path:
 
 def test_dialog_tail_from_env_jsonl_clipped(world, monkeypatch):
     log = _pult_log(world["tmp"] / "pult" / "dialog.jsonl", [
-        {"ts": "2026-10-09T05:00:00+00:00", "dir": "in", "kind": "tg", "text": "привет\nкак дела"},
-        {"ts": "2026-10-09T05:01:00+00:00", "dir": "out", "kind": "reply", "text": "о" * 900},
-        {"ts": "2026-10-09T05:02:00+00:00", "dir": "out", "kind": "reply", "text": ""},
+        {"ts": "2026-10-09T05:00:00+00:00", "route": "proj/seam", "dir": "in", "kind": "tg", "text": "привет\nкак дела"},
+        {"ts": "2026-10-09T05:01:00+00:00", "route": "proj/seam", "dir": "out", "kind": "reply", "text": "о" * 900},
+        {"ts": "2026-10-09T05:02:00+00:00", "route": "proj/seam", "dir": "out", "kind": "reply", "text": ""},
     ])
     monkeypatch.setenv(dialog.LOG_ENV, str(log))
     lines = dialog.tail(world["thread"])
@@ -328,7 +328,7 @@ def _prime(world, monkeypatch):
                         next_steps="прогнать тесты · обновить скилл")
     _work(world["proj"], "07", world["thread"].name, "- [x] первый\n- [ ] второй пункт\n")
     log = _pult_log(world["tmp"] / "pult" / "dialog.jsonl", [
-        {"ts": "2026-10-09T05:33:50+00:00", "dir": "in", "kind": "tg",
+        {"ts": "2026-10-09T05:33:50+00:00", "route": "proj/seam", "dir": "in", "kind": "tg",
          "text": "последняя реплика Гриши"}])
     monkeypatch.setenv(dialog.LOG_ENV, str(log))
 
@@ -470,10 +470,12 @@ class _AoFake:
 
 def test_first_ao_session_takes_the_title(world, monkeypatch):
     monkeypatch.setenv("AO_SESSION_ID", "management-1")
-    title = fields.read_field(world["sess"] / "arc.md", "title")
+    # SOC-72: оба номера — «проект — нить · NN · <AO-id>», и в паспорте тоже
+    title = fields.read_field(world["sess"] / "arc.md", "title") + " · management-1"
     fake = _AoFake("management-1")
     assert session_start._ao_name_by_title(world["proj"], SID, adapter=fake) == title
     assert fake.renamed == [("management-1", title)]
+    assert fields.read_field(world["sess"] / "arc.md", "title") == title
     same = _AoFake(title)
     assert session_start._ao_name_by_title(world["proj"], SID, adapter=same) is None
     assert same.renamed == []

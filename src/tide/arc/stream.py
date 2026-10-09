@@ -37,6 +37,7 @@ wires the thin CLI handlers.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import time
@@ -132,6 +133,23 @@ def thread_session_title(session_dir: Path, project: Optional[str] = None) -> Op
     if not name:
         return "{0} · {1}".format(thread, num)
     return "{0} — {1} · {2}".format(name, thread, num)
+
+
+_AO_SUFFIX = re.compile(r"^(.*? · \d{2,}) · \S+$")
+
+
+def with_ao_id(title: str, ao_id: str) -> str:
+    """«проект — нить · NN» + « · <AO-id>» (SOC-72): both numbers in one name.
+
+    The thread's session number tells the human WHERE in the thread; the AO id
+    (``tide-stack-8``) is what AO's sidebar, ``ao send`` and the pult call it. A
+    title already carrying an AO id gets the new one (a re-entry runs in another AO
+    session); no *ao_id* → the bare title."""
+    t = (title or "").strip()
+    m = _AO_SUFFIX.match(t)
+    base = m.group(1) if m else t
+    a = (ao_id or "").strip()
+    return "{0} · {1}".format(base, a) if base and a else base
 
 
 def _session_project_name(session_dir: Path) -> str:
@@ -461,7 +479,8 @@ def new_thread(root: Path, raw_slug: str, *, force: bool = False,
     entry = arcs / "{0}-@{1}".format(nn, s)
     for sub in (*TRIAD, paths.ARCS_DIRNAME):
         (entry / sub).mkdir(parents=True, exist_ok=True)
-    _io.atomic_write(entry / "{0}-goal.md".format(s), templates.thread_goal_md(s))
+    _io.atomic_write(entry / "{0}-goal.md".format(s),
+                     templates.thread_goal_md(s, (goal or "").strip()))
     if goal and goal.strip():
         fields.set_field(entry / "{0}-goal.md".format(s), "goal", goal.strip())
     stamp_rev(entry, root)

@@ -37,16 +37,34 @@ def arc_md(name: str) -> str:
     ).format(name=name)
 
 
-def thread_goal_md(slug: str) -> str:
+# The three layers every next session must get (SOC-101 F1, continuity-audit): what
+# Grisha expects, where the thread stands, what it learnt. Sub-heads under
+# ``## where we are`` — the auto-seed carries this section into the seed verbatim.
+WHERE_LAYERS = (
+    ("ожидание Гриши", "<что Гриша ждёт от нити — его словами, с датой>"),
+    ("где мы", "<сделано · идёт · ждёт Гришу — по строке на каждое>"),
+    ("опыт", "<грабли, петли, «отвергнуто» — копится от сессии к сессии>"),
+)
+
+
+def where_we_are_scaffold() -> str:
+    """The ``## where we are`` body: three ``###`` layers, each with its placeholder."""
+    return "".join("### {0}\n{1}\n\n".format(h, ph) for h, ph in WHERE_LAYERS).rstrip() + "\n"
+
+
+def thread_goal_md(slug: str, goal: str = "") -> str:
     """Seed text for a thread's goal doc — a ``kind: thread`` container of sessions.
 
     A *thread* (тред) is a durable work-line. Like a goal it holds its items —
     here **sessions** — as sub-arcs in the nested ``arcs/``; ``kind: thread`` marks
     it so the picker offers threads (not work-goals). ``## where we are`` is the
-    only mutable narrative; the live resume point lives on each session's cursor.
+    only mutable narrative (three layers, :data:`WHERE_LAYERS`); the live resume
+    point lives on each session's cursor. A known *goal* names the H1 too — a
+    thread born with words must not carry the ``<тред: …>`` placeholder.
     """
+    head = goal.strip() or "<тред: the work-line this thread carries>"
     return (
-        "# {slug}-thread — <тред: the work-line this thread carries>\n"
+        "# {slug}-thread — {head}\n"
         "\n"
         "goal: <one line — what this thread is about; ≤12 words>\n"
         "status: active\n"
@@ -55,8 +73,8 @@ def thread_goal_md(slug: str) -> str:
         "# The thread's items = its sessions (NN-slug in arcs/), chained by from:.\n"
         "\n"
         "## where we are\n"
-        "<the live state of this thread across its sessions>\n"
-    ).format(slug=slug)
+        "{where}"
+    ).format(slug=slug, head=head, where=where_we_are_scaffold())
 
 
 def session_md(name: str) -> str:

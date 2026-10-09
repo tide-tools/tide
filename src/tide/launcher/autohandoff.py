@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .. import acts, fields, offload, paths, slug
-from ..arc import artifact as _artifact, dialog as _dialog, work as _work
+from ..arc import artifact as _artifact, dialog as _dialog, stream as _stream, work as _work
 from ..arc.stream import StreamError
 
 # Сколько автопередач подряд без продвижения терпим (развилка Г-1).
@@ -213,12 +213,38 @@ def decide_for(session_entry: Path) -> Decision:
 
 # --- посев -------------------------------------------------------------------
 
+def where_we_are(thread_dir: Path) -> List[str]:
+    """``## where we are`` паспорта нити дословно — без пустых заглушек слоёв.
+
+    Слой, где осталась только заглушка, уходит целиком: подзаголовок без тела
+    читался бы как «тут пусто», а это не так — тут просто ещё не писали."""
+    from . import seed_draft
+
+    body = seed_draft.section_body(
+        seed_draft.sections(seed_draft._read(_stream.passport_path(Path(thread_dir)))), "where we are")
+    out: List[str] = []
+    head: Optional[str] = None
+    for ln in body:
+        if ln.startswith("### "):
+            head = ln.rstrip()
+            continue
+        if not ln.strip() or ln.strip().startswith("<"):
+            continue
+        if head is not None:
+            out.append(head)
+            head = None
+        out.append(ln.rstrip())
+    return out
+
+
 def build_auto_seed(session_entry: Path) -> str:
     """Посев автохендоффа из арки — без пересказа чата.
 
     Семь блоков контракта сида (тот же сборщик, что у ``tide handoffs draft``) +
-    открытые пункты работ нити + хвост журнала диалога. Блоки, которые обычно
-    курирует агент (опыт, карта входа), здесь честно помечены как не курированные.
+    «где мы» нити и итог прошлой сессии дословно (F2) + сжатый журнал пульса,
+    старше хвоста курсора, не больше :data:`seed_draft.JOURNAL_SHARE` тела (F5) +
+    открытые пункты работ нити + хвост диалога ЭТОЙ нити (F6). Опыт и карта входа
+    наследуются из входного сида (F3, F4); подсказки куратора вырезаны.
     """
     from . import seed_draft
 
@@ -227,10 +253,10 @@ def build_auto_seed(session_entry: Path) -> str:
     thread = thread_of(session_entry)
     bodies = seed_draft.draft_bodies(root, session_entry)
     bodies["опыт"] = [ln for ln in bodies.get("опыт", []) if "<!--" not in ln]
-    bodies["карта входа"] = [
-        "- автохендофф: карту никто не курировал — читай паспорт прошлой сессии "
-        "{0}/arc.md, plan.md нити и хвост диалога ниже".format(session_entry.name),
-    ]
+    bodies["карта входа"] = [ln for ln in bodies.get("карта входа", []) if "<!--" not in ln]
+    bodies["карта входа"].append(
+        "- автохендофф: читай паспорт прошлой сессии {0}/arc.md, plan.md нити и "
+        "хвост диалога ниже".format(session_entry.name))
     nxt = [ln.lstrip("- ").strip() for ln in bodies.get("дальше", []) if ln.strip()]
     header = [
         "# автохендофф — {0} · нить {1}".format(session_entry.name, thread.name),
@@ -241,11 +267,26 @@ def build_auto_seed(session_entry: Path) -> str:
         # _pickup_goal берёт цель новой сессии отсюда
         header.append("следующий шаг: {0}".format(nxt[0]))
     text = seed_draft.render_draft(bodies, header="\n".join(header))
-    extra: List[str] = ["## открытые пункты работ", ""]
+    passport = seed_draft.sections(seed_draft._read(session_entry / "arc.md"))
+    extra: List[str] = ["## где мы — нить", ""]
+    extra += where_we_are(thread) or [seed_draft.EMPTY]
+    extra += ["", "## итог прошлой сессии", ""]
+    extra += seed_draft.prose_lines(seed_draft.section_body(passport, "summary")) \
+        or [seed_draft.EMPTY]
+    extra += ["", "## открытые пункты работ", ""]
     extra += open_items(root, thread) or [seed_draft.EMPTY]
     extra += ["", "## хвост диалога", ""]
     extra += _dialog.tail(thread, DIALOG_TAIL) or [seed_draft.EMPTY]
-    return text.rstrip() + "\n\n" + "\n".join(extra) + "\n"
+    body = text.rstrip() + "\n\n" + "\n".join(extra) + "\n"
+    # журнал — не больше JOURNAL_SHARE от всего тела: budget = доля / (1 − доля) от остального
+    share = seed_draft.JOURNAL_SHARE
+    journal = seed_draft.block_journal(
+        seed_draft.section_body(passport, "context"),
+        budget=int(len(body) * share / (1 - share)),
+        source="{0} (## context)".format(session_entry / "arc.md"))
+    if journal:
+        body += "\n## журнал сессии — старше курсора\n\n" + "\n".join(journal) + "\n"
+    return body
 
 
 # --- сигнал ------------------------------------------------------------------

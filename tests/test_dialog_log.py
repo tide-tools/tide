@@ -192,9 +192,9 @@ def test_tail_merges_pult_log_and_thread_dialog(world, monkeypatch):
     log = world["tmp"] / "pult" / "dialog.jsonl"
     log.parent.mkdir()
     rows = [
-        {"ts": "2026-10-09T05:00:00+00:00", "dir": "in", "kind": "tg", "text": "тут?"},
-        {"ts": "2026-10-09T05:00:30+00:00", "dir": "out", "kind": "reply", "text": "да"},
-        {"ts": "2026-10-09T05:10:00+00:00", "dir": "in", "kind": "linear", "text": "ок"},
+        {"ts": "2026-10-09T05:00:00+00:00", "route": "proj/seam", "dir": "in", "kind": "tg", "text": "тут?"},
+        {"ts": "2026-10-09T05:00:30+00:00", "route": "proj/seam", "dir": "out", "kind": "reply", "text": "да"},
+        {"ts": "2026-10-09T05:10:00+00:00", "route": "proj/seam", "dir": "in", "kind": "linear", "text": "ок"},
     ]
     log.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
                    encoding="utf-8")

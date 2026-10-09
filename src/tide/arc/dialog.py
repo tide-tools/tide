@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .. import fields, paths
+from .. import fields, paths, slug
 
 LOG_ENV = "TIDE_DIALOG_LOG"
 LOG_FIELD = "dialog-log"
@@ -142,27 +142,72 @@ def tail(thread_dir: Optional[Path] = None, n: int = 12) -> List[str]:
 
 
 def _log_lines(thread_dir: Optional[Path]) -> List[str]:
-    """Хвост журнала пульта строками ``- ts · кто · канал · текст``."""
+    """Хвост журнала пульта строками ``- ts · кто · канал · текст`` — только ЭТОЙ нити.
+
+    Журнал из ``$TIDE_DIALOG_LOG`` общий на все проекты (SOC-101 F6: в посев лезли
+    пинги чужих сессий): из него берутся только записи, адресованные нити
+    (:func:`_row_of_thread`); общий не-jsonl журнал не разобрать — не берётся.
+    Журнал из поля ``dialog-log:`` нити — её собственный, берётся целиком.
+    """
     path = log_path(thread_dir)
     if path is None or not path.is_file():
         return []
+    shared = bool((os.environ.get(LOG_ENV) or "").strip())
     try:
         text = _read_tail(path)
     except OSError:
         return []
     lines = text.splitlines()
     if path.suffix != ".jsonl":
-        return [ln.rstrip() for ln in lines if ln.strip()]
+        return [] if shared else [ln.rstrip() for ln in lines if ln.strip()]
+    handles = _thread_handles(thread_dir) if shared else set()
     out: List[str] = []
     for raw in lines:
         try:
             row = json.loads(raw)
         except ValueError:
             continue  # the cut first line of the tail, or a torn write
-        if isinstance(row, dict):
-            line = render_row(row)
-            if line:
-                out.append(line)
+        if not isinstance(row, dict):
+            continue
+        if shared and not _row_of_thread(row, thread_dir, handles):
+            continue
+        line = render_row(row)
+        if line:
+            out.append(line)
+    return out
+
+
+def _row_of_thread(row: dict, thread_dir: Optional[Path], handles: "set") -> bool:
+    """Запись пульта адресована нити: ``thread``/``route`` (``проект/нить``) называют
+    её слаг, или ``ao_session`` — AO-сессия одной из её сессий."""
+    if thread_dir is None:
+        return False
+    tslug = slug.entry_slug(Path(thread_dir).name)
+    for key in ("thread", "route"):
+        val = str(row.get(key) or "").strip().rstrip("/")
+        if val and slug.entry_slug(val.rsplit("/", 1)[-1]) == tslug:
+            return True
+    ao = str(row.get("ao_session") or "").strip()
+    return bool(ao) and ao in handles
+
+
+def _thread_handles(thread_dir: Optional[Path]) -> "set":
+    """AO-хэндлы сессий нити — по реестру терминалов (``arc`` внутри папки нити)."""
+    if thread_dir is None:
+        return set()
+    from .. import registry
+
+    try:
+        reg = registry.read(paths.control_home())
+    except Exception:  # noqa: BLE001 — нет control-home: хэндлов не знаем
+        return set()
+    base = str(Path(thread_dir).resolve())
+    out = set()
+    for rec in reg.values():
+        arc = str((rec or {}).get("arc") or "")
+        handle = str((rec or {}).get("handle") or "").strip()
+        if handle and arc and str(Path(arc).resolve()).startswith(base):
+            out.add(handle)
     return out
 
 

@@ -12,6 +12,8 @@ a handful of independent checks and printing one ok/warn/fail line each:
                       reachable — an offline-tolerant network probe).
 * **roster**          every ACTIVE roster project is worktree-ready (git HEAD
                       exists) — the mine that detonates at pickup time (cand 34).
+* **ao-worktrees**    every live AO session worktree of a tide project carries
+                      tide's hooks (session-start, handoff-confirm, context-watch).
 
 DESIGN RAZOR — this is on-demand ONLY. It is NEVER wired into a hook, a daemon, or
 any periodic checker (that would violate tide's no-autonomy razor; SessionStart
@@ -341,6 +343,52 @@ def check_roster_worktrees(control_home: Optional[Path] = None) -> CheckResult:
     )
 
 
+# tide's hooks an AO session cannot live without (SOC-98/SOC-101 F9): the board's
+# binding, the handoff flip + words of the owner, the context ladder.
+AO_WORKTREE_HOOKS = (install.SESSION_START_CMD, install.HANDOFF_CONFIRM_CMD,
+                     install.CONTEXT_WATCH_CMD)
+
+
+def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None) -> CheckResult:
+    """Warn when a live AO session worktree of a tide project lacks tide's hooks.
+
+    New raises get them from the AO ``postCreate`` step (``tide install-hooks
+    --worktree``); worktrees cut before it — or by hand in AO — may still miss them.
+    Live = the worktree dir exists (AO removes it with the session). A tide project =
+    the worktree carries ``.tide``. Lists ``<project>/<session> (нет: …)``; the fix is
+    ``tide install-hooks --worktree`` inside it, or the next raise.
+    """
+    root = Path(worktrees_root) if worktrees_root is not None else paths.ao_worktrees_root()
+    if not root.is_dir():
+        return CheckResult("ao-worktrees", STATUS_OK, "AO worktrees: none here")
+    bad: List[str] = []
+    seen = 0
+    for wt in sorted(p for proj in root.iterdir() if proj.is_dir()
+                     for p in proj.iterdir() if p.is_dir()):
+        if not (wt / ".tide").exists():
+            continue
+        seen += 1
+        try:
+            data = install._load(install.settings_path(wt))
+        except install.InstallError:
+            data = {}
+        hooks = data.get(install.HOOKS_KEY) if isinstance(data, dict) else None
+        hooks = hooks if isinstance(hooks, dict) else {}
+        present = {h.get("command") for groups in hooks.values() if isinstance(groups, list)
+                   for g in groups if isinstance(g, dict)
+                   for h in (g.get(install.HOOKS_KEY) or []) if isinstance(h, dict)}
+        missing = [c.replace("tide hook ", "") for c in AO_WORKTREE_HOOKS if c not in present]
+        if missing:
+            bad.append("{0}/{1} (нет: {2})".format(wt.parent.name, wt.name, ", ".join(missing)))
+    if bad:
+        return CheckResult(
+            "ao-worktrees", STATUS_WARN,
+            "без хуков tide: {0} — доедут при следующем подъёме или "
+            "`tide install-hooks --worktree` в каталоге".format("; ".join(bad)))
+    return CheckResult("ao-worktrees", STATUS_OK,
+                       "хуки tide во всех {0} AO-worktree tide-проектов".format(seen))
+
+
 def run_doctor(
     root: Optional[Path],
     *,
@@ -364,6 +412,7 @@ def run_doctor(
         check_install_marker(marker_path=marker_path),
         check_channel(source=source, network=network),
         check_roster_worktrees(control_home),
+        check_ao_worktree_hooks(),
     ]
     return DoctorReport(results)
 
