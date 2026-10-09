@@ -315,9 +315,11 @@ def is_harness_notice(text: str) -> bool:
     Закрытые вставки посреди реплики вырезает :func:`human_text`; тут — тексты,
     которые целиком служебные: «Your claude.ai usage limit has reset…»,
     «[Cross-session idle notice] …», «[SYSTEM NOTIFICATION - NOT USER INPUT] …»."""
-    flat = " ".join(str(text or "").split())
+    raw = str(text or "")
+    flat = " ".join(_PASTED_TAG.sub("", raw).split())
     if not flat:
-        return False
+        # одна обёртка pasted_content без слов — след доставки, записанной до F47
+        return bool(_PASTED_TAG.search(raw))
     return flat.startswith(_INJECTED_PREFIXES) or bool(_USAGE_RESET.match(flat))
 
 

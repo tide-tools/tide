@@ -412,3 +412,17 @@ def test_one_huge_line_is_cut_by_chars():
     assert len(parts) == 3
     assert all(len(p.encode()) <= _ho.AO_MESSAGE_MAX_BYTES for p in parts)
     assert "".join(p.split("] ", 1)[1] for p in parts) == "я" * 5000
+
+
+def test_old_false_line_in_dialog_md_is_skipped_on_read(tmp_path):
+    """Строка, записанная до F47 (dialog.md:6 нити board), в сид не идёт."""
+    from tide.arc import dialog
+
+    thread = tmp_path / "t"
+    thread.mkdir()
+    dialog.dialog_path(thread).write_text(
+        dialog.HEADER + '- 2026-10-09T14:09:15 · Гриша · ao · <pasted_content id="29c7">\n'
+        "- 2026-10-09T14:10:00 · Гриша · tg · старые записи удаляем\n", encoding="utf-8")
+    lines = dialog._thread_lines(thread)
+    assert not any("pasted_content" in ln for ln in lines)
+    assert any("старые записи удаляем" in ln for ln in lines)
