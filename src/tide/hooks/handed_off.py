@@ -14,7 +14,8 @@
 
 Пересылаются только сообщения других сессий — по их обёртке
 (``<ao-session-delivery …>[from X]`` и ``<cross-session-message from-name="X">``);
-слова человека в окне старой не трогаем. Не пересылаем то, что прислала сама новая
+слова человека в окне старой не трогаем. Пачка доставок в одном промпте —
+каждая пересылается отдельно и пишется в журнал (F59). Не пересылаем то, что прислала сама новая
 (иначе пинг-понг) и менеджер (он про приём уже знает механикой — ``close-proposed``),
 и не шлём самой себе. Одна доставка — одна пересылка: id доставки пишется в
 ``.tide/state/forwarded.log`` control-home. Отправителю и Грише хук ничего не шлёт.
@@ -54,22 +55,40 @@ _UDS = re.compile(
 _ATTR = re.compile(r"([\w-]+)=\"([^\"]*)\"")
 
 
-def incoming(prompt: str) -> Optional[Dict[str, str]]:
-    """Сообщение другой сессии → ``{id, sender, body, channel}``; слова человека — None."""
+def _ao_msg(m) -> Dict[str, str]:
+    return {"id": m.group(1), "sender": m.group(2), "channel": "ao",
+            "body": m.group(3).strip()}
+
+
+def _uds_msg(m) -> Dict[str, str]:
+    attrs = dict(_ATTR.findall(m.group(1)))
+    sender = attrs.get("from-name") or attrs.get("from") or "?"
+    body = m.group(2).strip()
+    key = "uds:{0}:{1}".format(
+        sender, hashlib.sha1(body.encode("utf-8")).hexdigest()[:12])
+    return {"id": key, "sender": sender, "channel": "uds", "body": body}
+
+
+def incoming_all(prompt: str) -> List[Dict[str, str]]:
+    """ВСЕ сообщения других сессий в промпте, по порядку (SOC-101 F59): пачка
+    доставок приходит одним промптом — раньше пересылалась только первая."""
     text = str(prompt or "")
-    m = _AO_DELIVERY.search(text)
-    if m:
-        return {"id": m.group(1), "sender": m.group(2), "channel": "ao",
-                "body": m.group(3).strip()}
-    m = _UDS.search(text)
-    if m:
-        attrs = dict(_ATTR.findall(m.group(1)))
-        sender = attrs.get("from-name") or attrs.get("from") or "?"
-        body = m.group(2).strip()
-        key = "uds:{0}:{1}".format(
-            sender, hashlib.sha1(body.encode("utf-8")).hexdigest()[:12])
-        return {"id": key, "sender": sender, "channel": "uds", "body": body}
-    return None
+    found = [(m.start(), m.end(), _ao_msg(m)) for m in _AO_DELIVERY.finditer(text)]
+    found += [(m.start(), m.end(), _uds_msg(m)) for m in _UDS.finditer(text)]
+    found.sort(key=lambda t: t[0])
+    out, edge = [], -1
+    for start, end, msg in found:
+        if start < edge:
+            continue  # обёртка внутри тела другой доставки — часть её текста
+        out.append(msg)
+        edge = end
+    return out
+
+
+def incoming(prompt: str) -> Optional[Dict[str, str]]:
+    """Первое сообщение другой сессии → ``{id, sender, body, channel}``; слова человека — None."""
+    got = incoming_all(prompt)
+    return got[0] if got else None
 
 
 def _sender_is(sender: str, ao_id: str) -> bool:
@@ -294,28 +313,12 @@ def _manager_ao(home: Path) -> str:
         return ""
 
 
-def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
-             env: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Входящее сообщение старой, уже отдавшей нить → текст в её контекст (и пересылка
-    новой). None — сессия нить не отдавала, или пришли слова человека."""
-    e = os.environ if env is None else env
-    msg = incoming(str(payload.get("prompt") or ""))
-    if msg is None:
-        return None
+def _one(home: Path, rec: Dict[str, object], msg: Dict[str, str], *,
+         new: Dict[str, str], mine_ao: str, e: Dict[str, str]) -> str:
+    """Одно входящее старой → строка в её контекст (и пересылка новой)."""
     from .. import handoff_queue as hq
 
-    home = Path(home) if home is not None else paths.control_home()
-    sids = [s for s in dict.fromkeys([str(payload.get("session_id") or ""),
-                                      (e.get("CLAUDE_CODE_SESSION_ID") or "").strip()]) if s]
-    rec = None
-    for sid in sids:
-        rec = hq.is_dissolved(home, sid)
-        if rec:
-            break
-    if not rec:
-        return None
-    new = successor(home, rec)
-    new_ao, mine_ao = new.get("ao_session", ""), (e.get(hq.AO_SESSION_ENV) or "").strip()
+    new_ao = new.get("ao_session", "")
     addr = _address(new)
     if TWO_HEADS_MARK in msg["body"]:
         # тревога уже ушла обеим — её копию старой новой не пересылаем и новую
@@ -360,6 +363,37 @@ def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
                         new_ao=new_ao, mine=False)
 
 
+def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
+             env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """Входящие сообщения старой, уже отдавшей нить → текст в её контекст (и
+    пересылка новой). Каждая доставка пачки — отдельно (F59). None — сессия нить не
+    отдавала, или пришли слова человека."""
+    e = os.environ if env is None else env
+    msgs = incoming_all(str(payload.get("prompt") or ""))
+    if not msgs:
+        return None
+    from .. import handoff_queue as hq
+
+    home = Path(home) if home is not None else paths.control_home()
+    sids = [s for s in dict.fromkeys([str(payload.get("session_id") or ""),
+                                      (e.get("CLAUDE_CODE_SESSION_ID") or "").strip()]) if s]
+    rec = None
+    for sid in sids:
+        rec = hq.is_dissolved(home, sid)
+        if rec:
+            break
+    if not rec:
+        return None
+    new = successor(home, rec)
+    mine_ao = (e.get(hq.AO_SESSION_ENV) or "").strip()
+    notes: List[str] = []
+    for msg in msgs:
+        note = _one(home, rec, msg, new=new, mine_ao=mine_ao, e=e)
+        if note and note not in notes:
+            notes.append(note)
+    return "\n".join(notes) if notes else None
+
+
 def cmd_prompt(args) -> int:
     """``tide hook handoff-confirm`` целиком: подтверждение приёма
     (:func:`tide.handoff_queue.cmd_handoff_confirm`), затем — для старой, отдавшей
@@ -387,4 +421,4 @@ def cmd_prompt(args) -> int:
 
 __all__ = ["AO_MESSAGE_MAX_BYTES", "FORWARD_ENV", "OLD_ROLE", "TWO_HEADS_MARK", "cmd_prompt",
            "context_text", "forward_parts", "forward_text",
-           "incoming", "redirect", "successor", "two_heads_alarm", "two_heads_text"]
+           "incoming", "incoming_all", "redirect", "successor", "two_heads_alarm", "two_heads_text"]
