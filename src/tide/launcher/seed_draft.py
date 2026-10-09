@@ -924,6 +924,129 @@ def topic_pointer(root: Path, thread_entry: Path) -> str:
     return "- топик: " + " · ".join(parts)
 
 
+# --- входящие поручения из транскрипта передающей сессии (SOC-101 п.10) -----------
+#
+# continuity-audit · 01 → 02 потеряла поручение, пришедшее через ao send / uds после
+# последнего пульса: сид несёт только то, что сессия записала. Транскрипт Claude
+# Code пишет каждую доставку — берём их механически.
+
+INCOMING_LOOKBACK_HOURS = 6     # пульса не было — смотрим столько часов назад
+INCOMING_MAX = 10               # потолок строк в «в работе прямо сейчас»
+INCOMING_CLIP = 200
+_TRANSCRIPT_TAIL = 8 * 1024 * 1024
+_DELIVERY_RE = re.compile(
+    r"<ao-session-delivery\b[^>]*>\s*\[from ([^\]]+)\]\s*(.*?)\s*(?:</ao-session-delivery>|\Z)",
+    re.S)
+_CROSS_RE = re.compile(
+    r"<cross-session-message\b[^>]*?\bfrom-name=\"([^\"]+)\"[^>]*>\s*(.*?)\s*"
+    r"(?:</cross-session-message>|\Z)", re.S)
+_FULL_STAMP = re.compile(r"^-?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)")
+
+
+def claude_projects_dir() -> Path:
+    """Где Claude Code держит транскрипты: ``$CLAUDE_CONFIG_DIR/projects``."""
+    base = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    return (Path(base).expanduser() if base else Path.home() / ".claude") / "projects"
+
+
+def transcript_path(sid: str, projects: Optional[Path] = None) -> Optional[Path]:
+    """``<projects>/<папка cwd>/<sid>.jsonl`` — папку не угадываем (сессия могла жить
+    в AO-worktree), ищем по имени файла; несколько — самый свежий."""
+    sid = (sid or "").strip()
+    base = Path(projects) if projects is not None else claude_projects_dir()
+    if not sid or not base.is_dir():
+        return None
+    found = [p for p in base.glob("*/{0}.jsonl".format(sid)) if p.is_file()]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def _last_pulse_at(context: Sequence[str]):
+    from datetime import datetime
+
+    for ln in reversed(live_lines(context)):
+        m = _FULL_STAMP.match(ln.strip())
+        if m:
+            try:
+                return datetime.fromisoformat(m.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _user_text(row: dict) -> str:
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text") or "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def incoming_orders(transcript: Optional[Path], since) -> List[str]:
+    """Входящие сообщения других сессий в транскрипте после *since* (местное
+    время) → ``- поручено мне — от <X> в ЧЧ:ММ: <первые ~200 знаков>``.
+
+    Берутся доставки AO (``<ao-session-delivery …>[from X]``) и межсессионная почта
+    (``<cross-session-message … from-name="X">``); уведомления харнесса (F17) —
+    нет. Свежие сверху, не больше :data:`INCOMING_MAX`, остальное — счётом."""
+    import json
+
+    if transcript is None:
+        return []
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _TRANSCRIPT_TAIL))
+            raw = fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    found = []
+    for ln in raw.splitlines():
+        if "session-delivery" not in ln and "cross-session-message" not in ln:
+            continue
+        try:
+            row = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "user":
+            continue
+        at = _dialog._stamp(str(row.get("timestamp") or ""))
+        if at is None or (since is not None and at <= since):
+            continue
+        text = _user_text(row)
+        for rx in (_DELIVERY_RE, _CROSS_RE):
+            for m in rx.finditer(text):
+                who, body = m.group(1).strip(), " ".join(m.group(2).split())
+                if not body or _dialog.is_harness_notice(body):
+                    continue
+                found.append((at, who, body))
+    found.sort(key=lambda r: r[0], reverse=True)
+    out = ["- поручено мне — от {0} в {1}: {2}".format(
+        who, at.strftime("%H:%M"), _dialog.clip(body, INCOMING_CLIP))
+        for at, who, body in found[:INCOMING_MAX]]
+    if len(found) > INCOMING_MAX:
+        out.append("- (ещё поручений: {0} — транскрипт {1})".format(
+            len(found) - INCOMING_MAX, transcript))
+    return out
+
+
+def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
+    """Входящие поручения передающей сессии с последнего пульса (нет пульса —
+    за :data:`INCOMING_LOOKBACK_HOURS`). Никогда не падает."""
+    from datetime import datetime, timedelta
+
+    try:
+        sid = (fields.read_field(Path(session_entry) / "arc.md",
+                                 offload.CLAUDE_SESSION_FIELD) or "").strip()
+        since = _last_pulse_at(context) or (
+            (now or datetime.now()) - timedelta(hours=INCOMING_LOOKBACK_HOURS))
+        return incoming_orders(transcript_path(sid), since)
+    except Exception:  # noqa: BLE001 — сид важнее
+        return []
+
+
 def manager_line() -> str:
     """Текущий адрес менеджера одной строкой — резолвером :mod:`tide.whois`
     (``~/.tide/manager.json``, без него — цепочка хендоффов нити менеджера), а не
@@ -985,6 +1108,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             block_awaiting(_auto.open_questions(root, thread_entry), works)),
         NEXT: block_next(section_body(passport, "next")),
         INFLIGHT: _merge_lines(labels.get("inflight", []),
+                               session_incoming(session_entry,
+                                                section_body(passport, "context")),
                                _auto.open_items(root, thread_entry)),
         UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"))

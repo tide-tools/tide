@@ -430,3 +430,69 @@ def test_seed_skeleton_cli_verb(live, monkeypatch, capsys):
     assert "досеян каркас: ожидание Гриши, где мы, опыт" in out
     assert "пусты — ожидание Гриши, где мы, опыт" in out    # каркас — ещё не слова
     assert "### опыт" in pp.read_text(encoding="utf-8")
+
+
+# --- п.10 · входящие поручения из транскрипта передающей сессии ---------------------
+
+SID = "bb6b9092-af35-51b7-88c0-ca7a67b09137"  # claude-session паспорта-фикстуры
+
+
+@pytest.fixture
+def msk(monkeypatch):
+    """Пульсы паспорта — местное время −03, транскрипт — UTC."""
+    import time
+
+    monkeypatch.setenv("TZ", "Etc/GMT+3")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def _transcript(live_root_unused=None) -> Path:
+    import os
+
+    d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "-HOME--ao-tide-stack-10"
+    d.mkdir(parents=True, exist_ok=True)
+    dst = d / "{0}.jsonl".format(SID)
+    dst.write_text((FIX / "transcript-continuity-audit-01.jsonl").read_text(encoding="utf-8"),
+                   encoding="utf-8")
+    return dst
+
+
+def test_incoming_orders_after_the_last_pulse_reach_inflight(live, msk):
+    _transcript()
+    inflight = _block(ah.build_auto_seed(live["sess"]), "в работе прямо сейчас").splitlines()
+    orders = [ln for ln in inflight if ln.startswith("- поручено мне")]
+    assert orders[0].startswith("- поручено мне — от tide-stack-19-a8 в 07:33: main · 03 → "
+                                "continuity-audit: пересмотри C14 management-9→11")
+    assert len(orders[0]) < 260                                   # ~200 знаков текста
+    assert orders[1] == ("- поручено мне — от management-13 в 07:31: Поручение: промерь "
+                         "автосид main после правки F22–F24 и пришли вердикт комментом в "
+                         "SOC-101 к 13:00.")
+    assert len(orders) == 2  # до пульса ПЕРЕДАЧА (06:03) и уведомления харнесса — нет
+    text = "\n".join(inflight)
+    assert "usage limit" not in text and "task-notification" not in text
+    assert "[from me]" not in text                                # ответ ассистента
+
+
+def test_incoming_without_pulse_uses_lookback_and_ceiling(tmp_path, msk):
+    import json
+    from datetime import datetime
+
+    t = tmp_path / "t.jsonl"
+    t.write_text("\n".join(json.dumps({
+        "type": "user", "timestamp": "2026-10-09T10:{0:02d}:00Z",
+        "message": {"content": "<ao-session-delivery>[from m-1] поручение {0}"
+                               "</ao-session-delivery>".format(i)}}).replace("{0:02d}", "%02d" % i)
+        for i in range(15)), encoding="utf-8")
+    out = seed_draft.incoming_orders(t, datetime(2026, 10, 9, 6, 59))
+    assert len(out) == seed_draft.INCOMING_MAX + 1
+    assert out[0].endswith("поручение 14") and out[-1].startswith("- (ещё поручений: 5")
+    assert seed_draft.incoming_orders(t, datetime(2026, 10, 9, 8, 0)) == []
+    # пульса нет — окно за INCOMING_LOOKBACK_HOURS от «сейчас»
+    assert seed_draft._last_pulse_at([]) is None
+    sess = tmp_path / "s"
+    sess.mkdir()
+    (sess / "arc.md").write_text("# s\n\nclaude-session: nope\n", encoding="utf-8")
+    assert seed_draft.session_incoming(sess, [], now=datetime(2026, 10, 9, 12, 0)) == []
