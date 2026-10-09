@@ -1645,6 +1645,132 @@ def session_taken_at(context: Sequence[str]):
     return stamps[0][0] if stamps else None
 
 
+# --- фоновые сабагенты передающей сессии (SOC-101 F45) -------------------------
+#
+# «В работе» не видел своих воркеров: ``Agent`` в фоне (или возобновлённый
+# SendMessage'ем) без ``<task-notification>`` о конце — жив в старой сессии, и
+# новая запускала дубль на тот же файл (пара 12, acceptance-05 §9 п.2).
+
+_NOTIF_RE = re.compile(r"<task-notification>.*?<tool-use-id>([\w-]+)</tool-use-id>"
+                       r"(?:.*?<status>(\w+)</status>)?", re.S)
+_LAUNCH_RE = re.compile(r"Async agent launched.*?agentId:\s*([\w-]+)", re.S)
+_RESUME_RE = re.compile(r"\"resumedAgentId\"\s*:\s*\"([\w-]+)\"")
+
+
+def _result_text(block: dict) -> str:
+    c = block.get("content")
+    if isinstance(c, list):
+        return "\n".join(str(x.get("text") or "") for x in c if isinstance(x, dict))
+    return str(c or "")
+
+
+def _git_mark(cwd: str, at) -> "tuple[str, str]":
+    """``(корень репо, короткий sha последнего коммита до *at*)`` для *cwd*; не git —
+    пусто."""
+    import subprocess
+
+    if not cwd or not Path(cwd).is_dir():
+        return "", ""
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        sha = subprocess.run(["git", "-C", cwd, "log", "--all", "-1", "--format=%h",
+                              "--before={0}".format(at.isoformat())],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    return top, sha
+
+
+def background_workers(transcript: Optional[Path], git=_git_mark) -> List[str]:
+    """Незавершённые фоновые сабагенты в транскрипте (F45) — строками «в работе».
+
+    Запуск — ``Agent`` с ответом «Async agent launched … agentId: X»; возобновление —
+    SendMessage с ``resumedAgentId``; конец — ``<task-notification>`` с тем же
+    tool-use-id (любой статус). Что не кончилось — «воркер «описание» — жив в
+    старой сессии, итог перешлёт старая; адрес SendMessage/task-id; коммиты — git log
+    <репо> после <sha>»."""
+    import json
+
+    if transcript is None:
+        return []
+    try:
+        raw = Path(transcript).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    calls = {}    # tool_use_id → (описание, agentId из входа SendMessage, время, cwd)
+    desc_of = {}  # agentId → описание
+    runs = {}     # tool_use_id → (agentId, описание, время, cwd)
+    done = set()
+    for ln in raw.splitlines():
+        if ('"tool_use"' not in ln and '"tool_result"' not in ln
+                and "task-notification" not in ln):
+            continue
+        try:
+            row = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        at = _dialog._stamp(str(row.get("timestamp") or ""))
+        if row.get("type") == "assistant":
+            for b in (row.get("message") or {}).get("content") or []:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") in ("Agent", "Task"):
+                    calls[b.get("id")] = (str(inp.get("description") or "без описания"),
+                                          "", at, str(row.get("cwd") or ""))
+                elif b.get("name") == "SendMessage":
+                    calls[b.get("id")] = ("", str(inp.get("to") or ""), at,
+                                          str(row.get("cwd") or ""))
+            continue
+        if row.get("type") not in ("user", "attachment"):
+            continue
+        content = (row.get("message") or {}).get("content")
+        blocks = content if isinstance(content, list) else []
+        for b in blocks:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            call = calls.get(b.get("tool_use_id"))
+            if call is None:
+                continue
+            text = _result_text(b)
+            m = _LAUNCH_RE.search(text) or _RESUME_RE.search(text)
+            if not m:
+                continue
+            agent = m.group(1)
+            desc = call[0] or desc_of.get(agent, "")
+            if call[0]:
+                desc_of[agent] = call[0]
+            runs[b.get("tool_use_id")] = (agent, desc, call[2] or at, call[3])
+        for m in _NOTIF_RE.finditer(_user_text(row) or json.dumps(content, ensure_ascii=False)):
+            done.add(m.group(1))
+    live = {}
+    for tid, run in runs.items():
+        if tid not in done:
+            live[run[0]] = run  # один воркер — одна строка (последний запуск)
+    out = []
+    for agent, desc, at, cwd in sorted(live.values(), key=lambda r: r[2] or 0, reverse=True):
+        top, sha = git(cwd, at) if at else ("", "")
+        tail = "; коммиты — git log {0} после {1}".format(top, sha) if top and sha else ""
+        out.append("- воркер «{0}» — жив в старой сессии (с {1}), итог перешлёт старая; "
+                   "адрес: SendMessage {2} из старой, task-id {2}{3}".format(
+                       desc or "без описания", at.strftime("%H:%M") if at else "?",
+                       agent, tail))
+    return out
+
+
+def session_workers(session_entry: Path) -> List[str]:
+    """Фоновые воркеры передающей сессии (:func:`background_workers`). Не падает."""
+    try:
+        sid = (fields.read_field(Path(session_entry) / "arc.md",
+                                 offload.CLAUDE_SESSION_FIELD) or "").strip()
+        return background_workers(transcript_path(sid))
+    except Exception:  # noqa: BLE001 — сид важнее
+        return []
+
+
 def session_incoming(session_entry: Path, context: Sequence[str], now=None) -> List[str]:
     """Входящие поручения и материалы передающей сессии ЗА ВСЮ ЕЁ ЖИЗНЬ — с приёма
     (:func:`session_taken_at` минус :data:`INCOMING_TAKE_SLACK_MIN`), не закрытые
@@ -1749,6 +1875,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             block_awaiting(_auto.open_questions(root, thread_entry), works)),
         NEXT: block_next(section_body(passport, "next")),
         INFLIGHT: _merge_lines(labels.get("inflight", []),
+                               session_workers(session_entry),
                                session_incoming(session_entry,
                                                 section_body(passport, "context")),
                                _auto.open_items(root, thread_entry)),
