@@ -105,6 +105,28 @@ def passport_path(entry_dir: Path) -> Path:
     return Path(entry_dir) / "arc.md"
 
 
+def thread_session_title(session_dir: Path) -> Optional[str]:
+    """«нить · NN» — the name of a thread's session: thread slug + its two-digit number.
+
+    ``<arcs>/28-@ao-and-order/arcs/03-ao`` → ``ao-and-order · 03``. The handoff gives
+    this title to the session it raises — the passport's ``title:`` and the AO
+    sidebar name are one text, so the human finds the same session by the same words
+    everywhere. None when *session_dir* is not a session inside a thread
+    (``<thread>/arcs/NN-slug``).
+    """
+    d = Path(session_dir)
+    if d.parent.name != paths.ARCS_DIRNAME:
+        return None
+    num = slug.strip_marker(d.name).split("-", 1)[0]
+    owner = slug.strip_marker(d.parent.parent.name)
+    if not owner.split("-", 1)[0].isdigit():
+        return None  # a top-stream arc (``.tide/arcs/NN-slug``), not a thread's session
+    thread = slug.entry_slug(owner)
+    if not num.isdigit() or not thread:
+        return None
+    return "{0} · {1}".format(thread, num)
+
+
 # --- entry kind (arc / goal / thread) --------------------------------------
 
 def entry_kind(entry_dir: Path) -> str:

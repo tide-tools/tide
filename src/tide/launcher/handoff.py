@@ -513,6 +513,12 @@ def run_handoff(
                 owner_root, tslug, _unique_pickup_slug(entry, base=tslug),
                 goal=_pickup_goal(entry, text),
             )
+            # «нить · NN» from birth — the same name the spawn gives the AO session
+            from .. import fields as _fields
+
+            title = _stream.thread_session_title(session_born)
+            if title:
+                _fields.set_field(session_born / "arc.md", "title", title)
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             seed_text = text

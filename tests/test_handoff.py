@@ -479,3 +479,33 @@ def test_run_handoff_plain_arc_keeps_legacy_anchor(tmp_project, monkeypatch, tmp
     handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue")
     (rec,) = handoff_queue.list_offers(home)
     assert rec["arc"] == "ship-it"                        # unchanged for non-threads
+
+
+# --- «нить · NN»: the name of the session a handoff raises -------------------------
+
+def test_thread_session_title_is_thread_and_two_digit_number(tmp_path):
+    sess = tmp_path / ".tide" / "arcs" / "28-@ao-and-order" / "arcs" / "03-ao"
+    assert stream.thread_session_title(sess) == "ao-and-order · 03"
+    closed = tmp_path / ".tide" / "arcs" / "__28-@ao-and-order__" / "arcs" / "__04-x__"
+    assert stream.thread_session_title(closed) == "ao-and-order · 04"
+
+
+def test_thread_session_title_none_outside_a_thread(tmp_path):
+    # a top-stream arc (.tide/arcs/NN-slug) is not a thread's session
+    assert stream.thread_session_title(tmp_path / ".tide" / "arcs" / "05-ship") is None
+    assert stream.thread_session_title(tmp_path / "workspace" / "07-x") is None
+
+
+def test_run_handoff_born_session_is_titled_thread_and_number(tmp_project, monkeypatch, tmp_path):
+    from tide import fields
+
+    _queue_home(monkeypatch, tmp_path)
+    entry = stream.new_thread(tmp_project, "ao-and-order", goal="переезд в AO")
+    stream.new_session(tmp_project, "ao-and-order", "ao")          # 01
+    stream.new_session(tmp_project, "ao-and-order", "ao")          # 02
+    res = handoff.run_handoff(tmp_project, arc_ref="ao-and-order", mode="continue",
+                              from_session="o1")
+    born = res.summary_path.parent.parent
+    assert born.name.startswith("03-")
+    assert fields.read_field(born / "arc.md", "title") == "ao-and-order · 03"
+    assert entry.name.endswith("@ao-and-order")

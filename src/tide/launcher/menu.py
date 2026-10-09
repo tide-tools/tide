@@ -835,13 +835,26 @@ def launch_handoff(
     # turn so it STARTS the reception instead of sitting blank (cand 100, twin of the
     # spark trigger cand 96). The distil rides the system prompt; this turn executes it.
     slug = record.get("slug") or "нить"
+    session_dir = Path(seed_path).parent.parent
+    # The raised session is named «нить · NN» — ONE text for the passport's
+    # ``title:`` and the terminal/AO sidebar name, so the human finds it by the same
+    # words everywhere (decision 07 follow-up). Stamped before the spawn: a failed
+    # spawn leaves the right name on a session that is still waiting for ▶.
+    title = stream.thread_session_title(session_dir)
+    if title and not dry_run:
+        try:
+            fields.set_field(session_dir / "arc.md", "title", title)
+        except OSError:
+            pass  # best-effort: the spawn must not fail over a title
+    keep_title = (" Заголовок сессии «{0}» уже стоит — не меняй его: в старт-гейте "
+                  "ставь только цель.".format(title) if title else "")
     pickup_trigger = (
         "Ты — свежая сессия, принявшая нить «{0}» по тёплому хендоффу (▶ с доски). "
         "НЕ отчитывайся о состоянии — первым же ходом выполни инструкцию системного "
         "промпта: прими нить (прочитай дистилл прошлой сессии, продолжи с точки "
-        "хендоффа), закрой старт-гейт первым tide offload. Приём подтверждает сама "
+        "хендоффа), закрой старт-гейт первым tide offload.{1} Приём подтверждает сама "
         "сессия — разрешения на приём не спрашивай."
-    ).format(slug)
+    ).format(slug, keep_title)
     # ONE launch path (wave 3): sid pinned before spawn, the offer RESERVED for that
     # sid — the flip to taken happens on the session's first message (signed A:
     # reception is real only when the terminal actually said hello; a failed spawn
@@ -851,11 +864,11 @@ def launch_handoff(
     return launch_session(
         control_home,
         project=project,
-        session_dir=Path(seed_path).parent.parent,
+        session_dir=session_dir,
         adapter=adapter,
         seed_file=seed_path,
         trigger=pickup_trigger,
-        title="handoff · {0}".format(record["slug"]),
+        title=title or "handoff · {0}".format(record["slug"]),
         role=role,
         handoff_key=str(record["name"]),
         skip_permissions=skip_permissions,
