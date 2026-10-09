@@ -26,15 +26,17 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from . import fields, paths
 from .arc.stream import StreamError
 
-FIRST_PULSES = 3                 # сколько первых настоящих пульсов новой смотрим
-PULSES_ENV = "TIDE_SYNC_PULSES"
+FIRST_PULSES = 3                 # столько настоящих пульсов новой — автозапуск сверки
+PULSES_ENV = "TIDE_SYNC_PULSES"  # потолок пульсов в сверке (по умолчанию — все после приёма)
+REPO_ENV = "TIDE_SYNC_REPO"      # репо кода нити (через «:»), коммиты после ПЕРЕДАЧИ
 NO_ANSWER_MIN = 30               # ждёт ответа дольше — «нет ответа»
 REPORT_NAME = "seam-sync.md"     # отчёт сверки в workspace/ новой
 SENDER = "шов-синк"
@@ -68,7 +70,21 @@ _SUFFIX = re.compile(r"\s*\((?:пульс [^()]*|маркер в пульсе|и
 _SEE_INFLIGHT = re.compile(r"см\. «в работе прямо сейчас»\s*$")
 _DROP = re.compile(r"сним(?:аю|аем|ает)\s*:\s*(.+?)\s+[—–-]\s+(.+?)(?=\s*(?:[;·]|\bсним(?:аю|аем|ает)\s*:|$))",
                    re.I)
-_ID = re.compile(r"(?<![\w-])(?:[a-z]+(?:-[a-z]+)*-\d+[a-z0-9]*|f\d{1,3}|[0-9a-f]{7,40})(?![\w-])")
+# id сессии с хвостом uds (tide-stack-20-9e) — целиком, иначе ключ теряется (SOC-143)
+_ID = re.compile(r"(?<![\w-])(?:[a-z]+(?:-[a-z]+)*-\d+(?:-[0-9a-z]{2})?[a-z0-9]*|f\d{1,3}|"
+                 r"[0-9a-f]{7,40})(?![\w-])")
+_ORDER = re.compile(r"^поручено мне\s+—\s+от\s+(\S+?)(?:\s+в\s+(\d{1,2}:\d{2}))?\s*:\s*(.*)$", re.S)
+_F_RUN = re.compile(r"(?<![\w-])f(\d{1,3})(?:\s*[–-]\s*f(\d{1,3}))?(?!\w)", re.I)
+_HASH = re.compile(r"(?<![\w])(?:[a-z][\w.-]*@)?([0-9a-f]{7,40})(?![\w])")
+_DONE_WORD = r"(?:сделан|сдан|закрыт|готов|done)\w*"
+_F_LIST = r"((?:f\d{1,3}(?:\s*[–-]\s*f\d{1,3})?[\s/,+и]*)+)"
+_DONE_AFTER = re.compile(_DONE_WORD + r"\s+" + _F_LIST, re.I)
+_DONE_BEFORE = re.compile(_F_LIST + r"\s*(?:—\s*)?" + _DONE_WORD, re.I)
+HASH_NEAR = 25                   # F-N не дальше стольких знаков от хеша — «F60 tide@0e8dcd8»
+# «ждёт Гришу» — только решения Гриши (контракт v1): не работа нитей и не In Review
+_FOR_GRISHA = re.compile(r"жд[её]т гриш|решени[ея] гриш|реша[её]т гриш|❓", re.I)
+_NOT_GRISHA = re.compile(r"на проверке\s*\(in review\)|done ставит", re.I)
+_FROM_NEXT = re.compile(r"\(из следующего шага\)\s*$")
 _WORD = re.compile(r"[a-zа-я]{5,}")
 _STOP = {
     "после", "через", "старой", "старая", "новой", "новая", "сессии", "сессия", "только",
@@ -129,8 +145,25 @@ def seed_items(seed_text: str) -> Dict[str, List[str]]:
         if key == "tails":
             items = [i for i in items if not _SEE_INFLIGHT.search(i)]
         out[key] = items
-    out["awaiting"] = [i for i in (_clean(x) for x in _block(seed_text, AWAITING_HEADS))
-                       if _is_item(i)]
+    out["awaiting"] = awaiting_items(seed_text, out)
+    return out
+
+
+def awaiting_items(seed_text: str, items: Optional[Dict[str, List[str]]] = None) -> List[str]:
+    """«Что решить» — только решения Гриши (поправка main · 05, контракт v1): строки
+    «SOC-N на проверке (In Review) — Done ставит проверяющий» (Done ставит менеджер) и
+    работа нитей (строка «(из следующего шага)», повтор пункта «дальше»/«хвосты») —
+    вон; явное «ждёт Гришу / решение Гриши / ❓» остаётся всегда."""
+    work = {_norm(i) for key in ("next", "tails") for i in (items or {}).get(key, [])}
+    out = []
+    for raw in _block(seed_text, AWAITING_HEADS):
+        item = _clean(raw)
+        if not _is_item(item):
+            continue
+        if not _FOR_GRISHA.search(item) and (
+                _NOT_GRISHA.search(item) or _FROM_NEXT.search(raw) or _norm(item) in work):
+            continue
+        out.append(item)
     return out
 
 
@@ -173,10 +206,10 @@ def _parse_ts(raw: object) -> Optional[datetime]:
     return ts.astimezone().replace(tzinfo=None) if ts.tzinfo else ts
 
 
-def first_pulses(passport_text: str, n: int = FIRST_PULSES,
+def first_pulses(passport_text: str, n: int = 0,
                  since: object = None) -> List["tuple[str, str]"]:
     """Первые *n* настоящих пульсов ``## context`` (не механика приёма), не раньше
-    *since* → ``[(штамп, текст)]``."""
+    *since* → ``[(штамп, текст)]``; *n* ≤ 0 — все."""
     cutoff = _parse_ts(since)
     out: List["tuple[str, str]"] = []
     in_ctx = False
@@ -191,7 +224,7 @@ def first_pulses(passport_text: str, n: int = FIRST_PULSES,
         if cutoff is not None and (ts is None or ts < cutoff):
             continue
         out.append((m.group(1), m.group(2)))
-        if len(out) >= n:
+        if 0 < n <= len(out):
             break
     return out
 
@@ -244,16 +277,133 @@ def drops(pulses: Sequence["tuple[str, str]"]) -> List["tuple[str, str]"]:
     return out
 
 
+# --- сделано после ПЕРЕДАЧИ и закрытые поручения (поправка main · 05) -------------
+
+def f_ids(text: str) -> set:
+    """Номера находок ``F60``, ``F61/F62``, ``F55–F63`` (диапазон раскрыт) → ``{"f60", …}``."""
+    out = set()
+    for m in _F_RUN.finditer(text or ""):
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) else lo
+        if not lo <= hi <= lo + 30:
+            hi = lo
+        out.update("f{0}".format(i) for i in range(lo, hi + 1))
+    return out
+
+
+_AFTER_DEP = re.compile(r"(?:после|до|когда|ждёт|ждет|вслед за)\s+" + _F_LIST, re.I)
+
+
+def work_f_ids(item: str) -> set:
+    """F-N, которые пункт ДЕЛАЕТ: «автозакрытие после F49» — F49 условие, не работа."""
+    return f_ids(_AFTER_DEP.sub(" ", item or ""))
+
+
+def _hashes(text: str) -> List["tuple[int, int, str]"]:
+    return [(m.start(), m.end(), m.group(1)) for m in _HASH.finditer(text or "")
+            if any(c.isdigit() for c in m.group(1)) and any(c.isalpha() for c in m.group(1))]
+
+
+def done_in_line(text: str, label: str = "") -> Dict[str, str]:
+    """Что строка пульса/сида называет сделанным → ``{f-id: пруф}``: F-N рядом с хешем
+    («F60 tide@0e8dcd8», «cdc0434 F56») или со словом «сделано/сдан/закрыто»."""
+    out: Dict[str, str] = {}
+    hashes = _hashes(text)
+    for m in _F_RUN.finditer(text or ""):
+        near = [h for h in hashes
+                if (0 <= m.start() - h[1] <= HASH_NEAR or 0 <= h[0] - m.end() <= HASH_NEAR)
+                and ";" not in text[min(m.end(), h[1]):max(m.start(), h[0])]]
+        if near:
+            near.sort(key=lambda h: min(abs(m.start() - h[1]), abs(h[0] - m.end())))
+            for f in f_ids(m.group(0)):
+                out.setdefault(f, near[0][2][:7])
+    for rx in (_DONE_AFTER, _DONE_BEFORE):
+        for m in rx.finditer(text or ""):
+            for f in f_ids(m.group(1)):
+                out.setdefault(f, label or "сделано")
+    return out
+
+
+def done_evidence(seed_text: str, pulses: Sequence["tuple[str, str]"],
+                  commits: Sequence[str] = ()) -> Dict[str, str]:
+    """Сделанное к сверке → ``{f-id: пруф}``: коммиты репо нити после ПЕРЕДАЧИ
+    (``"<sha> <тема>"`` — F-N в теме), пульсы новой и «где мы» сида с хешами."""
+    out: Dict[str, str] = {}
+    for line in commits or ():
+        sha, _, subject = str(line).partition(" ")
+        for f in f_ids(subject):
+            out.setdefault(f, sha[:7])
+    for at, text in pulses:
+        for f, proof in done_in_line(text, "пульс " + str(at)[11:16]).items():
+            out.setdefault(f, proof)
+    for line in _block(seed_text, WHERE_HEADS):
+        for f, proof in done_in_line(line, "где мы").items():
+            out.setdefault(f, proof)
+    return out
+
+
+def passing_at(seed_text: str) -> Optional[datetime]:
+    """Штамп ПЕРЕДАЧИ старой из «где мы» сида."""
+    for line in _block(seed_text, WHERE_HEADS):
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s*—\s*ПЕРЕДАЧА", line)
+        if m:
+            return _parse_ts(m.group(1))
+    return None
+
+
+def _sender_rx(who: str):
+    """Id отправителя как сильный ключ: ``tide-stack-20-9e`` ловит и сам себя, и
+    ``tide-stack-20``; ``tide-stack-2`` не ловит ``tide-stack-24``."""
+    from .launcher.seed_draft import sender_key
+    key = sender_key(who)
+    if not key:
+        return None
+    return re.compile(r"(?<![\w-]){0}(?!\d)".format(re.escape(key)), re.I)
+
+
+def order_closed(item: str, pulses: Sequence["tuple[str, str]"]) -> str:
+    """Входящее «поручено мне — от X …» закрыто → причина, иначе ``""``. Признаки —
+    те же, что у сборщика сида (SOC-101 F60, :mod:`tide.launcher.seed_draft`):
+    письмо без просьбы — не поручение; пульс новой назвал id отправителя — записано."""
+    m = _ORDER.match(item or "")
+    if not m:
+        return ""
+    who, body = m.group(1), m.group(3)
+    from .launcher import seed_draft as sd
+    if sd.is_info_letter(body):
+        return "письмо без просьбы — не поручение"
+    stamped = [(t, line) for t, line in ((_parse_ts(a), x) for a, x in pulses) if t is not None]
+    if stamped and sd.pulse_names_sender(who, datetime.min, stamped):
+        return "пульс новой назвал {0}".format(sd.sender_key(who))
+    return ""
+
+
+def _drop_for(item: str, dropped: Sequence["tuple[str, str]"]) -> Optional["tuple[str, str]"]:
+    """Снятие, которое относится к пункту: по словам/ключам «что», а для поручения —
+    по id отправителя в любом месте снятия («снимаю: поручение tide-stack-20-9e 13:27 …»)."""
+    gone = next((d for d in dropped if mentions(item, d[0])[0]), None)
+    if gone is not None:
+        return gone
+    m = _ORDER.match(item or "")
+    rx = _sender_rx(m.group(1)) if m else None
+    if rx is not None:
+        return next((d for d in dropped if rx.search(d[0] + " " + d[1])), None)
+    return None
+
+
 # --- сверка --------------------------------------------------------------------
 
-def reconcile(seed_text: str, passport_text: str, *, n: int = FIRST_PULSES,
-              since: object = None) -> Dict[str, object]:
+def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
+              since: object = None, commits: Sequence[str] = ()) -> Dict[str, object]:
     """Сверка пересказа новой с сидом → ``{items: [{block, label, text, status, by,
-    why}], done, awaiting, pulses, gaps}``; status — named | dropped | missing."""
+    why}], done, awaiting, pulses, gaps}``; status — dropped | done (F-N сделаны после
+    ПЕРЕДАЧИ: коммиты *commits*, пульсы с хешами) | closed (поручение закрыто) | named
+    | missing. *n* ≤ 0 — все пульсы после приёма."""
     items = seed_items(seed_text)
     pulses = first_pulses(passport_text, n, since)
     said = " \n".join(t for _a, t in pulses)
     dropped = drops(pulses)
+    proof = done_evidence(seed_text, pulses, commits)
     rows: List[Dict[str, object]] = []
     seen = set()
     for key, label, _heads in ITEM_BLOCKS:
@@ -263,9 +413,16 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = FIRST_PULSES,
             seen.add(_norm(it))
             row = {"block": key, "label": label, "text": it, "status": "missing",
                    "by": "", "why": ""}
-            gone = next((d for d in dropped if mentions(it, d[0])[0]), None)
+            gone = _drop_for(it, dropped)
+            fs = work_f_ids(it)
+            closed = order_closed(it, pulses)
             if gone is not None:
                 row.update(status="dropped", why=gone[1], by=gone[0])
+            elif fs and fs <= set(proof):
+                row.update(status="done", by=", ".join(
+                    "{0} {1}".format(f.upper(), proof[f]) for f in sorted(fs, key=lambda x: int(x[1:]))))
+            elif closed:
+                row.update(status="closed", by=closed)
             else:
                 ok, by = mentions(it, said)
                 if ok:
@@ -286,8 +443,14 @@ def render(rep: Dict[str, object], *, title: str = "", answer: str = "") -> str:
     out = ["шов-синк{0}".format(" " + title if title else ""), ""]
     out.append("сделано (по ПЕРЕДАЧЕ старой):")
     out += ["- " + _clip(x) for x in rep["done"]] or ["- — ПЕРЕДАЧИ в сиде нет"]
+    after = [r for r in rows if r["status"] in ("done", "closed")]
+    if after:
+        out.append("")
+        out.append("сделано и закрыто после передачи (снято с «дальше»):")
+        out += ["- [{0}] {1} — {2}".format(r["label"], _clip(r["text"], 110), _clip(r["by"], 80))
+                for r in after]
     out.append("")
-    out.append("дальше (новая назвала в первых {0} пульсах):".format(len(rep["pulses"])))
+    out.append("дальше (новая назвала в {0} пульсах после приёма):".format(len(rep["pulses"])))
     named = [r for r in rows if r["status"] == "named"]
     out += ["- [{0}] {1}".format(r["label"], _clip(r["text"])) for r in named] or ["- —"]
     gone = [r for r in rows if r["status"] == "dropped"]
@@ -328,7 +491,7 @@ def offer_of(home: Optional[Path], new_dir: Path) -> Optional[Dict[str, object]]
                  and Path(str(r["seed"])).parent.parent.resolve() == target]
     except Exception:  # noqa: BLE001
         return None
-    return found[-1] if found else None
+    return found[0] if found else None  # list_offers — новейшие сверху
 
 
 def _ao_alive(handle: str) -> Optional[bool]:
@@ -411,10 +574,61 @@ def _now() -> str:
 
 
 def _pulses_n() -> int:
+    """Потолок пульсов из ``$TIDE_SYNC_PULSES``; нет — 0 (все после приёма)."""
     try:
-        return max(1, int(os.environ.get(PULSES_ENV) or FIRST_PULSES))
+        return max(0, int(os.environ.get(PULSES_ENV) or 0))
     except ValueError:
-        return FIRST_PULSES
+        return 0
+
+
+_ABS_PATH = re.compile(r"(?<![\w.])(/(?:Users|home|opt|srv|var|tmp)/[^\s«»\"'()`,;:]+)")
+
+
+def _git_top(path: Path) -> Optional[Path]:
+    try:
+        res = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (res.stdout or "").strip()
+    return Path(out) if res.returncode == 0 and out else None
+
+
+def code_repos(seed_text: str, limit: int = 4) -> List[Path]:
+    """Репо кода нити: ``$TIDE_SYNC_REPO`` (через «:»), иначе git-репо по абсолютным
+    путям сида («закоммичены в /…/tide»). Не нашлось — пусто, сверка без коммитов."""
+    env = [x for x in (os.environ.get(REPO_ENV) or "").split(os.pathsep) if x.strip()]
+    found: List[Path] = []
+    for raw in env or [m.group(1) for m in _ABS_PATH.finditer(seed_text or "")]:
+        path = Path(raw.rstrip(".")).expanduser()
+        for _ in range(8):
+            if path.is_dir() or path == path.parent:
+                break
+            path = path.parent
+        if not path.is_dir():
+            continue
+        top = _git_top(path)
+        if top is not None and top not in found:
+            found.append(top)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def git_commits(repos: Sequence[Path], since: Optional[datetime]) -> List[str]:
+    """``["<sha> <тема>"]`` коммитов *repos* после *since* (нет — пусто)."""
+    if since is None:
+        return []
+    out: List[str] = []
+    for repo in repos:
+        try:
+            res = subprocess.run(["git", "-C", str(repo), "log", "--since=" + since.isoformat(),
+                                  "--format=%h %s"], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if res.returncode == 0:
+            out += [ln for ln in res.stdout.splitlines() if ln.strip()]
+    return out
 
 
 def answer_hint(new_dir: Path) -> str:
@@ -435,9 +649,12 @@ def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
           n: Optional[int] = None, seed: Optional[Path] = None,
           send_mail: Optional[Callable[..., Dict[str, object]]] = None,
           send_ping: Optional[Callable[[str, str], Optional[int]]] = None,
-          who: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+          who: Optional[Dict[str, str]] = None,
+          commits: Optional[Sequence[str]] = None) -> Dict[str, object]:
     """Сверить новую *new_dir* с её сидом; без *dry_run* — письмо в почту нити,
-    пинг подтверждающему, поля ``sync*`` в паспорт новой, отчёт в workspace/."""
+    пинг подтверждающему, поля ``sync*`` в паспорт новой, отчёт в workspace/.
+    *n* — потолок пульсов (нет — все после приёма); *commits* — коммиты после
+    ПЕРЕДАЧИ (нет — ``git log`` репо кода нити, см. :func:`code_repos`)."""
     new_dir = Path(new_dir)
     p = session_paths(new_dir)
     seed = Path(seed) if seed else p["seed"]
@@ -451,9 +668,17 @@ def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
         except Exception:  # noqa: BLE001
             home = None
     rec = offer_of(home, new_dir)
-    rep = reconcile(seed.read_text(encoding="utf-8"),
-                    p["passport"].read_text(encoding="utf-8"),
-                    n=n or _pulses_n(), since=(rec or {}).get("taken_at"))
+    seed_text = seed.read_text(encoding="utf-8")
+    if commits is None:
+        try:
+            since = passing_at(seed_text) or _parse_ts((rec or {}).get("created"))
+            commits = git_commits(code_repos(seed_text), since)
+        except Exception:  # noqa: BLE001 — без коммитов сверка всё равно идёт
+            commits = []
+    rep = reconcile(seed_text, p["passport"].read_text(encoding="utf-8"),
+                    n=_pulses_n() if n is None else n, since=(rec or {}).get("taken_at"),
+                    commits=commits)
+    rep["commits"] = len(commits)
     origin = (fields.read_field(p["passport"], "from") or "").strip()
     title = "{0}{1} (нить {2}{3})".format(
         origin + " → " if origin and not origin.startswith("<") else "", new_dir.name,
@@ -615,8 +840,7 @@ def register_sync(hsub) -> None:
     c.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="print the list only, send and write nothing")
     c.add_argument("--pulses", type=int, default=None,
-                   help="how many first pulses count (default {0}, ${1})".format(
-                       FIRST_PULSES, PULSES_ENV))
+                   help="cap on pulses after the take (default: all; ${0})".format(PULSES_ENV))
     c.add_argument("--seed", default=None, help="seed path (default: <session>/input/handoff-seed.md)")
     c.set_defaults(func=_cmd_check, _cmd="handoffs sync check")
     o = sub.add_parser("ok", help="the confirmer agrees with the retell")
@@ -640,6 +864,8 @@ def alias_argv(argv: List[str]) -> List[str]:
     return list(argv)
 
 
-__all__ = ["FIRST_PULSES", "NO_ANSWER_MIN", "SeamSyncError", "alias_argv", "answer", "check",
-           "confirmer", "done_lines", "drops", "first_pulses", "ids", "mentions", "reconcile",
+__all__ = ["FIRST_PULSES", "NO_ANSWER_MIN", "SeamSyncError", "alias_argv", "answer",
+           "awaiting_items", "check", "code_repos", "confirmer", "done_evidence",
+           "done_in_line", "done_lines", "drops", "f_ids", "first_pulses", "git_commits",
+           "ids", "mentions", "order_closed", "passing_at", "reconcile",
            "register_sync", "render", "seed_items", "status"]

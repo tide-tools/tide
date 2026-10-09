@@ -111,7 +111,7 @@ def test_seed_items_skip_holes_pointers_and_inflight_echo():
     assert items["inflight"] == ["воркер «F49 ложная тревога» — жив в старой сессии (с 17:43)"]
     assert items["tails"] == ["F60, F59, F63 не начаты",
                               "4 старых сигнала стопа на доске management открыты"]
-    assert items["awaiting"] == ["SOC-129 на проверке (In Review) — предлагаю: посмотреть"]
+    assert items["awaiting"] == []   # In Review — Done ставит менеджер, не Гриша
 
 
 def test_done_from_passing_pulse_keeps_parentheses():
@@ -143,7 +143,7 @@ def test_reconcile_first_pulses_named_dropped_missing():
     assert rep["gaps"] == 1
     assert ss.reconcile(SEED, PASSPORT, n=4)["gaps"] == 0
     text = ss.render(rep, title="t")
-    for head in ("сделано (по ПЕРЕДАЧЕ старой):", "дальше (новая назвала в первых 3 пульсах):",
+    for head in ("сделано (по ПЕРЕДАЧЕ старой):", "дальше (новая назвала в 3 пульсах после приёма):",
                  "снято новой:", "не названо и не снято (1):", "что решить (ждёт Гришу):"):
         assert head in text
     assert "- [следующий шаг] автозакрытие старой после живой пары" in text
@@ -152,7 +152,7 @@ def test_reconcile_first_pulses_named_dropped_missing():
 def test_dry_run_writes_and_sends_nothing(world):
     _offer(world)
     before = (world["new"] / "arc.md").read_text(encoding="utf-8")
-    rep = ss.check(world["new"], home=world["home"], dry_run=True,
+    rep = ss.check(world["new"], home=world["home"], dry_run=True, n=3, commits=[],
                    who={"ao_session": "x", "role": "старая", "why": "тест"})
     assert rep["gaps"] == 1 and "handoffs-1 → 02-handoffs-2" in rep["text"]
     assert (world["new"] / "arc.md").read_text(encoding="utf-8") == before
@@ -183,7 +183,7 @@ def test_check_mails_list_pings_confirmer_and_stamps_passport(world):
     assert "tide mail read" in ping and "tide handoff sync ok" in ping
     passport = world["new"] / "arc.md"
     assert ss._get(passport, ss.SYNC) == ss.WAITING
-    assert ss._get(passport, ss.SYNC_GAPS) == "1"
+    assert ss._get(passport, ss.SYNC_GAPS) == "0"   # все пульсы после приёма
     assert ss._get(passport, ss.SYNC_LETTER) == "001"
     assert (world["new"] / "workspace" / ss.REPORT_NAME).is_file()
 
@@ -227,7 +227,9 @@ def test_cli_handoff_sync_alias(world, capsys):
     assert ss.alias_argv(["handoff", "x"]) == ["handoff", "x"]
     code = cli.main(["handoff", "sync", "check", str(world["new"]), "--dry-run"])
     out = capsys.readouterr().out
-    assert code == 2 and "не названо и не снято (1)" in out and "dry-run" in out
+    assert code == 0 and "не названо и не снято (0)" in out and "dry-run" in out
+    assert cli.main(["handoff", "sync", "check", str(world["new"]), "--dry-run",
+                     "--pulses", "3"]) == 2
     assert cli.main(["handoff", "sync", "status", str(world["new"])]) == 0
     assert "не сверялась" in capsys.readouterr().out
 
@@ -272,3 +274,91 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     assert head[-2].startswith("правила: работа → в workspace/ своей арки")
     assert head[-1] == ("почта: длинное или важное другой нити — "
                         "tide mail send <проект>/<нить>, не ao send")
+
+
+# --- поправки живой пары 04→05 ----------------------------------------------------
+
+ORDER = ("поручено мне — от tide-stack-20-9e в 13:27: Срочный баг от continuity-audit · 02 "
+         "(tide-stack-20) для handoffs · 04, по поручению менеджера. Автопередача встаёт…")
+
+
+def _ctx(*lines):
+    return "# x\n\n## context\n" + "".join(
+        "- 2026-10-09T19:{0:02d}:00 — {1}\n".format(i, ln) for i, ln in enumerate(lines))
+
+
+def test_order_dropped_by_sender_id():
+    seed = "## в работе прямо сейчас\n\n- " + ORDER + "\n"
+    for pulse in ("снимаю: поручение tide-stack-20-9e 13:27 (ложный стоп) — сделано SOC-121",
+                  "снимаю: поручено мне — от tide-stack-20-9e в 13:27, срочный баг — сделан как SOC-121"):
+        (row,) = ss.reconcile(seed, _ctx(pulse))["items"]
+        assert row["status"] == "dropped", pulse
+    # чужой id (tide-stack-2) не снимает поручение tide-stack-20-9e
+    (row,) = ss.reconcile(seed, _ctx("снимаю: поручение tide-stack-2 — сделано"))["items"]
+    assert row["status"] == "missing"
+    assert "tide-stack-20-9e" in ss.ids(ORDER)
+
+
+def test_all_pulses_after_take_by_default():
+    rep = ss.reconcile(SEED, PASSPORT)
+    assert len(rep["pulses"]) == 4 and rep["gaps"] == 0
+
+
+def test_done_after_passing_moves_items_out_of_next():
+    seed = SEED.replace("- автозакрытие старой после живой пары",
+                        "- автозакрытие старой после F49 и живой пары")
+    commits = ["0e8dcd8 fix(handoff): SOC-101 F60 — входящие", "b76d40a fix: SOC-101 F59",
+               "c8b6ad4 fix: SOC-101 F63", "a2bc46b fix: SOC-101 F49 — две головы"]
+    rep = ss.reconcile(seed, PASSPORT, commits=commits)
+    by = {r["text"]: r for r in rep["items"]}
+    assert by["F60, F59, F63 не начаты"]["status"] == "done"
+    assert "F60 0e8dcd8" in by["F60, F59, F63 не начаты"]["by"]
+    assert by["воркер «F49 ложная тревога» — жив в старой сессии (с 17:43)"]["status"] == "done"
+    # F49 — условие («после F49»), не работа пункта
+    assert by["автозакрытие старой после F49 и живой пары"]["status"] != "done"
+    # F55+F58 не сделаны — пункт остаётся в «дальше»
+    assert by["принять итоги сабагентов (F55+F58, F49) и разослать хеши"]["status"] == "named"
+    text = ss.render(rep)
+    assert "сделано и закрыто после передачи" in text and "F63 c8b6ad4" in text
+
+
+def test_done_from_pulse_hash_and_word():
+    assert ss.done_in_line("закрыто F60 tide@0e8dcd8") == {"f60": "0e8dcd8"}
+    assert ss.done_in_line("tide@cdc0434 F56, ab3ba1b F57") == {"f56": "cdc0434",
+                                                                "f57": "ab3ba1b"}
+    assert set(ss.done_in_line("закрыто F56/F60/F63", "п")) == {"f56", "f60", "f63"}
+    assert ss.done_in_line("F61/F62 сданы") == {"f61": "сделано", "f62": "сделано"}
+    assert ss.done_in_line("F60 следом; хеш 0e8dcd8 у SOC-121") == {}
+    assert ss.f_ids("F55–F58") == {"f55", "f56", "f57", "f58"}
+
+
+def test_closed_orders_info_letter_and_pulse_names_sender():
+    info = ("поручено мне — от tide-stack-26 в 17:55: спасибо. Нить continuity-audit "
+            "передана, теперь её ведёт continuity-audit · 04")
+    ask = "поручено мне — от tide-stack-30 в 17:55: новые дефекты, проверь"
+    seed = "## в работе прямо сейчас\n\n- {0}\n- {1}\n".format(info, ask)
+    rep = ss.reconcile(seed, _ctx("смотрю доску"))
+    st = {r["text"][:40]: r["status"] for r in rep["items"]}
+    assert st[info[:40]] == "closed" and st[ask[:40]] == "missing"
+    rep = ss.reconcile(seed, _ctx("ответила tide-stack-30 по дефектам"))
+    assert all(r["status"] == "closed" for r in rep["items"])
+    # «жду от tide-stack-30» — ожидание, не запись письма (F60)
+    rep = ss.reconcile(seed, _ctx("запросила у tide-stack-30, жду к 15:15"))
+    assert [r["status"] for r in rep["items"]][1] != "closed"
+
+
+def test_awaiting_only_grisha_decisions():
+    seed = """## следующий шаг
+
+- src tg:N по схеме context-keeper
+
+## ждёт Гришу
+
+- src tg:N по схеме context-keeper (из следующего шага)
+- SOC-99 на проверке (In Review) — предлагаю: посмотреть; Done ставит проверяющий
+- SOC-57 шаг 5 — ждёт Гришу: выбрать A или B
+- ❓ Грише: SOC-101 на проверке (In Review) — согласен ли с объёмом
+"""
+    assert ss.seed_items(seed)["awaiting"] == [
+        "SOC-57 шаг 5 — ждёт Гришу: выбрать A или B",
+        "❓ Грише: SOC-101 на проверке (In Review) — согласен ли с объёмом"]
