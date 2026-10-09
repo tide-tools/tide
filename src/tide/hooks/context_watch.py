@@ -165,6 +165,39 @@ def _stood_down(entry: Path, session: str) -> bool:
     return bool(offload._dissolved_stand_down(session))
 
 
+HANDED_TOLD_FIELD = "handed-told"
+
+
+def handed_over_text(new_title: str) -> str:
+    return ("tide: нить передана {0} — хендофф от тебя больше не нужен. Новое не "
+            "начинай: доведи то, что уже в работе, и перешли итоги ей.".format(new_title))
+
+
+def handed_over_reason(entry: Path, session: str, *,
+                       now: Optional[datetime] = None) -> Optional[str]:
+    """Сессия уже отдала нить (её оффер принят, SOC-101 F21): хендофф с неё не
+    требуем, а ОДИН раз говорим, кому передано. → текст (первый раз), ``""``
+    (уже сказано — молчать), None (нить не отдавала — обычный сторож)."""
+    try:
+        from .. import handoff_queue as hq
+        rec = hq.is_dissolved(paths.control_home(), session)
+    except Exception:  # noqa: BLE001
+        return None
+    if not rec:
+        return None
+    pp = entry / "arc.md"
+    if (fields.read_field(pp, HANDED_TOLD_FIELD) or "").strip():
+        return ""
+    try:
+        from ..launcher import reception
+        new_title = reception._title(reception._session_of(rec), "новой сессии")
+    except Exception:  # noqa: BLE001
+        new_title = "новой сессии"
+    fields.set_field(pp, HANDED_TOLD_FIELD, "{0} → {1}".format(
+        (now or datetime.now()).isoformat(timespec="seconds"), rec.get("name")))
+    return handed_over_text(new_title)
+
+
 def fill_tokens(payload: dict, session: str) -> Optional[int]:
     from .. import context_fill
 
@@ -184,6 +217,9 @@ def watch_reason(root: Path, payload: dict, *,
         return None
     if payload.get("stop_hook_active"):
         return None
+    told = handed_over_reason(entry, session, now=now)
+    if told is not None:
+        return told or None
     if _stood_down(entry, session):
         return None
     tokens = fill_tokens(payload, session)

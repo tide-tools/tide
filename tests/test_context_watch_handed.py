@@ -1,0 +1,48 @@
+"""SOC-101 F21: сторож контекста не требует хендофф у сессии, что уже отдала нить.
+
+Её оффер принят (is_dissolved) — вместо «передай нить» один раз: «нить передана
+<новой>, доведи в работе и перешли итоги ей». Дальше — тишина.
+"""
+
+from __future__ import annotations
+
+from tide import fields, handoff_queue as hq
+from tide.arc import stream
+from tide.hooks import context_watch as cw
+
+from tests.test_autohandoff import SID, _payload, world  # noqa: F401  fixture
+
+
+def _hand_over(world):
+    new = stream.new_session(world["proj"], "seam", "seam-2")
+    fields.set_field(new / "arc.md", "title", "proj — seam · 02 · proj-7")
+    (new / "input").mkdir(exist_ok=True)
+    seed = new / "input" / "handoff-seed.md"
+    seed.write_text("# seed\n", encoding="utf-8")
+    path = hq.offer(world["home"], "seam", arc="seam/seam-2", project="proj",
+                    seed=str(seed), from_session=SID)
+    hq.take(world["home"], path.stem, session="new-sid")
+    return new
+
+
+def test_handed_over_session_is_told_once_not_asked_for_handoff(world):
+    _hand_over(world)
+    first = cw.watch_reason(world["proj"], _payload(world, 900_000))
+    assert first == ("tide: нить передана proj — seam · 02 · proj-7 — хендофф от тебя "
+                     "больше не нужен. Новое не начинай: доведи то, что уже в работе, "
+                     "и перешли итоги ей.")
+    assert cw.AUTO_CMD not in first
+    # once: later stops are silent, whatever the context
+    assert cw.watch_reason(world["proj"], _payload(world, 950_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 100_000)) is None
+    assert (fields.read_field(world["sess"] / "arc.md", cw.HANDED_TOLD_FIELD) or "").strip()
+
+
+def test_told_even_below_the_threshold(world):
+    # it is not about the context any more — the thread moved on
+    _hand_over(world)
+    assert "нить передана" in cw.watch_reason(world["proj"], _payload(world, 10_000))
+
+
+def test_not_handed_over_keeps_the_ladder(world):
+    assert cw.AUTO_CMD in cw.watch_reason(world["proj"], _payload(world, 210_000))
