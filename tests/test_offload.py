@@ -373,6 +373,7 @@ def test_cli_offload_confirms_a_stranded_reservation(tmp_project, session, monke
     key = handoff_queue.list_offers(home)[0]["name"]
     handoff_queue.reserve(home, key, session="sid-stranded")
 
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-stranded")  # F26: the receiver itself
     monkeypatch.chdir(tmp_project)
     rc = cli.main(["offload", "hygiene/otliv", "--cursor", "жив и работаю"])
     assert rc == 0
@@ -400,6 +401,7 @@ def test_cli_offload_confirms_a_reservation_with_an_unstamped_passport(
     handoff_queue.reserve(home, key, session="sid-reserved")
     assert not (fields.read_field(session / "arc.md", "claude-session") or "").strip()
 
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-reserved")  # F26: the receiver itself
     monkeypatch.chdir(tmp_project)
     assert cli.main(["offload", "hygiene/otliv", "--cursor", "жив и работаю"]) == 0
     assert "confirmed by this pulse" in capsys.readouterr().out

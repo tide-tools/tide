@@ -391,16 +391,25 @@ def _confirm_pending_pickup(passport: Path) -> Optional[str]:
     sessions; never breaks an offload.
 
     Two ways in, because the passport is unstamped until reception (cand 140):
-    by pinned sid when there is one, else by the session's own directory — the
-    offer's seed lives inside it, so the reservation is found without a sid.
+    by the CALLER's sid when an offer is reserved for it, else by the session's own
+    directory — the offer's seed lives inside it, so the reservation is found
+    without a sid. Either way only the RECEIVING session confirms (SOC-101 F26):
+    the caller is ``$CLAUDE_CODE_SESSION_ID`` (+ its AO mapping), never the
+    passport it writes into — the old session pulsing into its successor's arc
+    confirmed the reception for it.
     """
     try:
         from . import handoff_queue
         home = paths.control_home()
-        sid = (fields.read_field(passport, CLAUDE_SESSION_FIELD) or "").strip()
-        claimed = handoff_queue.confirm_for_session(home, sid) if sid else None
+        callers = handoff_queue.caller_sids(home)
+        claimed = None
+        for sid in callers:
+            claimed = handoff_queue.confirm_for_session(home, sid, as_session=callers[0])
+            if claimed:
+                break
         if claimed is None:
-            claimed = handoff_queue.confirm_for_session_dir(home, Path(passport).parent)
+            claimed = handoff_queue.confirm_for_session_dir(
+                home, Path(passport).parent, callers=callers)
         return str(claimed["name"]) if claimed else None
     except Exception:  # noqa: BLE001 — the fallback must never break a pulse
         return None

@@ -662,7 +662,9 @@ def confirm_for_session(home: Path, session: str, *,
     return None
 
 
-def confirm_for_session_dir(home: Path, session_dir: Path) -> Optional[Dict[str, object]]:
+def confirm_for_session_dir(home: Path, session_dir: Path, *,
+                            callers: Optional[List[str]] = None
+                            ) -> Optional[Dict[str, object]]:
     """Claim the offer reserved for the session living at *session_dir* (by seed path).
 
     The sid-keyed twin above needs a caller who KNOWS its claude id — the hook has
@@ -670,9 +672,16 @@ def confirm_for_session_dir(home: Path, session_dir: Path) -> Optional[Dict[str,
     unstamped until reception, so the pulse fallback can no longer read the sid off
     the passport; it identifies the session by WHERE it lives instead. The offer's
     ``seed`` points into ``<session>/input/``, exactly as the launcher resolves it,
-    and ``pickup-session`` carries the reserved sid — so this confirms with the sid
-    the launch actually pinned, never a guess. Same single flip point (I4).
+    and ``pickup-session`` carries the reserved sid. Same single flip point (I4).
+
+    WHERE is not WHO (SOC-101 F26): the old session pulsing into its successor's
+    arc confirmed the reception for it. *callers* — the ids the CALLING process
+    runs under (its claude id first, then what ``$AO_SESSION_ID`` maps to) — must
+    pass :func:`may_confirm`; no callers ⇒ nothing is claimed.
     """
+    callers = [c for c in (callers or []) if c and c != "-"]
+    if not callers:
+        return None
     try:
         target = Path(session_dir).resolve()
     except OSError:  # pragma: no cover — a resolvable path is the caller's job
@@ -687,10 +696,59 @@ def confirm_for_session_dir(home: Path, session_dir: Path) -> Optional[Dict[str,
                 continue
         except OSError:
             continue
-        claimed = _mark_taken(r, session=sid)
-        _stamp_reception(claimed, session=sid)
+        if not may_confirm(home, r, callers):
+            return None
+        stamp = callers[0] if callers[0] != sid else sid
+        claimed = _mark_taken(r, session=stamp)
+        _stamp_reception(claimed, session=stamp)
         return claimed
     return None
+
+
+def _real_sid_of(home: Path, reserved: str) -> Optional[str]:
+    """claude's REAL id behind the reserved pre-pick, if tide already learnt it:
+    the registry maps the sid to its AO handle, the SessionStart stash maps the
+    handle to the real id. None — the reservation is not bound to a real chat yet."""
+    try:
+        from . import registry, sessions as _sessions
+        handle = registry.recorded_handle(home, reserved)
+        if not handle:
+            return None
+        stash = _sessions._read_ao_stash(home)
+        real = str((stash.get(str(handle).strip()) or {}).get("sid") or "").strip()
+        return real or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def may_confirm(home: Path, rec: Dict[str, object], callers: List[str]) -> bool:
+    """Whether a process running under *callers* may confirm *rec* (SOC-101 F26).
+
+    Yes when it IS the session the offer was given to: the reserved sid, or the real
+    claude id tide learnt for it. When the reservation is not bound to a real chat
+    yet (an AO pre-pick nobody answered), any caller but the GIVING session may —
+    the origin can never confirm its own handoff."""
+    reserved = str(rec.get("pickup_session") or "").strip()
+    origin = str(rec.get("from_session") or "").strip()
+    callers = [c for c in callers if c and c != "-"]
+    if not callers or not reserved or reserved == "-":
+        return False
+    if reserved in callers:
+        return True
+    real = _real_sid_of(home, reserved)
+    if real:
+        return real in callers
+    if origin and origin != "-" and origin in callers:
+        return False
+    return not any(is_dissolved(home, c) for c in callers)
+
+
+def caller_sids(home: Path, session: Optional[str] = None) -> List[str]:
+    """The ids the CALLING process runs under: *session* (else ``$CLAUDE_CODE_SESSION_ID``)
+    and, inside AO, every tide sid the launcher recorded against ``$AO_SESSION_ID``."""
+    sid = (session or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    out = _session_candidates(home, sid or None)
+    return out if sid else []
 
 
 # --- render ----------------------------------------------------------------
