@@ -178,6 +178,12 @@ def layer(lays: Dict[str, List[str]], key: str) -> List[str]:
     return [ln for head, body in lays.items() if head.startswith(want) for ln in body]
 
 
+def layer_named(lays: Dict[str, List[str]], *heads: str) -> List[str]:
+    """Строки слоя нити по подзаголовку (вне контракта: «### ждёт Гришу»)."""
+    return [ln for head, body in lays.items()
+            if any(head.startswith(h) for h in heads) for ln in body]
+
+
 def prose_lines(body: Sequence[str]) -> List[str]:
     """Как :func:`live_lines`, но заглушка ``<…>`` может тянуться на несколько строк
     (``## summary`` свежего паспорта) — вырезается целиком."""
@@ -186,6 +192,62 @@ def prose_lines(body: Sequence[str]) -> List[str]:
 
 
 # --- блоки (чистое) ---------------------------------------------------------
+
+_NOTE_STAMP = re.compile(r"^-?\s*(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})(?::\d{2})?)\s*[—-]\s*")
+
+# Метки, чьё содержимое — СОСТОЯНИЕ (его переписывает каждый новый пульс): берётся
+# только из самого свежего пульса с этой меткой. Опыт и решения копятся — из всех.
+_STATE_LABELS = ("awaiting", "inflight", "expectation")
+
+
+def pulse_notes(context: Sequence[str]) -> List["tuple[str, str]"]:
+    """Пульс-строки ``## context`` → ``[(ЧЧ:ММ, нота)]`` в порядке записи."""
+    out = []
+    for ln in live_lines(context):
+        raw = ln.strip()
+        m = _NOTE_STAMP.match(raw)
+        if m:
+            out.append((m.group(2), raw[m.end():].strip()))
+        else:
+            out.append(("", raw.lstrip("- ").strip()))
+    return out
+
+
+def labeled_pulses(context: Sequence[str]) -> Dict[str, List[str]]:
+    """Размеченное в нотах пульсов → строки блоков сида (SOC-101 F22).
+
+    «Ждёт Гришу: … В полёте: … Опыт: … Решения: …» в ноте ``tide offload`` раньше
+    доходили до сида строкой журнала (обрезанной до 72 знаков). Теперь кусок
+    метки — пункты своего блока: кусок режется по «; » на пункты, у каждого —
+    время пульса. Состояние (ждёт Гришу, в полёте, ожидание) — из самого свежего
+    пульса с меткой; опыт и решения — из всех, свежие сверху, без повторов.
+    """
+    out: Dict[str, List[str]] = {}
+    for stamp, note in reversed(pulse_notes(context)):
+        for key, pieces in contract.pulse_labels(note).items():
+            if key in _STATE_LABELS and key in out:
+                continue  # состояние уже взято из более свежего пульса
+            lines = out.setdefault(key, [])
+            for piece in pieces:
+                for item in re.split(r";\s+", piece):
+                    item = item.strip().rstrip(".;").strip()
+                    if not item:
+                        continue
+                    line = "- {0}{1}".format(item, " (пульс {0})".format(stamp) if stamp else "")
+                    if not any(item == x.split(" (пульс ")[0][2:] for x in lines):
+                        lines.append(line)
+    return out
+
+
+def _merge_lines(*groups: Sequence[str]) -> List[str]:
+    """Склеить источники блока по порядку, без повторов и без строк-дыр."""
+    out: List[str] = []
+    for g in groups:
+        for ln in g:
+            if ln.strip() and not is_hole(ln) and ln not in out:
+                out.append(ln)
+    return out
+
 
 def block_final(thread_goal: str, session_goal: str) -> List[str]:
     """Финал: цель нити + цель этой сессии, 1–2 строки.
@@ -701,6 +763,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         if inherited:
             decisions += ["- из нити-предшественницы {0}:".format(pred.name)]
             decisions += ["  " + ln for ln in inherited]
+    labels = labeled_pulses(section_body(passport, "context"))
     summary = prose_lines(section_body(passport, "summary"))
     where = layer(lays, "where") + block_cursor(
         section_body(passport, "cursor"), section_body(passport, "context"),
@@ -712,13 +775,19 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         EXPECTATION: layer(lays, "expectation") + block_final(
             _goal_of(thread_entry), _goal_of(session_entry)),
         WHERE: where,
+        # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
+        # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.
         EXPERIENCE: block_experience(
-            nums, contract.find_body(seed_in, "experience") + layer(lays, "experience"),
+            nums, labels.get("experience", []) + layer(lays, "experience")
+            + contract.find_body(seed_in, "experience"),
             _candidate_gists(root, nums)),
-        DECISIONS: decisions,
-        AWAITING: block_awaiting(_auto.open_questions(root, thread_entry), works),
+        DECISIONS: _merge_lines(labels.get("decisions", []), decisions),
+        AWAITING: _merge_lines(
+            labels.get("awaiting", []), layer_named(lays, "ждёт гришу", "ждет гришу"),
+            block_awaiting(_auto.open_questions(root, thread_entry), works)),
         NEXT: block_next(section_body(passport, "next")),
-        INFLIGHT: _auto.open_items(root, thread_entry),
+        INFLIGHT: _merge_lines(labels.get("inflight", []),
+                               _auto.open_items(root, thread_entry)),
         UNANSWERED: _dialog.tail(thread_entry, DIALOG_TAIL),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map")),
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),

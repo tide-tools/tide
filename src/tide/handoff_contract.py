@@ -161,6 +161,77 @@ THREAD_LAYERS: Tuple[Tuple[str, str], ...] = (
 )
 
 
+# Метки в ноте пульса (``tide offload "…"``, SOC-101 F22): самая полная ручная
+# передача пишется пульсом «ПЕРЕДАЧА. Ждёт Гришу: … В полёте: … Опыт: … Решения: …»,
+# и раньше сборщик видел в нём одну строку журнала. Метка → блок сида. Регистр не
+# важен, меток в ноте сколько угодно; текст метки — до следующей метки.
+# ``(блок, (варианты метки — регэкспы без «:»))``.
+PULSE_LABELS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("awaiting", (r"жд[её]т\s+гриш[уи]", r"открытые\s+решения\s+гриши")),
+    ("inflight", (r"в\s+пол[её]те",)),
+    ("experience", (r"опыт", r"урок[иа]?")),
+    ("decisions", (r"решени[еяй](?:\s+(?:сессии|гриши))?",)),
+    ("expectation", (r"ожидани[ея]\s+гриши",)),
+)
+
+# Метки, которые не идут ни в какой блок, но ЗАКАНЧИВАЮТ текст предыдущей —
+# иначе «В полёте: ничего. Адресаты: …» унёс бы адресатов в «в работе».
+PULSE_STOP_LABELS: Tuple[str, ...] = (
+    r"где\s+мы", r"адресаты", r"таблица", r"сделано", r"дальше", r"курсор",
+)
+
+
+def _label_re():
+    import re
+
+    alts = []
+    for key, pats in PULSE_LABELS:
+        for i, p in enumerate(pats):
+            alts.append(r"(?P<{0}_{1}>{2})".format(key, i, p))
+    for i, p in enumerate(PULSE_STOP_LABELS):
+        alts.append(r"(?P<stop_{0}>{1})".format(i, p))
+    # Метка стоит в начале ноты или после конца фразы/тире; за ней — «:», между
+    # ними может быть уточнение в скобках («РЕШЕНИЕ ГРИШИ (через …, 09.10):»).
+    return re.compile(
+        r"(?:^|(?<=[.;!?»)\]—])\s+|(?<=\s—)\s)(?:{0})(?:\s*\([^()]*\))?\s*:\s*".format(
+            "|".join(alts)), re.IGNORECASE)
+
+
+_LABEL_RE = None
+
+
+def pulse_labels(note: str) -> Dict[str, list]:
+    """Нота пульса → ``{ключ блока: [куски текста]}`` по меткам (SOC-101 F22).
+
+    Кусок — текст после метки до следующей метки (любой, в т.ч. стоп-метки), без
+    хвостовой точки. Нет меток — ``{}``. Чистая функция, без диска.
+    """
+    global _LABEL_RE
+    if _LABEL_RE is None:
+        _LABEL_RE = _label_re()
+    text = " ".join((note or "").split())
+    hits = list(_LABEL_RE.finditer(text))
+    out: Dict[str, list] = {}
+    for i, m in enumerate(hits):
+        group = next(g for g, v in m.groupdict().items() if v is not None)
+        end = hits[i + 1].start() if i + 1 < len(hits) else len(text)
+        piece = text[m.end():end].strip().rstrip(".;").strip()
+        if group.startswith("stop_") or not piece:
+            continue
+        out.setdefault(group.rsplit("_", 1)[0], []).append(piece)
+    return out
+
+
+def pulse_head(note: str) -> str:
+    """Нота пульса без размеченных кусков — то, что не ушло ни в один блок."""
+    global _LABEL_RE
+    if _LABEL_RE is None:
+        _LABEL_RE = _label_re()
+    text = " ".join((note or "").split())
+    m = _LABEL_RE.search(text)
+    return text if m is None else text[:m.start()].strip()
+
+
 # Разделы ``tide handoffs audit``: ключ (для --json/доски, стабилен) → подпись.
 # Подпись называет блок сида, куда источник должен был дойти; «понятая цель» —
 # не блок сида, а приёмка (контракт, раздел 4).
@@ -199,5 +270,6 @@ def missing(heads: Iterable[str]) -> Tuple[str, ...]:
 
 
 __all__ = ["AUDIT_SECTIONS", "BLOCKS", "Block", "EMPTY", "HANDOFF_TOKENS",
-           "JOURNAL_SHARE", "LIST", "NAMES", "PROSE", "SEED_CONTRACT", "THREAD_LAYERS",
-           "block", "empty_line", "find_body", "missing", "name", "names_of", "norm"]
+           "JOURNAL_SHARE", "LIST", "NAMES", "PROSE", "PULSE_LABELS", "PULSE_STOP_LABELS",
+           "SEED_CONTRACT", "THREAD_LAYERS", "block", "empty_line", "find_body", "missing",
+           "name", "names_of", "norm", "pulse_head", "pulse_labels"]
