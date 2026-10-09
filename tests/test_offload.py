@@ -42,6 +42,39 @@ def test_offload_cursor_replaces_section(tmp_project, session):
     assert "<where this session left off" not in body
 
 
+def _pulses(session):
+    """The count `tide thread` shows for *session* — read by thread_screen itself."""
+    from tide.arc import thread_screen
+    rows = thread_screen.sessions(session.parent.parent)
+    return next(int(s["pulses"] or 0) for s in rows if s["dir"] == session)
+
+
+def test_cursor_only_offload_counts_as_a_pulse(tmp_project, session):
+    # SOC-101: `tide offload <s> --cursor …` without a note used to leave
+    # ## context empty, and `tide thread` said «0 pulses in ## context».
+    before = _pulses(session)
+    offload.offload(tmp_project, "otliv", cursor="чиню счётчик пульсов")
+    assert _pulses(session) == before + 1
+    ctx = (session / "arc.md").read_text(encoding="utf-8").partition("## context")[2]
+    ctx = ctx.split("\n## ", 1)[0]
+    assert "курсор → чиню счётчик пульсов" in ctx
+
+
+def test_next_only_offload_counts_as_a_pulse(tmp_project, session, monkeypatch):
+    monkeypatch.chdir(tmp_project)
+    before = _pulses(session)
+    assert cli.main(["offload", "otliv", "--next", "шаг раз · шаг два"]) == 0
+    assert _pulses(session) == before + 1
+    assert "дальше → шаг раз · шаг два" in (session / "arc.md").read_text(encoding="utf-8")
+
+
+def test_offload_with_a_note_writes_one_line_not_two(tmp_project, session):
+    before = _pulses(session)
+    offload.offload(tmp_project, "otliv", note="решил так", cursor="делаю это")
+    assert _pulses(session) == before + 1
+    assert "курсор →" not in (session / "arc.md").read_text(encoding="utf-8")
+
+
 def test_offload_requires_something_to_write(tmp_project, session):
     with pytest.raises(offload.OffloadError, match="nothing to write"):
         offload.offload(tmp_project, "otliv")

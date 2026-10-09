@@ -143,6 +143,13 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
     passport = entry / "arc.md"
     text = passport.read_text(encoding="utf-8")
 
+    # A pulse with only --cursor/--next is still a pulse: without a line in
+    # ``## context`` the thread screen counts it as nothing («0 pulses in
+    # ## context») and the session looks idle while it works. So the cursor (or,
+    # lacking it, the next step) lands in the journal as a short line of its own.
+    if not (note or "").strip():
+        note = _cursor_only_note(cursor, next_steps)
+
     if (note or "").strip():
         line = "- {0} — {1}".format(_now_iso(now), " ".join(note.split()))
         if CONTEXT_SECTION in text:
@@ -168,6 +175,15 @@ def write_pulse(entry: Path, *, note: str = "", cursor: str = "",
         _replace_section(passport, SUMMARY_SECTION, " ".join(summary.split()))
     fields.set_field(passport, OFFLOADED_FIELD, _now_iso(now))
     return passport
+
+
+def _cursor_only_note(cursor: str, next_steps: str) -> str:
+    """The ``## context`` line for a pulse that carried no note — or ``""``."""
+    if (cursor or "").strip():
+        return "курсор → " + " ".join(cursor.split())
+    if (next_steps or "").strip():
+        return "дальше → " + " ".join(next_steps.split())
+    return ""
 
 
 def _replace_section(passport: Path, header: str, body: str) -> None:
