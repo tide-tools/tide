@@ -43,7 +43,9 @@ A single segment is allowed when:
   ``git worktree add/remove``.
 * Its first token is a read-only builtin — see ``_READONLY_BUILTINS``.
 * AO, read-only: ``ao session ls …`` and ``ao session show …`` — any other
-  ``ao`` subcommand is denied (Grisha's decision № 26).
+  ``ao`` subcommand is denied (Grisha's decision № 26) — plus ``ao send …``,
+  so the head can message its sessions (confirmed by Grisha in the session
+  window; kept a separate commit so one revert takes it back).
 * The manager's Linear tool, run by its exact absolute path
   (``_LINEAR_AS_MANAGER``) with any arguments. Matched as a string: another
   path, a relative path, a symlink or a ``bash -c`` wrapper does not pass.
@@ -108,7 +110,7 @@ _LINEAR_AS_MANAGER = str(
 ALLOWED_SURFACE = (
     "Read/Grep/Glob, any `tide …`, read-only git (status/log/diff/show/rev-parse, "
     "branch/remote listing, worktree list), and ls/cat/pwd/cd/find/grep/head/tail/"
-    "wc/sort/uniq/echo, `ao session ls|show`, `" + _LINEAR_AS_MANAGER + "` "
+    "wc/sort/uniq/echo, `ao send`, `ao session ls|show`, `" + _LINEAR_AS_MANAGER + "` "
     "— including `|` pipes, `&&` / `||` chains built only from "
     "those, and `2>&1` / `2>/dev/null`. Denied: file redirects (`>`), command "
     "substitution, and anything not on this list."
@@ -138,8 +140,12 @@ _READONLY_BUILTINS = frozenset({
 
 # AO: the head may look at sessions, nothing more. Keyed by ``ao`` subcommand →
 # the allowed second-level verbs (Grisha's decision № 26).
+#
+# An EMPTY set means "the whole subcommand, whatever follows" — that is how
+# ``ao send`` rides in: the head talks to its sessions (Grisha, "все три").
 _AO_ALLOWED = {
     "session": frozenset({"ls", "show"}),
+    "send": frozenset(),
 }
 
 # git branch flags that mean destructive deletion.
@@ -188,7 +194,7 @@ _RULE_REDIRECT = "file redirect (`>`) — that writes"
 _RULE_UNPARSEABLE = "unparseable quoting inside the link"
 _RULE_GIT_NOT_READONLY = "git subcommand is not read-only"
 _RULE_NOT_ALLOWED = "not on the read-only allowlist"
-_RULE_AO_NOT_ALLOWED = "ao subcommand is not allowed for the head (only `ao session ls|show`)"
+_RULE_AO_NOT_ALLOWED = "ao subcommand is not allowed for the head (only `ao send`, `ao session ls|show`)"
 _RULE_UNBALANCED_QUOTES = (
     "unbalanced quotes — a command the gate cannot parse is one it cannot vouch for"
 )
@@ -260,6 +266,8 @@ def _is_ao_allowed(args: List[str]) -> bool:
     verbs = _AO_ALLOWED.get(args[0])
     if verbs is None:
         return False
+    if not verbs:
+        return True  # the whole subcommand is allowed (``ao send …``)
     return len(args) >= 2 and args[1] in verbs
 
 

@@ -981,8 +981,24 @@ def test_orchestrator_denies_other_ao_and_linear_paths(command):
     assert allow is False
 
 
-def test_ao_send_still_denied_before_its_own_decision():
-    allow, _ = role_gate.decide("Bash", {"command": "ao send tide-stack-12 'привет'"}, "orchestrator")
+@pytest.mark.parametrize("command", [
+    "ao send tide-stack-12 'привет'",
+    "ao send tide-stack-12 --file /tmp/msg.md",
+    "ao session ls && ao send tide-stack-12 'проверь SOC-101'",
+])
+def test_orchestrator_allows_ao_send(command):
+    allow, _ = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is True
+
+
+@pytest.mark.parametrize("command", [
+    "ao send x 'hi' > /tmp/log",
+    "ao send x \"$(cat /etc/passwd)\"",
+    "ao send x 'hi'; ao session kill x",
+    "ao sendall x",
+])
+def test_ao_send_does_not_open_the_rest(command):
+    allow, _ = role_gate.decide("Bash", {"command": command}, "orchestrator")
     assert allow is False
 
 
@@ -990,3 +1006,4 @@ def test_explain_names_the_ao_rule():
     text = role_gate.explain("ao session kill tide-stack-12")
     assert "DENY" in text
     assert "ao session ls|show" in text
+    assert "ao send" in text
