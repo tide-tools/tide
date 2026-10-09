@@ -463,12 +463,20 @@ def _pass_map_warning(note: str) -> None:
 
 
 # SOC-101 C1: в пульсе ПЕРЕДАЧА — метка «Ожидание Гриши:» (или «Ожидание:») и
-# «Хвосты:». Метка — после начала ноты или конца фразы/тире, как в контракте.
-_LABEL_AT = r"(?:^|(?<=[.;!?»)\]—])\s+|(?<=\s—)\s|^-?\s*)"
-_EXPECT_LABEL = re.compile(_LABEL_AT + r"ожидани[ея](?:\s+гриши)?(?:\s*\([^()]*\))?\s*:",
-                           re.IGNORECASE)
-_TAILS_LABEL = re.compile(_LABEL_AT + r"(?:открытые\s+)?хвосты(?:\s*\([^()]*\))?\s*:",
-                          re.IGNORECASE)
+# «Хвосты:» («Открыто:»). F62: метки ищет тот же разборщик, что сборщик сида
+# (:func:`tide.handoff_contract._label_re`) — начало ноты, конец фразы, тире или
+# « · »; свой поиск не видел метку после « · » в длинном пульсе и подсказывал зря.
+def _pass_label_keys(text: str) -> set:
+    """Ключи меток контракта в ноте (``expectation``, ``tails``, ``entry_map``…),
+    включая метки без текста за ними (их ``pulse_labels`` отбрасывает)."""
+    from . import handoff_contract
+    keys = set()
+    for m in handoff_contract._label_re().finditer(text):
+        group = next(g for g, v in m.groupdict().items() if v is not None)
+        keys.add(group.rsplit("_", 1)[0])
+    return keys
+
+
 EXPECT_WARNING = ("в пульсе ПЕРЕДАЧА нет метки «Ожидание Гриши:», а слой «ожидание "
                   "Гриши» нити пуст — новая сессия не узнает, чего Гриша ждёт; впиши "
                   "его словами Гриши с датой: tide offload \"ПЕРЕДАЧА. … Ожидание Гриши: "
@@ -509,9 +517,10 @@ def _pass_labels_warning(passport: Path, note: str) -> None:
         text = " ".join((note or "").split())
         if not handoff_contract.is_pass_note(text):
             return
-        if not _EXPECT_LABEL.search(text) and not _expectation_layer(passport):
+        keys = _pass_label_keys(text)
+        if "expectation" not in keys and not _expectation_layer(passport):
             print("tide: внимание — {0}".format(EXPECT_WARNING), file=sys.stderr)
-        if not _TAILS_LABEL.search(text):
+        if "tails" not in keys:
             print("tide: подсказка — {0}".format(TAILS_HINT), file=sys.stderr)
     except Exception:  # noqa: BLE001 — предупреждение не смеет уронить пульс
         return
