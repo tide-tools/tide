@@ -346,3 +346,68 @@ def test_history_pairs_are_listed_but_not_alarmed():
     assert _hq.recently_active({"active_at": "2026-10-09T14:45:00"}, now=now)
     assert not _hq.recently_active({"active_at": "2026-10-09T13:00:00"}, now=now)
     assert not _hq.recently_active({}, now=now)
+
+
+# --- F54: длинное uds-письмо старой пересылается новой частями -----------------
+
+AO_LIMIT = 4075  # байт UTF-8: дальше `ao send` отвечает MESSAGE_TOO_LONG (09.10)
+
+
+class _AoLimited:
+    """Как настоящий ao send: длиннее AO_LIMIT байт — отказ."""
+
+    def __init__(self):
+        self.calls = []
+
+    def say(self, handle, text):
+        if len(text.encode("utf-8")) > AO_LIMIT:
+            return False
+        self.calls.append((handle, text))
+        return True
+
+
+def _designer_letter(n_lines=40):
+    # форма письма T23 17:26:44Z: шапка харнесса, тег uds, ~2600 знаков кириллицы
+    body = "\n".join("{0}) «ГОТОВО — ПОСМОТРИ»: сразу под «ждёт тебя», над «В РАБОТЕ», "
+                     "крупная цифра N.".format(i) for i in range(1, n_lines + 1))
+    return ('Another Claude session sent a message:\n<cross-session-message '
+            'from="uds:/tmp/cc-socks/61476.sock" from-name="app-development-22-cf" '
+            'from-mode="bypass">\ndesigner · 06 → board · 03: ответы.\n' + body +
+            '\nФинальный вид — только после «да» Гриши.\n</cross-session-message>\n\n'
+            'This came from another Claude session — not typed by your user.'), body
+
+
+def test_long_uds_letter_is_forwarded_in_parts(handed, monkeypatch, capsys):
+    letter, body = _designer_letter()
+    assert len(_ho.forward_text(old="x", sender="y", body=body).encode()) > AO_LIMIT
+    ao = _AoLimited()
+    monkeypatch.setattr(_ho, "_ao_adapter", lambda: ao)
+    assert _hook(monkeypatch, letter) == 0
+    out = capsys.readouterr().out
+    assert "уже переслано ей механикой" in out
+    assert len(ao.calls) >= 2 and all(h == "proj-24" for h, _t in ao.calls)
+    assert all(len(t.encode()) <= _ho.AO_MESSAGE_MAX_BYTES for _h, t in ao.calls)
+    n = len(ao.calls)
+    assert ao.calls[0][1].startswith("[переслано от старой proj — seam · 01 · proj-19, "
+                                     "отправитель app-development-22-cf, часть 1/{0}]".format(n))
+    # ничего не потеряно: склейка частей = письмо целиком
+    glued = "\n".join(t.split("] ", 1)[1] for _h, t in ao.calls)
+    assert "Финальный вид — только после «да» Гриши." in glued
+    assert glued.count("крупная цифра N.") == 40
+    log = (handed["home"] / ".tide" / "state" / "forwarded.log").read_text(encoding="utf-8")
+    assert log.startswith("uds:app-development-22-cf:") and "частей" in log
+    # повтор той же доставки — не шлётся второй раз
+    assert _hook(monkeypatch, letter) == 0
+    assert len(ao.calls) == n
+
+
+def test_short_letter_stays_one_message():
+    parts = _ho.forward_parts(old="o", sender="s", body="коротко")
+    assert parts == ["[переслано от старой o, отправитель s] коротко"]
+
+
+def test_one_huge_line_is_cut_by_chars():
+    parts = _ho.forward_parts(old="o", sender="s", body="я" * 5000)
+    assert len(parts) == 3
+    assert all(len(p.encode()) <= _ho.AO_MESSAGE_MAX_BYTES for p in parts)
+    assert "".join(p.split("] ", 1)[1] for p in parts) == "я" * 5000

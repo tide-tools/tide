@@ -39,7 +39,12 @@ from .. import paths, slug
 
 FORWARD_ENV = "TIDE_FORWARD_HANDED_OFF"
 FORWARD_LOG = "forwarded.log"
-BODY_MAX = 6000
+BODY_MAX = 12000
+# ``ao send --message`` отказывает длиннее ~4075 байт UTF-8 (MESSAGE_TOO_LONG,
+# проверено 09.10). Кириллица — 2 байта на букву: письмо дизайнера в 2600 знаков
+# (4672 байта с шапкой) не ушло, и хук молча просил переслать руками (SOC-101 F54).
+# Длинное шлём частями с запасом на шапку.
+AO_MESSAGE_MAX_BYTES = 3800
 
 _AO_DELIVERY = re.compile(
     r"<ao-session-delivery\s+id=\"([^\"]+)\"\s*>\s*\[from\s+([^\]\s]+)\]\s*(.*?)"
@@ -135,9 +140,51 @@ def _address(new: Dict[str, str]) -> str:
     return with_ao_id(title, ao) if ao else title
 
 
-def forward_text(*, old: str, sender: str, body: str) -> str:
+def forward_text(*, old: str, sender: str, body: str, part: str = "") -> str:
     body = body if len(body) <= BODY_MAX else body[:BODY_MAX - 1] + "…"
-    return "[переслано от старой {0}, отправитель {1}] {2}".format(old, sender, body)
+    return "[переслано от старой {0}, отправитель {1}{2}] {3}".format(
+        old, sender, ", часть {0}".format(part) if part else "", body)
+
+
+def _nbytes(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _cut(line: str, room: int) -> List[str]:
+    """Строку длиннее *room* байт — на куски по границе символа."""
+    out, cur = [], ""
+    for ch in line:
+        if _nbytes(cur + ch) > room:
+            out.append(cur)
+            cur = ""
+        cur += ch
+    return out + ([cur] if cur else [])
+
+
+def forward_parts(*, old: str, sender: str, body: str,
+                  limit: int = AO_MESSAGE_MAX_BYTES) -> List[str]:
+    """Пересылка частями, каждая ≤ *limit* байт UTF-8 вместе с шапкой (F54).
+    Режем по строкам; строка длиннее части — по символам."""
+    body = body if len(body) <= BODY_MAX else body[:BODY_MAX - 1] + "…"
+    whole = forward_text(old=old, sender=sender, body=body)
+    if _nbytes(whole) <= limit:
+        return [whole]
+    head = _nbytes(forward_text(old=old, sender=sender, body="", part="99/99")) + 1
+    room = max(200, limit - head)
+    chunks, cur = [], ""
+    for line in body.split("\n"):
+        for piece in (_cut(line, room) if _nbytes(line) > room else [line]):
+            joined = piece if not cur else cur + "\n" + piece
+            if cur and _nbytes(joined) > room:
+                chunks.append(cur)
+                cur = piece
+            else:
+                cur = joined
+    if cur:
+        chunks.append(cur)
+    n = len(chunks)
+    return [forward_text(old=old, sender=sender, body=c, part="{0}/{1}".format(i, n))
+            for i, c in enumerate(chunks, 1)]
 
 
 # --- две головы (SOC-101 F49) ---------------------------------------------------
@@ -272,11 +319,14 @@ def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
             if mine_ao:
                 from ..arc.stream import with_ao_id
                 old = with_ao_id(old, mine_ao)
-            text = forward_text(old=old, sender=msg["sender"], body=msg["body"])
-            ok = _ao_adapter().say(new_ao, text)
+            parts = forward_parts(old=old, sender=msg["sender"], body=msg["body"])
+            adapter = _ao_adapter()
+            ok = all(adapter.say(new_ao, text) for text in parts)
             forwarded = "sent" if ok else "not-delivered"
             if ok:
-                _remember(home, msg["id"], "→ {0} от {1}".format(new_ao, msg["sender"]))
+                _remember(home, msg["id"], "→ {0} от {1}{2}".format(
+                    new_ao, msg["sender"],
+                    " ({0} частей)".format(len(parts)) if len(parts) > 1 else ""))
     return context_text(new_addr=addr, sender=msg["sender"], forwarded=forwarded,
                         new_ao=new_ao, mine=False)
 
@@ -306,5 +356,6 @@ def cmd_prompt(args) -> int:
     return rc
 
 
-__all__ = ["FORWARD_ENV", "OLD_ROLE", "cmd_prompt", "context_text", "forward_text",
+__all__ = ["AO_MESSAGE_MAX_BYTES", "FORWARD_ENV", "OLD_ROLE", "cmd_prompt", "context_text",
+           "forward_parts", "forward_text",
            "incoming", "redirect", "successor", "two_heads_alarm", "two_heads_text"]
