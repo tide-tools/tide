@@ -24,8 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import handoff_contract as contract, io as _io, name_dots as _name_dots, \
-    paths, resolve
+from .. import fields, handoff_contract as contract, io as _io, \
+    name_dots as _name_dots, paths, resolve
 from . import plan_main as _plan_main, stream as _stream
 from .stream import StreamError
 
@@ -77,7 +77,7 @@ LAYER_FLAGS = (("expect", "expectation"), ("where", "where"), ("exp", "experienc
 def layer_cmd(thread: str) -> str:
     """Готовая команда, которой голова (ей role-gate запрещает писать файлы) вписывает
     слои нити: ``tide thread layer <нить> --expect "…" --where "…" --exp "…"``."""
-    return ('tide thread layer {0} --expect "<чего ждёт Гриша — его словами, tg N>" '
+    return ('tide thread layer {0} --expect "<чего ждёт Гриша — его словами, у каждой цитаты tg N>" '
             '--where "<сделано · идёт · ждёт Гришу>" --exp "<грабли, отвергнутое>"'
             .format(thread))
 
@@ -187,8 +187,49 @@ def _journal(lines: List[str], name: str, stamp: str, old: List[str]) -> List[st
     return lines[:at + 1] + entry + rest
 
 
+# SOC-143 F81: штамп слоя — время записи, а не время слов. Текст, что уже начат
+# своей датой («09.10 (TG, через менеджера) — …»), штамп не получает: склейка
+# «09.10 19:22 — 09.10 …» читалась как время слов. У ссылок «tg N» время слов
+# берётся из журнала пульта (:func:`tide.arc.dialog.tg_times`). Время записи слоя
+# ожидания — поле ``expect-written:`` goal-файла (его читает :func:`freshness`).
+EXPECT_AT_FIELD = "expect-written"
+_LEAD_DATE = re.compile(r"^[(\[]?\s*(?:\d{1,2}\.\d{1,2}(?:\.\d{2,4})?|\d{4}-\d{2}-\d{2})(?![\d.])")
+_TG_REF = re.compile(r"\b(tg)[ :]*(\d{3,6})\b"
+                     r"(?P<date>\s*,\s*\d{1,2}\.\d{1,2}(?:\.\d{2,4})?(?![\d.]))?"
+                     r"(?P<time>\s*,?\s*~?\d{1,2}:\d{2})?", re.I)
+
+
+def tg_refs(text: str) -> List[int]:
+    """Номера «tg N» в *text*, у которых ещё нет времени («tg 3573, 18:50» — есть)."""
+    return [int(m.group(2)) for m in _TG_REF.finditer(text or "") if not m.group("time")]
+
+
+def stamp_line(text: str, now: datetime, times: Optional[Dict[int, datetime]] = None) -> str:
+    """Строка слоя ``- ДД.ММ ЧЧ:ММ — текст`` (F81). Текст начат датой — без штампа.
+    Иначе штамп — время первой цитаты «tg N» из *times* (журнал пульта), нет его —
+    *now*. Остальные «tg N» с известным временем получают ``, ДД.ММ ЧЧ:ММ``."""
+    times = times or {}
+    lead = bool(_LEAD_DATE.match(text))
+    first = None
+    if not lead:
+        first = next((times[int(m.group(2))] for m in _TG_REF.finditer(text)
+                      if not m.group("time") and int(m.group(2)) in times), None)
+
+    def _sub(m):
+        at = times.get(int(m.group(2)))
+        if m.group("time") or at is None or at == first:
+            return m.group(0)
+        return "{0} {1}, {2}".format(m.group(1), m.group(2), at.strftime("%d.%m %H:%M"))
+
+    text = _TG_REF.sub(_sub, text)
+    if lead:
+        return "- " + text
+    return "- {0} — {1}".format((first or now).strftime("%d.%m %H:%M"), text)
+
+
 def write_layers(goal_path: Path, values: Dict[str, str], *,
-                 now: Optional[datetime] = None) -> List[str]:
+                 now: Optional[datetime] = None,
+                 tg_times: Optional[Dict[int, datetime]] = None) -> List[str]:
     """Вписать строки в слои ``## where we are`` goal-файла нити (SOC-101 F53).
 
     *values* — ``{ключ слоя контракта: текст}`` (``expectation`` / ``where`` /
@@ -205,7 +246,8 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
         return []
     seed_skeleton(goal_path)
     lines = goal_path.read_text(encoding="utf-8").splitlines()
-    stamp = (now or datetime.now()).strftime("%d.%m %H:%M")
+    now = now or datetime.now()
+    stamp = now.strftime("%d.%m %H:%M")
     done: List[str] = []
     for key, _ph in contract.THREAD_LAYERS:
         if key not in values:
@@ -225,13 +267,18 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
         old = []
         if key in REPLACE_KEYS:  # F65: «где мы» — снимок, а не лента
             old, body = [ln for ln in body if ln.strip()], []
-        body.append("- {0} — {1}".format(stamp, values[key]))
+        if key in REPLACE_KEYS:  # «где мы» — снимок: штамп всегда время записи
+            body.append("- {0} — {1}".format(stamp, values[key]))
+        else:
+            body.append(stamp_line(values[key], now, tg_times))
         tail = [""] if stop < len(lines) else []
         lines = lines[:head + 1] + body + tail + lines[stop:]
         if old:
             lines = _journal(lines, contract.name(key), stamp, old)
         done.append(contract.name(key))
     _io.atomic_write(goal_path, "\n".join(lines).rstrip("\n") + "\n")
+    if "expectation" in values:
+        fields.set_field(goal_path, EXPECT_AT_FIELD, now.isoformat(timespec="seconds"))
     return done
 
 
@@ -313,6 +360,13 @@ def freshness(thread_dir: Path) -> Dict[str, object]:
             except ValueError:
                 continue
             expect_at = max(expect_at or at, at)
+    written = (fields.read_field(goal, EXPECT_AT_FIELD) or "").strip() if lines else ""
+    try:
+        w_at = datetime.fromisoformat(written) if written else None
+    except ValueError:
+        w_at = None
+    if w_at is not None:  # F81: строки несут время слов, а не записи
+        expect_at = max(expect_at or w_at, w_at)
     if lines and expect_at is None:
         expect_at = _mtime(goal)
     if not lines:
@@ -346,7 +400,10 @@ def cmd_layer(args) -> int:
     entry = thread_entry(paths.require_tide_root(), target)
     if any(v.strip() for v in values.values()):
         goal = _stream.passport_path(entry)
-        done = write_layers(goal, values)
+        from . import dialog as _dialog
+        nums = tg_refs(values.get("expectation") or "") + tg_refs(
+            values.get("experience") or "")
+        done = write_layers(goal, values, tg_times=_dialog.tg_times(nums, entry))
         print("tide: {0} — вписано: {1}".format(goal, ", ".join(done) or "ничего"))
     if main:
         replace = bool(getattr(args, "layer_replace", False))

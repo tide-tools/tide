@@ -126,6 +126,63 @@ def log_path(thread_dir: Optional[Path] = None) -> Optional[Path]:
     return p
 
 
+# Журнал пульта Telegram по умолчанию (тот же, что читает ``tide truth inbox``):
+# ``$TIDE_TG_DIALOG`` → корень проекта ``management`` из ростера + этот путь.
+TG_LOG_ENV = "TIDE_TG_DIALOG"
+PULT_PROJECT = "management"
+PULT_REL = ".tide/arcs/01-@ao-control/arcs/02-tg-pult/workspace/tg-pult/dialog.jsonl"
+
+
+def pult_path(thread_dir: Optional[Path] = None) -> Optional[Path]:
+    """jsonl-журнал пульта: :func:`log_path` (если это ``.jsonl``), иначе
+    ``$TIDE_TG_DIALOG``, иначе проект ``management`` ростера + :data:`PULT_REL`."""
+    p = log_path(thread_dir)
+    if p is not None and p.suffix == ".jsonl":
+        return p
+    raw = (os.environ.get(TG_LOG_ENV) or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    try:
+        from .. import roster
+        for e in roster.read_roster(paths.control_home()):
+            if e.get("name") == PULT_PROJECT:
+                return Path(e["path"]).expanduser() / PULT_REL
+    except Exception:  # noqa: BLE001 — нет ростера — нет журнала
+        pass
+    return None
+
+
+def tg_times(nums, thread_dir: Optional[Path] = None) -> "dict":
+    """Время входящих сообщений Telegram по номеру (SOC-143 F81): ``{tg N: datetime}``
+    (местное наивное) из журнала пульта (:func:`pult_path`, строки ``dir: in``,
+    ``kind: tg``, ``tg_msg_id``). Нет журнала или номера в нём — ключа нет."""
+    want = {int(n) for n in nums}
+    out: dict = {}
+    path = pult_path(thread_dir) if want else None
+    if path is None:
+        return out
+    try:
+        fh = open(path, encoding="utf-8", errors="ignore")
+    except OSError:
+        return out
+    with fh:
+        for ln in fh:
+            if '"tg_msg_id"' not in ln:
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            n = row.get("tg_msg_id") if isinstance(row, dict) else None
+            if (not isinstance(n, int) or n not in want or n in out
+                    or row.get("dir") != "in" or row.get("kind") != "tg"):
+                continue
+            at = _stamp(str(row.get("ts") or ""))
+            if at is not None:
+                out[n] = at
+    return out
+
+
 def _read_tail(path: Path) -> str:
     with open(path, "rb") as fh:
         fh.seek(0, 2)
@@ -399,4 +456,4 @@ def report_failure(root: Optional[Path], detail: str, *, source: str = "") -> No
 __all__ = ["AGENT", "CLIP", "CH_AO", "CH_TG", "DIALOG_FILENAME", "HUMAN", "LOG_ENV",
            "LOG_FIELD", "append", "clip", "dialog_path", "human_text", "is_harness_notice",
            "log_human",
-           "log_path", "render_row", "report_failure", "tail"]
+           "log_path", "pult_path", "render_row", "report_failure", "tail", "tg_times"]
