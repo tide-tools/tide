@@ -14,7 +14,10 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src" / "tide"
 
 # Layer of a module, by its path relative to src/tide (first segment or stem).
-STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders"}
+STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
+         # stdlib-only reader of claude transcripts (imports nothing from tide):
+         # sessions filters the SDK host's side chats through it
+         "context_fill"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",

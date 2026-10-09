@@ -21,8 +21,9 @@
    пунктов работ нити, ни актов (``акт: …`` в паспортах её сессий).
 
 Тогда хендофф делается без подъёма (оффер висит для ▶), а Грише идёт сигнал
-«нить встала»: артефакт на стол доски + внешняя команда из ``$TIDE_ALERT_CMD``,
-если она задана (адресов человека пакет tide не знает).
+«нить встала»: артефакт на стол доски + внешняя команда из ``$TIDE_ALERT_CMD``
+с ``TIDE_ALERT_ROUTE=human``, если она задана (адресов человека пакет tide не
+знает). Ту же команду зовёт сторож контекста (route ``log`` / ``manager``).
 
 Чистые функции (``count_progress``, ``open_questions``, ``decide``,
 ``build_auto_seed``) — без argparse; :func:`run_auto` — оркестрация.
@@ -52,6 +53,7 @@ PROGRESS_MARK_FIELD = "progress-mark"  # пункты+акты нити на м�
 HANDED_OFF_FIELD = "handed-off"        # эта сессия уже передала нить (хук молчит)
 
 ALERT_CMD_ENV = "TIDE_ALERT_CMD"
+ROUTE_HUMAN = "human"  # «нить встала» — Грише; лестница контекста шлёт log/manager
 
 DIALOG_TAIL = 12
 
@@ -249,8 +251,10 @@ def build_auto_seed(session_entry: Path) -> str:
 # --- сигнал ------------------------------------------------------------------
 
 def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
+                 source: str = "",
                  now: Optional[datetime] = None) -> Dict[str, object]:
-    """«Нить встала»: артефакт на стол доски + ``$TIDE_ALERT_CMD``, если задана.
+    """«Нить встала»: артефакт на стол доски + ``$TIDE_ALERT_CMD`` с
+    ``TIDE_ALERT_ROUTE=human``, если задана (:func:`send_alert`).
 
     Никогда не падает: сигнал — уведомление, не шаг, от которого зависит передача.
     Возвращает ``{"artifact": путь|None, "alert": код возврата|None}``.
@@ -266,17 +270,32 @@ def signal_stall(root: Path, thread_dir: Path, detail: str, *, offer: str = "",
             root, caption, "message", content, from_arc=tslug, now=now)
     except Exception:  # noqa: BLE001 — a signal must never break the handoff
         pass
-    cmd = (os.environ.get(ALERT_CMD_ENV) or "").strip()
-    if cmd:
-        text = "{0} — {1}".format(caption, content.replace("\n", " "))
-        env = dict(os.environ, TIDE_ALERT_TEXT=text, TIDE_ALERT_THREAD=tslug)
-        try:
-            proc = subprocess.run(shlex.split(cmd) + [text], env=env, timeout=30,
-                                  capture_output=True, text=True)
-            out["alert"] = proc.returncode
-        except (OSError, ValueError, subprocess.SubprocessError):
-            out["alert"] = -1
+    text = "{0} — {1}".format(caption, content.replace("\n", " "))
+    out["alert"] = send_alert(text, route=ROUTE_HUMAN, source=source or tslug,
+                              extra_env={"TIDE_ALERT_THREAD": tslug})
     return out
+
+
+def send_alert(text: str, *, route: str, source: str = "",
+               extra_env: Optional[Dict[str, str]] = None) -> Optional[int]:
+    """Вызвать ``$TIDE_ALERT_CMD`` с *text* последним аргументом.
+
+    Env команды: ``TIDE_ALERT_TEXT`` (тот же текст), ``TIDE_ALERT_ROUTE`` (кому:
+    ``log`` — только в лог пульта, ``manager`` — менеджеру, ``human`` — Грише),
+    ``TIDE_ALERT_SOURCE`` (``<проект>/<нить>/<сессия>``). Нет команды — None, молча.
+    Никогда не падает: код возврата, -1 — команда не запустилась.
+    """
+    cmd = (os.environ.get(ALERT_CMD_ENV) or "").strip()
+    if not cmd:
+        return None
+    env = dict(os.environ, TIDE_ALERT_TEXT=text, TIDE_ALERT_ROUTE=route,
+               TIDE_ALERT_SOURCE=source, **(extra_env or {}))
+    try:
+        proc = subprocess.run(shlex.split(cmd) + [text], env=env, timeout=30,
+                              capture_output=True, text=True)
+        return proc.returncode
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return -1
 
 
 # --- оркестрация -------------------------------------------------------------
@@ -332,7 +351,10 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
                      "{0} → {1}".format(stamp, offer.stem if offer else mode))
     if not decision.spawn:
         res.signal = signal_stall(owner, thread, decision.detail,
-                                  offer=offer.stem if offer else "")
+                                  offer=offer.stem if offer else "",
+                                  source="{0}/{1}/{2}".format(
+                                      owner.name, slug.entry_slug(thread.name),
+                                      slug.entry_slug(entry.name)))
     return res
 
 
@@ -355,4 +377,4 @@ def render_dry_run(res: AutoResult) -> str:
 __all__ = ["AUTO_CHAIN_FIELD", "AutoHandoffError", "AutoResult", "CHAIN_LIMIT",
            "Decision", "HANDED_OFF_FIELD", "PROGRESS_MARK_FIELD", "build_auto_seed",
            "count_progress", "decide", "decide_for", "open_items", "open_questions",
-           "render_dry_run", "run_auto", "signal_stall"]
+           "render_dry_run", "run_auto", "send_alert", "signal_stall"]

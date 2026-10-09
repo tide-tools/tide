@@ -1,20 +1,28 @@
 """tide.hooks.context_watch — Stop-хук ``tide hook context-watch``: сторож контекста.
 
 Сжатие tide не делает (вердикт Гриши 09.10): переполненная сессия ПЕРЕДАЁТ нить
-свежей. Хук на каждой остановке сессии:
+свежей. Сама сессия о контексте не думает — её пингует хук. Лестница порогов
+(решение 09.10, заменила 300/500), на КАЖДОМ пороге ровно один пинг — блок одной
+остановки с текстом, а не блок каждой остановки:
 
-1. меряет заполнение контекста — ТОЛЬКО через :mod:`tide.context_fill` (им же
-   рисует доска; второго расчёта нет);
-2. ``NUDGE`` (300 000 токенов) — блокирует остановку ОДИН раз: «доведи шаг,
-   сделай offload, затем ``tide handoff continue --auto``»;
-3. ``HARD`` (500 000) — блокирует КАЖДУЮ естественную остановку одной командой
-   ``tide handoff continue --auto``, пока сессия не передаст нить.
+* ``SOFT`` (200 000) — мягко: «на ближайшей точке шага tide offload и
+  ``tide handoff continue --auto``»;
+* ``HARD`` (300 000) — жёстко: «доведи текущий шаг, новую работу не бери, хендофф
+  сейчас»;
+* ``ALARM`` (500 000) — тревога: сессия ещё раз получает требование хендоффа, и
+  менеджеру уходит сигнал (``$TIDE_ALERT_CMD`` с ``TIDE_ALERT_ROUTE=manager``).
 
-Пороги — в одном месте (здесь), переопределяются ``$TIDE_CTX_NUDGE`` /
-``$TIDE_CTX_HARD``. Субагенты хендофф не делают: у них срабатывает SubagentStop,
-на него tide ничего не вешает. Молчит: вне tide-проекта, без арки-сессии, у
-растворённой или уже передавшей сессии, на продолжении после блока
-(``stop_hook_active`` — анти-петля). Любая ошибка — молчаливый exit 0.
+На мягком и жёстком пороге тот же текст кратко уходит в ``$TIDE_ALERT_CMD`` с
+``TIDE_ALERT_ROUTE=log`` (пульт только пишет событие в лог). Нет команды — молча
+пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 200|300|500``):
+повторно не пингуем, скачок через несколько порогов — один пинг старшего.
+
+Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
+здесь, env: ``$TIDE_CTX_SOFT`` / ``$TIDE_CTX_HARD`` / ``$TIDE_CTX_ALARM``
+(``$TIDE_CTX_NUDGE`` — старый синоним мягкого). Субагенты хендофф не делают (у них
+SubagentStop). Молчит: вне tide-проекта, без арки-сессии, у растворённой или уже
+передавшей сессии, на продолжении после блока (``stop_hook_active``). Любая
+ошибка — молчаливый exit 0.
 """
 
 from __future__ import annotations
@@ -24,18 +32,25 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .. import fields, offload, paths, slug
 
-NUDGE_TOKENS = 300_000
-HARD_TOKENS = 500_000
-NUDGE_ENV = "TIDE_CTX_NUDGE"
+SOFT_TOKENS = 200_000
+HARD_TOKENS = 300_000
+ALARM_TOKENS = 500_000
+SOFT_ENV = "TIDE_CTX_SOFT"
 HARD_ENV = "TIDE_CTX_HARD"
+ALARM_ENV = "TIDE_CTX_ALARM"
+NUDGE_ENV = "TIDE_CTX_NUDGE"  # старое имя мягкого порога — синоним SOFT_ENV
 
 AUTO_CMD = "tide handoff continue --auto"
-CTX_NUDGE_FIELD = "ctx-nudge"
+CTX_PING_FIELD = "ctx-ping"
 HANDED_OFF_FIELD = "handed-off"  # same key launcher.autohandoff stamps
+
+LEVELS = ("soft", "hard", "alarm")
+ROUTE_LOG = "log"
+ROUTE_MANAGER = "manager"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -47,37 +62,88 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-def thresholds() -> Tuple[int, int]:
-    """``(nudge, hard)`` в токенах; env переопределяет, hard не ниже nudge."""
-    nudge = _env_int(NUDGE_ENV, NUDGE_TOKENS)
-    hard = _env_int(HARD_ENV, HARD_TOKENS)
-    return nudge, max(hard, nudge)
+def thresholds() -> Tuple[int, int, int]:
+    """``(soft, hard, alarm)`` в токенах; env переопределяет, лестница не убывает."""
+    soft = _env_int(SOFT_ENV, _env_int(NUDGE_ENV, SOFT_TOKENS))
+    hard = max(_env_int(HARD_ENV, HARD_TOKENS), soft)
+    alarm = max(_env_int(ALARM_ENV, ALARM_TOKENS), hard)
+    return soft, hard, alarm
 
 
 def _k(tokens: int) -> str:
     return "{0} тыс.".format(int(round(tokens / 1000.0)))
 
 
-def nudge_text(entry: Path, tokens: int, nudge: int, hard: int) -> str:
-    ref = "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name),
-                           slug.entry_slug(entry.name))
+def _kn(tokens: int) -> int:
+    return int(round(tokens / 1000.0))
+
+
+def _ref(entry: Path) -> str:
+    return "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name),
+                            slug.entry_slug(entry.name))
+
+
+def _offload_cmd(entry: Path) -> str:
+    return ("tide offload {0} --cursor \"<где стоишь>\" --next \"<шаги через · >\" "
+            "\"<что сделал>\"".format(_ref(entry)))
+
+
+def soft_text(entry: Path, tokens: int, soft: int, hard: int) -> str:
     return (
-        "tide: контекст сессии {0} токенов (порог {1}) — пора передать нить свежей "
-        "сессии. Доведи текущий шаг до точки, затем:\n"
-        "  1. tide offload {2} --cursor \"<где стоишь>\" --next \"<шаги через · >\" "
-        "\"<что сделал>\"\n"
+        "tide: контекст сессии {0} токенов (порог {1}) — пора готовить передачу нити. "
+        "На ближайшей точке шага:\n"
+        "  1. {2}\n"
         "  2. {3}\n"
-        "Новая сессия поднимется сама и продолжит с курсора. После {4} каждая "
-        "остановка будет блокироваться, пока не передашь."
-    ).format(_k(tokens), _k(nudge), ref, AUTO_CMD, _k(hard))
+        "Новая сессия поднимется сама и продолжит с курсора. На {4} — хендофф "
+        "без отсрочек."
+    ).format(_k(tokens), _k(soft), _offload_cmd(entry), AUTO_CMD, _k(hard))
 
 
-def hard_text(tokens: int, hard: int) -> str:
+def hard_text(entry: Path, tokens: int, hard: int) -> str:
     return (
-        "tide: контекст {0} токенов — выше жёсткого порога {1}. Передай нить "
-        "сейчас, одной командой:\n  {2}\n"
-        "Ничего больше не делай, пока не передашь."
-    ).format(_k(tokens), _k(hard), AUTO_CMD)
+        "tide: контекст {0} токенов — жёсткий порог {1}. Доведи текущий шаг, новую "
+        "работу не бери, хендофф сейчас:\n"
+        "  {2} && {3}"
+    ).format(_k(tokens), _k(hard), _offload_cmd(entry), AUTO_CMD)
+
+
+def alarm_text(entry: Path, tokens: int, alarm: int) -> str:
+    return (
+        "tide: ТРЕВОГА — контекст {0} токенов (порог {1}), а хендоффа нет. Менеджер "
+        "получил сигнал. Передай нить немедленно, ничего больше не делая:\n"
+        "  {2} && {3}"
+    ).format(_k(tokens), _k(alarm), _offload_cmd(entry), AUTO_CMD)
+
+
+def _short(entry: Path, tokens: int, level: str) -> str:
+    """Кратко для лога пульта (route=log): что сессия услышала."""
+    what = {"soft": "мягкий пинг: на ближайшей точке шага offload и хендофф",
+            "hard": "жёсткий пинг: доведи шаг, хендофф сейчас"}[level]
+    return "сессия {0} на {1} тыс. токенов — {2}".format(
+        slug.entry_slug(entry.name), _kn(tokens), what)
+
+
+def alert_source(root: Path, entry: Path) -> str:
+    """``<проект>/<нить>/<сессия>`` для ``TIDE_ALERT_SOURCE``."""
+    return "{0}/{1}/{2}".format(Path(root).name, slug.entry_slug(entry.parent.parent.name),
+                                slug.entry_slug(entry.name))
+
+
+def _pinged_rank(passport: Path, ladder: List[int]) -> int:
+    """Сколько ступеней уже пропинговано (0..3) по ``ctx-ping: <тыс.> …``."""
+    raw = (fields.read_field(passport, CTX_PING_FIELD) or "").strip().split(" ", 1)[0]
+    try:
+        k = int(raw)
+    except ValueError:
+        return 0
+    return sum(1 for t in ladder if _kn(t) <= k)
+
+
+def _send(level: str, root: Path, entry: Path, text: str) -> None:
+    from ..launcher import autohandoff as _ah
+
+    route = ROUTE_MANAGER if level == "alarm" else ROUTE_LOG
+    _ah.send_alert(text, route=route, source=alert_source(root, entry))
 
 
 def _session_entry(root: Path, session: str) -> Optional[Path]:
@@ -108,7 +174,7 @@ def fill_tokens(payload: dict, session: str) -> Optional[int]:
 
 def watch_reason(root: Path, payload: dict, *,
                  now: Optional[datetime] = None) -> Optional[str]:
-    """Причина блока остановки — или None. Штампует ``ctx-nudge`` при мягком блоке."""
+    """Причина блока остановки — или None. Один пинг на ступень, штамп ``ctx-ping``."""
     session = str(payload.get("session_id") or payload.get("session") or "")
     entry = _session_entry(root, session)
     if entry is None:
@@ -120,17 +186,32 @@ def watch_reason(root: Path, payload: dict, *,
     tokens = fill_tokens(payload, session)
     if tokens is None:
         return None
-    nudge, hard = thresholds()
-    if tokens >= hard:
-        return hard_text(tokens, hard)
-    if tokens >= nudge:
-        pp = entry / "arc.md"
-        if (fields.read_field(pp, CTX_NUDGE_FIELD) or "").strip():
-            return None
-        fields.set_field(pp, CTX_NUDGE_FIELD, "{0} {1}".format(
-            (now or datetime.now()).isoformat(timespec="seconds"), tokens))
-        return nudge_text(entry, tokens, nudge, hard)
-    return None
+    ladder = list(thresholds())
+    reached = sum(1 for t in ladder if tokens >= t)
+    if reached == 0:
+        return None
+    pp = entry / "arc.md"
+    if _pinged_rank(pp, ladder) >= reached:
+        return None
+    level = LEVELS[reached - 1]
+    step = ladder[reached - 1]
+    fields.set_field(pp, CTX_PING_FIELD, "{0} {1} {2}".format(
+        _kn(step), (now or datetime.now()).isoformat(timespec="seconds"), tokens))
+    if level == "soft":
+        reason = soft_text(entry, tokens, step, ladder[1])
+        signal = _short(entry, tokens, level)
+    elif level == "hard":
+        reason = hard_text(entry, tokens, step)
+        signal = _short(entry, tokens, level)
+    else:
+        reason = alarm_text(entry, tokens, step)
+        signal = "сессия {0} на {1} тыс. токенов, хендоффа нет".format(
+            slug.entry_slug(entry.name), _kn(tokens))
+    try:
+        _send(level, root, entry, signal)
+    except Exception:  # noqa: BLE001 — a signal must never break the ping
+        pass
+    return reason
 
 
 def cmd_context_watch(args) -> int:

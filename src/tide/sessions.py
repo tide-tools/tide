@@ -140,7 +140,7 @@ def _read_ao_stash(control_home: Path) -> Dict[str, Dict[str, str]]:
 def remember_ao_sid(control_home: Path, ao_id: str, sid: str) -> bool:
     """Stash ``ao_id → real claude sid`` (SessionStart's payload). True when written."""
     a, s = (ao_id or "").strip(), (sid or "").strip()
-    if not a or not s:
+    if not a or not s or is_side_sid(s):
         return False
     data = _read_ao_stash(control_home)
     if (data.get(a) or {}).get("sid") == s:
@@ -159,11 +159,39 @@ def ao_real_sid(control_home: Path, ao_id: str,
     may be the echoed pre-pick, and relinking onto it would bury the real id)."""
     e = os.environ if env is None else env
     live = (e.get(registry.ENV_SESSION_ID) or "").strip()
-    if live:
+    if live and not is_side_sid(live, env=e):
         return live
     stashed = ((_read_ao_stash(control_home).get((ao_id or "").strip()) or {})
                .get("sid") or "").strip()
-    return stashed or None
+    if stashed and not is_side_sid(stashed, env=e):
+        return stashed
+    if live or stashed:
+        # only a service side chat is known (an older tide stashed it): the working
+        # chat is the newest real transcript in this AO session's own worktree
+        return _ao_main_sid(ao_id, e)
+    return None
+
+
+def is_side_sid(sid: str, env: Optional[Dict[str, str]] = None) -> bool:
+    """True when *sid* is a service side chat of the SDK host («Summarize this agent
+    result…»), never the session itself — the one filter is
+    :func:`tide.context_fill.is_side_transcript`."""
+    from . import context_fill  # lazy: the hooks import sessions on every prompt
+
+    e = os.environ if env is None else env
+    base = Path(e.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    return context_fill.is_side_sid(sid, root=base)
+
+
+def _ao_main_sid(ao_id: str, env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """sid of the newest working chat in AO session *ao_id*'s worktree, or None."""
+    from . import context_fill
+
+    e = os.environ if env is None else env
+    base = Path(e.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    dirs = [base / d for d in _ao_chat_dirs((ao_id or "").strip())]
+    found = context_fill.main_transcript_in([d for d in dirs if d.is_dir()])
+    return found.stem if found is not None else None
 
 
 def _chat_dirs(sid: str, env: Optional[Dict[str, str]] = None) -> Set[str]:
@@ -243,7 +271,7 @@ def ao_relink(
     from . import fields, handoff_queue  # lazy: keep sessions light for the hooks
 
     a, r = (ao_id or "").strip(), (real or "").strip()
-    if not a or not r:
+    if not a or not r or is_side_sid(r, env):
         return []
     reg = registry.read(control_home)
     on_handle = [s.strip() for s, e in reg.items()

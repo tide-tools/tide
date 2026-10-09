@@ -45,7 +45,8 @@ def world(tmp_path, monkeypatch):
     sess = stream.new_session(proj, "seam", "s1", claude_session=SID)
     monkeypatch.setenv("TIDE_HOME", str(home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    for k in (cw.NUDGE_ENV, cw.HARD_ENV, ah.ALERT_CMD_ENV, handoff.NO_SPAWN_ENV,
+    for k in (cw.SOFT_ENV, cw.NUDGE_ENV, cw.HARD_ENV, cw.ALARM_ENV, ah.ALERT_CMD_ENV,
+              handoff.NO_SPAWN_ENV,
               "AO_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(proj)
@@ -148,24 +149,80 @@ def test_hooks_write_no_dialog_file(world, monkeypatch):
 
 # --- сторож контекста ------------------------------------------------------------
 
-def test_watch_silent_below_nudge(world):
-    assert cw.watch_reason(world["proj"], _payload(world, 100_000)) is None
-    assert fields.read_field(world["sess"] / "arc.md", cw.CTX_NUDGE_FIELD) is None
+def _alert_sink(world, monkeypatch) -> Path:
+    """TIDE_ALERT_CMD → скрипт во временном каталоге: дописывает env+argv строкой JSON."""
+    sink = world["tmp"] / "alerts.jsonl"
+    script = world["tmp"] / "alert_sink.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "rec = {{k: os.environ.get(k, '') for k in "
+        "('TIDE_ALERT_ROUTE', 'TIDE_ALERT_SOURCE', 'TIDE_ALERT_TEXT')}}\n"
+        "rec['argv'] = sys.argv[-1]\n"
+        "open({0!r}, 'a').write(json.dumps(rec, ensure_ascii=False) + '\\n')\n"
+        .format(str(sink)), encoding="utf-8")
+    monkeypatch.setenv(ah.ALERT_CMD_ENV, "{0} {1}".format(sys.executable, script))
+    return sink
 
 
-def test_watch_nudges_once_then_hard_blocks_every_stop(world):
-    r1 = cw.watch_reason(world["proj"], _payload(world, 350_000))
+def _alerts(sink: Path):
+    if not sink.is_file():
+        return []
+    return [json.loads(ln) for ln in sink.read_text(encoding="utf-8").splitlines()]
+
+
+def test_watch_silent_below_soft(world):
+    assert cw.watch_reason(world["proj"], _payload(world, 199_000)) is None
+    assert fields.read_field(world["sess"] / "arc.md", cw.CTX_PING_FIELD) is None
+
+
+def test_watch_ladder_one_ping_per_threshold(world, monkeypatch):
+    sink = _alert_sink(world, monkeypatch)
+    pp = world["sess"] / "arc.md"
+    assert cw.watch_reason(world["proj"], _payload(world, 199_000)) is None
+    assert _alerts(sink) == []
+    # 200k — мягкий пинг, один; в лог пульта (route=log)
+    r1 = cw.watch_reason(world["proj"], _payload(world, 200_000))
     assert r1 and "tide offload seam/s1" in r1 and cw.AUTO_CMD in r1
-    assert fields.read_field(world["sess"] / "arc.md", cw.CTX_NUDGE_FIELD)
-    # между порогами — уже напомнили, молчим
+    assert "ближайшей точке" in r1
+    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("200 ")
+    (a1,) = _alerts(sink)
+    assert a1["TIDE_ALERT_ROUTE"] == "log"
+    assert a1["TIDE_ALERT_SOURCE"] == "proj/seam/s1"
+    assert a1["argv"] == a1["TIDE_ALERT_TEXT"] and "200 тыс." in a1["argv"]
+    # второй стоп между порогами — молчим
+    assert cw.watch_reason(world["proj"], _payload(world, 250_000)) is None
+    assert len(_alerts(sink)) == 1
+    # 300k — жёсткий пинг, один
+    r2 = cw.watch_reason(world["proj"], _payload(world, 300_000))
+    assert r2 and "новую работу не бери" in r2 and cw.AUTO_CMD in r2
     assert cw.watch_reason(world["proj"], _payload(world, 420_000)) is None
-    # жёсткий порог — на каждой естественной остановке
-    for _ in range(2):
-        r = cw.watch_reason(world["proj"], _payload(world, 520_000))
-        assert r and cw.AUTO_CMD in r and "жёсткого" in r
+    assert [a["TIDE_ALERT_ROUTE"] for a in _alerts(sink)] == ["log", "log"]
+    # 500k — тревога: ещё одно требование сессии + сигнал менеджеру
+    r3 = cw.watch_reason(world["proj"], _payload(world, 520_000))
+    assert r3 and "ТРЕВОГА" in r3 and cw.AUTO_CMD in r3
+    last = _alerts(sink)[-1]
+    assert last["TIDE_ALERT_ROUTE"] == "manager"
+    assert last["TIDE_ALERT_SOURCE"] == "proj/seam/s1"
+    assert last["argv"] == "сессия s1 на 520 тыс. токенов, хендоффа нет"
+    assert last["TIDE_ALERT_TEXT"] == last["argv"]
+    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("500 ")
+    # дальше — тишина, ступени кончились
+    assert cw.watch_reason(world["proj"], _payload(world, 700_000)) is None
+    assert len(_alerts(sink)) == 3
     # продолжение после блока — анти-петля
+    fields.set_field(pp, cw.CTX_PING_FIELD, "")
     assert cw.watch_reason(world["proj"], _payload(world, 520_000,
                                                    stop_hook_active=True)) is None
+
+
+def test_watch_jump_over_steps_pings_once_highest(world):
+    r = cw.watch_reason(world["proj"], _payload(world, 610_000))
+    assert r and "ТРЕВОГА" in r
+    assert cw.watch_reason(world["proj"], _payload(world, 620_000)) is None
+
+
+def test_watch_without_alert_cmd_still_pings(world):
+    assert cw.watch_reason(world["proj"], _payload(world, 210_000))
 
 
 def test_watch_stands_down_after_handing_over(world):
@@ -174,12 +231,18 @@ def test_watch_stands_down_after_handing_over(world):
 
 
 def test_watch_thresholds_from_env(world, monkeypatch):
-    monkeypatch.setenv(cw.NUDGE_ENV, "1000")
+    assert cw.thresholds() == (200_000, 300_000, 500_000)
+    monkeypatch.setenv(cw.SOFT_ENV, "1000")
     monkeypatch.setenv(cw.HARD_ENV, "2_000")
-    assert cw.thresholds() == (1000, 2000)
-    assert "жёсткого" in cw.watch_reason(world["proj"], _payload(world, 5000))
+    monkeypatch.setenv(cw.ALARM_ENV, "3000")
+    assert cw.thresholds() == (1000, 2000, 3000)
+    assert "ТРЕВОГА" in cw.watch_reason(world["proj"], _payload(world, 5000))
     monkeypatch.setenv(cw.HARD_ENV, "abc")
-    assert cw.thresholds() == (1000, cw.HARD_TOKENS)
+    assert cw.thresholds() == (1000, cw.HARD_TOKENS, cw.HARD_TOKENS)  # лестница не убывает
+    # старое имя мягкого порога — синоним
+    monkeypatch.delenv(cw.SOFT_ENV)
+    monkeypatch.setenv(cw.NUDGE_ENV, "1500")
+    assert cw.thresholds()[0] == 1500
 
 
 def test_watch_hook_cli_prints_block_json(world, monkeypatch, capsys):
@@ -329,7 +392,8 @@ def test_auto_stands_on_open_question_and_signals(world, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SID)
     sink = world["tmp"] / "alert.txt"
     script = world["tmp"] / "alert.py"
-    script.write_text("import sys; open({0!r}, 'w').write(sys.argv[-1])".format(str(sink)),
+    script.write_text("import os, sys; open({0!r}, 'w').write("
+                      "os.environ['TIDE_ALERT_ROUTE'] + '|' + sys.argv[-1])".format(str(sink)),
                       encoding="utf-8")
     monkeypatch.setenv(ah.ALERT_CMD_ENV, "{0} {1}".format(sys.executable, script))
     assert cli.main(["handoff", "continue", "--auto"]) == 0
@@ -338,7 +402,8 @@ def test_auto_stands_on_open_question_and_signals(world, monkeypatch, capsys):
     assert "НЕ поднимаю" in out and "какой вариант?" in out
     (rec,) = hq.list_offers(world["home"])
     assert rec["status"] == hq.STATUS_OFFERED          # оффер висит для ▶
-    assert "встала" in sink.read_text(encoding="utf-8")
+    sent = sink.read_text(encoding="utf-8")
+    assert sent.startswith("human|") and "встала" in sent
     desk = artifact.render_list(world["proj"])
     assert "встала" in desk
 

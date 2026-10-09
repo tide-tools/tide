@@ -133,3 +133,108 @@ def test_ao_journal_usage_reads_last_update(tmp_path):
                                                         "size": 1000000}
     assert cf.ao_journal_usage("missing", tmp_path) is None
     assert cf.ao_journal_usage("../x", tmp_path) is None
+
+
+# --- side chats of the SDK host («Summarize this agent result…») -------------
+# Shapes copied from live transcripts 09.10 (management-3 ffedbcb7, tide-stack-6
+# 51d83c3c): the queue row carries the service prompt, ~15 hook attachments, one
+# haiku reply, no tools — and the file is NEWER than the session it serves.
+
+MAIN = "aaaaaaaa-0000-4000-8000-000000000001"
+SIDE = "bbbbbbbb-0000-4000-8000-000000000002"
+
+
+def _main_rows():
+    rows = [{"type": "queue-operation", "operation": "enqueue",
+             "content": "Ты запущен tide через Agent Orchestrator."},
+            {"type": "user", "entrypoint": "sdk-ts", "isSidechain": False,
+             "message": {"role": "user", "content": "Ты запущен tide через Agent Orchestrator."}}]
+    for i in range(4):
+        a = _asst("m{0}".format(i), 10, 0, 300_000 + i)
+        a["message"]["content"] = [{"type": "tool_use", "name": "Bash", "input": {}}]
+        rows.append(a)
+    return rows
+
+
+def _side_rows(prompt="Summarize this agent result as ONE short, substantive line"):
+    rows = [{"type": "queue-operation", "operation": "enqueue", "content": prompt + ": …"},
+            {"type": "queue-operation", "operation": "dequeue"}]
+    rows += [{"type": "attachment", "entrypoint": "sdk-ts", "isSidechain": False,
+              "attachment": {"type": "hook_success", "hookEvent": "SessionStart",
+                             "content": "x" * 2000}} for _ in range(15)]
+    rows.append({"type": "user", "entrypoint": "sdk-ts", "isSidechain": False,
+                 "message": {"role": "user", "content": prompt}})
+    a = _asst("h1", 10, 0, 28_000, model="claude-haiku-4-5-20251001")
+    a["message"]["content"] = [{"type": "text", "text": "Added three-layer view."}]
+    rows.append(a)
+    return rows
+
+
+def _pair(tmp_path, side_rows=None):
+    import os
+    d = tmp_path / "claude" / "projects" / "-wt-proj-1"
+    main = _write(d / "{0}.jsonl".format(MAIN), _main_rows())
+    side = _write(d / "{0}.jsonl".format(SIDE), side_rows or _side_rows())
+    os.utime(main, (1_000, 1_000))   # the side chat is the fresher one
+    os.utime(side, (2_000, 2_000))
+    return d, main, side
+
+
+def test_side_chat_is_recognised_by_its_service_prompt(tmp_path):
+    d, main, side = _pair(tmp_path)
+    assert cf.is_side_transcript(side) and not cf.is_side_transcript(main)
+    assert cf.is_side_sid(SIDE, root=d.parent) and not cf.is_side_sid(MAIN, root=d.parent)
+    assert not cf.is_side_sid("nobody", root=d.parent)  # no chat — not proven side
+
+
+def test_newest_main_wins_over_fresher_side_chat(tmp_path):
+    d, main, side = _pair(tmp_path)
+    assert cf.pick_main([side, main]) == main
+    assert cf.main_transcript_in([d]) == main
+    assert cf.pick_main([side]) is None
+
+
+def test_tiny_haiku_chat_without_tools_loses_to_a_live_one(tmp_path):
+    # unknown service prompt — caught by shape: 1 haiku reply, no tools, fresher
+    d, main, side = _pair(tmp_path, _side_rows(prompt="Name this conversation"))
+    assert not cf.is_side_transcript(side)
+    assert cf.pick_main([side, main]) == main
+    assert cf.pick_main([side]) == side   # alone it is still the only candidate
+
+
+def test_journal_skips_usage_of_a_side_chat(tmp_path, monkeypatch):
+    d, main, side = _pair(tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    j = tmp_path / "ao" / "chat-hosts" / "proj-1" / "acp-prompt.journal"
+    j.parent.mkdir(parents=True)
+    upd = lambda sid, used: json.dumps({"params": {"sessionId": sid, "update": {
+        "sessionUpdate": "usage_update", "used": used, "size": 1_000_000}}})
+    j.write_text(upd(MAIN, 312_000) + "\n" + upd(SIDE, 28_000) + "\n", encoding="utf-8")
+    got = cf.ao_journal_usage("proj-1", data_dir=tmp_path / "ao")
+    assert got == {"sid": MAIN, "used": 312_000, "size": 1_000_000}
+
+
+def test_ao_real_sid_and_stash_ignore_side_chats(tmp_path, monkeypatch):
+    from tide import sessions
+
+    d, main, side = _pair(tmp_path)
+    # the AO session's worktree → its claude project dir is d
+    wt = tmp_path / "aodata" / "worktrees" / "proj" / "proj-1"
+    wt.mkdir(parents=True)
+    d.rename(d.parent / sessions._claude_dir_name(wt))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("AO_DATA_DIR", str(tmp_path / "aodata"))
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"CLAUDE_CONFIG_DIR": str(tmp_path / "claude")}
+    # SessionStart of the side chat must not overwrite the stash
+    assert sessions.remember_ao_sid(home, "proj-1", SIDE) is False
+    assert sessions.ao_real_sid(home, "proj-1", env=env) is None
+    # a live env sid of the side chat → the worktree's working chat
+    assert sessions.ao_real_sid(home, "proj-1",
+                                env=dict(env, CLAUDE_CODE_SESSION_ID=SIDE)) == MAIN
+    # an older tide stashed the side chat → still the working chat
+    (home / sessions.AO_STASH_FILENAME).write_text(
+        json.dumps({"proj-1": {"sid": SIDE, "ts": "x"}}), encoding="utf-8")
+    assert sessions.ao_real_sid(home, "proj-1", env=env) == MAIN
+    assert sessions.ao_relink(home, "proj-1", SIDE, env=env) == []

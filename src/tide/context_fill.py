@@ -73,6 +73,151 @@ def transcript_for(sid: str, root: Optional[Path] = None) -> Optional[Path]:
     return max(hits, key=lambda p: p.stat().st_mtime)
 
 
+# --- side chats: the SDK's own service sessions -------------------------------
+# Claude Code's SDK host (AO's chat host — entrypoint sdk-ts/sdk-cli) writes short
+# service chats into the SAME project dir as the session it serves: «Summarize this
+# agent result as ONE short line…», run on haiku, one reply, no tools. They are
+# NEWER than the main chat and fire the same hooks (SessionStart with their own
+# sid), so «the newest transcript» / «the sid the hook saw» picks them up — and tide
+# pinned them into ``claude-session:`` and the board showed their 28k tokens as the
+# session's context (live 09.10: management-3 → ffedbcb7/1d5216e1 instead of
+# baf13154, tide-stack-6 → 8ab9633d/51d83c3c). ONE filter for every reader:
+# :func:`is_side_transcript`, :func:`is_side_sid`, :func:`pick_main`.
+
+# first user prompt of a service chat (the queue-operation row carries it even
+# before SessionStart fires, so the filter works from the very first hook)
+SIDE_PROMPT_PREFIXES = (
+    "Summarize this agent result",
+)
+# how much of a transcript's head to read: service chats put ~15 hook attachments
+# (one can be 13 KB) before the prompt and the reply
+_HEAD_BYTES = 256 * 1024
+# «tiny» = at most this many assistant replies, none with a tool call
+_TINY_REPLIES = 2
+
+_side_cache: Dict[str, bool] = {}
+
+
+def _prompt_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(x.get("text") or "") for x in content
+                        if isinstance(x, dict) and x.get("type") == "text")
+    return ""
+
+
+def transcript_head(path: Path) -> Dict:
+    """What the head of a transcript says about the chat: ``{"prompt", "sidechain",
+    "replies", "tools", "models", "complete"}``.
+
+    ``prompt`` — the first user prompt (the queue's ``enqueue`` row or the first
+    ``user`` message); ``complete`` — the whole file fit in the head read."""
+    out = {"prompt": None, "sidechain": False, "replies": 0, "tools": False,
+           "models": set(), "complete": False}
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read(_HEAD_BYTES + 1)
+    except OSError:
+        return out
+    out["complete"] = len(blob) <= _HEAD_BYTES
+    seen = set()
+    for raw in blob[:_HEAD_BYTES].splitlines():
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        kind = row.get("type")
+        if kind == "queue-operation" and row.get("operation") == "enqueue":
+            if out["prompt"] is None and isinstance(row.get("content"), str):
+                out["prompt"] = row["content"]
+            continue
+        if kind == "user" and out["prompt"] is None and not row.get("isMeta"):
+            out["sidechain"] = bool(row.get("isSidechain"))
+            out["prompt"] = _prompt_text((row.get("message") or {}).get("content"))
+        elif kind == "assistant":
+            msg = row.get("message") or {}
+            key = msg.get("id") or row.get("uuid")
+            if key not in seen:
+                seen.add(key)
+                out["replies"] += 1
+            if msg.get("model"):
+                out["models"].add(msg["model"])
+            if any(isinstance(c, dict) and c.get("type") == "tool_use"
+                   for c in (msg.get("content") or [])):
+                out["tools"] = True
+    return out
+
+
+def is_side_transcript(path: Union[str, Path]) -> bool:
+    """True when *path* is a service side chat, not a working session.
+
+    Signs (by live transcripts 09.10): the first prompt is an SDK service prompt
+    (:data:`SIDE_PROMPT_PREFIXES`), or the chat itself is a sidechain."""
+    key = str(path)
+    if key in _side_cache:
+        return _side_cache[key]
+    head = transcript_head(Path(path))
+    prompt = (head["prompt"] or "").lstrip()
+    side = head["sidechain"] or any(prompt.startswith(p) for p in SIDE_PROMPT_PREFIXES)
+    if head["prompt"] is not None:  # the verdict can't change once the prompt is known
+        _side_cache[key] = side
+    return side
+
+
+def _is_tiny(path: Path) -> bool:
+    """A finished chat of 1–2 haiku replies without a single tool call."""
+    head = transcript_head(path)
+    if not head["complete"] or head["tools"] or head["replies"] > _TINY_REPLIES:
+        return False
+    models = head["models"]
+    return bool(models) and all("haiku" in m for m in models)
+
+
+def pick_main(candidates: List[Path]) -> Optional[Path]:
+    """The newest WORKING transcript among *candidates* (None when only side chats).
+
+    Service chats (:func:`is_side_transcript`) are dropped; a tiny haiku-only chat
+    without tools is dropped too when a longer live candidate exists."""
+    live = [Path(p) for p in candidates if not is_side_transcript(p)]
+    if not live:
+        return None
+    full = [p for p in live if not _is_tiny(p)]
+    pool = full or live
+    try:
+        return max(pool, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def is_side_sid(sid: str, root: Optional[Path] = None) -> bool:
+    """True when claude session *sid* is a service side chat. No transcript → False
+    (a pre-pick or a chat not yet written is not proven side)."""
+    sid = (sid or "").strip()
+    if not sid or "/" in sid:
+        return False
+    try:
+        hits = list((root or projects_dir()).glob("*/{0}.jsonl".format(sid)))
+    except OSError:
+        return False
+    return bool(hits) and all(is_side_transcript(p) for p in hits)
+
+
+def main_transcript_in(dirs: List[Path]) -> Optional[Path]:
+    """The newest working transcript in claude project dirs *dirs* (:func:`pick_main`)."""
+    found: List[Path] = []
+    for d in dirs:
+        try:
+            found += [p for p in Path(d).glob("*.jsonl") if p.is_file()]
+        except OSError:
+            continue
+    # newest first, and only a few: the dir can hold thousands of side chats
+    found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return pick_main(found[:200])
+
+
 def _resolve(target: Union[str, Path], root: Optional[Path]) -> Optional[Path]:
     p = Path(str(target))
     if p.suffix == ".jsonl" and p.is_file():
@@ -237,7 +382,8 @@ def context_series(target: Union[str, Path], root: Optional[Path] = None,
 
 
 def ao_journal_usage(ao_id: str, data_dir: Optional[Path] = None) -> Optional[Dict]:
-    """The last ``usage_update`` AO's chat host saw for session *ao_id*.
+    """The last ``usage_update`` AO's chat host saw for session *ao_id* (updates
+    of service side chats — :func:`is_side_sid` — are skipped).
 
     ``{"sid": <claude session id>, "used": int, "size": int}`` or None when the
     session has no journal (terminal sessions don't) or no usage yet."""
@@ -264,8 +410,11 @@ def ao_journal_usage(ao_id: str, data_dir: Optional[Path] = None) -> Optional[Di
         upd = params.get("update") or {}
         if upd.get("sessionUpdate") != "usage_update":
             continue
+        sid = params.get("sessionId") or ""
+        if sid and is_side_sid(sid):
+            continue  # a service side chat of the host — not this session's context
         try:
-            return {"sid": params.get("sessionId") or "", "used": int(upd.get("used") or 0),
+            return {"sid": sid, "used": int(upd.get("used") or 0),
                     "size": int(upd.get("size") or 0)}
         except (TypeError, ValueError):
             return None

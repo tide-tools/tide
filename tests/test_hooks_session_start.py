@@ -514,3 +514,25 @@ def test_pointer_is_silent_without_a_session_id(tmp_project):
 def test_pointer_is_silent_when_the_sid_matches_nothing(tmp_project):
     out = session_start.render(tmp_project, "orchestrator", session="sid-ghost")
     assert session_start.THREAD_SCREEN_POINTER not in out
+
+
+def test_session_start_never_pins_a_side_chat(tmp_project, tmp_path, monkeypatch, capsys):
+    """The SDK host's «Summarize this agent result…» chat fires SessionStart in the same
+    project: its sid must not land in ``claude-session:`` of a fresh head."""
+    import json
+    from tide import fields
+
+    sid = "cccccccc-0000-4000-8000-000000000003"
+    tx = tmp_path / "claude" / "projects" / "-wt" / "{0}.jsonl".format(sid)
+    tx.parent.mkdir(parents=True)
+    tx.write_text(json.dumps({"type": "queue-operation", "operation": "enqueue",
+                              "content": "Summarize this agent result as ONE line"}) + "\n",
+                  encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.delenv("AO_SESSION_ID", raising=False)
+    stream.new_thread(tmp_project, "work", goal="do the work")
+    s = stream.new_session(tmp_project, "work", "plan")
+    monkeypatch.chdir(tmp_project)
+    monkeypatch.setattr(session_start, "_hook_session", lambda: sid)
+    assert session_start.cmd_session_start(None) == 0
+    assert not (fields.read_field(s / "arc.md", "claude-session") or "").strip()

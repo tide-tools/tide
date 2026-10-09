@@ -699,6 +699,8 @@ def cmd_handoff_confirm(args) -> int:
             session = None
         home = paths.control_home()
         from . import sessions as _sessions  # lazy: sideways, keeps the queue light
+        if session and _sessions.is_side_sid(session):
+            return 0  # the SDK host's service chat — it picks up nothing
         ao = _sessions.ao_session_env()
         real = _sessions.ao_real_sid(home, ao) if ao else None
         candidates = _session_candidates(home, session)

@@ -506,6 +506,14 @@ def _link_claude_session(root: Path, session_id: Optional[str]) -> Optional[Path
     return pp
 
 
+def _is_side_session(session: str) -> bool:
+    try:
+        from .. import sessions as _sessions
+        return _sessions.is_side_sid(session)
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        return False
+
+
 def cmd_session_start(args) -> int:
     """``tide hook session-start`` — print the board + reminder + warnings.
 
@@ -517,6 +525,10 @@ def cmd_session_start(args) -> int:
     if root is None:
         return 0
     session = _hook_session()
+    if session and _is_side_session(session):
+        # the SDK host's service chat («Summarize this agent result…») in the same
+        # project dir: never pin, stash or rename by it — it is not the session
+        session = None
     if session:
         try:
             _link_claude_session(root, session)  # cand 93: board sees the head at once
