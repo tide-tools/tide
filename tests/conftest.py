@@ -117,6 +117,11 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # project config, SOC-101): a missing binary = "AO not installed". The
     # fake_ao fixture sets its own TIDE_AO_BIN after this one.
     monkeypatch.setenv("TIDE_AO_BIN", str(tmp_path / "no-real-ao"))
+    # SOC-101: no test may message the real manager (ao send to the address from
+    # ~/.tide/manager.json) or Grisha (the Telegram alert command).
+    monkeypatch.setenv("TIDE_MANAGER_FILE", str(tmp_path / "no-manager.json"))
+    monkeypatch.delenv("TIDE_ALERT_CMD", raising=False)
+    monkeypatch.setenv("TIDE_AO_DB", str(tmp_path / "no-ao.db"))
     # The live pult's shared dialog journal (AO project env) flips dialog.tail
     # into "shared journal" filtering — a test reads only its own journals.
     monkeypatch.delenv("TIDE_DIALOG_LOG", raising=False)
