@@ -70,7 +70,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .base import SESSION_PROGRAM, SpawnResult, TerminalAdapter
 
@@ -446,6 +446,16 @@ def write_config(pid: str, want: dict) -> List[str]:
         return ["{0}: written, read-back failed ({1})".format(pid, exc)]
     lost = sorted(k for k in want if got.get(k) != want[k])
     return ["{0}: AO did not keep {1}".format(pid, ", ".join(lost))] if lost else []
+
+
+def terminated_sessions() -> Set[str]:
+    """Ids of AO sessions AO itself marks terminated (``isTerminated``), read-only via
+    ``ao session ls --json --include-terminated --all``. Their worktree dirs may still
+    lie on disk; they are dead, not «live without hooks» (``tide doctor``)."""
+    data = _json(["session", "ls", "--json", "--include-terminated", "--all"])
+    rows = data.get("data") or data.get("sessions") or []
+    return {str(r.get("id")).strip() for r in rows
+            if isinstance(r, dict) and r.get("id") and r.get("isTerminated")}
 
 
 def list_projects() -> List[dict]:

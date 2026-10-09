@@ -34,7 +34,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 from . import paths, placeholders
 from .canon import store
@@ -374,14 +374,28 @@ def ao_linked_missing_hooks(results: Optional[list] = None) -> List[str]:
             for r in results if r.missing]
 
 
+def _ao_terminated() -> Set[str]:
+    """AO session ids AO marks terminated. Best-effort: no AO / any error → empty
+    (then every worktree on disk counts as live, as before)."""
+    try:
+        from .adapters import ao
+
+        if not ao.ao_available():
+            return set()
+        return ao.terminated_sessions()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
                             unwired: Optional[List[str]] = None,
-                            linked: Optional[List[str]] = None) -> CheckResult:
+                            linked: Optional[List[str]] = None,
+                            terminated: Optional[Set[str]] = None) -> CheckResult:
     """Warn when a live AO session worktree of a tide project lacks tide's hooks.
 
     New raises get them from the AO ``postCreate`` step (``tide install-hooks
     --worktree``); worktrees cut before it — or by hand in AO — may still miss them.
-    Live = the worktree dir exists (AO removes it with the session). A tide project =
+    Live = the worktree dir exists and AO does not mark the session terminated. A tide project =
     the worktree carries ``.tide``. Every hook of :data:`harness.TIDE_HOOKS` is
     looked up in the settings.json the session actually sees (through a ``.claude``
     link too). Lists ``<project>/<session> (нет: …)``; the fix is ``tide
@@ -390,6 +404,9 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
     lacks the ``postCreate`` step, so every NEXT session comes hook-less too: named
     with the cure ``tide ao ensure``. *linked* (default: asked from AO) — projects
     whose ``.claude`` link points at a main settings.json without all the hooks.
+    *terminated* (default: asked from AO, ``ao session ls --include-terminated``) —
+    session ids AO marks terminated: their worktree may linger on disk, but the
+    session is dead — not judged, not listed (SOC-101 п.13: music-4..7).
     """
     if unwired is None or linked is None:
         results = _ao_ensure_results()
@@ -408,11 +425,12 @@ def check_ao_worktree_hooks(worktrees_root: Optional[Path] = None,
         if cures:
             return CheckResult("ao-worktrees", STATUS_WARN, cure.lstrip("; "))
         return CheckResult("ao-worktrees", STATUS_OK, "AO worktrees: none here")
+    dead = _ao_terminated() if terminated is None else set(terminated)
     bad: List[str] = []
     seen = 0
     for wt in sorted(p for proj in root.iterdir() if proj.is_dir()
                      for p in proj.iterdir() if p.is_dir()):
-        if not (wt / ".tide").exists():
+        if not (wt / ".tide").exists() or wt.name in dead:
             continue
         seen += 1
         missing = install.missing_hooks_at(install.settings_path(wt))

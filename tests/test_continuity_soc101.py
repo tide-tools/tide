@@ -284,3 +284,60 @@ def test_linear_issues_in_the_seed_get_links_once(scene, monkeypatch):
                      "- SOC-101 — https://linear.app/socaseinpoint/issue/SOC-101"]
     monkeypatch.setenv(seed_draft.LINEAR_URL_ENV, "https://l.example/i/{key}")
     assert seed_draft.block_links("см. SOC-7, ABC-1") == ["- SOC-7 — https://l.example/i/SOC-7"]
+
+
+# --- F15: закрытая арка не даёт имя живой AO-сессии --------------------------------
+
+def test_f15_closed_arc_never_names_the_ao_session(scene, monkeypatch):
+    from tide.hooks import session_start
+
+    sid = "aaaaaaaa-0000-4000-8000-000000000015"
+    pp = scene["sess"] / "arc.md"
+    fields.set_field(pp, "claude-session", sid)
+    fields.set_field(pp, "title", "proj — shov · 01")
+    fields.set_field(pp, "status", "done")
+    monkeypatch.setenv("AO_SESSION_ID", "proj-12")
+
+    class _Ao:
+        renamed = None
+
+        def session(self, h):
+            return {"displayName": "proj-12"}
+
+        def rename(self, h, name):
+            _Ao.renamed = (h, name)
+            return True
+
+    assert session_start._ao_name_by_title(scene["root"], sid, adapter=_Ao()) is None
+    assert _Ao.renamed is None
+    assert fields.read_field(pp, "title") == "proj — shov · 01"
+
+
+# --- п.13: doctor не судит terminated worktree -------------------------------------
+
+def test_doctor_skips_terminated_ao_worktrees(tmp_path, monkeypatch):
+    root = tmp_path / "worktrees"
+    dead = root / "music" / "music-4"
+    (dead / ".claude").mkdir(parents=True)
+    (dead / ".tide").mkdir()
+    monkeypatch.setattr(doctor, "_ao_terminated", lambda: {"music-4"})
+    res = doctor.check_ao_worktree_hooks(root, unwired=[], linked=[])
+    assert res.status == doctor.STATUS_OK and "music-4" not in res.detail
+    monkeypatch.setattr(doctor, "_ao_terminated", lambda: set())
+    res = doctor.check_ao_worktree_hooks(root, unwired=[], linked=[])
+    assert res.status == doctor.STATUS_WARN and "music/music-4" in res.detail
+
+
+def test_ao_terminated_sessions_read_from_ao_ls(monkeypatch):
+    from tide.adapters import ao
+
+    seen = {}
+
+    def fake_json(args, timeout=30):
+        seen["args"] = args
+        return {"data": [{"id": "music-4", "isTerminated": True},
+                         {"id": "music-8", "isTerminated": False}]}
+
+    monkeypatch.setattr(ao, "_json", fake_json)
+    assert ao.terminated_sessions() == {"music-4"}
+    assert "--include-terminated" in seen["args"]
