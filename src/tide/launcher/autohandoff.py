@@ -237,9 +237,6 @@ def build_auto_seed(session_entry: Path) -> str:
         out[sd.ENTRY_MAP].append(
             "- автохендофф: читай паспорт прошлой сессии {0}/arc.md, plan.md нити и "
             "«неотвеченные реплики Гриши» ниже".format(session_entry.name))
-        if not out.get(sd.INFLIGHT):
-            out[sd.INFLIGHT] = ["{0} автохендофф: на диске в полёте ничего — воркеров и "
-                                "сабагентов сессия не перечислила".format(sd.EMPTY)]
         return out
 
     clip = sd.JOURNAL_CLIP  # хвост пульса в «где мы» — тоже сырой журнал (F5)

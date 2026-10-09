@@ -29,7 +29,7 @@ def test_thirteen_blocks_in_contract_order_none_droppable():
 
 
 def test_empty_block_says_why():
-    assert hc.empty_line(hc.block("inflight")) == "— ничего не в полёте"
+    assert hc.empty_line(hc.block("inflight")).startswith("— источник пуст: метки «В полёте:»")
     assert hc.empty_line(hc.block("linear"), "нет") == "— нет"
 
 

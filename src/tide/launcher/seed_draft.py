@@ -342,7 +342,7 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
 def raw_pulse_chars(context: Sequence[str], tail: int = PULSE_TAIL, clip: int = 0) -> int:
     """Сколько знаков сырого пульса несёт курсор (его хвост из *tail* строк)."""
     pulse = live_lines(context)
-    return sum(min(len(ln) + 3, clip or len(ln) + 3)
+    return sum(min(len(ln) + 3, (clip + 1) if clip else len(ln) + 3)
                for ln in (pulse[-tail:] if tail > 0 else pulse))
 
 
@@ -596,10 +596,16 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     share = JOURNAL_SHARE
     rest = len(render_draft(out, header=header))
     tail = raw_pulse_chars(context, clip=clip)
-    out[JOURNAL] = block_journal(
-        context, budget=max(0, int((share * rest - tail) / (1 - share))), source=source)
-    out[LINEAR] = block_links(render_draft(out, header=header))
-    return render_draft(out, header=header)
+    budget = max(0, int((share * rest - tail) / (1 - share)))
+    for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
+        out[JOURNAL] = block_journal(context, budget=budget, source=source)
+        out[LINEAR] = block_links(render_draft(out, header=header))
+        text = render_draft(out, header=header)
+        over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]) - share * len(text)
+        if over <= 0 or budget == 0:
+            break
+        budget = max(0, budget - int(over) - 1)
+    return text
 
 
 # --- чтение диска -----------------------------------------------------------

@@ -93,3 +93,23 @@ def test_state_labels_come_from_the_newest_pulse_only():
     got = seed_draft.labeled_pulses(ctx)
     assert got["awaiting"] == ["- новое (пульс 06:00)"]
     assert got["experience"] == ["- второй (пульс 06:00)", "- первый (пульс 05:00)"]
+
+
+# --- п.2 · F23: пустой блок не врёт ------------------------------------------
+
+_LIES = ("Гришу ничего не ждёт", "в полёте ничего", "ничего не в полёте")
+
+
+def test_old_live_seed_lied_and_the_new_one_names_checked_sources(tmp_project, monkeypatch):
+    old = (FIX / "continuity-audit-02-seed.md").read_text(encoding="utf-8")
+    assert any(lie in old for lie in _LIES)  # так было: утверждение вместо дыры
+    monkeypatch.delenv(dialog.LOG_ENV, raising=False)
+    stream.new_thread(tmp_project, "empty", goal="пустая нить")
+    sess = stream.new_session(tmp_project, "empty", "s1", goal="ничего")
+    seed = ah.build_auto_seed(sess)
+    assert not any(lie in seed for lie in _LIES)
+    for name in ("ждёт Гришу", "в работе прямо сейчас", "опыт", "решения"):
+        body = _block(seed, name)
+        assert body.startswith("— источник пуст: "), (name, body)
+    assert "метки «Ждёт Гришу:» в пульсах" in _block(seed, "ждёт Гришу")
+    assert "открытые пункты работ нити" in _block(seed, "в работе прямо сейчас")
