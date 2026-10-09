@@ -190,26 +190,39 @@ def forward_parts(*, old: str, sender: str, body: str,
 # --- две головы (SOC-101 F49) ---------------------------------------------------
 
 TWO_HEADS_LOG = "two-heads.log"
+TWO_HEADS_MARK = "tide: ⚠ две головы"
 OLD_ROLE = ("старая — только довести своего воркера и переслать итог новой; новые "
             "задачи старой не отдавать и самой не брать")
 
 
 def two_heads_text(*, thread: str, new_addr: str, old_addr: str, evidence: str = "") -> str:
-    return ("tide: ⚠ две головы у нити {0}: нить ведёт новая — {1}; {2} — {3}.{4}".format(
-        thread or "?", new_addr, old_addr or "старая сессия", OLD_ROLE,
+    return ("{0} у нити {1}: нить ведёт новая — {2}; {3} — {4}.{5}".format(
+        TWO_HEADS_MARK, thread or "?", new_addr, old_addr or "старая сессия", OLD_ROLE,
         " Признак: {0}.".format(evidence) if evidence else ""))
 
 
 def two_heads_alarm(home: Path, rec: Dict[str, object], *, evidence: str = "",
-                    say=None) -> List[str]:
+                    say=None, verify: bool = True) -> List[str]:
     """Тревога «две головы»: ``ao send`` новой и старой — нить ведёт новая, старая
     только доводит воркера и пересылает итог. Раз на пару (оффер в
-    ``.tide/state/two-heads.log``). Вернуть AO-id, кому ушло. Никогда не падает."""
+    ``.tide/state/two-heads.log``). Вернуть AO-id, кому ушло. Никогда не падает.
+
+    Шлём, только если признак подтверждён (:func:`tide.handoff_queue.pair_evidence`:
+    пульс старой или поручение новой + правки/сабагенты старой после него) — письмо
+    новой и ходы старой сами по себе не тревога (F49, нить 32). Запись из
+    ``handoffs multiples`` (с ``active_at``) уже проверена; ``verify=False`` — не
+    проверять."""
     try:
         home = Path(home)
         key = "two-heads:{0}".format(rec.get("name") or rec.get("from_session") or "?")
         if _already_in(home, TWO_HEADS_LOG, key):
             return []
+        if verify and not rec.get("active_at"):
+            from .. import handoff_queue as hq
+            got = hq.pair_evidence(home, rec)
+            if not got:
+                return []
+            evidence = got["evidence"]
         new = successor(home, rec)
         new_ao = new.get("ao_session", "")
         try:
@@ -253,7 +266,7 @@ def context_text(*, new_addr: str, sender: str, forwarded: Optional[str],
     """Строка в контекст старой: кому передана нить и что делать с этим сообщением."""
     head = "tide: нить передана {0}.".format(new_addr)
     if from_new:
-        # F49: новая отдаёт задачи через старую — это две головы
+        # F49: новая шлёт старой поручение — не брать, иначе две головы
         return (head + " Это сообщение — от неё самой: не пересылаю. Нить ведёт она, а ты — "
                 + OLD_ROLE +
                 ". Задачу из него не бери: ответь ей, чтобы делала сама (воркера и его "
@@ -304,12 +317,20 @@ def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
     new = successor(home, rec)
     new_ao, mine_ao = new.get("ao_session", ""), (e.get(hq.AO_SESSION_ENV) or "").strip()
     addr = _address(new)
+    if TWO_HEADS_MARK in msg["body"]:
+        # тревога уже ушла обеим — её копию старой новой не пересылаем и новую
+        # тревогу не поднимаем: одна тревога на пару (F49)
+        return context_text(new_addr=addr, sender=msg["sender"], forwarded=None,
+                            new_ao=new_ao, mine=True)
     from_new = _sender_is(msg["sender"], new_ao) and not (new_ao and new_ao == mine_ao)
     if from_new:
-        # новая пишет старой — старая стала ретранслятором: тревога обеим (F49)
-        two_heads_alarm(home, rec, evidence="новая {0} пишет старой".format(new_ao))
+        # письмо новой само не признак (первое — подтверждение приёма); тревога —
+        # только если по транскрипту поручение + работа старой (F49)
+        order = hq.is_instruction(msg["body"])
+        if order:
+            two_heads_alarm(home, rec)
         return context_text(new_addr=addr, sender=msg["sender"], forwarded=None,
-                            new_ao=new_ao, mine=True, from_new=True)
+                            new_ao=new_ao, mine=True, from_new=order)
     skip = (_sender_is(msg["sender"], _manager_ao(home)) or (new_ao and new_ao == mine_ao))
     if skip:
         return context_text(new_addr=addr, sender=msg["sender"], forwarded=None,
@@ -364,6 +385,6 @@ def cmd_prompt(args) -> int:
     return rc
 
 
-__all__ = ["AO_MESSAGE_MAX_BYTES", "FORWARD_ENV", "OLD_ROLE", "cmd_prompt", "context_text",
-           "forward_parts", "forward_text",
+__all__ = ["AO_MESSAGE_MAX_BYTES", "FORWARD_ENV", "OLD_ROLE", "TWO_HEADS_MARK", "cmd_prompt",
+           "context_text", "forward_parts", "forward_text",
            "incoming", "redirect", "successor", "two_heads_alarm", "two_heads_text"]

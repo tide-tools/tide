@@ -597,19 +597,34 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
     return None
 
 
-# SOC-101 F49: старая голова после приёма часто НЕ пульсует, но работает — её
-# фоновый воркер держит её живой, и новая отдаёт задачи через неё. Признак — ходы
-# в её транскрипте позже приёма + запас (старая доводит ход, в котором передала).
-TWO_HEADS_GRACE_ENV = "TIDE_TWO_HEADS_GRACE_MIN"
-TWO_HEADS_GRACE_MIN = 5
+# SOC-101 F49: старая голова после приёма часто НЕ пульсует, но работает — новая
+# отдаёт задачи через неё. Само письмо новой старой — не признак: первым делом новая
+# пишет «нить приняла, жду вердикт» (ложная тревога у нити 32, 09.10). Признак —
+# ПОРУЧЕНИЕ новой (повелительный глагол или SOC-N с действием), не первое письмо
+# после приёма, и после него у старой правки/сабагенты; либо пульс старой.
+_LETTER_AO = re.compile(
+    r"<ao-session-delivery[^>]*>\s*\[from\s+([^\]\s]+)\]\s*(.*?)(?:</ao-session-delivery>|\Z)",
+    re.S)
+_LETTER_UDS = re.compile(
+    r"<cross-session-message\s+([^>]*)>\s*(.*?)(?:</cross-session-message>|\Z)", re.S)
+_FROM_NAME = re.compile(r"from-name=\"([^\"]*)\"")
+_IMPERATIVE = re.compile(
+    r"\b(?:с?делай|доделай|переделай|проверь|перепроверь|пришли|возьми|бери|почини|"
+    r"исправь|поправь|запусти|прогони|допиши|напиши|добавь|убери|закоммить|собери|"
+    r"посмотри|разбери|сверь|подними|обнови|займись|начни|продолжи)(?:те)?\b", re.I)
+_SOC = re.compile(r"\bSOC-\d+\b", re.I)
+_SOC_ACTION = re.compile(
+    r"\b(?:надо|нужно|сделать|взять|починить|проверить|исправить|поправить|"
+    r"за тобой|на тебе|твоя задача)\b", re.I)
+# ходы старой, которые и есть работа: правка файлов и сабагенты (в т.ч. воркер AO)
+WORK_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "Task"})
+_AO_SPAWN = re.compile(r"(?:^|[\s;&|(])ao\s+spawn\b")
 
 
-def _grace_min() -> int:
-    try:
-        v = int((os.environ.get(TWO_HEADS_GRACE_ENV) or "").strip())
-    except ValueError:
-        return TWO_HEADS_GRACE_MIN
-    return v if v >= 0 else TWO_HEADS_GRACE_MIN
+def is_instruction(body: str) -> bool:
+    """Письмо — поручение: повелительный глагол или SOC-N с действием."""
+    text = str(body or "")
+    return bool(_IMPERATIVE.search(text) or (_SOC.search(text) and _SOC_ACTION.search(text)))
 
 
 def _transcripts(sid: str) -> List[Path]:
@@ -623,32 +638,77 @@ def _transcripts(sid: str) -> List[Path]:
 TWO_HEADS_RECENT_MIN = 30  # тревогу шлём, только если старая была активна недавно
 
 
-def origin_activity(sid: str, taken_at: str, *, grace_min: Optional[int] = None,
+def _same_session(sender: str, ao_id: str) -> bool:
+    """«tide-stack-24» и uds-имя «tide-stack-24-9e» — одна сессия."""
+    s, a = (sender or "").strip(), (ao_id or "").strip()
+    return bool(s and a) and (s == a or s.startswith(a + "-"))
+
+
+def _letter_of(row: Dict[str, object]):
+    """Строка транскрипта → ``(отправитель, текст)`` письма другой сессии или None."""
+    kind = row.get("type")
+    text = ""
+    if kind == "attachment":
+        att = row.get("attachment") or {}
+        if isinstance(att, dict) and att.get("type") == "queued_command":
+            text = str(att.get("prompt") or "")
+    elif kind == "user":
+        content = (row.get("message") or {}).get("content") if isinstance(
+            row.get("message"), dict) else None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(str(b.get("text") or "") for b in content
+                             if isinstance(b, dict) and b.get("type") == "text")
+    m = _LETTER_AO.search(text)
+    if m:
+        return m.group(1), m.group(2).strip()
+    m = _LETTER_UDS.search(text)
+    if m:
+        name = _FROM_NAME.search(m.group(1))
+        return (name.group(1) if name else ""), m.group(2).strip()
+    return None
+
+
+def _work_of(row: Dict[str, object]) -> int:
+    if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
+        return 0
+    content = row["message"].get("content")
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
+               and (b.get("name") in WORK_TOOLS or (
+                   b.get("name") == "Bash" and _AO_SPAWN.search(
+                       str((b.get("input") or {}).get("command") or "")))))
+
+
+def origin_activity(sid: str, taken_at: str, *, new_ao: str,
                     transcript: Optional[Path] = None) -> Optional[str]:
     """Улика строкой — см. :func:`origin_activity_at`."""
-    got = origin_activity_at(sid, taken_at, grace_min=grace_min, transcript=transcript)
+    got = origin_activity_at(sid, taken_at, new_ao=new_ao, transcript=transcript)
     return got[0] if got else None
 
 
-def origin_activity_at(sid: str, taken_at: str, *, grace_min: Optional[int] = None,
+def origin_activity_at(sid: str, taken_at: str, *, new_ao: str,
                        transcript: Optional[Path] = None):
-    """Ходы сессии *sid* в её транскрипте позже приёма (*taken_at*, местное время)
-    + запас — строка-улика («3 хода после приёма, последний 14:31») или None.
+    """Старая *sid* работает по поручению новой *new_ao* после приёма (*taken_at*,
+    местное время) → ``(улика, когда последний ход — местное время)`` или None.
 
-    Ход — ответ агента (``assistant``) и входящая доставка другой сессии
-    (``ao-session-delivery`` / ``cross-session-message``). Пульс не нужен: старая,
-    ставшая ретранслятором, не пульсует (F49). → ``(улика, когда последний ход —
-    местное время)`` или None."""
-    from datetime import timedelta, timezone
+    Письма новой старой позже приёма: первое не считается вообще (это подтверждение
+    приёма); из остальных нужны поручения (:func:`is_instruction`). Признак — после
+    первого поручения у старой есть правки или сабагенты (:data:`WORK_TOOLS`).
+    Просто ходы и ответы старой — не две головы (F49, нить 32)."""
+    from datetime import timezone
 
+    if not new_ao:
+        return None
     try:
         since = datetime.fromisoformat(str(taken_at).strip())
     except ValueError:
         return None
     if since.tzinfo is None:
         since = since.astimezone()  # местное → aware
-    since = since + timedelta(minutes=_grace_min() if grace_min is None else grace_min)
-    turns, deliveries, last = 0, 0, None
+    letters, work = [], []
     for path in ([Path(transcript)] if transcript else _transcripts(sid)):
         try:
             fh = open(path, encoding="utf-8")
@@ -660,32 +720,81 @@ def origin_activity_at(sid: str, taken_at: str, *, grace_min: Optional[int] = No
                     continue
                 try:
                     row = json.loads(raw)
-                except ValueError:
-                    continue
-                kind = row.get("type")
-                if kind not in ("assistant", "user", "attachment"):
-                    continue
-                try:
-                    at = datetime.fromisoformat(str(row.get("timestamp")).replace("Z", "+00:00"))
-                except ValueError:
+                    at = datetime.fromisoformat(
+                        str(row.get("timestamp")).replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
                     continue
                 if at.tzinfo is None:
                     at = at.replace(tzinfo=timezone.utc)
                 if at <= since:
                     continue
-                if kind == "assistant":
-                    turns += 1
-                elif ("<ao-session-delivery" in raw or "<cross-session-message" in raw) \
-                        and (kind == "user" or '"queued_command"' in raw):
-                    deliveries += 1
-                else:
+                got = _letter_of(row)
+                if got and _same_session(got[0], new_ao):
+                    letters.append((at, got[1]))
                     continue
-                last = at if last is None or at > last else last
-    if not turns and not deliveries:
+                n = _work_of(row)
+                if n:
+                    work.append((at, n))
+    letters.sort(key=lambda x: x[0])
+    orders = [(at, body) for at, body in letters[1:] if is_instruction(body)]
+    if not orders:
         return None
+    first = orders[0]
+    done = [(at, n) for at, n in work if at > first[0]]
+    if not done:
+        return None
+    last = max(at for at, _n in done)
     local = last.astimezone().replace(tzinfo=None)
-    return ("{0} ход(ов) и {1} доставок в транскрипте после приёма, последний {2}".format(
-        turns, deliveries, local.strftime("%H:%M")), local)
+    quote = " ".join(first[1].split())
+    quote = quote if len(quote) <= 60 else quote[:59] + "…"
+    return ("поручение новой {0} в {1} («{2}»), после него {3} правок/сабагентов у старой, "
+            "последний {4}".format(new_ao, first[0].astimezone().strftime("%H:%M"), quote,
+                                   sum(n for _at, n in done), local.strftime("%H:%M")), local)
+
+
+def _new_ao_of(home: Path, rec: Dict[str, object]) -> str:
+    """AO-id новой — той, что приняла оффер *rec*."""
+    try:
+        from .arc import holder
+        return holder.ao_handle_for(Path(home), str(rec.get("taken_by") or ""))
+    except Exception:  # noqa: BLE001 — не знаю адреса — письма не атрибутирую
+        return ""
+
+
+def pair_evidence(home: Path, rec: Dict[str, object], *,
+                  entries: Optional[List[Dict[str, object]]] = None) -> Optional[Dict[str, str]]:
+    """Две головы у пары *rec* (принятый оффер): ``{evidence, active_at}`` или None.
+
+    Признак — пульс старой после приёма, или поручение новой + работа старой после
+    него (:func:`origin_activity_at`)."""
+    from . import fields, roster
+    from .offload import find_session_by_claude_id
+
+    frm = str(rec.get("from_session") or "").strip()
+    if not frm or frm == "-" or frm == rec.get("taken_by") or not _transfers_thread(rec):
+        return None
+    project = str(rec.get("project") or "").strip()
+    if entries is None:
+        entries = roster.read_roster(home)
+    entry = next((e for e in entries if e["name"] == project), None)
+    if entry is None:
+        return None
+    arc = find_session_by_claude_id(Path(entry["path"]).expanduser(), frm)
+    if arc is None:
+        return None  # origin closed/gone — history, not a multiple
+    pp = arc if arc.name.endswith(".md") else arc / "arc.md"
+    offl = (fields.read_field(pp, "offloaded-at") or "").strip()
+    taken = str(rec.get("taken_at") or "").strip()
+    if not taken or taken == "-":
+        return None
+    # ISO-штампы сравниваются лексикографически; '0'/'-' у непульсовавшей
+    # сессии никогда не новее реального taken-at
+    if offl and offl > taken:
+        return {"evidence": "пульс после приёма ({0})".format(offl), "active_at": offl}
+    seen = origin_activity_at(frm, taken, new_ao=_new_ao_of(home, rec))
+    if seen:
+        return {"evidence": seen[0], "active_at": seen[1].isoformat(timespec="seconds")}
+    return None
 
 
 def multiples(home: Path) -> List[Dict[str, object]]:
@@ -694,39 +803,18 @@ def multiples(home: Path) -> List[Dict[str, object]]:
     is derived from the chain, nothing is stamped, and a past session merely
     EXISTING is open history — not a violation. A pair is flagged when the
     origin's passport pulsed (``offloaded-at``) AFTER the take, or — SOC-101 F49 —
-    when its transcript shows turns/deliveries after the take (+ запас
-    ``$TIDE_TWO_HEADS_GRACE_MIN``): старая без пульсов, но живая — тоже вторая
-    голова. Улика — в ``evidence`` записи. Тревога, не бухгалтерия."""
-    from . import fields, roster
-    from .offload import find_session_by_claude_id
+    when the successor gave it an ORDER (not its first letter after the take) and
+    the origin then edited files or ran subagents (:func:`pair_evidence`). Письмо
+    новой само по себе и просто ходы старой — не признак. Улика — в ``evidence``
+    записи. Тревога, не бухгалтерия."""
+    from . import roster
 
+    entries = roster.read_roster(home)
     out: List[Dict[str, object]] = []
     for r in list_offers(home, status=STATUS_TAKEN):
-        frm = str(r.get("from_session") or "").strip()
-        if not frm or frm == "-" or frm == r.get("taken_by") or not _transfers_thread(r):
-            continue
-        project = str(r.get("project") or "").strip()
-        entry = next((e for e in roster.read_roster(home) if e["name"] == project), None)
-        if entry is None:
-            continue
-        arc = find_session_by_claude_id(Path(entry["path"]).expanduser(), frm)
-        if arc is None:
-            continue  # origin closed/gone — history, not a multiple
-        pp = arc if arc.name.endswith(".md") else arc / "arc.md"
-        offl = (fields.read_field(pp, "offloaded-at") or "").strip()
-        taken = str(r.get("taken_at") or "").strip()
-        # ISO-штампы сравниваются лексикографически; '0'/'-' у непульсовавшей
-        # сессии никогда не новее реального taken-at
-        if not taken or taken == "-":
-            continue
-        if offl and offl > taken:
-            out.append(dict(r, evidence="пульс после приёма ({0})".format(offl),
-                            active_at=offl))
-            continue
-        seen = origin_activity_at(frm, taken)
-        if seen:
-            out.append(dict(r, evidence=seen[0],
-                            active_at=seen[1].isoformat(timespec="seconds")))
+        got = pair_evidence(home, r, entries=entries)
+        if got:
+            out.append(dict(r, **got))
     return out
 
 
