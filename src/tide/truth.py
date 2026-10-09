@@ -2,8 +2,9 @@
 
 Темы проекта лежат в ``<корень>/.tide/topics/NN-slug/``: ``topic.md`` отвечает
 «как дела», рядом ``facts.md`` — «что сказал и хочет человек»: шапка (``сверено:``),
-секции «Сейчас» / «Открыто» и «Факты (новые сверху)» строками
-``- факт · дата · ссылки``. Строки с «заменено →» — история: на первом уровне
+секции «Сейчас» / «Открыто», «Решения» и «Факты (новые сверху)» строками
+``- факт · дата · ссылки``. Счётчик «фактов N» — строки-пункты всех секций,
+кроме служебных (:data:`SERVICE_SECTIONS`); решения — ещё и отдельно. Строки с «заменено →» — история: на первом уровне
 скрыты, видно только их число (``--all`` показывает всё).
 
 Три входа (контекст-кипер, интерфейс контекста, решение 3):
@@ -12,6 +13,10 @@
     tide truth <тема>                  topic.md целиком, потом «Сейчас»/«Открыто» и факты
     tide truth <проект>                «где мы» / «в полёте» / «горит» каждой темы проекта
     tide truth [<тема>] --grep слова   поиск живыми словами, с адресом файл:строка
+    tide truth check [--project P]     сверка журналов решений decisions-tg.jsonl
+                                       с «## Решения» (:mod:`tide.decisions_tg`)
+    tide truth inbox [--since D]       ответы человека в TG, у которых нет решения
+    tide truth decide --topic … --q N --a M --decision "…"   запись решения
 
 Поиск живыми словами: запрос режется на слова, служебные («что», «где», «по»…)
 выбрасываются, каждое слово сводится к основе (``передача`` → ``переда``) и ищется
@@ -81,6 +86,8 @@ FRESH_LABEL = {"": "", "unchecked": "[не сверено]", "stale": "[уста
                "skip": "[устарело]", "archived": "[архив]"}
 FRESH_RANK = {"": 0, "unchecked": 1, "stale": 1, "skip": 2, "archived": 2}
 HIDDEN = ("skip", "archived")
+# секции facts.md, чьи пункты — не факты (справка для читателя)
+SERVICE_SECTIONS = ("как читать", "ссылки", "источники")
 
 
 class TruthError(StreamError):
@@ -232,11 +239,13 @@ def meta_lines(lines: List[str], is_topic: bool) -> set:
 
 
 def parse_facts(lines: List[str]) -> Dict[str, List[Tuple[int, str]]]:
-    """Секции facts.md → ``{"now", "open", "facts"}: [(номер строки, строка)]``.
+    """Секции facts.md → ``{"now", "open", "decisions", "facts", "other"}: [(номер, строка)]``.
 
-    Берутся только строки-пункты (``- …``); номера строк — с единицы.
+    Берутся только строки-пункты (``- …``); номера строк — с единицы. «other» —
+    пункты прочих несервисных секций; пункты служебных секций и шапки не берутся.
     """
-    out: Dict[str, List[Tuple[int, str]]] = {"now": [], "open": [], "facts": []}
+    out: Dict[str, List[Tuple[int, str]]] = {"now": [], "open": [], "decisions": [],
+                                             "facts": [], "other": []}
     cur: Optional[str] = None
     for i, ln in enumerate(lines, 1):
         if ln.startswith("## "):
@@ -247,8 +256,12 @@ def parse_facts(lines: List[str]) -> Dict[str, List[Tuple[int, str]]]:
                 cur = "open"
             elif head.startswith("факты"):
                 cur = "facts"
-            else:
+            elif head.startswith("решения"):
+                cur = "decisions"
+            elif head.startswith(SERVICE_SECTIONS):
                 cur = None
+            else:
+                cur = "other"
             continue
         if cur and ln.startswith("- "):
             out[cur].append((i, ln))
@@ -257,6 +270,11 @@ def parse_facts(lines: List[str]) -> Dict[str, List[Tuple[int, str]]]:
 
 def _is_replaced(line: str) -> bool:
     return REPLACED_MARK in line
+
+
+def count_points(sections: Dict[str, List[Tuple[int, str]]]) -> int:
+    """Все строки-пункты facts.md, кроме служебных секций (решения — тоже)."""
+    return sum(len(v) for v in sections.values())
 
 
 def topic_info(project: str, tdir: Path) -> Dict:
@@ -285,7 +303,8 @@ def topic_info(project: str, tdir: Path) -> Dict:
         "dir": str(tdir),
         "topic": str(tdir / TOPIC_FILE) if topic_lines else "",
         "facts_file": str(facts_path) if has_facts else "",
-        "facts": len(sections["facts"]),
+        "facts": count_points(sections),
+        "decisions": len(sections["decisions"]),
         "replaced": sum(1 for _, ln in sections["facts"] if _is_replaced(ln)),
         "checked": checked,
         "status": status,
@@ -499,7 +518,11 @@ def _rows(t: Dict):
             continue
         lines = _read_lines(Path(path))
         skip = meta_lines(lines, is_topic)
-        fact_lines = set() if is_topic else {i for i, _ in parse_facts(lines)["facts"]}
+        if is_topic:
+            fact_lines = set()
+        else:
+            sec = parse_facts(lines)
+            fact_lines = {i for i, _ in sec["facts"] + sec["decisions"]}
         for i, ln in enumerate(lines, 1):
             if i in skip or not ln.strip():
                 continue
@@ -584,7 +607,10 @@ def _checked(t: Dict) -> str:
 def _facts_word(t: Dict) -> str:
     if not t["facts_file"]:
         return "фактов нет"
-    return "фактов {0}".format(t["facts"])
+    word = "фактов {0}".format(t["facts"])
+    if t.get("decisions"):
+        word += ", из них решений {0}".format(t["decisions"])
+    return word
 
 
 def render_list(topics: List[Dict]) -> str:
@@ -623,6 +649,9 @@ def show(t: Dict, limit: int = DEFAULT_LIMIT, show_all: bool = False,
                  for i, ln in enumerate(topic_lines, 1) if ln.strip()],
         "now": [_row(i, ln, p, holders) for i, ln in sec["now"]],
         "open": [_row(i, ln, p, holders) for i, ln in sec["open"]],
+        "decisions_rows": [_row(i, ln, p, holders) for i, ln in sec["decisions"]
+                           if show_all or not _is_replaced(ln)],
+        "other": [_row(i, ln, p, holders) for i, ln in sec["other"]],
         "shown": [_row(i, ln, p, holders) for i, ln in facts[:limit]],
         "total": len(facts),
         "hidden_replaced": 0 if show_all else t["replaced"],
@@ -651,10 +680,18 @@ def render_show(d: Dict) -> str:
         if d["open"]:
             out.append("Открыто:")
             out.extend(_addr(d["open"]))
+        if d.get("decisions_rows"):
+            out.append("Решения:")
+            out.extend(_addr(d["decisions_rows"]))
+        if d.get("other"):
+            out.append("Другие секции:")
+            out.extend(_addr(d["other"]))
         tail = "; заменено скрыто: {0}".format(d["hidden_replaced"]) if d["hidden_replaced"] else ""
-        out.append("Факты ({0} из {1}, новые сверху{2}):".format(
-            len(d["shown"]), d["total"], tail))
-        out.extend(_addr(d["shown"]))
+        rest = d["now"] or d["open"] or d.get("decisions_rows") or d.get("other")
+        if d["total"] or d["hidden_replaced"] or not rest:
+            out.append("Факты ({0} из {1}, новые сверху{2}):".format(
+                len(d["shown"]), d["total"], tail))
+            out.extend(_addr(d["shown"]))
         more = []
         if len(d["shown"]) < d["total"]:
             more.append("--limit {0}".format(d["total"]))
@@ -929,6 +966,9 @@ def _project(args, topics: List[Dict]) -> int:
 
 
 def _cmd_truth(args) -> int:
+    if args.topic in ("check", "inbox", "decide") and not args.grep:
+        from . import decisions_tg  # лениво: decisions_tg сам импортирует truth
+        return getattr(decisions_tg, "cmd_" + args.topic)(args)
     project = getattr(args, "project", None)
     show_all = bool(args.all)
     limit = max(1, int(args.limit))
@@ -1023,7 +1063,10 @@ def register(subparsers) -> None:
         help="что сказал человек по темам: список · тема · --grep (только чтение)",
     )
     p.add_argument("topic", nargs="?",
-                   help="тема: slug, номер, часть slug/заголовка, проект/slug или имя проекта")
+                   help="тема: slug, номер, часть slug/заголовка, проект/slug или имя проекта; "
+                        "check — сверка журналов решений decisions-tg.jsonl (код 1 при ошибках); "
+                        "inbox — ответы человека в TG без решения; "
+                        "decide — записать решение в тему (журнал + «## Решения»)")
     p.add_argument("--grep", nargs="+", metavar="СЛОВО",
                    help="поиск живыми словами: основы слов, сначала строки со всеми")
     p.add_argument("--project", help="только этот проект ростера")
@@ -1033,4 +1076,6 @@ def register(subparsers) -> None:
                    help="показать и заменённые факты, и скрытые темы (архив, «не читать»)")
     p.add_argument("--json", action="store_true", dest="as_json",
                    help="машинный вывод")
+    from . import decisions_tg  # лениво: decisions_tg сам импортирует truth
+    decisions_tg.add_arguments(p)
     p.set_defaults(func=_cmd_truth, _cmd="truth")

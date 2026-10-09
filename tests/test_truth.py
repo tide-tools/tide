@@ -93,7 +93,7 @@ def _snapshot(root: Path) -> dict:
 def test_list_covers_active_roster_projects(world, capsys):
     rc, out = _run(capsys)
     assert rc == 0
-    assert "alpha · 02-peredacha · передача работы · фактов 3 · сверено 2026-10-09" in out
+    assert "alpha · 02-peredacha · передача работы · фактов 5 · сверено 2026-10-09" in out  # Сейчас+Открыто+Факты
     assert "beta · 01-kontrakt · контракт агентов · фактов нет · сверено 2026-10-08" in out
     assert "01-staroe" not in out  # архивный проект не читается
 
