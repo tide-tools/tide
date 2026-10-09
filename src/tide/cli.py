@@ -464,6 +464,13 @@ def _register_thread_layers(sub) -> None:
                    help="with `layer`: line for «где мы» (done · going · waits for Гриша)")
     p.add_argument("--exp", dest="layer_exp", default=None,
                    help="with `layer`: line for «опыт» (rakes, loops, rejected)")
+    # SOC-101 F61: «главное» plan.md нити — тоже командой (role-gate, см. выше).
+    p.add_argument("--main", dest="layer_main", action="append", default=None,
+                   help="with `layer`: line(s) for «главное» in the thread's plan.md "
+                        "(SOC-N · кому сдавать · с кем не дублировать; repeatable, "
+                        "split on « · »); appends unless --replace")
+    p.add_argument("--replace", dest="layer_replace", action="store_true",
+                   help="with `layer --main`: replace the «главное» section wholesale")
     prev = p.get_default("func")
 
     def _dispatch(args) -> int:

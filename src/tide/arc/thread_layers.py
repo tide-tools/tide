@@ -10,6 +10,9 @@
 * :func:`write_layers` / ``tide thread layer <нить> --expect … --where … --exp …`` —
   вписать слои командой: голове role-gate писать файлы запрещает, а CLI tide ей
   разрешён (SOC-101 F53).
+* :func:`write_main` / ``tide thread layer <нить> --main "SOC-N · кому сдавать · с кем
+  не дублировать" [--replace]`` — раздел «главное» в ``plan.md`` нити (его читает
+  сборщик сида через :mod:`tide.arc.plan_main`; SOC-101 F61).
 * :func:`seed_skeleton` — досевает пустой каркас недостающих слоёв в goal-файл
   старой нити, не трогая остальное (``tide thread layers --seed-skeleton <нить>``).
 """
@@ -21,7 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .. import handoff_contract as contract, io as _io, paths, resolve
-from . import stream as _stream
+from . import plan_main as _plan_main, stream as _stream
 from .stream import StreamError
 
 WHERE_HEAD = "## where we are"
@@ -77,6 +80,12 @@ def layer_cmd(thread: str) -> str:
             .format(thread))
 
 
+def main_cmd(thread: str) -> str:
+    """Команда, которой голова вписывает «главное» нити в plan.md (SOC-101 F61)."""
+    return ('tide thread layer {0} --main "<SOC-N> · <кому и каким каналом сдавать> · '
+            '<с кем не дублировать>"'.format(thread))
+
+
 def exit_warning(thread_dir: Path) -> Optional[str]:
     """Предупреждение на передаче, когда слои нити пусты (None — все заполнены)."""
     empty = empty_layers(thread_dir)
@@ -84,13 +93,71 @@ def exit_warning(thread_dir: Path) -> Optional[str]:
         return None
     goal = _stream.passport_path(Path(thread_dir))
     from .. import slug as _slug
+    name = _slug.entry_slug(Path(thread_dir).name)
+    main = ""
+    if not _plan_main.live_lines(Path(thread_dir)):
+        main = ("\n«Главное» нити ({0}) тоже пусто — его читает сид первым:\n  {1}"
+                .format(Path(thread_dir) / _plan_main.PLAN_FILE, main_cmd(name)))
     return ("tide: слои нити пусты — {0} ({1}, ## where we are). Новая сессия не узнает "
             "их из сида: впиши их до передачи словами Гриши — командой (файлы руками "
-            "не нужны, голове она разрешена):\n  {2}\nКаркас слоёв она досеет сама (только "
-            "каркас — tide thread layers --seed-skeleton {3}). Передачу не "
+            "не нужны, голове она разрешена):\n  {2}{4}\nКаркас слоёв она досеет сама "
+            "(только каркас — tide thread layers --seed-skeleton {3}). Передачу не "
             "останавливаю.".format(
                 ", ".join("«{0}»".format(n) for n in empty), goal,
-                layer_cmd(_slug.entry_slug(Path(thread_dir).name)), Path(thread_dir).name))
+                layer_cmd(name), Path(thread_dir).name, main))
+
+
+def split_main(values) -> List[str]:
+    """Значения ``--main`` (флаг можно повторять) → строки «главного»: каждое ещё
+    режется по « · », пробелы схлопываются, пустые и повторы уходят."""
+    out: List[str] = []
+    for v in values or []:
+        for part in " ".join(str(v or "").split()).split(" · "):
+            part = part.strip().strip("·").strip()
+            if part and part not in out:
+                out.append(part)
+    return out
+
+
+def write_main(thread_dir: Path, items: List[str], *, replace: bool = False) -> List[str]:
+    """Вписать строки в раздел «## главное — читать первым» ``plan.md`` нити (F61).
+
+    Формат — тот, что читает сборщик сида (:func:`tide.arc.plan_main.live_lines`):
+    заголовок с префиксом ``## главное``, под ним строки ``- текст``. Нет plan.md —
+    создаётся каркасом нити (:func:`tide.arc.templates.thread_plan_md`); нет раздела —
+    встаёт после заголовка ``# …`` плана. Без *replace* строки дописываются в конец
+    раздела (подсказки ``<…>`` уходят, живые строки и повторы остаются как были);
+    с *replace* тело раздела заменяется целиком. Вернуть вписанные строки."""
+    items = split_main(items)
+    if not items:
+        return []
+    plan = Path(thread_dir) / _plan_main.PLAN_FILE
+    if not plan.is_file():
+        from . import templates
+        from .. import slug as _slug
+        _io.atomic_write(plan, templates.thread_plan_md(
+            _slug.entry_slug(Path(thread_dir).name)))
+    lines = plan.read_text(encoding="utf-8").splitlines()
+    head = next((i for i, ln in enumerate(lines) if ln.startswith(_plan_main.PREFIX)), -1)
+    if head < 0:
+        at = next((i + 1 for i, ln in enumerate(lines) if ln.startswith("# ")), 0)
+        lines = lines[:at] + [""] * bool(at) + [_plan_main.HEADING, ""] + lines[at:]
+        head = at + bool(at)
+    stop = next((j for j in range(head + 1, len(lines)) if lines[j].startswith("## ")),
+                len(lines))
+    body = [] if replace else [ln for ln in lines[head + 1:stop]
+                               if not ln.strip().lstrip("-* ").startswith("<")]
+    while body and not body[-1].strip():
+        body.pop()
+    while body and not body[0].strip():
+        body.pop(0)
+    have = {ln.strip().lstrip("-* ").strip() for ln in body}
+    added = [it for it in items if replace or it not in have]
+    body += ["- {0}".format(it) for it in added]
+    tail = [""] if stop < len(lines) else []
+    lines = lines[:head + 1] + body + tail + lines[stop:]
+    _io.atomic_write(plan, "\n".join(lines).rstrip("\n") + "\n")
+    return added
 
 
 def write_layers(goal_path: Path, values: Dict[str, str], *,
@@ -135,17 +202,29 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
 
 
 def cmd_layer(args) -> int:
-    """``tide thread layer <нить> --expect "…" --where "…" --exp "…"``."""
+    """``tide thread layer <нить> --expect "…" --where "…" --exp "…" --main "…"``."""
     target = (getattr(args, "target", None) or "").strip()
     values = {key: getattr(args, "layer_" + flag, None) or ""
               for flag, key in LAYER_FLAGS}
-    if not target or not any(v.strip() for v in values.values()):
+    main = split_main(getattr(args, "layer_main", None) or [])
+    if not target or not (main or any(v.strip() for v in values.values())):
         raise LayersError("thread layer: назови нить и хотя бы один слой — " +
-                          layer_cmd(target or "<нить>"))
+                          layer_cmd(target or "<нить>") + "  (или " +
+                          main_cmd(target or "<нить>") + ")")
     entry = thread_entry(paths.require_tide_root(), target)
-    goal = _stream.passport_path(entry)
-    done = write_layers(goal, values)
-    print("tide: {0} — вписано: {1}".format(goal, ", ".join(done) or "ничего"))
+    if any(v.strip() for v in values.values()):
+        goal = _stream.passport_path(entry)
+        done = write_layers(goal, values)
+        print("tide: {0} — вписано: {1}".format(goal, ", ".join(done) or "ничего"))
+    if main:
+        replace = bool(getattr(args, "layer_replace", False))
+        added = write_main(entry, main, replace=replace)
+        print("tide: {0} — «главное» {1}: {2}".format(
+            entry / _plan_main.PLAN_FILE, "заменено" if replace else "дописано",
+            "; ".join(added) or "ничего нового (строки уже есть)"))
+        problem = _plan_main.problem(entry)
+        if problem:
+            print("tide: «главное»: " + problem)
     empty = empty_layers(entry)
     print("tide: слои нити {0}: {1}".format(
         entry.name, "пусты — " + ", ".join(empty) if empty else "заполнены"))
@@ -213,4 +292,5 @@ def cmd_layers(args) -> int:
 
 
 __all__ = ["LAYER_FLAGS", "LayersError", "cmd_layer", "cmd_layers", "empty_layers",
-           "exit_warning", "layer_cmd", "seed_skeleton", "thread_entry", "write_layers"]
+           "exit_warning", "layer_cmd", "main_cmd", "seed_skeleton", "split_main",
+           "thread_entry", "write_layers", "write_main"]
