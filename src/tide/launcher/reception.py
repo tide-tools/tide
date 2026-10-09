@@ -1,7 +1,8 @@
 """tide.launcher.reception — Грише в Telegram: приём нити состоялся (или нет).
 
-Слово Гриши (tg 3119): на каждый приём — ровно одно короткое сообщение, кто у
-кого принял нить, что передано, что взято и что потеряно. Повод — первый
+Слово Гриши (tg 3119): на каждый приём — ровно одно короткое сообщение. Форма
+(замечание management-14 на msg 3171 — сырой хвост сида Гриша не читает): три
+строки — «<новая> приняла у · MM», «Взято: …» (одна строка), «Потеряно: …». Повод — первый
 настоящий пульс принявшей сессии (тот, что пишет ``first-pulse:`` в оффер):
 к нему уже есть и понятая цель, и аудит сида. Если принимающая так и не
 поднялась (SOC-101 F25) — одно сообщение «не поднялась, нить остаётся у …».
@@ -25,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import fields, handoff_contract as contract, handoff_queue as hq, paths
+from .. import fields, handoff_queue as hq, paths
 from ..arc import stream as _stream
 
 ANNOUNCED = "announced"          # метка в оффере: «<штамп> · sent|no-cmd|rc=N»
@@ -58,33 +59,38 @@ def clip(text: str, limit: int = FIELD_MAX) -> str:
     return cut.rstrip(" ,;:—-·") + "…"
 
 
-def _block_text(secs: Dict[str, List[str]], key: str) -> str:
-    """Живые строки блока сида *key* одной строкой; пустой блок — «—»."""
-    from . import seed_draft
-
-    lines = []
-    for ln in seed_draft.live_lines(contract.find_body(secs, key)):
-        if "<!--" in ln:
-            continue
-        if seed_draft.is_hole(ln):
-            return "—"
-        lines.append(ln.strip().lstrip("-*").strip())
-    return "; ".join(x for x in lines if x) or "—"
+TAKEN_MAX = 120                  # «Взято» — одна строка, режем по слову
+LOST_MAX = 100
 
 
-def reception_text(*, new_title: str, old_title: str, nxt: str, expectation: str,
-                   inflight: str, taken: str, lost: List[str]) -> str:
-    """Текст сообщения о приёме — по форме слова Гриши."""
-    return (
-        "{new} приняла нить от {old}. Передано: следующий шаг — {nxt}; ожидание "
-        "Гриши — {exp}; в полёте — {fly}. Взято: {taken}. Потеряно: {lost}."
-    ).format(new=new_title, old=old_title, nxt=clip(nxt), exp=clip(expectation),
-             fly=clip(inflight), taken=clip(taken or "—"),
-             lost=clip(", ".join(lost)) if lost else "ничего")
+def _base(title: str) -> str:
+    """«проект — нить · NN» без хвоста « · <AO-id>»."""
+    from ..arc.stream import with_ao_id
+    return with_ao_id(title, "")
+
+
+def _short_old(new_title: str, old_title: str) -> str:
+    """Старая той же нити — коротко «· MM»; иначе её имя целиком."""
+    nb, ob = _base(new_title), _base(old_title)
+    if " · " in nb and " · " in ob and nb.rsplit(" · ", 1)[0] == ob.rsplit(" · ", 1)[0]:
+        return "· " + ob.rsplit(" · ", 1)[1]
+    return old_title
+
+
+def reception_text(*, new_title: str, old_title: str, taken: str,
+                   lost: List[str]) -> str:
+    """Три строки Грише: кто у кого принял, что взято, что потеряно."""
+    return "{new} приняла у {old}\nВзято: {taken}\nПотеряно: {lost}".format(
+        new=new_title, old=_short_old(new_title, old_title),
+        taken=clip(taken or "—", TAKEN_MAX),
+        lost=clip(", ".join(lost), LOST_MAX) if lost else "ничего")
 
 
 def not_alive_text(new_title: str, old_title: str) -> str:
-    return "{0} не поднялась, нить остаётся у {1}".format(new_title, old_title)
+    """Две строки Грише: кто не поднялся и что делать."""
+    return ("{0} не поднялась, нить остаётся у {1}\n"
+            "Делать ничего не надо: {2} работает дальше, передачу можно повторить".format(
+                new_title, _short_old(new_title, old_title), _base(old_title)))
 
 
 # --- диск ----------------------------------------------------------------------
@@ -132,20 +138,18 @@ def _lost(home: Path, key: str) -> List[str]:
 
 
 def compose_reception(home: Path, rec: Dict[str, object]) -> str:
-    from . import seed_draft
-
     new, old = titles(home, rec)
-    seed = str(rec.get("seed") or "-")
-    secs = seed_draft.sections(seed_draft._read(Path(seed))) if seed != "-" else {}
-    taken = str(rec.get("understood_goal") or "-")
-    if taken == "-":
+    taken = ""
+    for key in ("understood_goal", "first_pulse"):  # цель старт-гейта / курсор
+        v = str(rec.get(key) or "-").strip()
+        if v != "-":
+            taken = v
+            break
+    if not taken:
         sess = _session_of(rec)
         taken = (fields.read_field(sess / "arc.md", "goal") or "").strip() if sess else ""
-    return reception_text(
-        new_title=new, old_title=old, nxt=_block_text(secs, "next"),
-        expectation=_block_text(secs, "expectation"),
-        inflight=_block_text(secs, "inflight"), taken=taken or "—",
-        lost=_lost(home, str(rec["name"])))
+    return reception_text(new_title=new, old_title=old, taken=taken or "—",
+                          lost=_lost(home, str(rec["name"])))
 
 
 def _log(home: Path, line: str) -> None:
@@ -221,6 +225,21 @@ def close_text(old_title: str, new_title: str) -> str:
         old_title, new_title))
 
 
+def _with_old_ao(home: Path, rec: Dict[str, object], old_title: str) -> str:
+    """Имя старой с её AO-id («… · 02 · tide-stack-12») — менеджеру не сопоставлять
+    руками. AO-id — по claude-сессии отдавшей (реестр / AO-стэш); нет — как было."""
+    sid = str(rec.get("from_session") or "-")
+    if sid == "-":
+        return old_title
+    try:
+        from ..arc import holder
+        from ..arc.stream import with_ao_id
+        handle = holder.ao_handle_for(Path(home), sid)
+    except Exception:  # noqa: BLE001
+        return old_title
+    return with_ao_id(old_title, handle) if handle else old_title
+
+
 def _ao_adapter():
     from ..adapters.ao import AoAdapter
     return AoAdapter()
@@ -241,7 +260,7 @@ def propose_close(home: Path, key: str) -> Optional[str]:
         stamp = datetime.now().isoformat(timespec="seconds")
         hq._set_field(path, CLOSE_PROPOSED, stamp)  # метка ДО отправки
         new, old = titles(home, rec)
-        text = close_text(old, new)
+        text = close_text(_with_old_ao(home, rec, old), new)
         try:
             from .. import whois
             to = whois.manager(home=Path(home)).get("ao_session", "")

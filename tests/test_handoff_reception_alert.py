@@ -78,12 +78,10 @@ def test_one_message_on_reception_and_none_on_repeat(seam, sent):
     assert len(sent) == 1
     msg = sent[0]["text"]
     assert sent[0]["route"] == "human"
-    assert msg.startswith("proj — seam · 02 приняла нить от proj — seam · 01. Передано: ")
-    assert "следующий шаг — дописать пробу живости и тест на моках AO" in msg
-    assert "ожидание Гриши — Гриша ждёт живой шов передачи" in msg
-    assert "в полёте — воркер пакета Б гоняет pytest" in msg
-    assert "Взято: живой шов передачи" in msg
+    assert msg.splitlines()[0] == "proj — seam · 02 приняла у · 01"
+    assert "Взято: живой шов передачи" in msg  # цель старт-гейта принявшей
     assert "Потеряно: " in msg
+    assert "воркер пакета Б" not in msg and "input/" not in msg  # не хвост сида
     rec = hq.list_offers(seam["home"])[0]
     assert "sent" in hq._get(rec["path"].read_text(encoding="utf-8"), reception.ANNOUNCED)
     # второй и третий пульс — ни одного нового сообщения
@@ -109,16 +107,45 @@ def test_no_alert_cmd_skips_quietly_and_logs(seam, monkeypatch):
     assert hq._get(rec["path"].read_text(encoding="utf-8"), reception.ANNOUNCED).endswith(
         "no-cmd")
     log = paths.state_dir(seam["home"]) / reception.ALERT_LOG
-    assert "приняла нить от" in log.read_text(encoding="utf-8")
+    assert "приняла у" in log.read_text(encoding="utf-8")
 
 
-def test_fields_are_clipped_to_about_200():
+def _assert_short(msg):
+    assert len(msg.splitlines()) <= 3, msg
+    assert len(msg) <= 300, (len(msg), msg)
+
+
+def test_reception_message_is_three_short_lines():
     long = "слово " * 100
-    msg = reception.reception_text(new_title="A", old_title="B", nxt=long,
-                                   expectation="e", inflight="—", taken="t", lost=[])
-    part = msg.split("следующий шаг — ", 1)[1].split("; ожидание", 1)[0]
-    assert len(part) <= 200 and part.endswith("…")
-    assert msg.endswith("Потеряно: ничего.")
+    msg = reception.reception_text(
+        new_title="tide-stack — handoffs · 03 · tide-stack-21",
+        old_title="tide-stack — handoffs · 02", taken=long,
+        lost=["неотвеченные реплики Гриши " * 10])
+    _assert_short(msg)
+    first, taken, lost = msg.splitlines()
+    assert first == "tide-stack — handoffs · 03 · tide-stack-21 приняла у · 02"
+    assert taken.startswith("Взято: ") and taken.endswith("…")
+    assert len(taken) <= len("Взято: ") + 120
+    assert lost.startswith("Потеряно: ")
+    ok = reception.reception_text(new_title="A — t · 02", old_title="B — u · 05",
+                                  taken="t", lost=[])
+    assert ok == "A — t · 02 приняла у B — u · 05\nВзято: t\nПотеряно: ничего"
+
+
+def test_live_reception_message_is_short(seam, sent):
+    assert _pulse("слово " * 80) == 0
+    msg = sent[0]["text"]
+    _assert_short(msg)
+    assert "приняла у" in msg and "Потеряно:" in msg
+
+
+def test_not_alive_text_is_two_short_lines():
+    msg = reception.not_alive_text("tide-stack — handoffs · 03 · tide-stack-21",
+                                   "tide-stack — handoffs · 02")
+    lines = msg.splitlines()
+    assert len(lines) == 2 and len(msg) <= 300
+    assert lines[0] == "tide-stack — handoffs · 03 · tide-stack-21 не поднялась, нить остаётся у · 02"
+    assert "tide-stack — handoffs · 02 работает дальше" in lines[1]
 
 
 def test_lost_lists_missing_audit_sections(seam, sent, monkeypatch):
@@ -131,7 +158,7 @@ def test_lost_lists_missing_audit_sections(seam, sent, monkeypatch):
     ]})
     hq.take(seam["home"], seam["key"], session="new-sid")
     reception.announce_reception(seam["home"], seam["key"])
-    assert sent[0]["text"].endswith("Потеряно: неотвеченные реплики Гриши.")
+    assert sent[0]["text"].endswith("Потеряно: неотвеченные реплики Гриши")
 
 
 def test_not_alive_sends_one_message(world, monkeypatch, sent):
@@ -153,8 +180,10 @@ def test_not_alive_sends_one_message(world, monkeypatch, sent):
     assert cli.main(["handoff", "seam", "--from-session", "old-sid"]) == 0
     assert len(sent) == 1
     msg = sent[0]["text"]
-    assert msg.endswith("не поднялась, нить остаётся у proj — seam · 01")
+    first = msg.splitlines()[0]
+    assert first.endswith("не поднялась, нить остаётся у · 01")
     assert msg.startswith("proj — seam · ")
+    assert len(msg.splitlines()) == 2
 
 
 # --- выключатель $TIDE_ACCEPT_NOTIFY (all | fail | off) ------------------------------

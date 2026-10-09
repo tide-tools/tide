@@ -55,6 +55,18 @@ def test_reception_proposes_close_to_the_manager_once(seam, sent, ao, manager):
     assert len(ao.said) == 1
 
 
+def test_close_proposal_names_the_old_session_with_its_ao_id(seam, sent, ao, manager,
+                                                           monkeypatch):
+    from tide.arc import holder
+
+    monkeypatch.setattr(holder, "ao_handle_for",
+                        lambda home, sid: "proj-12" if sid == "old-sid" else "")
+    assert _pulse() == 0
+    assert ao.said == [("management-14",
+                        "proj — seam · 01 · proj-12 передала нить proj — seam · 02, "
+                        "приём подтверждён; закрыть proj — seam · 01 · proj-12?")]
+
+
 def test_no_manager_address_sends_nothing(seam, sent, ao):
     # no manager.json (conftest) and no management project in the roster
     assert _pulse() == 0
