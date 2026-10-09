@@ -821,3 +821,81 @@ def test_spark_without_say_keeps_the_wired_trigger(home_with_project):
         res = menu.spark(home, _spark_entry(home, proj), thread="release",
                          say=blank, adapter=_OkAdapter())
         assert any("старт-гейт" in a for a in res.commands[0])
+
+
+# --- one name «проект — нить · NN» on every launch path (decision 09.10) ------
+
+class _TitleAdapter(_OkAdapter):
+    """Records the tab / AO sidebar name the launcher asks for."""
+
+    def __init__(self):
+        self.titles = []
+
+    def spawn(self, *, command, cwd, title, dry_run=False):
+        self.titles.append(title)
+        return super().spawn(command=command, cwd=cwd, title=title, dry_run=dry_run)
+
+
+def _music_home(tmp_control_home):
+    # the folder is NOT the roster name — the name must come from the roster
+    proj = tmp_control_home / "groovamp-dir"
+    proj.mkdir()
+    scaffold_project(proj, name="music")
+    roster.add(tmp_control_home, "music", str(proj))
+    return tmp_control_home, proj
+
+
+def test_spark_role_thread_is_named_project_thread_number(tmp_control_home):
+    # music's role threads (04-@product → 01-product) used to land in the AO sidebar
+    # as «product · product · product»: born title «product · product» + « · product»
+    from tide import fields
+    from tide.arc import stream
+
+    home, proj = _music_home(tmp_control_home)
+    stream.new_thread(proj, "product", goal="продукт Groovamp")
+    adapter = _TitleAdapter()
+    res = menu.spark(home, _spark_entry(home, proj), thread="product", adapter=adapter)
+    assert res.ok
+    assert adapter.titles == ["music — product · 01"]
+    sess = stream.last_session(proj, "product")
+    assert fields.read_field(sess / "arc.md", "title") == "music — product · 01"
+
+
+def test_spark_dry_run_names_without_writing(tmp_control_home):
+    from tide.arc import stream
+
+    home, proj = _music_home(tmp_control_home)
+    stream.new_thread(proj, "designer", goal="дизайн экранов")
+    adapter = _TitleAdapter()
+    menu.spark(home, _spark_entry(home, proj), thread="designer", adapter=adapter,
+               dry_run=True)
+    assert adapter.titles == ["music — designer · 01"]
+    assert stream.last_session(proj, "designer") is None      # dry-run stays clean
+
+
+def test_launch_entry_bound_session_renames_hand_title(tmp_control_home):
+    # tide menu / go into an existing session: tab and passport say the same name,
+    # whatever the agent typed into title: earlier
+    from tide import fields
+    from tide.arc import stream
+
+    home, proj = _music_home(tmp_control_home)
+    stream.new_thread(proj, "techlead", goal="техлид")
+    sess = stream.new_session(proj, "techlead", "techlead")
+    fields.set_field(sess / "arc.md", "title", "техлид · v0.28.4 джем #152")
+    entry = dict(_spark_entry(home, proj))
+    entry["session"] = menu._session_binding("techlead", sess, False, "techlead")
+    adapter = _TitleAdapter()
+    res = menu.launch_entry(entry, adapter=adapter, control_home=home)
+    assert res.ok
+    assert adapter.titles == ["music — techlead · 01"]
+    assert fields.read_field(sess / "arc.md", "title") == "music — techlead · 01"
+
+
+def test_launch_handoff_names_by_the_offer_project(home_with_project):
+    home, proj = home_with_project
+    record, sess = _seed_offer(home, proj)
+    adapter = _TitleAdapter()
+    menu.launch_handoff(record, menu.list_entries(home), control_home=home, adapter=adapter)
+    want = "proj — redesign · {0}".format(sess.name.split("-", 1)[0])
+    assert adapter.titles == [want]

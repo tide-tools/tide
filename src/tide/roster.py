@@ -49,7 +49,7 @@ the thin ``tide roster add|rm|ls`` handlers that ``cli.py`` calls.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import io as _io, paths
 from .arc.stream import StreamError
@@ -175,6 +175,26 @@ def read_roster(root: Path) -> List[Dict[str, str]]:
         if entry is not None:
             out.append(entry)
     return out
+
+
+def name_for_path(path: Path, home: Optional[Path] = None) -> str:
+    """The ROSTER name of the project at *path*; its dir name when the roster has none.
+
+    The human knows a project by its roster name (``waifus``), not by its folder
+    (``ai-hot``) — session names and offers carry this one. *home* is the
+    control-home whose roster to read; None resolves it (``$TIDE_HOME`` or a climb
+    from *path*). No control-home / unreadable roster → the dir name, never an error.
+    """
+    p = Path(path).expanduser()
+    try:
+        want = p.resolve()
+        root = Path(home) if home is not None else paths.control_home(p)
+        for e in read_roster(root):
+            if Path(e.get("path", "")).expanduser().resolve() == want:
+                return e["name"]
+    except OSError:
+        pass
+    return p.name
 
 
 def _render(entries: List[Dict[str, str]]) -> str:

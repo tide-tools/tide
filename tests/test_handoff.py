@@ -481,13 +481,28 @@ def test_run_handoff_plain_arc_keeps_legacy_anchor(tmp_project, monkeypatch, tmp
     assert rec["arc"] == "ship-it"                        # unchanged for non-threads
 
 
-# --- «нить · NN»: the name of the session a handoff raises -------------------------
+# --- «проект — нить · NN»: the one name of a thread's session ---------------------
 
-def test_thread_session_title_is_thread_and_two_digit_number(tmp_path):
+def test_thread_session_title_is_project_thread_and_two_digit_number(tmp_path):
     sess = tmp_path / ".tide" / "arcs" / "28-@ao-and-order" / "arcs" / "03-ao"
-    assert stream.thread_session_title(sess) == "ao-and-order · 03"
+    assert (stream.thread_session_title(sess, project="tide-stack")
+            == "tide-stack — ao-and-order · 03")
     closed = tmp_path / ".tide" / "arcs" / "__28-@ao-and-order__" / "arcs" / "__04-x__"
-    assert stream.thread_session_title(closed) == "ao-and-order · 04"
+    assert (stream.thread_session_title(closed, project="tide-stack")
+            == "tide-stack — ao-and-order · 04")
+
+
+def test_thread_session_title_role_thread_is_not_tripled(tmp_path):
+    # music's role threads (04-@product/arcs/01-product) once came out as
+    # «product · product · product» in the AO sidebar
+    sess = tmp_path / "music" / ".tide" / "arcs" / "04-@product" / "arcs" / "01-product"
+    assert stream.thread_session_title(sess, project="music") == "music — product · 01"
+
+
+def test_thread_session_title_project_from_the_path_without_roster(tmp_path):
+    # no roster for this dir → the project's folder name is the last resort
+    sess = tmp_path / "music" / ".tide" / "arcs" / "05-@designer" / "arcs" / "01-designer"
+    assert stream.thread_session_title(sess) == "music — designer · 01"
 
 
 def test_thread_session_title_none_outside_a_thread(tmp_path):
@@ -507,5 +522,6 @@ def test_run_handoff_born_session_is_titled_thread_and_number(tmp_project, monke
                               from_session="o1")
     born = res.summary_path.parent.parent
     assert born.name.startswith("03-")
-    assert fields.read_field(born / "arc.md", "title") == "ao-and-order · 03"
+    want = "{0} — ao-and-order · 03".format(tmp_project.name)
+    assert fields.read_field(born / "arc.md", "title") == want
     assert entry.name.endswith("@ao-and-order")

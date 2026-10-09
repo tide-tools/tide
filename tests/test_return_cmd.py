@@ -284,3 +284,21 @@ def test_force_stays_accepted_as_noop(tmp_path, monkeypatch):
                                 arc=str(sess), force=True)
     assert out["ok"] is True and out["action"] == "resumed"
     assert "--resume {0}".format(SID) in " ".join(adapter.spawned["command"])
+
+
+def test_return_respawn_keeps_the_session_name(tmp_path, monkeypatch):
+    # ⟳ from the board on a thread's session: the respawn carries «проект — нить · NN»
+    # (passport = sidebar), not the board's tab text
+    home = tmp_path / "home"
+    home.mkdir()
+    proj = tmp_path / "groovamp-dir"
+    sess = proj / ".tide" / "arcs" / "04-@product" / "arcs" / "02-product"
+    sess.mkdir(parents=True)
+    (home / "roster.md").write_text("# tide roster\nmusic | {0}\n".format(proj),
+                                    encoding="utf-8")
+    adapter = _FakeAdapter(focus_ok=False)
+    _patched(monkeypatch, adapter)
+    out = return_cmd.run_return(home, sid=SID, project=proj, arc=str(sess),
+                                title="product · product · product")
+    assert out["action"] == "resumed"
+    assert adapter.spawned["title"] == "music — product · 02"

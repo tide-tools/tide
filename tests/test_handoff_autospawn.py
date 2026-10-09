@@ -292,14 +292,14 @@ def test_ao_autospawn_then_reception_relinks_to_the_real_id(world, monkeypatch, 
     assert pre not in reg and reg[REAL]["handle"] == AO_NEW
 
 
-# --- the raised session is named «нить · NN» — passport and AO sidebar alike -------
+# --- the raised session is named «проект — нить · NN» — passport and AO sidebar alike
 
 def test_raised_session_is_named_thread_and_number(world, monkeypatch):
     adapter = _use(monkeypatch, _FakeAo(ref=AO_NEW))
     assert cli.main(["handoff", "seam"]) == 0
     rec = _offer(world["home"])
     session_dir = Path(rec["seed"]).parent.parent
-    want = "seam · {0}".format(session_dir.name.split("-", 1)[0])
+    want = "proj — seam · {0}".format(session_dir.name.split("-", 1)[0])
     assert fields.read_field(session_dir / "arc.md", "title") == want
     assert adapter.spawned["title"] == want            # → `ao spawn --name`
     # the fresh session is told the title is already set — keep it
@@ -308,7 +308,7 @@ def test_raised_session_is_named_thread_and_number(world, monkeypatch):
 
 def test_skill_path_offer_renames_a_hand_titled_session(world, monkeypatch):
     # the /handoff skill births the session itself (`tide arc new-session`), an agent
-    # may have titled it by hand; the raise names it «нить · NN» all the same
+    # may have titled it by hand; the raise names it «проект — нить · NN» all the same
     adapter = _use(monkeypatch, _FakeAo(ref=AO_NEW))
     stream.new_session(world["proj"], "seam", "seam")                  # 01
     sess = stream.new_session(world["proj"], "seam", "ao")             # 02
@@ -320,5 +320,20 @@ def test_skill_path_offer_renames_a_hand_titled_session(world, monkeypatch):
     assert cli.main(["handoffs", "offer", "ao", "--project", "proj",
                      "--arc", "{0}/{1}".format(thread.name, sess.name),
                      "--seed", str(seed)]) == 0
-    assert adapter.spawned["title"] == "seam · 02"
-    assert fields.read_field(sess / "arc.md", "title") == "seam · 02"
+    assert adapter.spawned["title"] == "proj — seam · 02"
+    assert fields.read_field(sess / "arc.md", "title") == "proj — seam · 02"
+
+
+def test_raised_session_name_uses_the_roster_name(world, monkeypatch):
+    # the roster names the project «waifus» while its folder is «proj»: the human
+    # knows the roster name, so passport and sidebar carry it
+    roster_file = world["home"] / "roster.md"
+    text = roster_file.read_text(encoding="utf-8").replace("proj |", "waifus |")
+    roster_file.write_text(text, encoding="utf-8")
+    adapter = _use(monkeypatch, _FakeAo(ref=AO_NEW))
+    assert cli.main(["handoff", "seam"]) == 0
+    rec = _offer(world["home"])
+    session_dir = Path(rec["seed"]).parent.parent
+    want = "waifus — seam · {0}".format(session_dir.name.split("-", 1)[0])
+    assert adapter.spawned["title"] == want
+    assert fields.read_field(session_dir / "arc.md", "title") == want

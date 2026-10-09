@@ -105,13 +105,17 @@ def passport_path(entry_dir: Path) -> Path:
     return Path(entry_dir) / "arc.md"
 
 
-def thread_session_title(session_dir: Path) -> Optional[str]:
-    """«нить · NN» — the name of a thread's session: thread slug + its two-digit number.
+def thread_session_title(session_dir: Path, project: Optional[str] = None) -> Optional[str]:
+    """«проект — нить · NN» — the one name of a thread's session.
 
-    ``<arcs>/28-@ao-and-order/arcs/03-ao`` → ``ao-and-order · 03``. The handoff gives
-    this title to the session it raises — the passport's ``title:`` and the AO
-    sidebar name are one text, so the human finds the same session by the same words
-    everywhere. None when *session_dir* is not a session inside a thread
+    ``<music>/.tide/arcs/04-@product/arcs/01-product`` → ``music — product · 01``:
+    the project's ROSTER name (not its path), the thread slug without ``NN-`` and
+    ``@``, the session's two-digit number in the thread. The passport's ``title:``
+    and the AO sidebar name (``ao spawn --name``) are this one text, so the human
+    finds the same session by the same words everywhere (decision
+    session-name-project-thread-number, 09.10). *project* is the roster name when the
+    caller knows it; None looks it up from the session's project root (dir name as
+    the last resort). None when *session_dir* is not a session inside a thread
     (``<thread>/arcs/NN-slug``).
     """
     d = Path(session_dir)
@@ -124,7 +128,20 @@ def thread_session_title(session_dir: Path) -> Optional[str]:
     thread = slug.entry_slug(owner)
     if not num.isdigit() or not thread:
         return None
-    return "{0} · {1}".format(thread, num)
+    name = (project or "").strip() or _session_project_name(d)
+    if not name:
+        return "{0} · {1}".format(thread, num)
+    return "{0} — {1} · {2}".format(name, thread, num)
+
+
+def _session_project_name(session_dir: Path) -> str:
+    """Roster name of the project holding *session_dir* (``<root>/.tide/arcs/<thread>/
+    arcs/<session>``) — '' when the path does not have that shape."""
+    parents = Path(session_dir).parents
+    if len(parents) < 5 or parents[3].name != paths.TIDE_DIR:
+        return ""
+    from .. import roster  # lazy: roster imports this module
+    return roster.name_for_path(parents[4])
 
 
 # --- entry kind (arc / goal / thread) --------------------------------------
@@ -471,7 +488,7 @@ def new_session(
     head immediately instead of leaving the nit stuck on 'launching' (cand 93-board-spark).
 
     The passport FLOOR is mechanics, not seed-text (cands 102/105): every session is
-    born with a real ``title:`` (default ``<thread> · <slug>``) and — when the thread's
+    born with a real ``title:`` (``<project> — <thread> · NN``) and — when the thread's
     own goal is live words — an inherited ``goal:``. A blind thread goal is fine (the
     thread may be a draft); the session then keeps its placeholder for the agent to
     fill. Living here means EVERY birth path (menu, spark, pickup, bare CLI) gets the
@@ -504,8 +521,13 @@ def new_session(
                 session_goal = thread_goal.strip()
     if session_goal:
         fields.set_field(entry / "arc.md", "goal", session_goal)
-    thread_s = slug.entry_slug(thread_slug) if "-" in thread_slug else slug.slugify(thread_slug)
-    fields.set_field(entry / "arc.md", "title", "{0} · {1}".format(thread_s, s))
+    # the session's one name «проект — нить · NN» (decision 09.10), the same text the
+    # AO sidebar shows; the agent's start-gate sets only the goal
+    title = thread_session_title(entry)
+    if not title:
+        thread_s = slug.entry_slug(thread_slug) if "-" in thread_slug else slug.slugify(thread_slug)
+        title = "{0} · {1}".format(thread_s, s)
+    fields.set_field(entry / "arc.md", "title", title)
     if claude_session and claude_session.strip():
         fields.set_field(entry / "arc.md", "claude-session", claude_session.strip())
     stamp_rev(entry, root)

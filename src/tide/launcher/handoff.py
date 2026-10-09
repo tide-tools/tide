@@ -83,14 +83,7 @@ def _roster_project_name(home: Path, owner_root: Path) -> str:
     dir name is only the last resort for a project the roster doesn't know.
     """
     from .. import roster as _roster
-    try:
-        want = Path(owner_root).expanduser().resolve()
-        for e in _roster.read_roster(Path(home)):
-            if Path(e.get("path", "")).expanduser().resolve() == want:
-                return e["name"]
-    except OSError:
-        pass
-    return Path(owner_root).name
+    return _roster.name_for_path(owner_root, home=Path(home))
 
 
 def summary_filename(date: Optional[str] = None) -> str:
@@ -513,10 +506,12 @@ def run_handoff(
                 owner_root, tslug, _unique_pickup_slug(entry, base=tslug),
                 goal=_pickup_goal(entry, text),
             )
-            # «нить · NN» from birth — the same name the spawn gives the AO session
+            # «проект — нить · NN» from birth — the same name the spawn gives the AO
+            # session; the project by the queue's roster (the name the offer carries)
             from .. import fields as _fields
 
-            title = _stream.thread_session_title(session_born)
+            title = _stream.thread_session_title(
+                session_born, project=_roster_project_name(home, owner_root))
             if title:
                 _fields.set_field(session_born / "arc.md", "title", title)
             summary_path = session_born / "input" / "handoff-seed.md"

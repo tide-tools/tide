@@ -294,9 +294,23 @@ def test_cli_new_session_no_stamp_without_env(tmp_project, monkeypatch):
 # --- passport floor at birth (cands 102/105) ---------------------------------
 
 def test_session_born_with_default_title(tmp_project):
+    # «проект — нить · NN» (decision 09.10): no roster here → the dir name
     stream.new_thread(tmp_project, "prz")
     sess = stream.new_session(tmp_project, "prz", "kickoff")
-    assert fields.read_field(sess / "arc.md", "title") == "prz · kickoff"
+    want = "{0} — prz · 01".format(tmp_project.name)
+    assert fields.read_field(sess / "arc.md", "title") == want
+
+
+def test_session_born_title_uses_the_roster_name(tmp_project, tmp_path_factory, monkeypatch):
+    # the human knows the project by its ROSTER name, not its folder
+    home = tmp_path_factory.mktemp("home")
+    (home / "roster.md").write_text(
+        "# tide roster\nwaifus | {0}\n".format(tmp_project), encoding="utf-8")
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    stream.new_thread(tmp_project, "prz")
+    stream.new_session(tmp_project, "prz", "kickoff")
+    sess = stream.new_session(tmp_project, "prz", "kickoff")
+    assert fields.read_field(sess / "arc.md", "title") == "waifus — prz · 02"
 
 
 def test_session_inherits_live_thread_goal(tmp_project):
@@ -324,7 +338,8 @@ def test_default_title_normalizes_entry_name_ref(tmp_project):
     # still read as clean words, same normalization as the from: field
     stream.new_thread(tmp_project, "prz")
     sess = stream.new_session(tmp_project, "01-@prz", "kickoff")
-    assert fields.read_field(sess / "arc.md", "title") == "prz · kickoff"
+    want = "{0} — prz · 01".format(tmp_project.name)
+    assert fields.read_field(sess / "arc.md", "title") == want
 
 
 def test_cli_new_session_guard_is_cross_thread(tmp_project, monkeypatch):

@@ -131,7 +131,8 @@ def run_return(
             # straight to the resume, instead of re-focusing a ghost (c636275).
             registry.forget_handle(control_home, handle)
 
-    tab = re.sub(r"\s+", " ", title or "").strip()[:48] or "resume-{0}".format(s[:8])
+    tab = _session_name(control_home, project, arc) or (
+        re.sub(r"\s+", " ", title or "").strip()[:48] or "resume-{0}".format(s[:8]))
     first_turn = word
     if getattr(adapter, "name", "") == "ao":
         # AO cannot `claude --resume` an outside conversation: the respawn is a NEW
@@ -161,6 +162,24 @@ def run_return(
         # каналом: посылать её в терминал, который ещё грузится, некуда.
         out["said"] = not dry_run
     return out
+
+
+def _session_name(control_home: Path, project, arc: str) -> str:
+    """«проект — нить · NN» when *arc* is a thread's session — the respawned session
+    keeps the one name it has in the passport and the AO sidebar (decision 09.10);
+    '' otherwise (the board's tab title is the fallback)."""
+    if not arc:
+        return ""
+    try:
+        from .. import roster
+        from ..arc import stream
+        name = roster.name_for_path(Path(project), home=Path(control_home))
+        a = Path(arc)
+        if a.name == "arc.md":
+            a = a.parent
+        return stream.thread_session_title(a, project=name) or ""
+    except Exception:  # noqa: BLE001 — a name must never block the return
+        return ""
 
 
 def _focus_any(adapter, handle: str):

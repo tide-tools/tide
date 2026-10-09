@@ -836,11 +836,11 @@ def launch_handoff(
     # spark trigger cand 96). The distil rides the system prompt; this turn executes it.
     slug = record.get("slug") or "нить"
     session_dir = Path(seed_path).parent.parent
-    # The raised session is named «нить · NN» — ONE text for the passport's
+    # The raised session is named «проект — нить · NN» — ONE text for the passport's
     # ``title:`` and the terminal/AO sidebar name, so the human finds it by the same
-    # words everywhere (decision 07 follow-up). Stamped before the spawn: a failed
-    # spawn leaves the right name on a session that is still waiting for ▶.
-    title = stream.thread_session_title(session_dir)
+    # words everywhere (decision 09.10). Stamped before the spawn: a failed spawn
+    # leaves the right name on a session that is still waiting for ▶.
+    title = stream.thread_session_title(session_dir, project=record["project"])
     if title and not dry_run:
         try:
             fields.set_field(session_dir / "arc.md", "title", title)
@@ -1051,8 +1051,11 @@ def launch_entry(
         dry_run=dry_run,
         **_session_launch_kwargs(entry),
     )
+    title = _tab_title(entry)
+    if session.get("arc_path") and not dry_run:
+        _stamp_session_title(Path(session["arc_path"]), entry)
     res = adapter.spawn(
-        command=command, cwd=str(project), title=_tab_title(entry), dry_run=dry_run
+        command=command, cwd=str(project), title=title, dry_run=dry_run
     )
     # Record sid → terminal so ▶ resolves THIS session's tab later (cand 94).
     if res.ok and not dry_run:
@@ -1062,16 +1065,36 @@ def launch_entry(
 
 
 def _tab_title(entry: Dict) -> str:
-    """The terminal tab title — session first, then thread: ``<session> · <thread>``.
+    """The terminal tab / AO sidebar name — «проект — нить · NN» for a thread's session.
 
-    Falls back to ``tide-<project>`` when no session is bound.
+    The same text as the passport's ``title:`` (decision 09.10). Before, the tab
+    glued ``<session title> · <thread>`` — and a born title is already
+    ``<thread> · <slug>``, so a role thread whose slug repeats the thread came out
+    as «designer · designer · designer». A session outside a thread falls back to
+    its own title, then ``tide-<project>`` when nothing is bound.
     """
     s = entry.get("session") or {}
     thread = s.get("thread")
     if not thread:
         return "tide-{0}".format(entry["name"])
+    if s.get("arc_path"):
+        name = stream.thread_session_title(Path(s["arc_path"]), project=entry["name"])
+        if name:
+            return name
     session = s.get("session_title") or s.get("session_index") or s.get("arc_ref") or "session"
-    return "{0} · {1}".format(session, thread)
+    return "{0} — {1} · {2}".format(entry["name"], thread, session)
+
+
+def _stamp_session_title(session_dir: Path, entry: Dict) -> None:
+    """Best-effort: write «проект — нить · NN» into the session passport's ``title:``
+    right before the spawn, so passport and sidebar say the same thing."""
+    title = stream.thread_session_title(session_dir, project=entry["name"])
+    if not title:
+        return
+    try:
+        fields.set_field(session_dir / "arc.md", "title", title)
+    except OSError:
+        pass  # a launch must not fail over a title
 
 
 def launch_entries(
@@ -1351,11 +1374,13 @@ def spark(
                 / "arcs" / "01-{0}".format(container_slug))
         binding = {"arc_ref": container_slug, "arc_text": None,
                    "thread": container_slug,
-                   "session_id": None, "resume": False}
+                   "session_id": None, "resume": False,
+                   "arc_path": str(sess)}
     else:
         container_slug = slug.entry_slug(thread_entry.name)
         sess_slug = _unique_pickup_slug(thread_entry, base=container_slug)
         sess = stream.new_session(project, container_slug, sess_slug)
+        _stamp_session_title(sess, project_entry)  # roster name of THIS entry
         binding = _session_binding(
             slug.entry_slug(sess.name), sess, True, container_slug
         )
