@@ -516,6 +516,12 @@ def _register_handoffs(sub) -> None:
     from .hooks.handed_off import register_two_heads
 
     register_two_heads(hsub)  # SOC-101 F49: multiples шлёт тревогу «две головы»
+    from .hooks.autoclose import register_autoclose
+
+    register_autoclose(hsub)  # SOC-101: автозакрытие старой ($TIDE_AUTOCLOSE_OLD=1)
+    from .seam_sync import register_sync
+
+    register_sync(hsub)  # SOC-143: шов-синк «сделано / дальше / что решить»
 
 
 def _register_offload(sub) -> None:
@@ -697,7 +703,9 @@ def _self_register() -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``tide`` console_script."""
     parser = build_parser()
-    args = parser.parse_args(argv)
+    from .seam_sync import alias_argv  # SOC-143: `tide handoff sync …` → handoffs sync
+
+    args = parser.parse_args(alias_argv(sys.argv[1:] if argv is None else argv))
 
     _self_register()
 

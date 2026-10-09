@@ -575,6 +575,9 @@ def cmd_prompt(args) -> int:
             note = redirect(payload)
             if note:
                 print(note)
+            # старая без воркеров закрывается сама — только при $TIDE_AUTOCLOSE_OLD=1
+            from . import autoclose
+            autoclose.on_prompt(payload)
     except Exception as exc:  # noqa: BLE001 — хук не смеет уронить сессию
         print("tide: [handed-off] skipped: {0}".format(exc), file=sys.stderr)
     return rc
