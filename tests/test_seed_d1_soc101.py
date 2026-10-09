@@ -158,3 +158,88 @@ def test_pass_without_map_warns_and_collects(tmp_project, capsys):
     # наследство: собранная карта прошлого сида не переходит дальше
     assert seed_draft.block_entry_map(got, (), ["- новая " + seed_draft.COLLECTED])[0] == \
         "- новая " + seed_draft.COLLECTED
+
+
+# --- F30: статусы задач Linear — из Linear ------------------------------------------
+
+@pytest.fixture
+def linear(monkeypatch):
+    """Подменённый клиент Linear: сеть не трогаем, вызовы считаем."""
+    seed_draft._LINEAR_CACHE.clear()
+    calls = []
+    states = {"SOC-39": ("Done", "completed"), "SOC-100": ("Done", "completed"),
+              "SOC-101": ("In Progress", "started"), "SOC-117": ("Backlog", "backlog"),
+              "SOC-90": ("Canceled", "canceled")}
+
+    def fetch(keys):
+        calls.append(list(keys))
+        return {k: v for k, v in states.items() if k in keys}
+
+    monkeypatch.setattr(seed_draft, "linear_fetch", fetch)
+    monkeypatch.setenv(seed_draft.LINEAR_URL_ENV, "https://l.example/{key}")
+    monkeypatch.delenv(seed_draft.LINEAR_OFF_ENV, raising=False)
+    yield calls
+    seed_draft._LINEAR_CACHE.clear()
+
+
+def test_statuses_come_from_linear_and_closed_go_down(linear):
+    text = "SOC-100 в In Review; SOC-39 — In Review; SOC-101, SOC-117, SOC-90, SOC-5"
+    live = seed_draft.linear_states(seed_draft.linear_keys(text))
+    assert seed_draft.block_links(text, live=live) == [
+        "- (статусы — из Linear на момент сборки)",
+        "- SOC-5 — https://l.example/SOC-5 — в Linear не найдена",
+        "- SOC-101 — https://l.example/SOC-101 — In Progress",
+        "- SOC-117 — https://l.example/SOC-117 — Backlog",
+        "- закрыты в Linear — не открытые задачи нити:",
+        "  - SOC-39 — https://l.example/SOC-39 — закрыта (Done)",
+        "  - SOC-90 — https://l.example/SOC-90 — закрыта (Canceled)",
+        "  - SOC-100 — https://l.example/SOC-100 — закрыта (Done)",
+    ]
+    # кэш: повторная сборка с тем же/меньшим набором — без нового запроса
+    seed_draft.linear_states(["SOC-100", "SOC-39"])
+    assert len(linear) == 1
+
+
+def test_linear_down_falls_back_to_text_with_a_mark(linear, monkeypatch):
+    def down(keys):
+        raise seed_draft.LinearUnavailable("Linear не ответил (URLError)")
+
+    monkeypatch.setattr(seed_draft, "linear_fetch", down)
+    text = "SOC-100 в In Review, SOC-101"
+    live = seed_draft.linear_states(seed_draft.linear_keys(text))
+    assert isinstance(live, seed_draft.LinearUnavailable)
+    assert seed_draft.block_links(text, live=live) == [
+        "- (статус не сверен с Linear: Linear не ответил (URLError); рядом — из текста пульсов)",
+        "- SOC-100 — https://l.example/SOC-100 — In Review (из пульса, не сверен)",
+        "- SOC-101 — https://l.example/SOC-101",
+    ]
+    # любой сбой клиента — тоже откат, не падение
+    seed_draft._LINEAR_CACHE.clear()
+    monkeypatch.setattr(seed_draft, "linear_fetch", lambda keys: 1 / 0)
+    assert isinstance(seed_draft.linear_states(["SOC-1"]), seed_draft.LinearUnavailable)
+
+
+def test_no_network_under_pytest_and_offline_switch(monkeypatch):
+    seed_draft._LINEAR_CACHE.clear()
+    assert seed_draft.linear_states(["SOC-1"]) is None  # клиент не подменён — сети нет
+    monkeypatch.setenv(seed_draft.LINEAR_OFF_ENV, "1")
+    monkeypatch.setattr(seed_draft, "linear_fetch", lambda keys: {"SOC-1": ("Done", "completed")})
+    assert isinstance(seed_draft.linear_states(["SOC-1"]), seed_draft.LinearUnavailable)
+
+
+def test_fetch_builds_one_query_per_team(monkeypatch):
+    import io
+    import urllib.request
+
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append((json.loads(req.data), req.headers, timeout))
+        return io.BytesIO(json.dumps({"data": {"issues": {"nodes": [
+            {"identifier": "SOC-7", "state": {"name": "Todo", "type": "unstarted"}}]}}}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(seed_draft, "_linear_key", lambda: "k")
+    assert seed_draft.linear_fetch(["SOC-7", "SOC-8"]) == {"SOC-7": ("Todo", "unstarted")}
+    assert len(sent) == 1 and sent[0][0]["variables"] == {"team": "SOC", "nums": [7.0, 8.0]}
+    assert sent[0][2] <= 5

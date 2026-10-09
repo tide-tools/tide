@@ -441,25 +441,169 @@ def issue_statuses(text: str) -> Dict[str, str]:
     return out
 
 
+# --- статусы задач Linear из самого Linear (SOC-101 F30) ------------------------
+#
+# Статус «рядом с номером в пульсе» врал: SOC-100 «In Review» стояла Done, SOC-39/51/57
+# давно закрытые шли открытыми задачами нити. Теперь при сборке — ОДИН запрос GraphQL
+# на все номера (ключ — Keychain ``linear-api-key``, таймаут короткий); нет ключа /
+# сети / ответа — откат на текст пульсов с пометкой «статус не сверен».
+
+LINEAR_API = "https://api.linear.app/graphql"
+LINEAR_KEYCHAIN = "linear-api-key"
+LINEAR_OFF_ENV = "TIDE_LINEAR_OFFLINE"    # =1 — в Linear не ходить (статус из текста)
+LINEAR_TIMEOUT = 4.0                       # с; плюс ≤1 с на Keychain — укладываемся в 5
+CLOSED_TYPES = ("completed", "canceled")
+_LINEAR_QUERY = ("query($team:String!,$nums:[Float!]){issues(filter:{team:{key:{eq:$team}},"
+                 "number:{in:$nums}},first:250){nodes{identifier state{name type}}}}")
+
+
+class LinearUnavailable(Exception):
+    """Linear не ответил (нет ключа, сети, ошибка API) — причина в тексте."""
+
+
+def _linear_key() -> str:
+    import subprocess
+
+    try:
+        r = subprocess.run(["security", "find-generic-password", "-s", LINEAR_KEYCHAIN, "-w"],
+                           capture_output=True, text=True, timeout=1.0)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise LinearUnavailable("Keychain недоступен ({0})".format(type(e).__name__))
+    key = (r.stdout or "").strip()
+    if not key:
+        raise LinearUnavailable("нет ключа {0} в Keychain".format(LINEAR_KEYCHAIN))
+    return key
+
+
+def linear_fetch(keys: Sequence[str]) -> Dict[str, "tuple[str, str]"]:
+    """``{SOC-N: (имя статуса, тип)}`` из Linear — один запрос на команду (префикс).
+
+    Сеть. Тесты подменяют эту функцию (``monkeypatch.setattr(seed_draft,
+    "linear_fetch", …)``); под pytest без подмены в сеть не ходим вовсе."""
+    import json
+    import urllib.request
+
+    by_team: Dict[str, List[float]] = {}
+    for k in keys:
+        team, _, num = k.partition("-")
+        if num.isdigit():
+            by_team.setdefault(team, []).append(float(num))
+    if not by_team:
+        return {}
+    token = _linear_key()
+    out: Dict[str, "tuple[str, str]"] = {}
+    for team, nums in by_team.items():
+        body = json.dumps({"query": _LINEAR_QUERY,
+                           "variables": {"team": team, "nums": nums}}).encode()
+        req = urllib.request.Request(LINEAR_API, data=body, headers={
+            "Authorization": token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=LINEAR_TIMEOUT) as r:
+                data = json.load(r)
+        except Exception as e:  # noqa: BLE001 — сеть/таймаут/HTTP — всё одно: не сверено
+            raise LinearUnavailable("Linear не ответил ({0})".format(type(e).__name__))
+        if not isinstance(data, dict) or data.get("errors") or not data.get("data"):
+            raise LinearUnavailable("Linear вернул ошибку")
+        for node in (data["data"].get("issues") or {}).get("nodes") or []:
+            st = node.get("state") or {}
+            out[str(node.get("identifier"))] = (str(st.get("name") or ""),
+                                                str(st.get("type") or ""))
+    return out
+
+
+_DEFAULT_FETCH = linear_fetch
+_LINEAR_CACHE: Dict[frozenset, object] = {}
+
+
+def linear_states(keys: Sequence[str]):
+    """Статусы *keys* из Linear или :class:`LinearUnavailable` (как значение, не
+    исключение); None — сверка не запускалась (pytest без подменённого клиента). Кэш на процесс: сборка зовёт блок много раз (бюджет журнала), а
+    запрос — один; провал тоже кэшируется — таймаут не повторяется."""
+    want = frozenset(keys)
+    if not want:
+        return {}
+    if (os.environ.get(LINEAR_OFF_ENV) or "").strip() not in ("", "0"):
+        return LinearUnavailable("сверка выключена ({0})".format(LINEAR_OFF_ENV))
+    fetch = linear_fetch
+    if fetch is _DEFAULT_FETCH and os.environ.get("PYTEST_CURRENT_TEST"):
+        return None  # под тестами без подменённого клиента — сверки нет, как до F30
+    for got, val in _LINEAR_CACHE.items():
+        if want <= got and getattr(val, "_fetch", None) is fetch:
+            return val
+    try:
+        val = _States(fetch(sorted(want)))
+    except LinearUnavailable as e:
+        val = e
+    except Exception as e:  # noqa: BLE001 — сид важнее
+        val = LinearUnavailable("сверка упала ({0})".format(type(e).__name__))
+    try:
+        val._fetch = fetch
+    except AttributeError:
+        pass
+    _LINEAR_CACHE[want] = val
+    return val
+
+
+class _States(dict):
+    """Ответ Linear (dict) с пометкой, какой функцией получен (для кэша)."""
+
+
 def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
-                status_text: str = "") -> List[str]:
+                status_text: str = "", live=None) -> List[str]:
     """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
 
     Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
     искать, где это. Адрес — ``$TIDE_LINEAR_ISSUE_URL`` (шаблон с ``{key}``).
-    «SOC-92/96/77» — три задачи. Статус — рядом со ссылкой, если он записан в
-    *status_text* (или в самом *text*) локально (:func:`issue_statuses`)."""
+    «SOC-92/96/77» — три задачи.
+
+    Статус (F30): *live* — ответ :func:`linear_states`. Словарь — статус из
+    Linear; закрытые (Done/Canceled) уходят вниз отдельной группой «закрыты в
+    Linear». :class:`LinearUnavailable` — статус из *status_text*/*text*
+    (:func:`issue_statuses`) с пометкой «статус не сверен». None — как до F30:
+    только текст, без пометок."""
     tmpl = (os.environ.get(LINEAR_URL_ENV) or "").strip() or LINEAR_URL_DEFAULT
     text = expand_issue_runs(text)
-    statuses = issue_statuses((status_text or "") + "\n" + text)
     seen: List[str] = []
     for key in _ISSUE_RE.findall(text or ""):
         if key.split("-", 1)[0] in prefixes and key not in seen:
             seen.append(key)
     seen.sort(key=lambda k: int(k.rsplit("-", 1)[1]))
-    return ["- {0} — {1}{2}".format(k, tmpl.format(key=k),
-                                    " — " + statuses[k] if k in statuses else "")
-            for k in seen]
+    if isinstance(live, dict):
+        opened, closed = [], []
+        for k in seen:
+            name, kind = live.get(k, ("", ""))
+            if kind in CLOSED_TYPES:
+                closed.append("  - {0} — {1} — закрыта ({2})".format(k, tmpl.format(key=k), name))
+            else:
+                opened.append("- {0} — {1} — {2}".format(
+                    k, tmpl.format(key=k), name or "в Linear не найдена"))
+        if not seen:
+            return []
+        out = ["- (статусы — из Linear на момент сборки)"] + opened
+        if closed:
+            out += ["- закрыты в Linear — не открытые задачи нити:"] + closed
+        return out
+    statuses = issue_statuses((status_text or "") + "\n" + text)
+    if live is None:
+        return ["- {0} — {1}{2}".format(k, tmpl.format(key=k),
+                                        " — " + statuses[k] if k in statuses else "")
+                for k in seen]
+    if not seen:
+        return []
+    return ["- (статус не сверен с Linear: {0}; рядом — из текста пульсов)".format(live)] + [
+        "- {0} — {1}{2}".format(k, tmpl.format(key=k),
+                                " — {0} (из пульса, не сверен)".format(statuses[k])
+                                if k in statuses else "")
+        for k in seen]
+
+
+def linear_keys(text: str, prefixes: Sequence[str] = ("SOC",)) -> List[str]:
+    """Номера задач *prefixes* в *text* (с раскрытием «SOC-92/96/77»), без повторов."""
+    out: List[str] = []
+    for key in _ISSUE_RE.findall(expand_issue_runs(text)):
+        if key.split("-", 1)[0] in prefixes and key not in out:
+            out.append(key)
+    return out
 
 
 def block_awaiting(questions: Sequence[str],
@@ -749,8 +893,9 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
         out[JOURNAL] = block_journal(context, budget=budget, source=source)
         # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
-        out[LINEAR] = block_links(render_draft(out, header=header) + "\n" + "\n".join(context),
-                                  status_text="\n".join(reversed(list(context))))
+        hay = render_draft(out, header=header) + "\n" + "\n".join(context)
+        out[LINEAR] = block_links(hay, status_text="\n".join(reversed(list(context))),
+                                  live=linear_states(linear_keys(hay)))
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
                           if not _PASS_RE.match(ln.strip())) - share * len(text)
@@ -990,7 +1135,7 @@ def topic_pointer(root: Path, thread_entry: Path) -> str:
             st = _STATUS_RE.search(lin)
             parent = "Linear-родитель {0} — {1}".format(
                 key.group(1) if key else lin,
-                st.group(1) if st else "статус в topic.md не записан")
+                st.group(1) if st else "статус — в блоке «задачи Linear»")
         else:
             parent = "Linear-родитель не записан (поля linear: нет)"
         parts.append("{0} · {1}".format(f.resolve(), parent))

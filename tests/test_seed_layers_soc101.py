@@ -271,8 +271,8 @@ def test_topic_pointer_by_home_line_with_linear_parent_as_written(live):
                "linear:     SOC-117 https://l.example/SOC-117 (родитель топика)\n".format(tname))
     _topic(live["root"], "01-chuzhoy", "threads: 26-@release\nlinear: SOC-1 Done\n")
     entry = _block(ah.build_auto_seed(live["sess"]), "карта входа").splitlines()
-    assert [ln for ln in entry if ln.startswith("- топик:")][0] == "- топик: {0} · Linear-родитель SOC-117 — статус в topic.md не " \
-                       "записан".format(f.resolve())
+    assert [ln for ln in entry if ln.startswith("- топик:")][0] == "- топик: {0} · Linear-родитель SOC-117 — статус — в блоке " \
+                       "«задачи Linear»".format(f.resolve())
     assert sum(ln.startswith("- топик:") for ln in entry) == 1
 
 
