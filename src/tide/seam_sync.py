@@ -37,6 +37,13 @@ from .arc.stream import StreamError
 FIRST_PULSES = 3                 # столько настоящих пульсов новой — автозапуск сверки
 PULSES_ENV = "TIDE_SYNC_PULSES"  # потолок пульсов в сверке (по умолчанию — все после приёма)
 REPO_ENV = "TIDE_SYNC_REPO"      # репо кода нити (через «:»), коммиты после ПЕРЕДАЧИ
+AUTO_FRESH_HOURS = 2             # приём старше — история, автозапуск не трогает никогда
+# автозапуск включён с этого момента: приёмы раньше — старые передачи, их не сверяем
+# (живой дефект: context-keeper получил сверку через 7 ч после приёма, оффер 277)
+AUTO_SINCE = "2026-10-09T19:25:00"
+REMIND_LOOKBACK_HOURS = 48       # напоминание менеджеру смотрит приёмы не старше
+REMIND_STAMP = "sync-remind.last"
+REMIND_THROTTLE_SEC = 60
 NO_ANSWER_MIN = 30               # ждёт ответа дольше — «нет ответа»
 REPORT_NAME = "seam-sync.md"     # отчёт сверки в workspace/ новой
 SENDER = "шов-синк"
@@ -48,6 +55,7 @@ SYNC_AT = "sync-at"              # когда отправлено
 SYNC_LETTER = "sync-letter"      # номер письма в почте нити
 SYNC_ANSWER = "sync-answer"      # кто ответил и что (для fix — текст)
 SYNC_ANSWER_AT = "sync-answer-at"
+SYNC_REMINDED = "sync-reminded"  # напоминание менеджеру ушло (одно на пару)
 
 WAITING = "ждёт ответа"
 OK = "ok"
@@ -440,7 +448,12 @@ def _clip(text: str, n: int = 160) -> str:
 def render(rep: Dict[str, object], *, title: str = "", answer: str = "") -> str:
     """Короткий список «сделано / дальше / что решить» + что не названо."""
     rows = rep["items"]
-    out = ["шов-синк{0}".format(" " + title if title else ""), ""]
+    out = ["шов-синк{0}".format(" " + title if title else "")]
+    if rep.get("to"):
+        line = addressee_line(rep["to"])
+        if line:
+            out.append(line)
+    out.append("")
     out.append("сделано (по ПЕРЕДАЧЕ старой):")
     out += ["- " + _clip(x) for x in rep["done"]] or ["- — ПЕРЕДАЧИ в сиде нет"]
     after = [r for r in rows if r["status"] in ("done", "closed")]
@@ -502,11 +515,31 @@ def _ao_alive(handle: str) -> Optional[bool]:
         return None
 
 
+def _is_main_thread(thread_dir: Optional[Path]) -> bool:
+    name = Path(thread_dir).name if thread_dir else ""
+    return re.sub(r"^\d+-@?", "", name) == "main"
+
+
+def _new_ao(home: Optional[Path], new_dir: Optional[Path]) -> str:
+    if new_dir is None or home is None:
+        return ""
+    try:
+        from .arc import holder
+        sid = (fields.read_field(Path(new_dir) / "arc.md", "claude-session") or "").strip()
+        return holder.ao_handle_for(Path(home), sid) if sid else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def confirmer(home: Optional[Path], rec: Optional[Dict[str, object]], root: Path, *,
               alive: Callable[[str], Optional[bool]] = _ao_alive,
-              main_of: Optional[Callable[[Path], Dict[str, str]]] = None) -> Dict[str, str]:
+              main_of: Optional[Callable[[Path], Dict[str, str]]] = None,
+              new_dir: Optional[Path] = None,
+              manager_of: Optional[Callable[[], Dict[str, str]]] = None) -> Dict[str, str]:
     """Кто подтверждает → ``{ao_session, role, why}``: старая, пока её AO-сессия жива;
-    закрыта / exited / не знаем адреса — main проекта (``tide whois main``)."""
+    закрыта / exited / не знаем адреса — main проекта (``tide whois main``); новая
+    сама main проекта (нить main или адрес main = адрес новой) — менеджер
+    (``tide whois manager``): сам себе не подтверждают."""
     old = ""
     if rec is not None and str(rec.get("from_session") or "-") != "-":
         try:
@@ -525,7 +558,29 @@ def confirmer(home: Optional[Path], rec: Optional[Dict[str, object]], root: Path
         m = main_of(Path(root)) or {}
     except Exception:  # noqa: BLE001
         m = {}
-    return {"ao_session": str(m.get("ao_session") or ""), "role": "main проекта", "why": why}
+    main_ao = str(m.get("ao_session") or "")
+    new_ao = _new_ao(home, new_dir)
+    thread_dir = Path(new_dir).parents[1] if new_dir is not None else None
+    if _is_main_thread(thread_dir) or (main_ao and new_ao and main_ao == new_ao):
+        if manager_of is None:
+            def manager_of() -> Dict[str, str]:
+                from . import whois
+                return whois.manager(home=Path(home) if home else None)
+        try:
+            mg = manager_of() or {}
+        except Exception:  # noqa: BLE001
+            mg = {}
+        return {"ao_session": str(mg.get("ao_session") or ""), "role": "менеджер",
+                "why": "{0}; новая — сама main проекта".format(why)}
+    return {"ao_session": main_ao, "role": "main проекта", "why": why}
+
+
+def addressee_line(to: Dict[str, str]) -> str:
+    """Кому письмо и почему он (поправка main · 05): «подтверждаешь ты — …, потому что …»."""
+    if not to or to.get("role") in (None, "", "—", "-"):
+        return ""
+    return "подтверждаешь ты — {0} {1}, потому что {2}".format(
+        to.get("role"), to.get("ao_session") or "(без адреса)", to.get("why") or "так вышло")
 
 
 # --- поля паспорта ----------------------------------------------------------------
@@ -684,17 +739,16 @@ def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
         origin + " → " if origin and not origin.startswith("<") else "", new_dir.name,
         p["thread"].name, ", оффер {0}".format(rec.get("num")) if rec is not None else "")
     rep["title"] = title
+    if who:
+        to = who
+    elif rec is not None or not dry_run:
+        to = confirmer(home, rec, p["root"], new_dir=new_dir)
+    else:
+        to = {"ao_session": "", "role": "—", "why": "принятого оффера не нашлось"}
+    rep["to"] = to
     rep["text"] = render(rep, title=title, answer=answer_hint(new_dir))
     if dry_run:
-        if who:
-            rep["to"] = who
-        elif rec is not None:
-            rep["to"] = confirmer(home, rec, p["root"])
-        else:
-            rep["to"] = {"ao_session": "", "role": "—", "why": "принятого оффера не нашлось"}
         return rep
-    to = who or confirmer(home, rec, p["root"])
-    rep["to"] = to
     from . import mail as _mail
     send_mail = send_mail or _mail.send
     letter = send_mail(p["thread"].name, rep["text"], sender=SENDER, root=p["root"],
@@ -776,6 +830,138 @@ def status(new_dir: Path, *, now: Optional[datetime] = None) -> Dict[str, str]:
     if not out[SYNC]:
         out[SYNC] = "не сверялась"
     return out
+
+
+# --- автозапуск и напоминание ----------------------------------------------------
+
+def _taken_ago(rec: Dict[str, object], now: datetime) -> Optional[timedelta]:
+    taken = _parse_ts(rec.get("taken_at"))
+    return None if taken is None else now - taken
+
+
+def due(new_dir: Path, rec: Optional[Dict[str, object]], *,
+        now: Optional[datetime] = None) -> bool:
+    """Пора ли сверке самой: принятый оффер continue, приём свежий, ``sync:`` в паспорте
+    новой ещё нет, после приёма у новой :data:`FIRST_PULSES` настоящих пульсов или
+    пульс со «снимаю:»."""
+    from . import handoff_queue as hq
+    if rec is None or not hq._transfers_thread(rec):
+        return False
+    ago = _taken_ago(rec, now or datetime.now())
+    taken, since = _parse_ts(rec.get("taken_at")), _parse_ts(AUTO_SINCE)
+    if (ago is None or ago.total_seconds() > AUTO_FRESH_HOURS * 3600
+            or taken is None or (since is not None and taken < since)):
+        return False
+    passport = Path(new_dir) / "arc.md"
+    if _get(passport, SYNC):
+        return False
+    pulses = first_pulses(passport.read_text(encoding="utf-8"), 0, rec.get("taken_at"))
+    return len(pulses) >= FIRST_PULSES or bool(drops(pulses))
+
+
+def auto_check(new_dir: Path, *, home: Optional[Path] = None,
+               now: Optional[datetime] = None, **kw) -> Optional[Dict[str, object]]:
+    """После пульса новой: пора (:func:`due`) — один раз :func:`check` по пульсам, что
+    есть сейчас. Повтор отсекает поле ``sync`` в паспорте. Никогда не падает."""
+    try:
+        new_dir = Path(new_dir)
+        if home is None:
+            home = paths.control_home(session_paths(new_dir)["root"])
+        rec = offer_of(home, new_dir)
+        if not due(new_dir, rec, now=now):
+            return None
+        return check(new_dir, home=home, **kw)
+    except Exception as exc:  # noqa: BLE001 — сверка не смеет сорвать пульс
+        try:
+            import sys
+            print("tide: шов-синк не ушёл: {0}".format(exc), file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def wrap_offload(sub) -> None:
+    """Научить ``tide offload`` запускать шов-синк сам (SOC-143): handoff_queue и
+    offload — домен и сверку не видят, компонуется в cli поверх обёртки приёма."""
+    p = sub.choices.get("offload") if hasattr(sub, "choices") else None
+    inner = p.get_default("func") if p is not None else None
+    if inner is None:
+        return
+
+    def _offload_and_sync(args) -> int:
+        rc = inner(args)
+        if rc != 0:
+            return rc
+        try:
+            from . import offload as _offload
+            session_dir = _offload.find_session(paths.require_tide_root(), args.session)
+            rep = auto_check(session_dir) if session_dir is not None else None
+            if rep:
+                to = rep.get("to") or {}
+                print("tide: шов-синк ушёл сам — письмо {0} в почту нити, подтверждает {1} {2}; "
+                      "не названо {3}".format(rep.get("letter"), to.get("role"),
+                                              to.get("ao_session") or "без адреса", rep["gaps"]))
+        except Exception:  # noqa: BLE001
+            pass
+        return rc
+
+    p.set_defaults(func=_offload_and_sync)
+
+
+def remind_text(new_dir: Path, st: Dict[str, str], minutes: int) -> str:
+    ref = "{0}/{1}".format(Path(new_dir).parents[1].name, Path(new_dir).name)
+    return ("шов-синк {0}: нет ответа {1} мин от {2} (письмо {3}) — "
+            "tide handoff sync ok {4} | tide handoff sync fix {4} \"…\"").format(
+        ref, minutes, st.get(SYNC_TO) or "подтверждающего", st.get(SYNC_LETTER) or "-",
+        Path(new_dir))
+
+
+def remind(home: Path, *, now: Optional[datetime] = None,
+           alert: Optional[Callable[..., Optional[int]]] = None) -> List[str]:
+    """Свежие пары, где сверка «ждёт ответа» дольше :data:`NO_ANSWER_MIN` минут, —
+    одна строка менеджеру (``send_alert(route=manager)``); метка ``sync-reminded``
+    в паспорте новой — одна на пару. → тексты отправленных."""
+    from . import handoff_queue as hq
+    now = now or datetime.now()
+    out: List[str] = []
+    for rec in hq.list_offers(Path(home), status=hq.STATUS_TAKEN):
+        try:
+            ago = _taken_ago(rec, now)
+            if (ago is None or ago.total_seconds() > REMIND_LOOKBACK_HOURS * 3600
+                    or not hq._transfers_thread(rec) or str(rec.get("seed") or "-") == "-"):
+                continue
+            new_dir = Path(str(rec["seed"])).parent.parent
+            passport = new_dir / "arc.md"
+            if not passport.is_file() or _get(passport, SYNC_REMINDED):
+                continue
+            st = status(new_dir, now=now)
+            if st[SYNC] != NO_ANSWER:
+                continue
+            at = _parse_ts(st[SYNC_AT])
+            minutes = int((now - at).total_seconds() // 60) if at else NO_ANSWER_MIN
+            text = remind_text(new_dir, st, minutes)
+            _set(passport, SYNC_REMINDED, _now())  # метка ДО отправки — одна на пару
+            if alert is None:
+                from .launcher.autohandoff import send_alert as alert
+            alert(text, route="manager", source="{0}/sync".format(rec.get("name")))
+            out.append(text)
+        except Exception:  # noqa: BLE001 — напоминание не смеет уронить хук
+            continue
+    return out
+
+
+def on_prompt(*, home: Optional[Path] = None) -> List[str]:
+    """Хук handoff-confirm: раз в :data:`REMIND_THROTTLE_SEC` — :func:`remind`."""
+    try:
+        home = Path(home) if home is not None else paths.control_home()
+        stamp = paths.state_dir(home) / REMIND_STAMP
+        if stamp.is_file() and datetime.now().timestamp() - stamp.stat().st_mtime < REMIND_THROTTLE_SEC:
+            return []
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(_now(), encoding="utf-8")
+        return remind(home)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 # --- CLI -----------------------------------------------------------------------
@@ -865,7 +1051,7 @@ def alias_argv(argv: List[str]) -> List[str]:
 
 
 __all__ = ["FIRST_PULSES", "NO_ANSWER_MIN", "SeamSyncError", "alias_argv", "answer",
-           "awaiting_items", "check", "code_repos", "confirmer", "done_evidence",
-           "done_in_line", "done_lines", "drops", "f_ids", "first_pulses", "git_commits",
-           "ids", "mentions", "order_closed", "passing_at", "reconcile",
-           "register_sync", "render", "seed_items", "status"]
+           "auto_check", "awaiting_items", "check", "code_repos", "confirmer", "done_evidence",
+           "done_in_line", "done_lines", "drops", "due", "f_ids", "first_pulses", "git_commits",
+           "ids", "mentions", "on_prompt", "order_closed", "passing_at", "reconcile",
+           "register_sync", "remind", "render", "seed_items", "status", "wrap_offload"]

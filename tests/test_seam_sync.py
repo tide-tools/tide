@@ -85,6 +85,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.delenv(mail.AO_SESSION_ENV, raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv(ss.PULSES_ENV, raising=False)
+    monkeypatch.setattr(ss, "AUTO_SINCE", "2000-01-01T00:00:00")
     monkeypatch.chdir(proj)
     sent = []
     monkeypatch.setattr(autohandoff, "_ao_send", lambda h, t: sent.append((h, t)) or 0)
@@ -362,3 +363,119 @@ def test_awaiting_only_grisha_decisions():
     assert ss.seed_items(seed)["awaiting"] == [
         "SOC-57 шаг 5 — ждёт Гришу: выбрать A или B",
         "❓ Грише: SOC-101 на проверке (In Review) — согласен ли с объёмом"]
+
+
+# --- автозапуск и напоминание ---------------------------------------------------
+
+def _fresh_world(world, pulses=2):
+    now = datetime.now().replace(microsecond=0)
+    lines = ["- {0} — нить принята — шов приёма закрыт механикой".format(
+        (now - timedelta(minutes=5)).isoformat())]
+    lines += ["- {0} — пульс {1}: итоги сабагентов F55+F58 и F49, F60 F59 F63".format(
+        (now - timedelta(minutes=4 - i)).isoformat(), i) for i in range(pulses)]
+    (world["new"] / "arc.md").write_text(
+        "# 02-handoffs-2\n\ntitle: proj — handoffs · 02\nfrom: handoffs-1\n\n## context\n"
+        + "\n".join(lines) + "\n", encoding="utf-8")
+    rec = _offer(world)
+    hq._set_field(rec["path"], "taken-at", (now - timedelta(minutes=6)).isoformat())
+    return hq._parse(rec["path"])
+
+
+def test_auto_sync_on_third_pulse_once(world, monkeypatch, capsys):
+    _fresh_world(world, pulses=1)
+    monkeypatch.setenv(ss.REPO_ENV, "")
+    monkeypatch.setattr(ss, "confirmer", lambda *a, **k: {
+        "ao_session": "proj-41", "role": "старая", "why": "старая жива"})
+    inbox = world["tdir"] / "inbox"
+    ref = world["new"].name
+    assert cli.main(["offload", ref, "второй пульс: смотрю доску"]) == 0
+    assert not inbox.exists() and ss._get(world["new"] / "arc.md", ss.SYNC) == ""
+    assert cli.main(["offload", ref, "третий пульс: автозакрытие старой после живой пары"]) == 0
+    assert "шов-синк ушёл сам — письмо 001" in capsys.readouterr().out
+    assert (inbox / "001-от-shov-sink.md").is_file()
+    assert ss._get(world["new"] / "arc.md", ss.SYNC) == ss.WAITING
+    assert [to for to, _ in world["sent"]] == ["proj-41"]
+    assert cli.main(["offload", ref, "четвёртый пульс"]) == 0
+    assert sorted(x.name for x in inbox.glob("*.md")) == ["001-от-shov-sink.md"]
+    assert len(world["sent"]) == 1
+
+
+def test_auto_sync_on_drop_pulse_and_never_breaks_offload(world, monkeypatch):
+    rec = _fresh_world(world, pulses=0)
+    passport = world["new"] / "arc.md"
+    assert not ss.due(world["new"], rec)
+    with passport.open("a", encoding="utf-8") as fh:
+        fh.write("- {0} — снимаю: сигналы стопа — нить board\n".format(
+            datetime.now().replace(microsecond=0).isoformat()))
+    assert ss.due(world["new"], rec)
+
+    def boom(*a, **k):
+        raise RuntimeError("почта легла")
+
+    monkeypatch.setattr(ss, "check", boom)
+    assert cli.main(["offload", world["new"].name, "пульс"]) == 0   # offload цел
+    assert ss._get(passport, ss.SYNC) == ""                        # повторит на следующем
+
+
+def test_auto_sync_skips_old_take_and_new_mode(world):
+    rec = _fresh_world(world, pulses=3)
+    assert ss.due(world["new"], rec)
+    late = datetime.now() + timedelta(hours=ss.AUTO_FRESH_HOURS, minutes=1)
+    assert not ss.due(world["new"], rec, now=late)        # приём старше 2 ч — история
+    assert ss.AUTO_FRESH_HOURS <= 2
+
+
+def test_auto_sync_never_before_feature_on(world, monkeypatch):
+    rec = _fresh_world(world, pulses=3)
+    monkeypatch.setattr(ss, "AUTO_SINCE", (datetime.now() + timedelta(minutes=1)).isoformat())
+    assert not ss.due(world["new"], rec)                   # приём до включения — не трогаем
+    assert ss.auto_check(world["new"], home=world["home"]) is None
+    assert not (world["tdir"] / "inbox").exists()
+    assert not ss.due(world["new"], dict(rec, mode="new"))
+
+
+def test_remind_manager_once_after_30_min(world):
+    _fresh_world(world, pulses=3)
+    passport = world["new"] / "arc.md"
+    now = datetime.now().replace(microsecond=0)
+    ss._set(passport, ss.SYNC, ss.WAITING)
+    ss._set(passport, ss.SYNC_TO, "старая proj-41 (старая жива)")
+    ss._set(passport, ss.SYNC_LETTER, "001")
+    ss._set(passport, ss.SYNC_AT, (now - timedelta(minutes=10)).isoformat())
+    got = []
+    alert = lambda text, **kw: got.append((text, kw)) or 0  # noqa: E731
+    assert ss.remind(world["home"], alert=alert) == []           # 10 мин — рано
+    ss._set(passport, ss.SYNC_AT, (now - timedelta(minutes=ss.NO_ANSWER_MIN + 5)).isoformat())
+    (text,) = ss.remind(world["home"], alert=alert)
+    assert got[0][1]["route"] == "manager"
+    assert "нет ответа 35 мин от старая proj-41" in text and "\n" not in text
+    assert ss.remind(world["home"], alert=alert) == []           # одна на пару
+    assert len(got) == 1 and ss._get(passport, ss.SYNC_REMINDED)
+
+
+def test_confirmer_is_manager_when_new_is_main(world, tmp_path):
+    rec = _offer(world)
+    ss._set(world["new"] / "arc.md", "claude-session", "sid-h2")   # новая = proj-42
+    mg = lambda: {"ao_session": "mgmt-20"}  # noqa: E731
+    # адрес main проекта = адрес самой новой (proj-42) — сам себе не подтверждает
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: False,
+                      main_of=lambda r: {"ao_session": "proj-42"}, new_dir=world["new"],
+                      manager_of=mg)
+    assert to["ao_session"] == "mgmt-20" and to["role"] == "менеджер"
+    assert "новая — сама main проекта" in to["why"]
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: False,
+                      main_of=lambda r: {"ao_session": "proj-main"}, new_dir=world["new"],
+                      manager_of=mg)
+    assert to["ao_session"] == "proj-main"
+    main_new = tmp_path / "x" / "31-@main" / "arcs" / "05-main-5"
+    assert ss._is_main_thread(main_new.parents[1]) and not ss._is_main_thread(world["tdir"])
+
+
+def test_letter_says_who_confirms_and_why(world):
+    _offer(world)
+    rep = ss.check(world["new"], home=world["home"], commits=[], who={
+        "ao_session": "proj-main", "role": "main проекта", "why": "старая proj-41 закрыта"})
+    body = (world["tdir"] / "inbox" / "001-от-shov-sink.md").read_text(encoding="utf-8")
+    assert ("подтверждаешь ты — main проекта proj-main, потому что старая proj-41 закрыта"
+            in body)
+    assert rep["text"].splitlines()[1].startswith("подтверждаешь ты — ")

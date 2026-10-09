@@ -535,6 +535,10 @@ def _register_offload(sub) -> None:
 
     register_offload(sub)
     wrap_offload(sub)
+    # SOC-143: 3-й настоящий пульс принявшей (или «снимаю:») — шов-синк сам, один раз
+    from .seam_sync import wrap_offload as wrap_offload_sync
+
+    wrap_offload_sync(sub)
 
 
 def _register_whois(sub) -> None:

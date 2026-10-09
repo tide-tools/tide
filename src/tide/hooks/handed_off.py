@@ -578,6 +578,9 @@ def cmd_prompt(args) -> int:
             # старая без воркеров закрывается сама — только при $TIDE_AUTOCLOSE_OLD=1
             from . import autoclose
             autoclose.on_prompt(payload)
+            # SOC-143: шов-синк без ответа > 30 мин — одна строка менеджеру на пару
+            from .. import seam_sync
+            seam_sync.on_prompt()
     except Exception as exc:  # noqa: BLE001 — хук не смеет уронить сессию
         print("tide: [handed-off] skipped: {0}".format(exc), file=sys.stderr)
     return rc
