@@ -73,24 +73,32 @@ def _sender_is(sender: str, ao_id: str) -> bool:
     return bool(s and a) and (s == a or s.startswith(a + "-"))
 
 
-def _already(home: Path, key: str) -> bool:
+def _already_in(home: Path, name: str, key: str) -> bool:
     try:
-        log = paths.state_dir(Path(home)) / FORWARD_LOG
+        log = paths.state_dir(Path(home)) / name
         return any(ln.split("\t", 1)[0] == key
                    for ln in log.read_text(encoding="utf-8").splitlines())
     except OSError:
         return False
 
 
-def _remember(home: Path, key: str, line: str) -> None:
+def _remember_in(home: Path, name: str, key: str, line: str) -> None:
     try:
-        log = paths.state_dir(Path(home)) / FORWARD_LOG
+        log = paths.state_dir(Path(home)) / name
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as fh:
             fh.write("{0}\t{1}\t{2}\n".format(
                 key, datetime.now().isoformat(timespec="seconds"), " ".join(line.split())))
     except OSError:
         pass
+
+
+def _already(home: Path, key: str) -> bool:
+    return _already_in(home, FORWARD_LOG, key)
+
+
+def _remember(home: Path, key: str, line: str) -> None:
+    _remember_in(home, FORWARD_LOG, key, line)
 
 
 def successor(home: Path, rec: Dict[str, object]) -> Dict[str, str]:
@@ -132,10 +140,69 @@ def forward_text(*, old: str, sender: str, body: str) -> str:
     return "[переслано от старой {0}, отправитель {1}] {2}".format(old, sender, body)
 
 
+# --- две головы (SOC-101 F49) ---------------------------------------------------
+
+TWO_HEADS_LOG = "two-heads.log"
+OLD_ROLE = ("старая — только довести своего воркера и переслать итог новой; новые "
+            "задачи старой не отдавать и самой не брать")
+
+
+def two_heads_text(*, thread: str, new_addr: str, old_addr: str, evidence: str = "") -> str:
+    return ("tide: ⚠ две головы у нити {0}: нить ведёт новая — {1}; {2} — {3}.{4}".format(
+        thread or "?", new_addr, old_addr or "старая сессия", OLD_ROLE,
+        " Признак: {0}.".format(evidence) if evidence else ""))
+
+
+def two_heads_alarm(home: Path, rec: Dict[str, object], *, evidence: str = "",
+                    say=None) -> List[str]:
+    """Тревога «две головы»: ``ao send`` новой и старой — нить ведёт новая, старая
+    только доводит воркера и пересылает итог. Раз на пару (оффер в
+    ``.tide/state/two-heads.log``). Вернуть AO-id, кому ушло. Никогда не падает."""
+    try:
+        home = Path(home)
+        key = "two-heads:{0}".format(rec.get("name") or rec.get("from_session") or "?")
+        if _already_in(home, TWO_HEADS_LOG, key):
+            return []
+        new = successor(home, rec)
+        new_ao = new.get("ao_session", "")
+        try:
+            from ..arc import holder
+            old_ao = holder.ao_handle_for(home, str(rec.get("from_session") or ""))
+            if new_ao and new_ao == old_ao:
+                # цепочка по чатам видит живую старую — новая та, что приняла оффер
+                new_ao = holder.ao_handle_for(home, str(rec.get("taken_by") or ""))
+                new = {"ao_session": new_ao, "title": new_ao or "новая сессия"}
+        except Exception:  # noqa: BLE001
+            old_ao = ""
+        try:
+            from ..launcher import reception
+            old_title = reception.titles(home, rec)[1]
+        except Exception:  # noqa: BLE001
+            old_title = "старая сессия"
+        from ..arc.stream import with_ao_id
+        old_addr = with_ao_id(old_title, old_ao) if old_ao else old_title
+        text = two_heads_text(thread=str(rec.get("arc") or "").split("/", 1)[0],
+                              new_addr=_address(new), old_addr=old_addr, evidence=evidence)
+        send = say or _ao_adapter().say
+        sent = [h for h in dict.fromkeys([new_ao, old_ao]) if h and send(h, text)]
+        if sent:
+            _remember_in(home, TWO_HEADS_LOG, key, "→ {0}: {1}".format(
+                ", ".join(sent), evidence or "-"))
+        return sent
+    except Exception:  # noqa: BLE001 — тревога не смеет уронить хук
+        return []
+
+
 def context_text(*, new_addr: str, sender: str, forwarded: Optional[str],
-                 new_ao: str, mine: bool) -> str:
+                 new_ao: str, mine: bool, from_new: bool = False) -> str:
     """Строка в контекст старой: кому передана нить и что делать с этим сообщением."""
     head = "tide: нить передана {0}.".format(new_addr)
+    if from_new:
+        # F49: новая отдаёт задачи через старую — это две головы
+        return (head + " Это сообщение — от неё самой: не пересылаю. Нить ведёт она, а ты — "
+                + OLD_ROLE +
+                ". Задачу из него не бери: ответь ей, чтобы делала сама (воркера и его "
+                "итог можешь передать ей).")
     if mine:
         return head + " Это сообщение — от неё самой или менеджера: не пересылаю."
     tell = " Скажи отправителю {0} новый адрес: {1}.".format(sender, new_addr)
@@ -182,8 +249,13 @@ def redirect(payload: Dict[str, object], *, home: Optional[Path] = None,
     new = successor(home, rec)
     new_ao, mine_ao = new.get("ao_session", ""), (e.get(hq.AO_SESSION_ENV) or "").strip()
     addr = _address(new)
-    skip = (_sender_is(msg["sender"], new_ao) or _sender_is(msg["sender"], _manager_ao(home))
-            or (new_ao and new_ao == mine_ao))
+    from_new = _sender_is(msg["sender"], new_ao) and not (new_ao and new_ao == mine_ao)
+    if from_new:
+        # новая пишет старой — старая стала ретранслятором: тревога обеим (F49)
+        two_heads_alarm(home, rec, evidence="новая {0} пишет старой".format(new_ao))
+        return context_text(new_addr=addr, sender=msg["sender"], forwarded=None,
+                            new_ao=new_ao, mine=True, from_new=True)
+    skip = (_sender_is(msg["sender"], _manager_ao(home)) or (new_ao and new_ao == mine_ao))
     if skip:
         return context_text(new_addr=addr, sender=msg["sender"], forwarded=None,
                             new_ao=new_ao, mine=True)
@@ -234,5 +306,5 @@ def cmd_prompt(args) -> int:
     return rc
 
 
-__all__ = ["FORWARD_ENV", "cmd_prompt", "context_text", "forward_text", "incoming",
-           "redirect", "successor"]
+__all__ = ["FORWARD_ENV", "OLD_ROLE", "cmd_prompt", "context_text", "forward_text",
+           "incoming", "redirect", "successor", "two_heads_alarm", "two_heads_text"]

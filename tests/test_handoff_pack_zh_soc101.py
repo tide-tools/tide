@@ -212,3 +212,137 @@ def test_grisha_paste_keeps_his_words():
     said = dialog.human_text('<pasted_content id="ab">\nлог ошибки\n</pasted_content '
                              'id="ab">\n\nпочини это', {"kind": "human"})
     assert said == ("ao", "лог ошибки почини это")
+
+
+# --- F49: две головы — старая работает после приёма без пульсов ----------------
+
+import json as _json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from tide import handoff_queue as _hq  # noqa: E402
+from tide.hooks import handed_off as _ho  # noqa: E402
+from tests.test_handed_off_forward import AO_MSG, _hook, handed  # noqa: E402,F401
+
+
+def _tx(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(_json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                    encoding="utf-8")
+    return path
+
+
+def _utc(local_iso):
+    from datetime import timezone
+    return datetime.fromisoformat(local_iso).astimezone().astimezone(
+        timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def test_origin_activity_from_transcript_not_pulses(tmp_path):
+    taken = "2026-10-09T14:21:36"
+    t = _tx(tmp_path / "tx.jsonl", [
+        {"type": "assistant", "timestamp": _utc("2026-10-09T14:22:00"), "message": {}},
+        {"type": "assistant", "timestamp": _utc("2026-10-09T14:23:10"), "message": {}},
+    ])
+    # ход, в котором передала, — в пределах запаса: не улика
+    assert _hq.origin_activity("x", taken, transcript=t) is None
+    _tx(t, [
+        {"type": "assistant", "timestamp": _utc("2026-10-09T14:22:00"), "message": {}},
+        {"type": "attachment", "timestamp": _utc("2026-10-09T14:31:57"),
+         "attachment": {"type": "queued_command",
+                        "prompt": "<ao-session-delivery id=\"s:1\">[from tide-stack-27] x"}},
+        {"type": "assistant", "timestamp": _utc("2026-10-09T14:32:05"), "message": {}},
+    ])
+    ev = _hq.origin_activity("x", taken, transcript=t)
+    assert ev and "1 ход" in ev and "1 доставок" in ev and "14:32" in ev
+
+
+def test_multiples_flags_silent_origin_by_transcript(handed, monkeypatch, tmp_path):
+    home = handed["home"]
+    rec = _hq.list_offers(home, status=_hq.STATUS_TAKEN)[0]
+    assert _hq.multiples(home) == []  # тихая старая — история
+    cfg = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    later = (datetime.fromisoformat(rec["taken_at"]) + timedelta(minutes=10)).isoformat()
+    _tx(cfg / "projects" / "-x-proj-19" / "old-sid.jsonl",
+        [{"type": "assistant", "timestamp": _utc(later), "message": {}}])
+    (m,) = _hq.multiples(home)
+    assert m["name"] == rec["name"] and "в транскрипте после приёма" in m["evidence"]
+
+
+def world_proj(handed):
+    from tide import roster
+    return Path(roster.read_roster(handed["home"])[0]["path"])
+
+
+def test_two_heads_alarm_goes_to_both_once(handed, monkeypatch):
+    home = handed["home"]
+    rec = _hq.list_offers(home, status=_hq.STATUS_TAKEN)[0]
+    monkeypatch.setattr("tide.arc.holder.ao_handle_for",
+                        lambda h, sid: "proj-19" if sid == "old-sid" else "")
+    calls = []
+    say = lambda h, t: calls.append((h, t)) or True  # noqa: E731
+    assert _ho.two_heads_alarm(home, rec, evidence="улика", say=say) == ["proj-24", "proj-19"]
+    text = calls[0][1]
+    assert "две головы" in text and "нить ведёт новая" in text and "proj-24" in text
+    assert "только довести своего воркера и переслать итог новой" in text
+    assert "Признак: улика" in text
+    assert _ho.two_heads_alarm(home, rec, say=say) == []  # раз на пару
+    assert len(calls) == 2
+
+
+def test_new_writing_to_old_raises_two_heads(handed, monkeypatch, capsys):
+    """T27 17:31:36Z → T23 17:31:57Z: новая отдала задачу через старую."""
+    assert _hook(monkeypatch, AO_MSG.replace("tide-stack-17", "proj-24")) == 0
+    out = capsys.readouterr().out
+    assert "не пересылаю" in out and "только довести своего воркера" in out
+    assert "Задачу из него не бери" in out
+    sent = handed["ao"].calls
+    assert sent and sent[0][0] == "proj-24" and "две головы" in sent[0][1]
+    assert all("[переслано" not in t for _h, t in sent)
+
+
+def test_multiples_cli_sends_alarm_and_no_send_only_lists(handed, monkeypatch, tmp_path,
+                                                          capsys):
+    home = handed["home"]
+    rec = _hq.list_offers(home, status=_hq.STATUS_TAKEN)[0]
+    cfg = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    later = (datetime.fromisoformat(rec["taken_at"]) + timedelta(minutes=10)).isoformat()
+    _tx(cfg / "projects" / "-x" / "old-sid.jsonl",
+        [{"type": "assistant", "timestamp": _utc(later), "message": {}}])
+    # новая приняла нить по-настоящему: claude-session и чат на диске
+    new = world_proj(handed) / ".tide" / "arcs" / rec["arc"].split("/")[0] / "arcs" / \
+        rec["arc"].split("/")[1]
+    fields.set_field(new / "arc.md", "claude-session", "new-sid")
+    _tx(cfg / "projects" / "-y" / "new-sid.jsonl",
+        [{"type": "assistant", "timestamp": _utc(later), "message": {}}])
+    assert cli.main(["handoffs", "multiples", "--no-send"]) == 1
+    assert handed["ao"].calls == []
+    assert cli.main(["handoffs", "multiples"]) == 1
+    out = capsys.readouterr().out
+    assert "в транскрипте после приёма" in out and "→ сказано: proj-24" in out
+    assert "две головы" in handed["ao"].calls[0][1]
+
+
+def test_old_stop_hook_reminds_role_again_after_interval(world, monkeypatch):
+    from tests.test_context_watch_handed import _hand_over
+
+    _hand_over(world)
+    t0 = datetime(2026, 10, 9, 14, 22)
+    sent = []
+    monkeypatch.setattr(_ho, "two_heads_alarm",
+                        lambda home, rec, **kw: sent.append(kw) or ["x"])
+    assert "нить передана" in cw.handed_over_reason(world["sess"], SID, now=t0)
+    assert cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=5)) == ""
+    again = cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=16))
+    assert "Две головы на нити нельзя" in again
+    assert "только довести своего воркера и переслать итог новой" in again
+    assert sent and "Stop-хук" in sent[0]["evidence"]
+    assert cw.handed_over_reason(world["sess"], SID, now=t0 + timedelta(minutes=20)) == ""
+
+
+def test_history_pairs_are_listed_but_not_alarmed():
+    now = datetime(2026, 10, 9, 15, 0)
+    assert _hq.recently_active({"active_at": "2026-10-09T14:45:00"}, now=now)
+    assert not _hq.recently_active({"active_at": "2026-10-09T13:00:00"}, now=now)
+    assert not _hq.recently_active({}, now=now)

@@ -124,7 +124,10 @@ def test_switch_off_only_hints(handed, monkeypatch, capsys):
 def test_no_ping_pong_with_new_or_manager(handed, monkeypatch, capsys, sender):
     msg = AO_MSG.replace("tide-stack-17", sender)
     assert _hook(monkeypatch, msg) == 0
-    assert handed["ao"].calls == []
+    # пересылки нет; новая, пишущая старой, — тревога «две головы» (SOC-101 F49)
+    assert all("[переслано" not in t for _h, t in handed["ao"].calls)
+    if sender == "management-14":
+        assert handed["ao"].calls == []
     assert "не пересылаю" in capsys.readouterr().out
 
 

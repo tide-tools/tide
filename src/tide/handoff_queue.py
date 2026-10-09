@@ -597,13 +597,106 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
     return None
 
 
+# SOC-101 F49: старая голова после приёма часто НЕ пульсует, но работает — её
+# фоновый воркер держит её живой, и новая отдаёт задачи через неё. Признак — ходы
+# в её транскрипте позже приёма + запас (старая доводит ход, в котором передала).
+TWO_HEADS_GRACE_ENV = "TIDE_TWO_HEADS_GRACE_MIN"
+TWO_HEADS_GRACE_MIN = 5
+
+
+def _grace_min() -> int:
+    try:
+        v = int((os.environ.get(TWO_HEADS_GRACE_ENV) or "").strip())
+    except ValueError:
+        return TWO_HEADS_GRACE_MIN
+    return v if v >= 0 else TWO_HEADS_GRACE_MIN
+
+
+def _transcripts(sid: str) -> List[Path]:
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    try:
+        return sorted(base.glob("*/{0}.jsonl".format(sid)))
+    except OSError:
+        return []
+
+
+TWO_HEADS_RECENT_MIN = 30  # тревогу шлём, только если старая была активна недавно
+
+
+def origin_activity(sid: str, taken_at: str, *, grace_min: Optional[int] = None,
+                    transcript: Optional[Path] = None) -> Optional[str]:
+    """Улика строкой — см. :func:`origin_activity_at`."""
+    got = origin_activity_at(sid, taken_at, grace_min=grace_min, transcript=transcript)
+    return got[0] if got else None
+
+
+def origin_activity_at(sid: str, taken_at: str, *, grace_min: Optional[int] = None,
+                       transcript: Optional[Path] = None):
+    """Ходы сессии *sid* в её транскрипте позже приёма (*taken_at*, местное время)
+    + запас — строка-улика («3 хода после приёма, последний 14:31») или None.
+
+    Ход — ответ агента (``assistant``) и входящая доставка другой сессии
+    (``ao-session-delivery`` / ``cross-session-message``). Пульс не нужен: старая,
+    ставшая ретранслятором, не пульсует (F49). → ``(улика, когда последний ход —
+    местное время)`` или None."""
+    from datetime import timedelta, timezone
+
+    try:
+        since = datetime.fromisoformat(str(taken_at).strip())
+    except ValueError:
+        return None
+    if since.tzinfo is None:
+        since = since.astimezone()  # местное → aware
+    since = since + timedelta(minutes=_grace_min() if grace_min is None else grace_min)
+    turns, deliveries, last = 0, 0, None
+    for path in ([Path(transcript)] if transcript else _transcripts(sid)):
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            continue
+        with fh:
+            for raw in fh:
+                if '"timestamp"' not in raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    continue
+                kind = row.get("type")
+                if kind not in ("assistant", "user", "attachment"):
+                    continue
+                try:
+                    at = datetime.fromisoformat(str(row.get("timestamp")).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if at.tzinfo is None:
+                    at = at.replace(tzinfo=timezone.utc)
+                if at <= since:
+                    continue
+                if kind == "assistant":
+                    turns += 1
+                elif ("<ao-session-delivery" in raw or "<cross-session-message" in raw) \
+                        and (kind == "user" or '"queued_command"' in raw):
+                    deliveries += 1
+                else:
+                    continue
+                last = at if last is None or at > last else last
+    if not turns and not deliveries:
+        return None
+    local = last.astimezone().replace(tzinfo=None)
+    return ("{0} ход(ов) и {1} доставок в транскрипте после приёма, последний {2}".format(
+        turns, deliveries, local.strftime("%H:%M")), local)
+
+
 def multiples(home: Path) -> List[Dict[str, object]]:
     """Taken offers whose ORIGIN session kept WORKING after the thread moved on —
     the real 'Mickey 17'. Canon №1 simplified (16.07): the current session
     is derived from the chain, nothing is stamped, and a past session merely
-    EXISTING is open history — not a violation. A pair is flagged only when the
-    origin's passport pulsed (``offloaded-at``) AFTER the take: it kept acting
-    on a thread a successor now holds. Тревога, не бухгалтерия."""
+    EXISTING is open history — not a violation. A pair is flagged when the
+    origin's passport pulsed (``offloaded-at``) AFTER the take, or — SOC-101 F49 —
+    when its transcript shows turns/deliveries after the take (+ запас
+    ``$TIDE_TWO_HEADS_GRACE_MIN``): старая без пульсов, но живая — тоже вторая
+    голова. Улика — в ``evidence`` записи. Тревога, не бухгалтерия."""
     from . import fields, roster
     from .offload import find_session_by_claude_id
 
@@ -624,9 +717,28 @@ def multiples(home: Path) -> List[Dict[str, object]]:
         taken = str(r.get("taken_at") or "").strip()
         # ISO-штампы сравниваются лексикографически; '0'/'-' у непульсовавшей
         # сессии никогда не новее реального taken-at
-        if offl and taken and taken != "-" and offl > taken:
-            out.append(r)
+        if not taken or taken == "-":
+            continue
+        if offl and offl > taken:
+            out.append(dict(r, evidence="пульс после приёма ({0})".format(offl),
+                            active_at=offl))
+            continue
+        seen = origin_activity_at(frm, taken)
+        if seen:
+            out.append(dict(r, evidence=seen[0],
+                            active_at=seen[1].isoformat(timespec="seconds")))
     return out
+
+
+def recently_active(rec: Dict[str, object], *, minutes: int = TWO_HEADS_RECENT_MIN,
+                    now: Optional[datetime] = None) -> bool:
+    """Вторая голова жива сейчас: последняя активность старой — не старше *minutes*.
+    История (старая давно замолчала) тревоги не стоит."""
+    try:
+        at = datetime.fromisoformat(str(rec.get("active_at") or ""))
+    except ValueError:
+        return False
+    return ((now or datetime.now()) - at).total_seconds() <= minutes * 60
 
 
 def drop(home: Path, key: str, *, prune_untouched: bool = True) -> "tuple[Dict[str, object], bool]":
@@ -871,8 +983,18 @@ def _cmd_multiples(args) -> int:
     print("tide: ⚠ handoff MULTIPLES (Mickey 17) — an origin handed the thread off but")
     print("      may still be acting. One holder per thread — the origin must stand down:")
     for r in ms:
-        print("  {0}: origin {1} → held now by {2}  (thread {3})".format(
-            r["name"], r["from_session"], r["taken_by"], r["arc"]))
+        print("  {0}: origin {1} → held now by {2}  (thread {3}){4}".format(
+            r["name"], r["from_session"], r["taken_by"], r["arc"],
+            " — {0}".format(r["evidence"]) if r.get("evidence") else ""))
+    if not getattr(args, "no_send", False):
+        # SOC-101 F49: две головы — тревога обеим (ao send), раз на пару
+        from .hooks import handed_off
+        for r in ms:
+            if not recently_active(r):
+                continue  # старая давно замолчала — история, не тревога
+            sent = handed_off.two_heads_alarm(_home(), r, evidence=str(r.get("evidence") or ""))
+            if sent:
+                print("    → сказано: {0}".format(", ".join(sent)))
     return 1
 
 
@@ -1019,6 +1141,8 @@ def register(subparsers):
     dp.set_defaults(func=_cmd_drop, _cmd="handoffs drop")
 
     mp = hsub.add_parser("multiples", help="detect 'Mickey 17' multiples — origins that handed off but may still act")
+    mp.add_argument("--no-send", action="store_true", dest="no_send",
+                    help="only list; don't ao-send the two-heads alarm to old and new")
     mp.set_defaults(func=_cmd_multiples, _cmd="handoffs multiples")
 
     # bare `tide handoffs` behaves like `tide handoffs list`

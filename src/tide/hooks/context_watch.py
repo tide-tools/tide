@@ -194,11 +194,31 @@ def handed_over_text(new_title: str) -> str:
             "начинай: доведи то, что уже в работе, и перешли итоги ей.".format(new_title))
 
 
+# SOC-101 F49: старая после приёма жива (воркер), и новая гоняет задачи через неё.
+# Stop-хук старой напоминает её роль снова — не чаще раза в N минут.
+HANDED_REMIND_ENV = "TIDE_HANDED_REMIND_MIN"
+HANDED_REMIND_MIN = 15
+
+
+def _remind_min() -> int:
+    return _env_int(HANDED_REMIND_ENV, HANDED_REMIND_MIN)
+
+
+def handed_remind_text(new_title: str) -> str:
+    from .handed_off import OLD_ROLE
+
+    return ("tide: ты всё ещё работаешь, а нить ведёт {0}. Две головы на нити нельзя: "
+            "ты — {1}. Задачи, которые она шлёт тебе, не бери — пусть делает сама.".format(
+                new_title, OLD_ROLE))
+
+
 def handed_over_reason(entry: Path, session: str, *,
                        now: Optional[datetime] = None) -> Optional[str]:
     """Сессия уже отдала нить (её оффер принят, SOC-101 F21): хендофф с неё не
-    требуем, а ОДИН раз говорим, кому передано. → текст (первый раз), ``""``
-    (уже сказано — молчать), None (нить не отдавала — обычный сторож)."""
+    требуем, а говорим, кому передано: первый раз — сразу, дальше (F49) — снова
+    не чаще раза в ``$TIDE_HANDED_REMIND_MIN`` минут, пока старая работает, и тогда
+    же тревога «две головы» обеим. → текст, ``""`` (молчать), None (нить не
+    отдавала — обычный сторож)."""
     try:
         from .. import handoff_queue as hq
         rec = hq.is_dissolved(paths.control_home(), session)
@@ -206,17 +226,32 @@ def handed_over_reason(entry: Path, session: str, *,
         return None
     if not rec:
         return None
+    now = now or datetime.now()
     pp = entry / "arc.md"
-    if (fields.read_field(pp, HANDED_TOLD_FIELD) or "").strip():
-        return ""
     try:
         from ..launcher import reception
         new_title = reception._title(reception._session_of(rec), "новой сессии")
     except Exception:  # noqa: BLE001
         new_title = "новой сессии"
-    fields.set_field(pp, HANDED_TOLD_FIELD, "{0} → {1}".format(
-        (now or datetime.now()).isoformat(timespec="seconds"), rec.get("name")))
-    return handed_over_text(new_title)
+    told = (fields.read_field(pp, HANDED_TOLD_FIELD) or "").strip()
+    stamp = "{0} → {1}".format(now.isoformat(timespec="seconds"), rec.get("name"))
+    if not told:
+        fields.set_field(pp, HANDED_TOLD_FIELD, stamp)
+        return handed_over_text(new_title)
+    try:
+        told_at = datetime.fromisoformat(told.split(" ", 1)[0])
+    except ValueError:
+        return ""
+    if (now - told_at).total_seconds() < _remind_min() * 60:
+        return ""
+    fields.set_field(pp, HANDED_TOLD_FIELD, stamp)
+    try:
+        from . import handed_off
+        handed_off.two_heads_alarm(paths.control_home(), rec,
+                                   evidence="старая работает после приёма (Stop-хук)")
+    except Exception:  # noqa: BLE001
+        pass
+    return handed_remind_text(new_title)
 
 
 def fill_tokens(payload: dict, session: str) -> Optional[int]:
