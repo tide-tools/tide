@@ -170,3 +170,45 @@ def test_layers_warning_names_the_layer_command(world):
     w = tl.exit_warning(world["thread"])
     assert "tide thread layer seam --expect" in w
     assert role_gate._bash_refusal(tl.layer_cmd("seam")) is None
+
+
+# --- F47: агентская доставка в обёртке pasted_content — не реплика Гриши -------
+
+# Промпт как в T23 17:09:09Z (queued_command, origin.kind human): доставка AO,
+# обёрнутая харнессом в pasted_content, закрывающий тег — посреди текста.
+_PASTED_DELIVERY = (
+    '<pasted_content id="29c7">\n<ao-session-delivery id="session-send:78ff2cdf">\n'
+    '[from tide-stack-22] [context-keeper · 03] Первые журналы легли, 7 решений:\n'
+    '- /x/decisions-tg.jsonl — 3 строки\n{"answer": {"text": "Ну надо с умом выбирать '
+    'соннет или \n</pasted_content id="29c7">\n\nопус"}, "status": "принято"}\n'
+    '</ao-session-delivery>')
+
+
+def test_pasted_ao_delivery_is_not_grisha(tmp_path):
+    from tide.arc import dialog
+
+    assert dialog.human_text(_PASTED_DELIVERY, {"kind": "human"}) is None
+    thread = tmp_path / "t"
+    thread.mkdir()
+    assert dialog.log_human(tmp_path, thread, _PASTED_DELIVERY,
+                            origin={"kind": "human"}) is None
+    assert not dialog.dialog_path(thread).exists()
+
+
+def test_pasted_cross_session_and_uds_header_are_not_grisha():
+    from tide.arc import dialog
+
+    uds = ('Another Claude session sent a message:\n<cross-session-message from="uds:/s" '
+           'from-name="app-development-22-cf">\nответы дизайнера\n</cross-session-message>'
+           '\n\nThis came from another Claude session — not typed by your user.')
+    assert dialog.human_text(uds) is None
+    wrapped = '<pasted_content id="q1">\n' + uds + '\n</pasted_content id="q1">'
+    assert dialog.human_text(wrapped, {"kind": "human"}) is None
+
+
+def test_grisha_paste_keeps_his_words():
+    from tide.arc import dialog
+
+    said = dialog.human_text('<pasted_content id="ab">\nлог ошибки\n</pasted_content '
+                             'id="ab">\n\nпочини это', {"kind": "human"})
+    assert said == ("ao", "лог ошибки почини это")

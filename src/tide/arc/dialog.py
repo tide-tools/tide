@@ -76,6 +76,8 @@ _INJECTED_PREFIXES = (
     # уведомления харнесса, которые приходят промптом «от пользователя» (SOC-101 F17:
     # «usage limit has reset» лёг в сид неотвеченной репликой Гриши)
     "[Cross-session", "[SYSTEM NOTIFICATION", "Your claude.ai usage limit",
+    # межсессионная почта uds приходит с шапкой харнесса перед тегом (SOC-101 F47)
+    "Another Claude session sent a message",
 )
 # «usage limit has reset» бывает и без «Your claude.ai» в начале.
 _USAGE_RESET = re.compile(r"^(?:your\s+)?(?:claude(?:\.ai)?\s+)?usage limit has reset",
@@ -90,6 +92,11 @@ _INJECTED_BLOCK = re.compile(
 _INJECTED_INLINE = re.compile(
     r"<(?:{0})\b|\[watch\] |\[alert\b|\[linear [A-Z]+-\d+|\[Cross-session|"
     r"\[SYSTEM NOTIFICATION".format("|".join(_INJECTED_TAGS)))
+# Вставка «вставлено из буфера» (SOC-101 F47): харнесс оборачивает длинный текст в
+# ``<pasted_content id="…">…</pasted_content id="…">`` — и так же обернул агентскую
+# доставку AO (origin.kind human!). Обёртку снимаем, содержимое судим как обычно:
+# доставка/межсессионная почта внутри отсекаются, слова Гриши остаются.
+_PASTED_TAG = re.compile(r"</?pasted_content\b[^>]*>", re.IGNORECASE)
 _ATTACHED_RE = re.compile(r"\s*Attached files \(read these files in the workspace\):.*\Z",
                           re.DOTALL)
 _CORRELATION_RE = re.compile(r"[ \t]*\[?AO transcript correlation ID[^\n\]]*\]?", re.IGNORECASE)
@@ -286,6 +293,7 @@ def human_text(prompt: str, origin: object = None) -> Optional[Tuple[str, str]]:
     if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
         return None
     text = _CORRELATION_RE.sub("", str(prompt or ""))
+    text = _PASTED_TAG.sub("", text)
     text = _ATTACHED_RE.sub("", text).strip()
     if text.startswith(_INJECTED_PREFIXES) or is_harness_notice(text):
         return None
