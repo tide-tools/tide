@@ -329,3 +329,35 @@ def test_linear_numbers_from_compressed_pulses_still_listed(live):
     seed = ah.build_auto_seed(live["sess"])
     assert "сжато строк" in seed
     assert "- SOC-200 — " in _block(seed, "задачи Linear")  # номер из сжатого пульса
+
+
+# --- п.8 · адрес менеджера — резолвером, не константой ----------------------------
+
+def test_manager_address_comes_from_the_resolver(live, tmp_path, monkeypatch):
+    import json
+
+    mf = tmp_path / "manager.json"
+    mf.write_text(json.dumps({"ao_session": "management-14", "thread": "main",
+                              "title": "management — main · 04"}), encoding="utf-8")
+    monkeypatch.setenv("TIDE_MANAGER_FILE", str(mf))
+    main = _block(ah.build_auto_seed(live["sess"]), "главное").splitlines()
+    assert main[0].startswith("— ")  # «главное» не записано — дыра видна
+    assert main[-1] == ("- менеджер сейчас: management — main · 04 (ao_session management-14)"
+                        " — адрес на момент сборки (tide whois manager)")
+
+
+def test_manager_unknown_is_said_not_invented(live, monkeypatch):
+    from tide import whois
+
+    monkeypatch.setattr(whois, "manager_address", lambda default="": default)
+    main = _block(ah.build_auto_seed(live["sess"]), "главное")
+    assert "менеджер: адрес не нашёлся" in main and "management-" not in main
+
+
+def test_inherited_manager_line_is_not_carried(live):
+    seed_in = live["sess"] / "input" / seed_draft.INPUT_SEED_NAME
+    seed_in.parent.mkdir(parents=True, exist_ok=True)
+    seed_in.write_text("## главное\n\n- SOC-7\n- менеджер сейчас: management-7 — старый\n",
+                       encoding="utf-8")
+    main = _block(ah.build_auto_seed(live["sess"]), "главное")
+    assert "management-7" not in main and main.startswith("- SOC-7")

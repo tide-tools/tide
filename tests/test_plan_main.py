@@ -109,8 +109,9 @@ def test_seed_main_falls_back_to_input_seed(tmp_project):
     (s / "input").mkdir(exist_ok=True)
     (s / "input" / seed_draft.INPUT_SEED_NAME).write_text(
         "## главное\n\n- SOC-7\n- сдавать: X\n- не дублировать: Y\n", encoding="utf-8")
-    assert seed_draft.draft_bodies(tmp_project, s)[seed_draft.MAIN] == [
-        "- SOC-7", "- сдавать: X", "- не дублировать: Y"]
+    main = seed_draft.draft_bodies(tmp_project, s)[seed_draft.MAIN]
+    assert main[:3] == ["- SOC-7", "- сдавать: X", "- не дублировать: Y"]
+    assert len(main) == 4 and main[3].startswith("- менеджер")  # адрес — резолвером
     assert t.is_dir()
 
 

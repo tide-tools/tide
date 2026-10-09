@@ -848,7 +848,8 @@ def block_main(thread_entry: Path, inherited: Sequence[str] = (),
     own = plan_main.live_lines(thread_entry)
     if own:
         return ["- " + ln.lstrip("-* ").strip() for ln in own]
-    kept = [ln for ln in live_lines(inherited) if not is_hole(ln) and "<!--" not in ln]
+    kept = [ln for ln in live_lines(inherited) if not is_hole(ln) and "<!--" not in ln
+            and not ln.lstrip("- ").startswith("менеджер")]  # адрес считается заново
     if kept:
         return kept
     if pred is not None:
@@ -923,6 +924,19 @@ def topic_pointer(root: Path, thread_entry: Path) -> str:
     return "- топик: " + " · ".join(parts)
 
 
+def manager_line() -> str:
+    """Текущий адрес менеджера одной строкой — резолвером :mod:`tide.whois`
+    (``~/.tide/manager.json``, без него — цепочка хендоффов нити менеджера), а не
+    константой «management-NN»: менеджер меняется хендоффами (SOC-101 F19/F20)."""
+    from .. import whois
+
+    addr = whois.manager_address()
+    if addr:
+        return "- менеджер сейчас: {0} — адрес на момент сборки (tide whois manager)".format(addr)
+    return ("- менеджер: адрес не нашёлся (tide whois manager: нет ~/.tide/manager.json и "
+            "цепочки его нити) — спроси tide whois manager перед отправкой")
+
+
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
     """Тела блоков контракта для *session_entry* с диска — общее у черновика и
@@ -953,7 +967,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     if summary:
         where.append("- итог сессии: {0}".format(" ".join(ln.strip() for ln in summary)))
     return {
-        MAIN: block_main(thread_entry, contract.find_body(seed_in, "main"), pred),
+        MAIN: (block_main(thread_entry, contract.find_body(seed_in, "main"), pred)
+               or [contract.empty_line(contract.block("main"))]) + [manager_line()],
         EXPECTATION: block_expectation(
             layer(lays, "expectation"), _stream.passport_path(thread_entry),
             labels.get("expectation", [])),
