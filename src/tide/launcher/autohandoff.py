@@ -32,7 +32,9 @@
 (``$TIDE_AUTORAISE_AFTER``, по умолчанию 1800 с; ``0``/``off`` — выключено). Он
 опрашивает оффер раз в :data:`AUTORAISE_POLL` с: взяли/сняли — тихо выходит
 сразу; через N секунд оффер всё ещё висит — тот же подъём, что ``tide pickup``,
-и сообщение Грише (route=human) и менеджеру (``ao send``).
+и сообщение менеджеру (``ao send``). Грише (route=human) — только если поднять не
+вышло (нить всё ещё стоит); удачный подъём — route=log, в журнал пульта (слово
+Гриши tg 3733: о приёме и хендоффе ему не писать, только доска и журнал).
 
 Чистые функции (``count_progress``, ``open_questions``, ``decide``,
 ``build_auto_seed``) — без argparse; :func:`run_auto` — оркестрация.
@@ -68,6 +70,7 @@ AUTORAISE_ENV = "TIDE_AUTORAISE_AFTER"  # сек до автоподъёма в�
 AUTORAISE_DEFAULT = 1800
 AUTORAISE_POLL = 30  # как часто автоподъём смотрит, не взяли ли оффер
 ROUTE_HUMAN = "human"  # «нить встала» — Грише; лестница контекста шлёт log/manager
+ROUTE_LOG = "log"      # только журнал пульта — удачный автоподъём (tg 3733)
 
 DIALOG_TAIL = 12  # = seed_draft.DIALOG_TAIL (хвост диалога в сиде)
 
@@ -548,7 +551,10 @@ def run_autoraise(home: Path, key: str, *, after: int, thread: str = "",
                 "вышло ({3}); подними: tide pickup {2}".format(
                     who, mins, key, res.get("detail") or "без подробностей"))
     out["text"] = text
-    out["alert"] = send_alert(text, route=ROUTE_HUMAN, source="{0}/{1}".format(
+    # tg 3733: удачный подъём — хендофф, Грише не пишем (журнал пульта + менеджер);
+    # не вышло — нить всё ещё стоит, это продолжение «нить встала» → Грише.
+    route = ROUTE_LOG if res.get("ok") else ROUTE_HUMAN
+    out["alert"] = send_alert(text, route=route, source="{0}/{1}".format(
         str(rec.get("project") or ""), who), extra_env={"TIDE_ALERT_THREAD": who})
     out["manager"] = tell_manager(text)
     return out

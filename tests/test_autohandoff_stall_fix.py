@@ -191,7 +191,7 @@ def test_autoraise_raises_untaken_offer_and_tells(world, raise_spy):
     assert out["action"] == "raised" and raise_spy["raised"] == [rec["name"]]
     assert sum(raise_spy["slept"]) == 1800 and max(raise_spy["slept"]) <= ah.AUTORAISE_POLL
     ((route, text),) = raise_spy["alerts"]
-    assert route == ah.ROUTE_HUMAN
+    assert route == ah.ROUTE_LOG  # tg 3733: удачный подъём — журнал, не Грише
     assert "нить seam стояла 30 мин" in text and "поднял" in text and rec["name"] in text
     ((handle, mtext),) = raise_spy["mgr"]
     assert handle == "management-15" and mtext == text
@@ -223,7 +223,8 @@ def test_autoraise_failed_pickup_still_tells(world, raise_spy, monkeypatch):
         "ok": False, "action": "failed", "detail": "адаптер умер"})
     out = ah.run_autoraise(world["home"], rec["name"], after=0, thread="seam")
     assert out["action"] == "failed"
-    ((_route, text),) = raise_spy["alerts"]
+    ((route, text),) = raise_spy["alerts"]
+    assert route == ah.ROUTE_HUMAN  # не поднял — нить всё ещё стоит, Грише
     assert "адаптер умер" in text and "tide pickup {0}".format(rec["name"]) in text
 
 

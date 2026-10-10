@@ -4,6 +4,10 @@
 оффер). Канал — ``$TIDE_ALERT_CMD`` (здесь подменён: ничего не уходит наружу).
 Метка ``announced:`` в оффере — второй пульс не шлёт. Нет команды — тишина и
 строка в журнале. Принимающая не поднялась — одно «не поднялась, нить остаётся у …».
+
+С 10.10 (слово Гриши tg 3733 на 3728–3732) по умолчанию ``TIDE_ACCEPT_NOTIFY=off``:
+Грише ничего, только строка в alerts.log. Тесты старой формы сообщения включают
+``all`` фикстурой ``sent``; поведение по умолчанию — ``test_default_*``.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ def sent(monkeypatch):
 
     monkeypatch.setattr(autohandoff, "send_alert", fake_send)
     monkeypatch.setenv(autohandoff.ALERT_CMD_ENV, "never-run")
+    monkeypatch.setenv(reception.NOTIFY_ENV, "all")  # старое поведение — явно
     return calls
 
 
@@ -103,6 +108,7 @@ def test_no_alert_cmd_skips_quietly_and_logs(seam, monkeypatch):
     calls = []
     monkeypatch.setattr(autohandoff, "send_alert", lambda *a, **k: calls.append(a) or 0)
     monkeypatch.delenv(autohandoff.ALERT_CMD_ENV, raising=False)
+    monkeypatch.setenv(reception.NOTIFY_ENV, "all")  # отправка включена, но команды нет
     assert _pulse() == 0
     assert calls == []
     rec = hq.list_offers(seam["home"])[0]
@@ -227,11 +233,63 @@ def test_notify_fail_still_reports_not_alive_and_off_silences_it(seam, sent, mon
     assert len(sent) == 1
 
 
-def test_notify_default_and_garbage_mean_all(monkeypatch):
+def test_notify_default_and_garbage_mean_off(monkeypatch):
+    """tg 3733: без env — off; мусор — тоже off (тишина надёжнее шума)."""
     monkeypatch.delenv(reception.NOTIFY_ENV, raising=False)
-    assert reception.notify_mode() == "all"
+    assert reception.notify_mode() == "off"
     monkeypatch.setenv(reception.NOTIFY_ENV, "loud")
+    assert reception.notify_mode() == "off"
+    monkeypatch.setenv(reception.NOTIFY_ENV, " ALL ")
     assert reception.notify_mode() == "all"
+
+
+def test_default_reception_is_log_only(seam, sent, monkeypatch):
+    """Без $TIDE_ACCEPT_NOTIFY: приём не зовёт отправку Грише, но пишет строку в
+    alerts.log, метка announced — «off» (повторный пульс тоже молчит)."""
+    monkeypatch.delenv(reception.NOTIFY_ENV, raising=False)
+    assert _pulse() == 0
+    assert hq.list_offers(seam["home"])[0]["status"] == hq.STATUS_TAKEN
+    assert sent == []
+    rec = hq.list_offers(seam["home"])[0]
+    assert hq._get(rec["path"].read_text(encoding="utf-8"), reception.ANNOUNCED).endswith("off")
+    log = (paths.state_dir(seam["home"]) / reception.ALERT_LOG).read_text(encoding="utf-8")
+    assert "не отправлено ($TIDE_ACCEPT_NOTIFY=off)" in log
+    assert "proj — seam · 02 приняла у · 01" in log
+    assert _pulse("дальше") == 0
+    assert sent == []
+
+
+def test_default_not_alive_is_log_only(seam, sent, monkeypatch):
+    monkeypatch.delenv(reception.NOTIFY_ENV, raising=False)
+    assert reception.announce_not_alive(seam["home"], seam["key"]) == "off"
+    assert sent == []
+    log = (paths.state_dir(seam["home"]) / reception.ALERT_LOG).read_text(encoding="utf-8")
+    assert "не поднялась" in log
+
+
+def test_notify_all_restores_old_message(seam, sent):
+    """Явное TIDE_ACCEPT_NOTIFY=all (фикстура sent) — одно сообщение Грише, как было."""
+    assert _pulse() == 0
+    assert len(sent) == 1 and sent[0]["route"] == "human"
+    assert "приняла у" in sent[0]["text"]
+    log = (paths.state_dir(seam["home"]) / reception.ALERT_LOG).read_text(encoding="utf-8")
+    assert "отправлено: proj — seam · 02 приняла у" in log
+
+
+def test_stall_still_goes_to_human_by_default(tmp_path, monkeypatch):
+    """«Нить встала» выключатель приёма не трогает: route=human, как было."""
+    monkeypatch.delenv(reception.NOTIFY_ENV, raising=False)
+    calls = []
+    monkeypatch.setattr(autohandoff, "send_alert", lambda text, **kw: calls.append(
+        (kw.get("route"), text)) or 0)
+    monkeypatch.setattr(autohandoff, "tell_manager", lambda text: {"to": None, "code": None})
+    root = tmp_path / "proj"
+    thread = root / ".tide" / "arcs" / "01-@seam"
+    thread.mkdir(parents=True)
+    out = autohandoff.signal_stall(root, thread, "вопрос висит")
+    assert out["alert"] == 0
+    ((route, text),) = calls
+    assert route == "human" and "встала" in text
 
 
 # --- F41: «Передано», «Взято» целыми фразами, открытые хвосты в «Потеряно» ----------
