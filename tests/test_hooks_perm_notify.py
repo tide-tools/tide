@@ -36,6 +36,10 @@ def alert(tmp_path, monkeypatch):
         "\"$1\" \"$2\" >> '{0}'\n".format(str(log)), encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("TIDE_ALERT_CMD", str(script))
+    # Бюджет хука (0.8 с на tg-alert) проверяет test_slow_alert_cmd_is_cut_fast; здесь
+    # проверяется текст сообщения, и под нагрузкой (mac2, load ~350) форк sh не успевал
+    # за 0.8 с → сообщение срезалось, _alerts() пуст. Даём подставному пульту время.
+    monkeypatch.setattr(perm_notify, "ALERT_TIMEOUT_SEC", 30.0)
     return log
 
 
