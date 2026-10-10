@@ -21,6 +21,8 @@
     tide truth skip --q N --a M --reason "…"   пара сознательно без решения
     tide truth baseline [--project P]  стартовая строка журнала правок тем
                                        (edits.jsonl, :mod:`tide.truth_edits`)
+    tide truth tg [проект|slug|проект/нить] [--limit N]   тема Telegram проекта:
+                                       ответы Гриши и открытые вопросы (:mod:`tide.truth_tg`)
 
 Поиск живыми словами: запрос режется на слова, служебные («что», «где», «по»…)
 выбрасываются, каждое слово сводится к основе (``передача`` → ``переда``) и ищется
@@ -971,12 +973,18 @@ def _project(args, topics: List[Dict]) -> int:
 
 
 def _cmd_truth(args) -> int:
+    if args.topic == "tg" and not args.grep:
+        from . import truth_tg  # лениво: truth_tg сам импортирует truth
+        return truth_tg.cmd_tg(args)
+    if getattr(args, "tg_target", None) is not None:
+        raise TruthError("truth: лишний аргумент «{0}» (второе слово — только у tide truth tg)"
+                         .format(args.tg_target))
     if args.topic in ("check", "inbox", "decide", "skip", "baseline") and not args.grep:
         from . import decisions_tg  # лениво: decisions_tg сам импортирует truth
         return getattr(decisions_tg, "cmd_" + args.topic)(args)
     project = getattr(args, "project", None)
     show_all = bool(args.all)
-    limit = max(1, int(args.limit))
+    limit = max(1, int(DEFAULT_LIMIT if args.limit is None else args.limit))
     names = [] if project else [n for n, _ in resolve_projects(None)]
     query = args.topic
     grep_words = list(args.grep or [])
@@ -1073,12 +1081,16 @@ def register(subparsers) -> None:
                         "inbox — ответы человека в TG без решения; "
                         "decide — записать решение в тему (журнал + «## Решения»); "
                         "skip — пара без решения в decisions-skip.jsonl; "
-                        "baseline — стартовая строка журнала правок edits.jsonl")
+                        "baseline — стартовая строка журнала правок edits.jsonl; "
+                        "tg — тема Telegram проекта: ответы Гриши и открытые вопросы")
+    p.add_argument("tg_target", nargs="?", metavar="ЧТО",
+                   help="для tg: проект, slug темы или проект/нить (по умолчанию — проект cwd)")
     p.add_argument("--grep", nargs="+", metavar="СЛОВО",
                    help="поиск живыми словами: основы слов, сначала строки со всеми")
     p.add_argument("--project", help="только этот проект ростера")
-    p.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
-                   help="сколько фактов/строк показать (по умолчанию {0})".format(DEFAULT_LIMIT))
+    p.add_argument("--limit", type=int, default=None,
+                   help="сколько фактов/строк показать (по умолчанию {0}; у tg — 10 ответов)"
+                        .format(DEFAULT_LIMIT))
     p.add_argument("--all", action="store_true",
                    help="показать и заменённые факты, и скрытые темы (архив, «не читать»)")
     p.add_argument("--json", action="store_true", dest="as_json",
