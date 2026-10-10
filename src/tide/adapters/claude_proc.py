@@ -101,7 +101,7 @@ def claude_pid(procs: List[Proc], *, session_id: str = "", ao_handle: str = ""
 
 # --- общий вердикт живости: транскрипт ИЛИ процесс ----------------------------------
 
-FRESH_MIN = 15.0                               # транскрипт свежее — сессия жива
+FRESH_MIN = 5.0                                # транскрипт свежее — сессия жива (SOC-167: 5, не 15 — есть и проверка процесса)
 
 
 def transcript_age_min(sid: str, *, now: Optional[datetime] = None) -> Optional[float]:

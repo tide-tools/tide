@@ -215,9 +215,21 @@ def test_ao_exited_wording_and_old_transcript_alarms(world, box, monkeypatch):
     v = next(v for v in _sweep(world, box, states=lambda h: st)
              if v.get("session") == "06-board-6")
     assert v["why"].startswith("AO говорит exited, но транскрипт свеж 3 мин")
-    _transcript(SID_HEAD, age_min=40)                  # старше 15 мин — AO прав
+    _transcript(SID_HEAD, age_min=40)                  # старше порога (5 мин) — AO прав
     res = _sweep(world, box, now=datetime.now() + timedelta(minutes=61))
     assert any(v.get("orphan") for v in res) and len(box.alerts) == 1
+
+
+def test_fresh_window_default_is_5_minutes(world, box, monkeypatch):
+    """SOC-167: порог по умолчанию 5 мин (было 15) — живость ещё и по процессу."""
+    from tide.adapters import claude_proc
+
+    monkeypatch.delenv(orphan.FRESH_ENV, raising=False)
+    assert orphan.FRESH_MIN == 5 and claude_proc.FRESH_MIN == 5
+    assert orphan.fresh_minutes({}) == 5.0
+    assert orphan.fresh_minutes({orphan.FRESH_ENV: "15"}) == 15.0   # env по-прежнему главнее
+    _transcript(SID_HEAD, age_min=8)                   # между 5 и 15: раньше «жива», теперь сирота
+    assert any(v.get("orphan") for v in _sweep(world, box))
 
 
 def test_fresh_window_from_env(world, box, monkeypatch):
