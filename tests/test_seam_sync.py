@@ -90,6 +90,7 @@ def world(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(autohandoff, "_ao_send", lambda h, t: sent.append((h, t)) or 0)
     monkeypatch.setattr(autohandoff, "send_alert", lambda text, **kw: 0)
+    monkeypatch.setattr(ss, "_ao_alive", lambda h: True)   # живость — без живого ao
     return {"home": home, "proj": proj, "old": old, "new": new, "sent": sent,
             "tdir": new.parents[1]}
 
@@ -166,7 +167,7 @@ def test_confirmer_old_alive_else_main(world):
     to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: True,
                       main_of=lambda r: {"ao_session": "proj-main"})
     assert to == {"ao_session": "proj-41", "role": "старая", "why": "старая жива"}
-    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: False,
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: h != "proj-41",
                       main_of=lambda r: {"ao_session": "proj-main"})
     assert to["ao_session"] == "proj-main" and to["role"] == "main проекта"
     assert "proj-41 закрыта" in to["why"]
@@ -465,12 +466,12 @@ def test_confirmer_is_manager_when_new_is_main(world, tmp_path):
     ss._set(world["new"] / "arc.md", "claude-session", "sid-h2")   # новая = proj-42
     mg = lambda: {"ao_session": "mgmt-20"}  # noqa: E731
     # адрес main проекта = адрес самой новой (proj-42) — сам себе не подтверждает
-    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: False,
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: h != "proj-41",
                       main_of=lambda r: {"ao_session": "proj-42"}, new_dir=world["new"],
                       manager_of=mg)
     assert to["ao_session"] == "mgmt-20" and to["role"] == "менеджер"
     assert "новая — сама main проекта" in to["why"]
-    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: False,
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: h != "proj-41",
                       main_of=lambda r: {"ao_session": "proj-main"}, new_dir=world["new"],
                       manager_of=mg)
     assert to["ao_session"] == "proj-main"
@@ -552,3 +553,104 @@ def test_reset_drops_answer_back_to_waiting(world):
     assert sorted((world["tdir"] / "inbox").iterdir()) == inbox and world["sent"] == []
     with pytest.raises(ss.SeamSyncError):
         ss.reset(world["new"], "  ")
+
+
+# --- подтверждать некому: адресат к main проекта, иначе самоподтверждение ---------
+
+def _resolver(main, manager):
+    def resolve(*a, **k):
+        return ss.confirmer(*a, main_of=lambda r: {"ao_session": main},
+                            manager_of=lambda: {"ao_session": manager}, **k)
+    return resolve
+
+
+def test_confirmer_nobody_when_new_is_main_and_manager(world):
+    """Живой случай management/main: старая management-23 закрыта, новая management-24 —
+    сама main и сам менеджер → подтверждать некому."""
+    rec = _offer(world)
+    ss._set(world["new"] / "arc.md", "claude-session", "sid-h2")   # новая = proj-42
+    to = ss.confirmer(world["home"], rec, world["proj"], alive=lambda h: h != "proj-41",
+                      main_of=lambda r: {"ao_session": "proj-42"}, new_dir=world["new"],
+                      manager_of=lambda: {"ao_session": "proj-42"})
+    assert to["role"] == ss.NOBODY and to["ao_session"] == ""
+    assert "proj-41 закрыта" in to["why"] and "сам менеджер" in to["why"]
+    assert "подтверждать некому" in ss.addressee_line(to)
+    # main проекта закрыт и менеджер закрыт — тоже некому
+    to = ss.confirmer(world["home"], rec, world["proj"],
+                      alive=lambda h: h not in ("proj-41", "proj-main", "mgmt-20"),
+                      main_of=lambda r: {"ao_session": "proj-main"}, new_dir=world["new"],
+                      manager_of=lambda: {"ao_session": "mgmt-20"})
+    assert to["role"] == ss.NOBODY and "main проекта proj-main закрыт" in to["why"]
+    # main закрыт, менеджер жив — менеджер
+    to = ss.confirmer(world["home"], rec, world["proj"],
+                      alive=lambda h: h not in ("proj-41", "proj-main"),
+                      main_of=lambda r: {"ao_session": "proj-main"}, new_dir=world["new"],
+                      manager_of=lambda: {"ao_session": "mgmt-20"})
+    assert to["ao_session"] == "mgmt-20" and to["role"] == "менеджер"
+
+
+def test_self_confirm_when_nobody_to_confirm(world):
+    """management/main: sync-to назначен менеджеру, а менеджер — сама новая (до починки — тупик)."""
+    _stamp_to(world, {"ao_session": "proj-42", "role": "менеджер",
+                      "why": "старая proj-41 закрыта; новая — сама main проекта"})
+    passport = world["new"] / "arc.md"
+    ss._set(passport, "claude-session", "sid-h2")
+    out = ss.answer(world["new"], ss.OK, by="proj-42", alive=lambda h: h != "proj-41",
+                    resolve=_resolver("proj-42", "proj-42"))
+    assert out["sync"] == "ok"
+    assert out["answer"].startswith("proj-42 (самоподтверждение: подтверждать некому — ")
+    assert ss._get(passport, ss.SYNC_TO).startswith(ss.NOBODY + " без адреса (")
+    assert "адресат сменился" in passport.read_text(encoding="utf-8")
+    assert world["sent"] == []                       # пинговать некого
+    assert mail.unread(world["tdir"]) == []          # письмо сверки прочитано
+
+
+def test_dead_old_moves_to_main_then_self_when_main_is_new(world):
+    """tide-stack/handoffs: sync-to остался на старой, а она закрылась — новая не может
+    подтвердить, адресат переходит к main проекта (пинг ему); main — сама новая → некому."""
+    _stamp_to(world, {"ao_session": "proj-41", "role": "старая", "why": "старая жива"})
+    passport = world["new"] / "arc.md"
+    ss._set(passport, "claude-session", "sid-h2")
+    dead_old = lambda h: h != "proj-41"  # noqa: E731
+    with pytest.raises(ss.SeamSyncError, match="подтверждает proj-31, не ты.*адресат сменился"):
+        ss.answer(world["new"], ss.OK, by="proj-42", alive=dead_old,
+                  resolve=_resolver("proj-31", "mgmt-20"))
+    assert ss.assigned_of(ss._get(passport, ss.SYNC_TO)) == "proj-31"
+    assert ss._get(passport, ss.SYNC) == ss.WAITING
+    (to, ping), = world["sent"]
+    assert to == "proj-31" and "tide handoff sync ok" in ping
+    out = ss.answer(world["new"], ss.OK, by="proj-31", alive=dead_old)
+    assert out["answer"] == "proj-31"
+    # вариант: старая мертва, main проекта — сама новая, менеджер закрыт → самоподтверждение
+    _stamp_to(world, {"ao_session": "proj-41", "role": "старая", "why": "старая жива"})
+    out = ss.answer(world["new"], ss.OK, by="proj-42",
+                    alive=lambda h: h not in ("proj-41", "mgmt-20"),
+                    resolve=_resolver("proj-42", "mgmt-20"))
+    assert "самоподтверждение: подтверждать некому" in out["answer"]
+    assert "менеджер mgmt-20 закрыт" in out["answer"]
+
+
+def test_live_old_still_refuses_new(world):
+    """Обычный случай: старая жива и это не новая — отказ новой как был, адрес не трогаем."""
+    _stamp_to(world, {"ao_session": "proj-41", "role": "старая", "why": "старая жива"})
+    passport = world["new"] / "arc.md"
+    ss._set(passport, "claude-session", "sid-h2")
+    with pytest.raises(ss.SeamSyncError, match="подтверждает proj-41, не ты"):
+        ss.answer(world["new"], ss.OK, by="proj-42", resolve=_resolver("proj-42", "proj-42"))
+    assert ss._get(passport, ss.SYNC_TO) == "старая proj-41 (старая жива)"
+    assert world["sent"] == [] and ss._get(passport, ss.SYNC) == ss.WAITING
+
+
+def test_remind_skips_dead_old_and_pings_main(world):
+    _fresh_world(world, pulses=3)
+    passport = world["new"] / "arc.md"
+    now = datetime.now().replace(microsecond=0)
+    ss._set(passport, ss.SYNC, ss.WAITING)
+    ss._set(passport, ss.SYNC_TO, "старая proj-41 (старая жива)")
+    ss._set(passport, ss.SYNC_LETTER, "001")
+    ss._set(passport, ss.SYNC_AT, (now - timedelta(minutes=ss.NO_ANSWER_MIN + 5)).isoformat())
+    got = []
+    (text,) = ss.remind(world["home"], alert=lambda t, **kw: got.append(t) or 0,
+                        alive=lambda h: h != "proj-41", resolve=_resolver("proj-31", "mgmt-20"))
+    assert "от main проекта proj-31" in text and "от старая proj-41" not in text
+    assert [to for to, _ in world["sent"]] == ["proj-31"]

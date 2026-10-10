@@ -579,15 +579,34 @@ def _new_ao(home: Optional[Path], new_dir: Optional[Path]) -> str:
         return ""
 
 
+NOBODY = "некому"                # роль в sync-to: подтверждать некому — новая сама, с пометкой
+
+
+def _dead(alive: Callable[[str], Optional[bool]], handle: str) -> bool:
+    """Сессия точно не жива (False); не знаем (None/ошибка) — не мёртвая: адрес держим."""
+    try:
+        return alive(handle) is False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def confirmer(home: Optional[Path], rec: Optional[Dict[str, object]], root: Path, *,
-              alive: Callable[[str], Optional[bool]] = _ao_alive,
+              alive: Optional[Callable[[str], Optional[bool]]] = None,
               main_of: Optional[Callable[[Path], Dict[str, str]]] = None,
               new_dir: Optional[Path] = None,
-              manager_of: Optional[Callable[[], Dict[str, str]]] = None) -> Dict[str, str]:
-    """Кто подтверждает → ``{ao_session, role, why}``: старая, пока её AO-сессия жива;
-    закрыта / exited / не знаем адреса — main проекта (``tide whois main``); новая
-    сама main проекта (нить main или адрес main = адрес новой) — менеджер
-    (``tide whois manager``): сам себе не подтверждают."""
+              manager_of: Optional[Callable[[], Dict[str, str]]] = None,
+              selves: Optional[Sequence[str]] = None) -> Dict[str, str]:
+    """Кто подтверждает → ``{ao_session, role, why}``: старая, пока её AO-сессия жива
+    и это не сама новая; закрыта / exited / нет адреса — main проекта (``tide whois
+    main``), если он не сама новая и жив; новая сама main проекта или main закрыт —
+    менеджер (``tide whois manager``), если он не сама новая и жив. Иначе подтверждать
+    некому — роль :data:`NOBODY`: новая подтверждает сама, с пометкой (см. :func:`answer`)."""
+    alive = alive or _ao_alive
+    me = {x for x in (selves if selves is not None
+                      else (new_self(new_dir, home=home) if new_dir is not None else [])) if x}
+    new_ao = _new_ao(home, new_dir)
+    if new_ao:
+        me.add(new_ao)
     old = ""
     if rec is not None and str(rec.get("from_session") or "-") != "-":
         try:
@@ -595,9 +614,10 @@ def confirmer(home: Optional[Path], rec: Optional[Dict[str, object]], root: Path
             old = holder.ao_handle_for(Path(home) if home else None, str(rec["from_session"]))
         except Exception:  # noqa: BLE001
             old = ""
-    if old and alive(old):
+    if old and old not in me and alive(old):
         return {"ao_session": old, "role": "старая", "why": "старая жива"}
-    why = "старой нет адреса" if not old else "старая {0} закрыта".format(old)
+    why = ("старой нет адреса" if not old else "старая {0} — сама новая".format(old)
+           if old in me else "старая {0} закрыта".format(old))
     if main_of is None:
         def main_of(r: Path) -> Dict[str, str]:
             from . import whois
@@ -607,28 +627,53 @@ def confirmer(home: Optional[Path], rec: Optional[Dict[str, object]], root: Path
     except Exception:  # noqa: BLE001
         m = {}
     main_ao = str(m.get("ao_session") or "")
-    new_ao = _new_ao(home, new_dir)
     thread_dir = Path(new_dir).parents[1] if new_dir is not None else None
-    if _is_main_thread(thread_dir) or (main_ao and new_ao and main_ao == new_ao):
-        if manager_of is None:
-            def manager_of() -> Dict[str, str]:
-                from . import whois
-                return whois.manager(home=Path(home) if home else None)
-        try:
-            mg = manager_of() or {}
-        except Exception:  # noqa: BLE001
-            mg = {}
-        return {"ao_session": str(mg.get("ao_session") or ""), "role": "менеджер",
-                "why": "{0}; новая — сама main проекта".format(why)}
-    return {"ao_session": main_ao, "role": "main проекта", "why": why}
+    if _is_main_thread(thread_dir) or (main_ao and main_ao in me):
+        why = "{0}; новая — сама main проекта".format(why)
+    elif main_ao and not _dead(alive, main_ao):
+        return {"ao_session": main_ao, "role": "main проекта", "why": why}
+    else:
+        why = "{0}; main проекта {1}".format(
+            why, "{0} закрыт".format(main_ao) if main_ao else "без адреса")
+    if manager_of is None:
+        def manager_of() -> Dict[str, str]:
+            from . import whois
+            return whois.manager(home=Path(home) if home else None)
+    try:
+        mg = manager_of() or {}
+    except Exception:  # noqa: BLE001
+        mg = {}
+    mg_ao = str(mg.get("ao_session") or "")
+    if mg_ao and mg_ao not in me and not _dead(alive, mg_ao):
+        return {"ao_session": mg_ao, "role": "менеджер", "why": why}
+    why = "{0}; {1}".format(why, "новая — сам менеджер" if mg_ao in me and mg_ao else
+                            "менеджер {0} закрыт".format(mg_ao) if mg_ao else "у менеджера нет адреса")
+    return {"ao_session": "", "role": NOBODY, "why": why}
 
 
 def addressee_line(to: Dict[str, str]) -> str:
     """Кому письмо и почему он (поправка main · 05): «подтверждаешь ты — …, потому что …»."""
     if not to or to.get("role") in (None, "", "—", "-"):
         return ""
+    if to.get("role") == NOBODY:
+        return ("подтверждать некому — {0}: новая подтверждает сама (ответ пометится "
+                "«самоподтверждение»)".format(to.get("why") or "так вышло"))
     return "подтверждаешь ты — {0} {1}, потому что {2}".format(
         to.get("role"), to.get("ao_session") or "(без адреса)", to.get("why") or "так вышло")
+
+
+def sync_to_value(to: Dict[str, str]) -> str:
+    return "{0} {1} ({2})".format(to.get("role"), to.get("ao_session") or "без адреса", to.get("why"))
+
+
+def parse_sync_to(value: str) -> Dict[str, str]:
+    """Обратно из поля ``sync-to``: ``{ao_session, role, why}``."""
+    value = (value or "").strip()
+    head, _, tail = value.partition(" (")
+    why = tail[:-1] if tail.endswith(")") else tail
+    ao = assigned_of(value)
+    role = head[: -len(ao)].strip() if ao else re.sub(r"\s*без адреса$", "", head).strip()
+    return {"ao_session": ao, "role": role, "why": why}
 
 
 # --- поля паспорта ----------------------------------------------------------------
@@ -851,8 +896,7 @@ def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
     rep.update(letter=num, ping_code=code)
     at = _now()
     for key, val in ((SYNC, WAITING), (SYNC_GAPS, str(rep["gaps"])),
-                     (SYNC_TO, "{0} {1} ({2})".format(to.get("role"), to.get("ao_session") or "без адреса",
-                                                      to.get("why"))),
+                     (SYNC_TO, sync_to_value(to)),
                      (SYNC_AT, at), (SYNC_LETTER, num)):
         _set(p["passport"], key, val)
     report = new_dir / "workspace" / REPORT_NAME
@@ -907,15 +951,67 @@ def new_self(new_dir: Path, *, home: Optional[Path] = None) -> List[str]:
     return out
 
 
+def readdress(new_dir: Path, *, home: Optional[Path] = None,
+              alive: Optional[Callable[[str], Optional[bool]]] = None,
+              selves: Optional[Sequence[str]] = None,
+              send_ping: Optional[Callable[[str, str], Optional[int]]] = None,
+              resolve: Optional[Callable[..., Dict[str, str]]] = None) -> Dict[str, str]:
+    """Адресат сверки СЕЙЧАС: назначенный в ``sync-to`` — пока он жив и не сама новая;
+    иначе заново по :func:`confirmer` (старая закрылась после письма — main проекта,
+    дальше менеджер, дальше «некому»). Сменился — новое ``sync-to``, строка в
+    ``## context`` и пинг новому адресату (письмо то же). → ``{ao_session, role, why,
+    changed}``."""
+    new_dir = Path(new_dir)
+    p = session_paths(new_dir)
+    alive = alive or _ao_alive
+    if home is None:
+        try:
+            home = paths.control_home(p["root"])
+        except Exception:  # noqa: BLE001
+            home = None
+    me = [x for x in (selves if selves is not None else new_self(new_dir, home=home)) if x]
+    cur = parse_sync_to(_get(p["passport"], SYNC_TO))
+    ao = cur["ao_session"]
+    if cur["role"] == NOBODY or (ao and ao not in me and not _dead(alive, ao)):
+        return dict(cur, changed="")
+    if not cur["role"] and not ao:
+        return dict(cur, changed="")         # сверки не было — адресовать нечего
+    to = (resolve or confirmer)(home, offer_of(home, new_dir), p["root"], alive=alive,
+                                new_dir=new_dir, selves=me)
+    if to.get("ao_session") == ao and to.get("role") == cur["role"]:
+        return dict(cur, changed="")
+    was = _get(p["passport"], SYNC_TO)
+    _set(p["passport"], SYNC_TO, sync_to_value(to))
+    _context_line(p["passport"], "шов-синк: адресат сменился — было {0}, теперь {1}".format(
+        was or "—", sync_to_value(to)))
+    if to.get("ao_session"):
+        try:
+            from . import mail as _mail
+            if send_ping is None:
+                from .launcher.autohandoff import _ao_send as send_ping
+            send_ping(to["ao_session"], ping_text(
+                p["thread"].name, _get(p["passport"], SYNC_LETTER) or "-",
+                _mail.address_of(p["thread"]), new_dir, int(_get(p["passport"], SYNC_GAPS) or 0)))
+        except Exception:  # noqa: BLE001 — пинг не главное, адрес уже в паспорте
+            pass
+    return dict(to, changed="1")
+
+
 def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = None,
            send_mail: Optional[Callable[..., Dict[str, object]]] = None,
            ack: Optional[Callable[..., object]] = None,
-           me: Optional[Sequence[str]] = None) -> Dict[str, str]:
+           me: Optional[Sequence[str]] = None,
+           alive: Optional[Callable[[str], Optional[bool]]] = None,
+           home: Optional[Path] = None,
+           send_ping: Optional[Callable[[str, str], Optional[int]]] = None,
+           resolve: Optional[Callable[..., Dict[str, str]]] = None) -> Dict[str, str]:
     """Ответ подтверждающего: ``ok`` или ``fix`` с текстом. Поля — в паспорт новой;
     письмо сверки — прочитано (квитанция); поправка — письмом новой (с пингом).
     Новая сама себя не подтверждает (*me* — как она может назваться, нет —
-    :func:`new_self`); ответ не назначенного в ``sync-to`` принимается с пометкой;
-    «человек» (ручной вызов без AO) — принимается."""
+    :func:`new_self`), пока есть кому: адресат проверяется заново (:func:`readdress` —
+    назначенный закрылся или он сама новая → main проекта → менеджер); подтверждать
+    некому — самоподтверждение принимается с пометкой. Ответ не назначенного в
+    ``sync-to`` принимается с пометкой; «человек» (ручной вызов без AO) — принимается."""
     new_dir = Path(new_dir)
     p = session_paths(new_dir)
     if not p["passport"].is_file():
@@ -925,13 +1021,20 @@ def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = N
     if verdict == FIX and not (text or "").strip():
         raise SeamSyncError('sync fix: скажи, что поправить — tide handoff sync fix <новая> "…"')
     who = (by or "").strip() or _who()
+    self_why = ""
     if who != "человек":
-        selves = [x for x in (me if me is not None else new_self(new_dir)) if x]
+        selves = [x for x in (me if me is not None else new_self(new_dir, home=home)) if x]
         if who in selves:
-            to = assigned_of(_get(p["passport"], SYNC_TO))
-            raise SeamSyncError("sync: подтверждает {0}, не ты — новая сама себя не "
-                                "подтверждает".format(to or _get(p["passport"], SYNC_TO)
-                                                      or "старая или main проекта"))
+            to = readdress(new_dir, home=home, alive=alive, selves=selves,
+                           send_ping=send_ping, resolve=resolve)
+            if to.get("role") != NOBODY:
+                raise SeamSyncError("sync: подтверждает {0}, не ты — новая сама себя не "
+                                    "подтверждает{1}".format(
+                                        to.get("ao_session") or _get(p["passport"], SYNC_TO)
+                                        or "старая или main проекта",
+                                        " (адресат сменился: {0}; пинг ему ушёл)".format(
+                                            to.get("why")) if to.get("changed") else ""))
+            self_why = to.get("why") or "подтверждать некому"
     assigned = assigned_of(_get(p["passport"], SYNC_TO))
     stranger = bool(assigned) and who != "человек" and who != assigned
     from . import mail as _mail
@@ -944,6 +1047,8 @@ def answer(new_dir: Path, verdict: str, text: str = "", *, by: Optional[str] = N
     say = who if verdict == OK else "{0}: {1}".format(who, " ".join(text.split()))
     if stranger:
         say = "{0} (не назначенный: {1} вместо {2})".format(say, who, assigned)
+    if self_why:
+        say = "{0} (самоподтверждение: подтверждать некому — {1})".format(say, self_why)
     _set(p["passport"], SYNC, verdict)
     _set(p["passport"], SYNC_ANSWER, say)
     _set(p["passport"], SYNC_ANSWER_AT, _now())
@@ -1078,10 +1183,14 @@ def remind_text(new_dir: Path, st: Dict[str, str], minutes: int) -> str:
 
 
 def remind(home: Path, *, now: Optional[datetime] = None,
-           alert: Optional[Callable[..., Optional[int]]] = None) -> List[str]:
+           alert: Optional[Callable[..., Optional[int]]] = None,
+           alive: Optional[Callable[[str], Optional[bool]]] = None,
+           send_ping: Optional[Callable[[str, str], Optional[int]]] = None,
+           resolve: Optional[Callable[..., Dict[str, str]]] = None) -> List[str]:
     """Свежие пары, где сверка «ждёт ответа» дольше :data:`NO_ANSWER_MIN` минут, —
     одна строка менеджеру (``send_alert(route=manager)``); метка ``sync-reminded``
-    в паспорте новой — одна на пару. → тексты отправленных."""
+    в паспорте новой — одна на пару. Перед напоминанием адресат проверяется заново
+    (:func:`readdress`): мёртвой старой не напоминаем. → тексты отправленных."""
     from . import handoff_queue as hq
     now = now or datetime.now()
     out: List[str] = []
@@ -1098,6 +1207,9 @@ def remind(home: Path, *, now: Optional[datetime] = None,
             st = status(new_dir, now=now)
             if st[SYNC] != NO_ANSWER:
                 continue
+            if readdress(new_dir, home=Path(home), alive=alive, send_ping=send_ping,
+                         resolve=resolve).get("changed"):
+                st = status(new_dir, now=now)    # адресат сменился — напоминание про нового
             at = _parse_ts(st[SYNC_AT])
             minutes = int((now - at).total_seconds() // 60) if at else NO_ANSWER_MIN
             text = remind_text(new_dir, st, minutes)
