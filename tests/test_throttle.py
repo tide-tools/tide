@@ -245,6 +245,31 @@ def test_window_85_blocks_heavy_but_not_targeted(home, monkeypatch, capsys):
     assert _hook(monkeypatch, "git commit -m x") == role_gate.ALLOW_EXIT
 
 
+
+def test_window_estimate_of_board_counts_with_mark(home, monkeypatch, capsys):
+    """Строка состояния мертва — доска пишет оценку (window_pct_est): правило 85 % её
+    считает, но и отказ, и журнал говорят «≈N% (оценка доски)» (SOC-166)."""
+    _write(home, _state(window_pct=88, window_pct_est=True, auto_pct=85,
+                        window_until=_iso(datetime.now(timezone.utc) + timedelta(hours=1))))
+    assert _hook(monkeypatch, "scripts/tide-ci") == role_gate.BLOCK_EXIT
+    err = capsys.readouterr().err
+    assert "окно ≈88% (оценка доски), порог 85%" in err
+    assert "израсходовано" not in err
+    assert any(" · heavy · window · " in ln and "окно ≈88% (оценка доски)" in ln
+               for ln in _log(home))
+    assert _hook(monkeypatch, "pytest tests/test_throttle.py") == role_gate.ALLOW_EXIT
+    # оценка ниже порога — не держит
+    _write(home, _state(window_pct=60, window_pct_est=True))
+    assert _hook(monkeypatch, "scripts/tide-ci") == role_gate.ALLOW_EXIT
+
+
+def test_window_est_flag_only_true_counts():
+    st, bad = throttle.parse(_state(window_pct=90, window_pct_est="yes"))
+    assert st["window_pct_est"] is False and bad is None
+    v = throttle.verdict(st, "music", throttle.KIND_SPAWN, now=NOW)
+    assert not v.allow and "израсходовано на 90%" in v.reason and "≈" not in v.reason
+
+
 # --- хук: файл недоступен ---------------------------------------------------------
 
 @pytest.mark.parametrize("content,why", [
@@ -322,6 +347,17 @@ def test_status_line_fresh_running_and_missing(home, monkeypatch, capsys):
     (home / ".tide" / "state" / "throttle.json").unlink()
     assert cli.main(["throttle", "status"]) == 0
     assert "без ограничений (нет файла)" in capsys.readouterr().out
+
+
+
+def test_status_line_marks_board_estimate(home, monkeypatch, capsys):
+    now = datetime.now(timezone.utc)
+    _write(home, _state(window_pct=86.4, window_pct_est=True,
+                        window_until=_iso(now + timedelta(hours=1))))
+    assert cli.main(["throttle", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "окно ≈86% (оценка), порог 85%" in out
+    assert "тяжёлые не начинаются" in out
 
 
 def test_throttle_check_exit_codes(home, monkeypatch, capsys):

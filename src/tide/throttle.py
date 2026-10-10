@@ -9,7 +9,7 @@ control-home; движок его ТОЛЬКО читает (договор фа
 
     {"v":1, "paused":{"all":bool, "projects":{"<проект>":bool}}, "until":ISO|null,
      "ceiling":int|null, "ceiling_auto":int|null, "auto_pct":85, "window_pct":число|null,
-     "window_until":ISO|null, "by":"board", "at":ISO, "auto_at":…}
+     "window_until":ISO|null, "window_pct_est":bool, "by":"board", "at":ISO, "auto_at":…}
 
 Правила:
 
@@ -18,7 +18,9 @@ control-home; движок его ТОЛЬКО читает (договор фа
   (``ao session ls --json``: не закрыта, не оркестратор, статус working) ≥ потолка —
   новые агенты не стартуют;
 * правило 85 %: ``window_pct ≥ auto_pct`` (и окно ещё не сброшено) — тяжёлые запуски
-  (новые агенты, tide-ci, полный pytest) не начинаются.
+  (новые агенты, tide-ci, полный pytest) не начинаются. ``window_pct_est: true`` —
+  процент не с живой строки состояния, а оценка доски: правило считает и его, но в
+  отказе, журнале и ``tide throttle status`` пишется «окно ≈N% (оценка доски)».
 
 Что гейтится (вид запуска — :func:`kind_of`): ``spawn`` — ``ao spawn``, ``ao session
 restore|resume-agent``, ``ao review trigger``; ``heavy`` — ``tide-ci`` и полный pytest
@@ -132,6 +134,7 @@ def parse(raw) -> Tuple[Optional[dict], Optional[str]]:
         "auto_pct": _num(raw.get("auto_pct")),
         "window_pct": _num(raw.get("window_pct")),
         "window_until": _iso(raw.get("window_until")),
+        "window_pct_est": raw.get("window_pct_est") is True,
         "at": _iso(raw.get("at")),
     }
     for key in ("until", "window_until", "at"):
@@ -205,6 +208,15 @@ def window_hot(st: Optional[dict], now: Optional[datetime] = None) -> bool:
     return st["window_pct"] >= st["auto_pct"]
 
 
+def window_label(st: dict, *, who: str = "оценка доски") -> str:
+    """«окно 86%» или, если процент — оценка доски, «окно ≈86% (оценка доски)»."""
+    if st.get("window_pct") is None:
+        return "окно —%"
+    if st.get("window_pct_est"):
+        return "окно ≈{0:.0f}% ({1})".format(st["window_pct"], who)
+    return "окно {0:.0f}%".format(st["window_pct"])
+
+
 def hhmm(d: Optional[datetime], now: Optional[datetime] = None) -> str:
     if d is None:
         return ""
@@ -271,9 +283,13 @@ def verdict(st: Optional[dict], project: Optional[str], kind: str, *,
         tail = (" до сброса в {0}".format(hhmm(st["window_until"], now))
                 if st.get("window_until") else "")
         what = "новые агенты не стартуют" if kind == KIND_SPAWN else _HEAVY_WHAT
-        return Verdict(False, "window", "tide · окно израсходовано на {0:.0f}% (порог {1:.0f}%){2} "
-                       "— {3}; точечный pytest по файлам можно, доведи шаг до коммита."
-                       .format(st["window_pct"], st["auto_pct"], tail, what))
+        if st.get("window_pct_est"):
+            used = "{0}, порог {1:.0f}%".format(window_label(st), st["auto_pct"])
+        else:
+            used = "окно израсходовано на {0:.0f}% (порог {1:.0f}%)".format(
+                st["window_pct"], st["auto_pct"])
+        return Verdict(False, "window", "tide · {0}{1} — {2}; точечный pytest по файлам "
+                       "можно, доведи шаг до коммита.".format(used, tail, what))
     if kind == KIND_SPAWN:
         top = ceiling(st)
         if top is not None:
@@ -553,14 +569,13 @@ def status_line(home: Optional[Path] = None, *, now: Optional[datetime] = None,
         parts.append("потолок {0}{1}".format(top, src))
         alive += full
     parts.append(alive)
-    if st.get("window_pct") is None:
-        wp = "окно —%"
-    else:
-        wp = "окно {0:.0f}%".format(st["window_pct"])
-    wp += " (порог {0:.0f}%".format(st["auto_pct"])
+    wp = window_label(st, who="оценка")
+    rest = "порог {0:.0f}%".format(st["auto_pct"])
     if st.get("window_until"):
-        wp += ", сброс {0}".format(hhmm(st["window_until"], now))
-    wp += ")"
+        rest += ", сброс {0}".format(hhmm(st["window_until"], now))
+    # оценка уже в скобках — порог идёт через запятую, без вторых скобок
+    wp += (", " + rest) if st.get("window_pct_est") and st.get("window_pct") is not None \
+        else " (" + rest + ")"
     if window_hot(st, now):
         wp += " — тяжёлые не начинаются"
     parts.append(wp)
@@ -613,4 +628,4 @@ def register(subparsers) -> None:
 __all__ = ["FILE", "KIND_HEAVY", "KIND_SPAWN", "KIND_WAKE", "LOG", "Verdict", "ceiling", "gate",
            "journal", "kind_of", "live_agents", "load", "parse", "paused", "project_of",
            "pytest_is_full", "register", "status_line", "strip_heredocs", "verdict",
-           "window_hot"]
+           "window_hot", "window_label"]
