@@ -158,6 +158,58 @@ def test_pause_of_project_only_hits_that_project(home, monkeypatch, capsys):
     assert _hook(monkeypatch, "ao spawn --project edge") == role_gate.ALLOW_EXIT
 
 
+@pytest.mark.parametrize("cmd,target", [
+    ("ao spawn --project mitehq --prompt go", "mitehq"),
+    ("ao spawn --project=mitehq --name x", "mitehq"),
+    ("ao spawn --name 'p -x' --prompt '--project fake' --project tide-stack", "tide-stack"),
+    ("ao spawn --prompt go", None),
+    ("ao spawn --standalone --harness claude-code", None),
+    ("ao session restore mitehq-12", "mitehq"),
+    ("ao session restore -p edge mitehq-12", "edge"),
+    ("ao session resume-agent tide-stack-40 --json", "tide-stack"),
+    ("ao session resume-agent -ptide-stack x", "tide-stack"),
+    ("ao session restore some-id", None),
+    ("ao review trigger mitehq-3 --model opus", "mitehq"),
+    ("ao review trigger --model opus --session=edge-7", "edge"),
+    ("ao review trigger --harness codex", None),
+    ("ao send --session mitehq-1 --message hi", None),
+    ("env AO_X=1 ao spawn --project mitehq 2>&1", "mitehq"),
+])
+def test_target_project(cmd, target):
+    assert throttle.target_project(shlex.split(cmd)) == target
+
+
+def test_pause_checks_target_project_not_caller(home, monkeypatch, capsys):
+    """SOC-166, живой тест паузы: ``ao spawn --project mitehq`` из сессии tide-stack
+    при паузе mitehq проходил как tide-stack. Пауза — для проекта-ЦЕЛИ."""
+    _write(home, _state(paused={"all": False, "projects": {"mitehq": True}},
+                        until=_iso(datetime.now(timezone.utc) + timedelta(hours=2))))
+    monkeypatch.setenv("AO_PROJECT_ID", "tide-stack")
+    monkeypatch.setenv("AO_SESSION_ID", "tide-stack-40")
+    assert _hook(monkeypatch, "ao spawn --project mitehq --prompt go") == role_gate.BLOCK_EXIT
+    assert "пауза проекта mitehq" in capsys.readouterr().err
+    assert any(" · tide-stack-40 · mitehq · spawn · pause · отказ" in ln for ln in _log(home))
+    # restore чужой сессии на паузе — тоже отказ
+    assert _hook(monkeypatch, "ao session restore mitehq-12") == role_gate.BLOCK_EXIT
+    # без --project — проект вызывающей (tide-stack не на паузе)
+    assert _hook(monkeypatch, "ao spawn --prompt go") == role_gate.ALLOW_EXIT
+    # из mitehq (на паузе) в tide-stack — пропуск
+    monkeypatch.setenv("AO_PROJECT_ID", "mitehq")
+    monkeypatch.setenv("AO_SESSION_ID", "mitehq-5")
+    assert _hook(monkeypatch, "ao spawn --project tide-stack") == role_gate.ALLOW_EXIT
+    # а без цели из mitehq — пауза своего проекта, как прежде
+    assert _hook(monkeypatch, "ao spawn --prompt go") == role_gate.BLOCK_EXIT
+
+
+def test_target_does_not_bypass_pause_all_or_ceiling(home, monkeypatch):
+    _write(home, _state(paused={"all": True, "projects": {}}, until=None))
+    monkeypatch.setenv("AO_PROJECT_ID", "mitehq")
+    assert _hook(monkeypatch, "ao spawn --project tide-stack") == role_gate.BLOCK_EXIT
+    _write(home, _state(ceiling=3))
+    monkeypatch.setattr(throttle, "live_agents", lambda timeout=5: 3)
+    assert _hook(monkeypatch, "ao spawn --project tide-stack") == role_gate.BLOCK_EXIT
+
+
 def test_heredoc_body_is_data_not_a_command(home, monkeypatch):
     """Живой случай 10.10: строка «  ao review trigger — …» в тексте коммита через
     heredoc резалась как запуск агента. Тело heredoc — данные; команда после — нет."""

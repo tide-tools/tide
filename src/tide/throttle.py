@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -429,6 +430,71 @@ def kind_of(tokens: List[str]) -> Optional[str]:
     return None
 
 
+# ao: флаги со значением отдельным токеном (spawn · restore · resume-agent · review
+# trigger по ``--help``) — значение не путаем с id сессии.
+_AO_VALUE_FLAGS = frozenset({
+    "--project", "-p", "--branch", "--claim-pr", "--harness", "--agent", "--issue",
+    "--kind", "--mode", "--model", "--name", "--prompt", "--tracker-provider",
+    "--effort", "--pr", "--session",
+})
+_AO_SID = re.compile(r"^(.+)-(\d+)$")
+
+
+def project_of_sid(sid: Optional[str]) -> Optional[str]:
+    """Проект AO-сессии по её id ``<проект>-<N>`` (как ``key.rsplit("-", 1)[0]`` в
+    seed_draft.sender_roles) или None."""
+    m = _AO_SID.match((sid or "").strip())
+    return m.group(1) if m else None
+
+
+def target_project(tokens: List[str]) -> Optional[str]:
+    """Проект-ЦЕЛЬ запуска агента (SOC-166): ``ao spawn --project X`` / ``--project=X`` /
+    ``-p X`` (restore, resume-agent) — X; ``ao session restore|resume-agent <id>`` и
+    ``ao review trigger <id>`` / ``--session <id>`` — проект из id. Не распознано — None
+    (гейт берёт проект вызывающей сессии, как прежде)."""
+    t = _drop_redirects(_strip_prefix(tokens))
+    if not t or os.path.basename(t[0]) != "ao":
+        return None
+    rest = t[1:]
+    verb = next((v for v in _AO_SPAWN if tuple(rest[:len(v)]) == v), None)
+    if verb is None:
+        return None
+    args = rest[len(verb):]
+    explicit: Optional[str] = None
+    sid: Optional[str] = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            if sid is None and i + 1 < len(args):
+                sid = args[i + 1]
+            break
+        name, eq, val = a.partition("=")
+        if a.startswith("-p") and not a.startswith("--") and a != "-p" and not eq:
+            name, val, eq = "-p", a[2:], "="          # слитно: -pmitehq
+        if name in ("--project", "-p", "--session"):
+            if not eq:
+                val = args[i + 1] if i + 1 < len(args) else ""
+                i += 1
+            if name == "--session":
+                sid = sid or val
+            else:
+                explicit = val.strip() or explicit
+            i += 1
+            continue
+        if a.startswith("-"):
+            i += 2 if (a in _AO_VALUE_FLAGS and not eq) else 1
+            continue
+        if sid is None:
+            sid = a
+        i += 1
+    if explicit:
+        return explicit
+    if verb != ("spawn",):
+        return project_of_sid(sid)
+    return None
+
+
 # --- проект и журнал ----------------------------------------------------------
 
 def project_of(cwd: Optional[str] = None, home: Optional[Path] = None) -> Optional[str]:
@@ -515,13 +581,21 @@ def gate(kinds: List[Tuple[str, str]], *, session: str = "", cwd: Optional[str] 
         if bad:
             journal(home, session, project, "-", "badfield", bad, now=now)
         for kind, seg in kinds:
-            v = verdict(st, project, kind, now=now, live=live)
+            # SOC-166: пауза — для проекта-ЦЕЛИ запуска агента (ao spawn --project X,
+            # restore <id>), а не вызывающей сессии; потолок и окно — общие.
+            proj = project
+            if kind == KIND_SPAWN:
+                try:
+                    proj = target_project(shlex.split(seg)) or project
+                except ValueError:
+                    proj = project
+            v = verdict(st, proj, kind, now=now, live=live)
             if not v.allow:
-                journal(home, session, project, kind, v.code,
+                journal(home, session, proj, kind, v.code,
                         "отказ `{0}` — {1}".format(seg[:120], v.reason), now=now)
                 return v.reason
             if kind == KIND_SPAWN and v.reason:
-                journal(home, session, project, kind, v.code,
+                journal(home, session, proj, kind, v.code,
                         "пропуск `{0}` — {1}".format(seg[:120], v.reason), now=now)
         return None
     except Exception:  # noqa: BLE001 — троттлинг не ломает хук
@@ -625,7 +699,7 @@ def register(subparsers) -> None:
     p.set_defaults(func=_cmd_status, _cmd="throttle status")
 
 
-__all__ = ["FILE", "KIND_HEAVY", "KIND_SPAWN", "KIND_WAKE", "LOG", "Verdict", "ceiling", "gate",
-           "journal", "kind_of", "live_agents", "load", "parse", "paused", "project_of",
-           "pytest_is_full", "register", "status_line", "strip_heredocs", "verdict",
-           "window_hot", "window_label"]
+__all__ = ["FILE", "KIND_HEAVY", "KIND_SPAWN", "KIND_WAKE", "LOG", "Verdict", "ceiling",
+           "gate", "journal", "kind_of", "live_agents", "load", "parse", "paused",
+           "project_of", "project_of_sid", "pytest_is_full", "register", "status_line",
+           "strip_heredocs", "target_project", "verdict", "window_hot", "window_label"]
