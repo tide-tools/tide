@@ -255,3 +255,109 @@ def test_ao_relinked_reservation_is_still_ours(world, monkeypatch, said, clock):
     assert out["action"] == reception_watch.DIED
     assert len(said["manager"]) == 1
     assert hq._resolve(world["home"], key)["pickup_session"] == "-"
+
+
+# --- SOC-167: ложный exited от AO — вторая проверка живости --------------------------
+
+from tide.adapters import claude_proc  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_live_claude(monkeypatch):
+    """Своя машина не в счёт: по умолчанию живых claude нет (ps прочёлся, пусто)."""
+    monkeypatch.setattr(claude_proc, "snapshot", lambda **kw: [])
+
+
+def _ps_with_claude(monkeypatch, *, sid=SID, pid=5150):
+    monkeypatch.setattr(claude_proc, "snapshot", lambda **kw: claude_proc.parse_ps(
+        " {0} 1 /Users/x/.local/bin/claude --verbose --session-id={1}\n".format(pid, sid)))
+
+
+def test_false_exited_with_live_claude_keeps_the_offer(world, monkeypatch, said, clock):
+    """AO зовёт новую exited, а её claude жив — оффер не освобождается, тревоги нет."""
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    _ps_with_claude(monkeypatch)
+    home = world["home"]
+    key = _reserved_offer(home)
+    seen = []
+
+    def sleep(s):
+        clock.sleep(s)
+        seen.append(s)
+        if len(seen) == 3:
+            hq.confirm_for_session(home, SID)       # приняла — пока AO врал
+    monkeypatch.setattr(reception_watch, "_sleep", sleep)
+    out = reception_watch.watch(home, key, AO_NEW, sid=SID, skip_alive=True,
+                                raised_by=raise_log.BOARD)
+    assert out["action"] == "accepted"
+    assert said == {"manager": [], "ao": [], "human": []}
+    log = _log(home)
+    assert log.count("AO говорит exited, но процесс жив (pid 5150)") == 1
+
+
+def test_false_exited_alive_until_timeout_is_not_died(world, monkeypatch, said, clock):
+    """Жива вопреки AO, но так и не приняла — не «умерла»; оффер держится до срока."""
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    _ps_with_claude(monkeypatch)
+    key = _reserved_offer(world["home"])
+    out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID, skip_alive=True,
+                                accept_timeout=60)
+    assert out["action"] == reception_watch.NOT_ACCEPTED and clock.t >= 60
+    assert "процесс жив" in out["alive_despite_ao"]
+
+
+def test_first_signal_false_but_claude_alive_is_not_freed(world, monkeypatch, said, clock):
+    """Первый сигнал не пришёл (AO: exited), а процесс жив — не «не ожила»."""
+    _use(monkeypatch, _Probe(signal=False, alive=True))
+    _ps_with_claude(monkeypatch)
+    home = world["home"]
+    key = _reserved_offer(home)
+    hq.confirm_for_session(home, SID)
+    out = reception_watch.watch(home, key, AO_NEW, sid=SID)
+    assert out["action"] == "accepted" and said["manager"] == []
+
+
+def test_relinked_claude_id_alive_by_process(world, monkeypatch, said, clock):
+    """Резерв перепривязан на настоящий claude-id — живость ищется и по нему."""
+    from tide import registry
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    key = _reserved_offer(world["home"], sid="real-claude-id")
+    monkeypatch.setattr(registry, "recorded_handle",
+                        lambda home, sid, **kw: AO_NEW if sid == "real-claude-id" else None)
+    _ps_with_claude(monkeypatch, sid="real-claude-id")
+    out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID, skip_alive=True,
+                                accept_timeout=30)
+    assert out["action"] == reception_watch.NOT_ACCEPTED
+
+
+def test_exited_no_process_old_transcript_frees_as_before(world, monkeypatch, said, clock):
+    """AO exited + процесса нет + транскрипт старый — как раньше: умерла, оффер свободен."""
+    import os
+    from datetime import datetime, timedelta
+    from pathlib import Path
+    d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "-tmp-proj"
+    d.mkdir(parents=True, exist_ok=True)
+    t = d / "{0}.jsonl".format(SID)
+    t.write_text("{}\n", encoding="utf-8")
+    old = (datetime.now() - timedelta(minutes=90)).timestamp()
+    os.utime(t, (old, old))
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    key = _reserved_offer(world["home"])
+    out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID, skip_alive=True)
+    assert out["action"] == reception_watch.DIED
+    assert hq._resolve(world["home"], key)["pickup_session"] == "-"
+    assert "оффер не освобождаю" not in _log(world["home"])
+
+
+def test_exited_but_fresh_transcript_keeps_the_offer(world, monkeypatch, said, clock):
+    import os
+    from pathlib import Path
+    d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "-tmp-proj"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "{0}.jsonl".format(SID)).write_text("{}\n", encoding="utf-8")
+    _use(monkeypatch, _Probe(signal=True, alive=False))
+    key = _reserved_offer(world["home"])
+    out = reception_watch.watch(world["home"], key, AO_NEW, sid=SID, skip_alive=True,
+                                accept_timeout=20)
+    assert out["action"] == reception_watch.NOT_ACCEPTED
+    assert "транскрипт жив (свеж 0 мин)" in _log(world["home"])

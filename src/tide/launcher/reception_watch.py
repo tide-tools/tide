@@ -20,6 +20,14 @@
 передающей и ``ao send`` ей, менеджеру ``ao send``, Грише одно сообщение
 (как и раньше у автохендоффа). Ничего здесь не падает.
 
+SOC-167: ответ AO «exited» сам по себе не приговор. После перезапуска AO (10.10 11:32)
+он показывал exited у живых сессий; прежде чем счесть новую не поднявшейся и
+освободить оффер, сторож спрашивает общий помощник живости
+(:func:`tide.adapters.claude_proc.liveness`: свежий транскрипт ИЛИ живой процесс
+claude этой сессии). Жива по любому признаку — оффер не трогаем, ждём приёма дальше,
+в ``raises.log`` строка «AO говорит exited, но процесс/транскрипт жив» (раз на сторож).
+``ps`` не прочёлся — как раньше, верим AO.
+
 Выключатель: ``$TIDE_RECEPTION_WATCH=off`` (тесты держат его выключенным).
 """
 
@@ -179,6 +187,34 @@ def _offer_state(home: Path, key: str, sid: str, handle: str = "") -> str:
     return "offered"
 
 
+def _really_alive(home: Path, key: str, sid: str, handle: str) -> Optional[str]:
+    """AO сказал exited — живая ли всё же новая? → строка-причина (жива) или None.
+
+    Ключи сессии: наш *sid* (пред-выбор) и резерв оффера, если он наш (AO-перепривязка
+    пишет туда настоящий claude-id); процесс ищется и по ``ao chat-host <handle>``."""
+    from .. import handoff_queue as hq
+    from ..adapters import claude_proc
+
+    sids = [sid]
+    try:
+        reserved = str(hq._resolve(home, key).get("pickup_session") or "").strip()
+        if reserved not in ("", "-", sid) and _ours(home, reserved, sid, handle):
+            sids.append(reserved)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        live = claude_proc.liveness(session_ids=sids, ao_handle=handle)
+    except Exception:  # noqa: BLE001 — помощник не смеет уронить сторож
+        return None
+    if live.get("alive") is not True:
+        return None
+    if live.get("by") == "process":
+        return "AO говорит exited, но процесс жив (pid {0}) — оффер не освобождаю".format(
+            live.get("pid"))
+    return "AO говорит exited, но транскрипт жив (свеж {0} мин) — оффер не освобождаю".format(
+        int(live.get("age") or 0))
+
+
 def watch(home: Path, key: str, handle: str, *, adapter_name: Optional[str] = None,
           sid: str = "", raised_by: str = "", skip_alive: bool = False,
           live_timeout: Optional[float] = None,
@@ -198,12 +234,23 @@ def watch(home: Path, key: str, handle: str, *, adapter_name: Optional[str] = No
     except Exception:  # noqa: BLE001
         return {"action": "skip", "detail": "адаптер не найден"}
     out: Dict[str, object] = {"key": key, "handle": handle}
+    noted = []                                # строка «жив вопреки AO» — раз на сторож
+
+    def alive_despite_ao() -> bool:
+        why = _really_alive(home, key, sid, handle)
+        if why and not noted:
+            noted.append(why)
+            out["alive_despite_ao"] = why
+            from . import raise_log
+            raise_log.log(home, key, raised_by or "-", why)
+        return bool(why)
+
     if not skip_alive:
         alive = handoff._await_alive(home, key, {"ok": True, "action": "spawned",
                                                  "handle": handle,
                                                  "adapter": adapter_name or ""},
                                      adapter_name=adapter_name, timeout=live_timeout)
-        if alive.get("action") == handoff.NOT_ALIVE:
+        if alive.get("action") == handoff.NOT_ALIVE and not alive_despite_ao():
             if _offer_state(home, key, sid, handle) != "offered":
                 return dict(out, action="superseded")
             out.update(action=handoff.NOT_ALIVE, detail=alive.get("detail") or "")
@@ -225,6 +272,8 @@ def watch(home: Path, key: str, handle: str, *, adapter_name: Optional[str] = No
                 dead = not probe(handle)
             except Exception:  # noqa: BLE001 — шаткая проба — «ещё не знаю»
                 dead = False
+        if dead and alive_despite_ao():
+            dead = False                       # SOC-167: ложный exited — ждём приёма дальше
         if dead:
             out.update(action=DIED, detail="AO {0} умерла (exited), не подтвердив приём"
                        .format(handle))
