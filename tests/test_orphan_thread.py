@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tide import handoff_queue as hq
+from tide.adapters import claude_proc
 from tide.arc import holder
 from tide.hooks import orphan
 from tide.launcher import autohandoff
@@ -59,6 +60,8 @@ def world(tmp_control_home, tmp_path, monkeypatch):
     monkeypatch.delenv(orphan.REPEAT_ENV, raising=False)
     monkeypatch.setattr(holder, "ao_handle_for", lambda h, sid: AO.get(sid, ""))
     monkeypatch.setattr(hq, "list_offers", lambda h, status=None: [])
+    # своя машина не в счёт: по умолчанию живых claude нет (ps прочёлся, пусто)
+    monkeypatch.setattr(claude_proc, "snapshot", lambda **kw: [])
     return {"home": home, "proj": proj, "thread": thread, "head": head}
 
 
@@ -235,6 +238,109 @@ def test_run_raise_does_not_raise_over_fresh_transcript(world, box, monkeypatch)
     out, calls = _run_raise(world, box, monkeypatch)
     assert out["action"] == "skip" and calls == [] and box.alerts == []
     assert "транскрипт свеж" in out["why"]
+
+
+# --- SOC-167: вторая проверка живости — процесс claude ведущей --------------------------
+
+PS_LIVE = (
+    "  101     1 /Applications/Agent Orchestrator.app/Contents/Resources/daemon/ao chat-host "
+    "tide-stack-33 /Users/x/.ao/data /Users/x/.ao/data/worktrees/proj/tide-stack-33 acp ab\n"
+    "  102   101 /Applications/Agent Orchestrator.app/acp-runtime/node/bin/node index.js\n"
+    "  {pid}   102 /Users/x/.local/bin/claude --output-format stream-json --verbose "
+    "--session-id={sid} --tools default\n"
+    "  200     1 /bin/zsh -c grep -- '--session-id=" + SID_HEAD + "' x\n")
+
+
+def _procs(text):
+    return lambda: claude_proc.parse_ps(text)
+
+
+def test_ao_exited_but_claude_process_alive_is_not_orphan(world, box, monkeypatch):
+    """app-development-54 10.10: простаивает с 08:33, AO зовёт exited, транскрипт старый,
+    а claude жив — тишина менеджеру, строка «не сирота: процесс жив (pid N)»."""
+    _transcript(SID_HEAD, age_min=200)
+    procs = _procs(PS_LIVE.format(pid=4711, sid=SID_HEAD))
+    res = orphan.sweep(world["home"], env={orphan.RAISE_ENV: "on"},
+                       session_of=_states(**{"tide-stack-33": DEAD}), procs=procs,
+                       alert=box.alert, spawn=box.spawn)
+    v = next(v for v in res if v.get("session") == "06-board-6")
+    assert not v["orphan"] and v["alive_pid"] == 4711
+    assert v["why"].startswith("не сирота: процесс жив (pid 4711) — AO говорит terminated")
+    assert box.alerts == [] and box.spawned == [] and _alert_lines(world["home"]) == []
+    lines = _fresh_lines(world["home"])
+    assert len(lines) == 1 and "не сирота: процесс жив (pid 4711)" in lines[0]
+
+
+def test_alive_by_ao_chat_host_when_uuid_differs(world, box):
+    """claude поднят AO под другим uuid — находим по хозяину ``ao chat-host <ao-id>``."""
+    _transcript(SID_HEAD, age_min=200)
+    procs = _procs(PS_LIVE.format(pid=4712, sid="other-uuid"))
+    res = orphan.scan(world["home"], session_of=_states(**{"tide-stack-33": DEAD}),
+                      procs=procs)
+    v = next(v for v in res if v.get("session") == "06-board-6")
+    assert not v["orphan"] and v["alive_pid"] == 4712
+
+
+def test_ao_exited_no_process_old_transcript_is_orphan(world, box):
+    """Процесса нет (шелл с uuid в тексте grep — не claude) + старый транскрипт — сирота."""
+    _transcript(SID_HEAD, age_min=200)
+    text = "\n".join(ln for ln in PS_LIVE.format(pid=4711, sid=SID_HEAD).splitlines()
+                     if "/claude " not in ln)
+    res = orphan.sweep(world["home"], env={}, session_of=_states(**{"tide-stack-33": DEAD}),
+                       procs=_procs(text), alert=box.alert, spawn=box.spawn)
+    v = next(v for v in res if v.get("session") == "06-board-6")
+    assert v["orphan"] and "alive_pid" not in v and len(box.alerts) == 1
+
+
+def test_ps_error_is_not_orphan(world, box, monkeypatch):
+    """ps не прочёлся — «неизвестно» — не сирота и тишина."""
+    _transcript(SID_HEAD, age_min=200)
+    monkeypatch.setattr(claude_proc, "snapshot", lambda **kw: None)
+    res = _sweep(world, box)
+    v = next(v for v in res if v.get("session") == "06-board-6")
+    assert not v["orphan"] and "процессы не прочитать (ps)" in v["why"]
+    assert box.alerts == []
+
+
+def test_snapshot_error_paths():
+    import subprocess as sp
+
+    def boom(*a, **k):
+        raise sp.TimeoutExpired("ps", 5)
+    assert claude_proc.snapshot(run=boom) is None
+    assert claude_proc.snapshot(run=lambda *a, **k: sp.CompletedProcess(a, 1, "", "")) is None
+    assert claude_proc.snapshot(run=lambda *a, **k: sp.CompletedProcess(a, 0, "", "")) is None
+    ok = claude_proc.snapshot(run=lambda *a, **k: sp.CompletedProcess(
+        a, 0, " 7 1 /u/.local/bin/claude --session-id=s1\n", ""))
+    assert ok == [claude_proc.Proc(7, 1, "/u/.local/bin/claude --session-id=s1")]
+
+
+def test_claude_pid_matching():
+    procs = claude_proc.parse_ps(
+        " 5 1 /u/.local/bin/claude --chrome-native-host --session-id=s1\n"
+        " 6 1 /u/.local/bin/claude --resume s2 --verbose\n"
+        " 7 1 /u/.local/bin/claude --session-id=s3x\n")
+    assert claude_proc.claude_pid(procs, session_id="s1") is None   # chrome-хост
+    assert claude_proc.claude_pid(procs, session_id="s2") == 6      # --resume
+    assert claude_proc.claude_pid(procs, session_id="s3") is None   # не префикс
+
+
+def test_head_is_current_session_not_previous(world, box):
+    """Случай nochnaya-smena/main 10.10: в нити прошлые сессии с claude-session; ведущая —
+    новейшая принятая, транскрипт и процесс ищутся по ЕЁ claude-session."""
+    _transcript(SID_OLD, age_min=1)                    # прошлая пишет — не в счёт
+    _transcript(SID_HEAD, age_min=48)                  # ведущая простаивала 11:16→12:04
+    procs = _procs(PS_LIVE.format(pid=99275, sid=SID_HEAD).replace("tide-stack-33", "x-1"))
+    res = orphan.scan(world["home"], session_of=_states(**{"tide-stack-33": DEAD}),
+                      procs=procs)
+    v = next(v for v in res if v.get("thread") == "board")
+    assert v["session"] == "06-board-6" and v["ao"] == "tide-stack-33"
+    assert not v["orphan"] and v["alive_pid"] == 99275
+    res = orphan.scan(world["home"], session_of=_states(**{"tide-stack-33": DEAD}),
+                      procs=_procs(PS_LIVE.format(pid=1, sid=SID_OLD).replace(
+                          "tide-stack-33", "x-1")))
+    v = next(v for v in res if v.get("thread") == "board")
+    assert v["orphan"]                                 # живой claude прошлой не спасает
 
 
 def test_autoclose_with_accepted_new_is_quiet(world, box, monkeypatch):

@@ -30,7 +30,16 @@
   транскрипт tide-stack-40 как ``exited`` — по одному ответу AO вышла бы ложная
   тревога менеджеру, а с автоподъёмом — вторая голова. Свежий транскрипт важнее
   ответа AO: не сирота, в ``alerts.log`` строка «AO говорит exited, но транскрипт
-  свеж N мин — не сирота» (не чаще раза в :func:`repeat_minutes` по нити).
+  свеж N мин — не сирота» (не чаще раза в :func:`repeat_minutes` по нити);
+* живого процесса claude этой сессии нет (:mod:`tide.adapters.claude_proc`: одна
+  выборка ``ps`` на проход; ``claude --session-id=<claude-session>`` или claude-потомок
+  ``ao chat-host <ao-id>``). Тот же случай 10.10: простаивающие ведущие
+  (app-development-54 с 08:33, nochnaya-smena-9 с 11:16 до 12:04) транскрипт не
+  пишут, AO зовёт их exited, а процесс жив — не сирота, в ``alerts.log`` «не сирота:
+  процесс жив (pid N)». ``ps`` не прочёлся — «неизвестно», молчим.
+
+Итого сирота ТОЛЬКО если AO говорит exited/terminated И процесса нет И транскрипт
+старше :data:`FRESH_MIN`.
 
 Сирота → строка менеджеру (``send_alert(route=manager)``, нет команды — ``ao send``
 по ``tide whois manager``; Грише ничего — tg 3733) и строка в ``state/alerts.log``.
@@ -59,7 +68,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .. import paths
 
@@ -76,7 +85,7 @@ THROTTLE_SEC = 120
 THROTTLE_FILE = "throttle.json"          # пульт лимита доски (пауза проектов)
 ALERT_LOG = "alerts.log"
 MARK = "нить-сирота"                     # метка строки в alerts.log (по ней и повтор)
-MARK_FRESH = "не-сирота"                 # отбой по свежему транскрипту — свой ключ, не глушит тревогу
+MARK_FRESH = "не-сирота"                 # отбой (свежий транскрипт / живой процесс) — свой ключ
 ROUTE_MANAGER = "manager"
 _ON = ("1", "on", "yes", "true", "да")
 _OFF = ("0", "off", "no", "false", "нет")
@@ -181,18 +190,26 @@ def _last_sign(entry: Path, sid: str) -> Optional[datetime]:
 
 
 def transcript_age_min(sid: str, *, now: Optional[datetime] = None) -> Optional[float]:
-    """Сколько минут назад писался транскрипт claude-сессии *sid* (тот же поиск, что у
-    контекст-хука: :func:`tide.context_fill.transcript_for`) — или None, нет на диске."""
-    from .. import context_fill
+    """Сколько минут назад писался транскрипт claude-сессии *sid* — или None
+    (общий помощник: :func:`tide.adapters.claude_proc.transcript_age_min`)."""
+    from ..adapters import claude_proc
+    return claude_proc.transcript_age_min(sid, now=now)
 
-    try:
-        p = context_fill.transcript_for(sid)
-        if p is None:
-            return None
-        mtime = datetime.fromtimestamp(Path(p).stat().st_mtime)
-    except OSError:
-        return None
-    return max(0.0, ((now or datetime.now()) - mtime).total_seconds() / 60.0)
+
+def lazy_procs() -> Callable[[], Optional[List[Any]]]:
+    """Одна выборка процессов на проход: первый спрос снимает ``ps``, дальше — память.
+    ``None`` в ответе — ``ps`` не прочёлся (неизвестно)."""
+    memo: Dict[str, Optional[List[Any]]] = {}
+
+    def get() -> Optional[List[Any]]:
+        if "v" not in memo:
+            from ..adapters import claude_proc
+            try:
+                memo["v"] = claude_proc.snapshot()
+            except Exception:  # noqa: BLE001
+                memo["v"] = None
+        return memo["v"]
+    return get
 
 
 def open_offer(offers: List[Dict[str, object]], project: str, thread: str) -> str:
@@ -216,10 +233,13 @@ def verdict(home: Path, project: str, root: Path, thread_dir: Path, *,
             offers: List[Dict[str, object]], now: Optional[datetime] = None,
             session_of: Optional[Callable[[str], Optional[dict]]] = None,
             recent_hours: float = RECENT_HOURS,
-            fresh_min: Optional[float] = None) -> Dict[str, object]:
+            fresh_min: Optional[float] = None,
+            procs: Optional[Callable[[], Optional[List[Any]]]] = None) -> Dict[str, object]:
     """Сирота ли нить *thread_dir* проекта *project* → ``{project, thread, session,
     title, ao, ref, last, orphan, why}``. Только чтение; AO спрашивается последним,
-    его «кончилась» перебивает транскрипт свежее *fresh_min* минут (``fresh`` в ответе)."""
+    его «кончилась» перебивают транскрипт свежее *fresh_min* минут (``fresh`` в ответе)
+    и живой процесс claude ведущей (``alive_pid``; выборка — *procs*, по умолчанию
+    свой ``ps``; не прочёлся — не сирота)."""
     from .. import acts, fields, slug
     from ..arc import holder, stream
     from .autoclose import ended
@@ -273,13 +293,25 @@ def verdict(home: Path, project: str, root: Path, thread_dir: Path, *,
     if not gone:
         return no("ведущая {0} жива".format(handle))
     out["gone"] = gone
-    # SOC-167: AO после своего перезапуска врёт «exited» про живую — транскрипт решает
+    # SOC-167: AO после своего перезапуска врёт «exited» про живую — вторая проверка:
+    # свежий транскрипт ИЛИ живой процесс claude ведущей (общий помощник живости)
+    from ..adapters import claude_proc
     window = fresh_minutes() if fresh_min is None else fresh_min
-    age = transcript_age_min(sid, now=now) if window > 0 else None
-    if age is not None and age < window:
+    live = claude_proc.liveness(session_ids=[sid], ao_handle=handle, fresh_min=window,
+                                procs=procs or lazy_procs(), now=now)
+    age = live["age"]
+    if live["by"] == "transcript":
         out["fresh"] = int(age)
         return no("AO говорит {0}, но транскрипт свеж {1} мин — не сирота".format(
             gone, int(age)))
+    if live["alive"] is None:
+        return no("AO говорит {0}, процессы не прочитать (ps) — не знаю, молчу".format(gone))
+    if live["alive"]:
+        out["alive_pid"] = live["pid"]
+        quiet = "транскрипт молчит {0} мин".format(int(age)) if age is not None \
+            else "транскрипта нет"
+        return no("не сирота: процесс жив (pid {0}) — AO говорит {1}, {2}".format(
+            live["pid"], gone, quiet))
     out["orphan"] = True
     out["why"] = "ведущая {0} не жива в AO ({1}), оффера нет".format(handle, gone)
     return out
@@ -307,7 +339,9 @@ def _projects(home: Path) -> List[Dict[str, str]]:
 def scan(home: Path, *, now: Optional[datetime] = None,
          session_of: Optional[Callable[[str], Optional[dict]]] = None,
          recent_hours: float = RECENT_HOURS,
-         fresh_min: Optional[float] = None) -> List[Dict[str, object]]:
+         fresh_min: Optional[float] = None,
+         procs: Optional[Callable[[], Optional[List[Any]]]] = None
+         ) -> List[Dict[str, object]]:
     """Вердикты по всем открытым нитям проектов ростера (архив и пауза — мимо)."""
     from .. import handoff_queue as hq
     from ..arc import stream
@@ -318,6 +352,7 @@ def scan(home: Path, *, now: Optional[datetime] = None,
     except Exception:  # noqa: BLE001
         offers = []
     out: List[Dict[str, object]] = []
+    procs = procs or lazy_procs()            # один ps на весь проход, и то по спросу
     for proj in _projects(home):
         if paused(home, proj["name"], now=now):
             out.append({"project": proj["name"], "thread": "*", "orphan": False,
@@ -332,7 +367,7 @@ def scan(home: Path, *, now: Optional[datetime] = None,
             try:
                 out.append(verdict(home, proj["name"], root, tdir, offers=offers, now=now,
                                    session_of=session_of, recent_hours=recent_hours,
-                                   fresh_min=fresh_min))
+                                   fresh_min=fresh_min, procs=procs))
             except Exception as exc:  # noqa: BLE001 — одна нить не роняет проход
                 out.append({"project": proj["name"], "thread": tdir.name,
                             "orphan": False, "why": "ошибка: {0}".format(exc)})
@@ -515,7 +550,7 @@ def sweep(home: Path, *, env: Optional[Dict[str, str]] = None,
     for v in scan(home, now=now, **kw):
         if v.get("orphan"):
             v["alarm"] = alarm(home, v, env=env, now=now, **act)
-        elif "fresh" in v and not alarmed_recently(home, v, now=now,
+        elif ("fresh" in v or "alive_pid" in v) and not alarmed_recently(home, v, now=now,
                                                    minutes=repeat_minutes(env),
                                                    mark=MARK_FRESH):
             journal(home, v, str(v["why"]), now=now, mark=MARK_FRESH)
@@ -596,5 +631,6 @@ def register(hsub) -> None:
 
 __all__ = ["CONFIG_KEY", "FRESH_ENV", "RAISE_ENV", "REPEAT_ENV", "WATCH_ENV", "alarm", "alarmed_recently",
            "manager_text", "on_prompt", "open_offer", "paused", "raise_enabled_for",
-           "raise_switch", "register", "run_raise", "scan", "sweep", "transcript_age_min",
+           "lazy_procs", "raise_switch", "register", "run_raise", "scan", "sweep",
+           "transcript_age_min",
            "verdict"]
