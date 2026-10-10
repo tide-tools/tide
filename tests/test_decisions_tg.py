@@ -706,3 +706,69 @@ def test_check_session_shared_with_hook():
     ok, why = tg.check_session("sid-other", "x", KEEPER)
     assert not ok and "ведёт context-keeper" in why
     assert tg.check_session("", "x", lookup=lambda: None) == (True, "")  # механизм не заведён
+
+
+# --- skip / baseline: та же проверка сессии, что у decide -----------------------
+
+def _skip_baseline_world(pult_world):
+    """Каталог management/.tide/topics с журналом правок и тема alpha без него —
+    у baseline есть что записать, у skip — куда."""
+    d = pult_world["management"] / ".tide" / "topics"
+    edits.baseline(d)
+    a = pult_world["alpha"] / ".tide" / "topics" / SLUG
+    (a / edits.EDITS_FILE).unlink()
+    return d, a
+
+
+def test_skip_and_baseline_refused_for_foreign_session(pult_world, capsys, monkeypatch):
+    from tide.hooks import truth_gate as tg
+
+    monkeypatch.setattr(tg, "keeper", lambda home=None: KEEPER)
+    d, a = _skip_baseline_world(pult_world)
+    snap = lambda: {p: p.read_bytes() for p in (d / dt.SKIP_FILE, d / edits.EDITS_FILE)}
+    before = snap()
+    for sid in ("sid-other", None):
+        if sid:
+            monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+        else:
+            monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        for verb, argv in (("skip", ["skip", "--q", "600", "--a", "602", "--reason", "повтор"]),
+                           ("baseline", ["baseline", "--project", "alpha"])):
+            rc = cli.main(["truth", *argv])
+            err = capsys.readouterr().err
+            assert rc != 0
+            assert "{0}: отказ, ничего не записано".format(verb) in err
+            assert "ведёт context-keeper" in err and "ao send tide-stack-28" in err
+    assert before == snap() and not (a / edits.EDITS_FILE).exists()
+    # dry-run не пишет — проверка сессии не нужна
+    rc, out = _run(capsys, "skip", "--q", "600", "--a", "602", "--reason", "повтор", "--dry-run")
+    assert rc == 0 and "dry-run" in out
+    rc, out = _run(capsys, "baseline", "--project", "alpha", "--dry-run")
+    assert rc == 0 and "dry-run — записал бы baseline" in out
+    assert before == snap() and not (a / edits.EDITS_FILE).exists()
+
+
+def test_skip_and_baseline_allowed_for_keeper(pult_world, capsys, monkeypatch):
+    from tide.hooks import truth_gate as tg
+
+    monkeypatch.setattr(tg, "keeper", lambda home=None: KEEPER)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-keeper")  # у сабагента тот же id
+    d, a = _skip_baseline_world(pult_world)
+    rc, out = _run(capsys, "skip", "--q", "600", "--a", "602", "--reason", "повтор")
+    assert rc == 0 and "записано" in out
+    assert (600, 602) in dt.load_skip(d / dt.SKIP_FILE)
+    rc, out = _run(capsys, "baseline", "--project", "alpha")
+    assert rc == 0 and "alpha/01-tema: baseline" in out and (a / edits.EDITS_FILE).is_file()
+
+
+def test_skip_and_baseline_pass_when_keeper_thread_absent(pult_world, capsys, monkeypatch):
+    """Обход как у decide: нити хранителя нет в ростере — механизм не заведён, пишут все."""
+    from tide.hooks import truth_gate as tg
+
+    monkeypatch.setattr(tg, "keeper", lambda home=None: None)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-other")
+    d, a = _skip_baseline_world(pult_world)
+    rc, out = _run(capsys, "skip", "--q", "600", "--a", "602", "--reason", "повтор")
+    assert rc == 0 and "записано" in out
+    rc, out = _run(capsys, "baseline", "--project", "alpha")
+    assert rc == 0 and (a / edits.EDITS_FILE).is_file()

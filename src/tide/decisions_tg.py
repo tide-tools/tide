@@ -52,7 +52,8 @@
     tide truth decide --topic <проект>/<NN-slug> --q N --a M[,K…] --decision "…"
         единственный путь записи: строка в журнал темы + строка в «## Решения».
         Пишет только держатель нити context-keeper или её сабагент (та же
-        проверка, что у хука truth-gate; ``--dry-run`` — всем).
+        проверка, что у хука truth-gate; ``--dry-run`` — всем). Так же
+        ``tide truth skip`` и ``tide truth baseline``.
 
 Пара берётся из журнала пульта двумя путями: строка ``kind: ask-closed``
 ``{ask, source}``, где ``ask`` — исходящее (номер tg или id события log.jsonl),
@@ -1173,6 +1174,8 @@ def cmd_skip(args) -> int:
     answers = _parse_answers(args.d_a)
     if len(answers) != 1:
         raise truth.TruthError("skip: --a — один номер ответа")
+    if not args.d_dry_run:
+        _require_keeper("skip")
     res = skip(truth.resolve_projects(None), int(args.d_q), answers[0],
                getattr(args, "d_reason", None) or "", dry_run=args.d_dry_run)
     print(("записано" if res["written"] else "dry-run: ничего не записано")
@@ -1214,6 +1217,8 @@ def cmd_baseline(args) -> int:
         if reason:
             raise truth.TruthError("baseline: --reason только вместе с --topic")
         dirs = baseline_dirs(projs)
+    if not args.d_dry_run:
+        _require_keeper("baseline")
     rc = 0
     for name, d in dirs:
         last = edits.last_after(d)
