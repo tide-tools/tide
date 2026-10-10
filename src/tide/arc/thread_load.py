@@ -764,11 +764,17 @@ def _v(x):
     return "—" if x is None or x == "" else x
 
 
+def _u(x, unit):
+    """Значение с единицей: пусто — «—» без единицы (не «— ч»)."""
+    v = _v(x)
+    return v if v == "—" else "{0} {1}".format(v, unit)
+
+
 def _mail_part(m):
     """Почта: нет непрочитанных — «—» (не «0/None мин»); есть — «N/возраст мин»."""
     if not m["unread"]:
         return "почта —"
-    return "почта {0}/{1} мин".format(m["unread"], _v(m["oldest_unacked_min"]))
+    return "почта {0}/{1}".format(m["unread"], _u(m["oldest_unacked_min"], "мин"))
 
 
 def human(d):
@@ -776,14 +782,14 @@ def human(d):
         _v(d["generated_at"]), d["rule"]["name"], d["rule"]["need"], len(d["rule"]["signals"]))]
     for r in sorted(d["threads"], key=lambda r: (-len(r["signals"]), r["project"], r["thread"])):
         h = r["handoffs"]
-        lines.append("{flag} {p}/{n}: контекст {c} тыс. · передач {hc} (интервал {hi} ч) · {mail} · "
-                     "Linear {lp}+{lr} · сабагенты {w} · входящие {inc} · хвосты {t} · {usd} $/ч".format(
+        lines.append("{flag} {p}/{n}: контекст {c} · передач {hc} (интервал {hi}) · {mail} · "
+                     "Linear {lp}+{lr} · сабагенты {w} · входящие {inc} · хвосты {t} · {usd}".format(
                          flag="!!" if r["flag"] else "  ", p=r["project"], n=r["name"],
-                         c=_v(r["head"]["context_k"]), hc=_v(h["count_24h"]), hi=_v(h["median_interval_h"]),
+                         c=_u(r["head"]["context_k"], "тыс."), hc=_v(h["count_24h"]), hi=_u(h["median_interval_h"], "ч"),
                          mail=_mail_part(r["mail"]),
                          lp=_v(r["linear"]["in_progress"]), lr=_v(r["linear"]["in_review"]),
                          w=len(r["workers"]), inc=_v(r["incoming_24h"]), t=_v(r["open_tails"]),
-                         usd=_v(r["spend"]["usd_per_h"]))
+                         usd=_u(r["spend"]["usd_per_h"], "$/ч"))
                      + (" · застревание: " + ", ".join(r["stuck"]["markers"]) if r["stuck"]["markers"] else ""))
         if r["signals"]:
             lines.append("     сигналы: " + "; ".join("{0}={1} ({2})".format(s["signal"], _v(s["value"]), s["rule"])

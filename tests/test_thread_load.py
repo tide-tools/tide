@@ -297,6 +297,18 @@ def test_human_all_fields_empty():
         stuck=dict(markers=[]), signals=[dict(signal="x", value=None, rule=">= 1")], split=None)])
     out = thread_load.human(d)
     assert "None" not in out
-    assert "почта —" in out and "хвосты —" in out and "контекст — тыс." in out
+    assert "почта —" in out and "хвосты —" in out and "контекст — ·" in out
+    # SOC-153: пустое значение — без единицы после прочерка
+    assert "(интервал —)" in out and out.count(" · — ") == 0 and not out.rstrip().endswith("— $/ч")
+    for unit in ("тыс.", "мин", "ч)", "$/ч"):
+        assert "— " + unit not in out
+    assert out.split("\n")[1].rstrip().endswith("хвосты — · —")
     d["threads"][0]["mail"] = dict(unread=2, oldest_unacked_min=None)
-    assert "None" not in thread_load.human(d)
+    out = thread_load.human(d)
+    assert "None" not in out and "почта 2/—" in out and "— мин" not in out
+    # заполненные значения — с единицами
+    d["threads"][0].update(head=dict(context_k=120), handoffs=dict(count_24h=3, median_interval_h=1.5),
+                           spend=dict(usd_per_h=2.5), mail=dict(unread=1, oldest_unacked_min=40))
+    out = thread_load.human(d)
+    for part in ("контекст 120 тыс.", "(интервал 1.5 ч)", "почта 1/40 мин", "2.5 $/ч"):
+        assert part in out
