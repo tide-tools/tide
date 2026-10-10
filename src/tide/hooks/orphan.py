@@ -55,6 +55,11 @@
 исход. Висит вопрос к человеку или цепочка встала (:func:`autohandoff.decide_for`) —
 не поднимает, только говорит менеджеру почему.
 
+Кроме хука — таймер (SOC-171): launchd ``com.tide.orphan-watch`` раз в 2 мин зовёт
+``tide hook orphan-tick`` (:func:`on_tick`) — тот же проход без сессии, троттлинг
+общий с хуком (штамп ``state/orphan.last``); в тишине тревога — не позже ~FRESH_MIN
++ шаг таймера после смерти ведущей. Plist — ``tide hook orphan-tick --print-plist``.
+
 Весь сторож выключается ``$TIDE_ORPHAN_WATCH=off`` (тесты держат его выключенным).
 ``tide handoffs orphans`` — пруф без действий: кого счёл бы сиротой и почему нет.
 Никогда не падает.
@@ -558,10 +563,20 @@ def sweep(home: Path, *, env: Optional[Dict[str, str]] = None,
     return out
 
 
-def _throttled(home: Path) -> bool:
+def _stamp_age(home: Path) -> Optional[float]:
+    """Сколько секунд назад был последний проход (хук или таймер) — или None."""
+    try:
+        return datetime.now().timestamp() - (paths.state_dir(Path(home)) / STAMP).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _throttled(home: Path, sec: float = THROTTLE_SEC) -> bool:
+    """Общий троттлинг хука и таймера: проход был раньше *sec* с — пропуск; иначе
+    штамп ``state/orphan.last`` и проход."""
     p = paths.state_dir(Path(home)) / STAMP
     try:
-        if p.is_file() and datetime.now().timestamp() - p.stat().st_mtime < THROTTLE_SEC:
+        if p.is_file() and datetime.now().timestamp() - p.stat().st_mtime < sec:
             return True
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
@@ -583,6 +598,165 @@ def on_prompt(*, home: Optional[Path] = None,
         return sweep(home, env=e)
     except Exception:  # noqa: BLE001 — хук не смеет уронить сессию
         return []
+
+
+# --- таймер (SOC-171) ----------------------------------------------------------------------
+#
+# Хук бежит только на сообщении живой сессии: в тишине (09.10 — ночь, проба SOC-167)
+# тревога пришла через 18 мин после смерти ведущей. Таймер launchd
+# (:data:`TICK_LABEL`, раз в :data:`TICK_INTERVAL` с) делает тот же проход без
+# сессии: тот же штамп троттлинга, тот же alerts.log, та же доставка менеджеру.
+# Пауза пульта лимита (SOC-166) таймер не держит — это не запуск агентов; проекты на
+# паузе :func:`scan` пропускает так же, как на хуке.
+
+TICK_LABEL = "com.tide.orphan-watch"
+TICK_INTERVAL = 120                      # StartInterval launchd, с
+TICK_SLACK_SEC = 10                      # дрожь launchd: таймер не пропускает свой же прошлый проход
+TICK_LOG = "orphan-watch.log"            # stdout/stderr агента — в state/ control-home
+
+
+def on_tick(*, home: Optional[Path] = None, env: Optional[Dict[str, str]] = None,
+            **kw) -> Dict[str, object]:
+    """Таймер: :func:`sweep` с общим с хуком троттлингом → ``{ran, why, verdicts}``.
+
+    Сессии не нужно: home — :func:`tide.paths.control_home` (``$TIDE_HOME`` или
+    подъём от cwd). Проход хука или таймера был раньше ``THROTTLE_SEC - TICK_SLACK_SEC``
+    с — тихий пропуск (запас — чтобы шаг launchd 120 с не попадал в собственный
+    троттлинг и проход не шёл раз в 4 мин). *kw* — в :func:`sweep` (тесты). Не падает."""
+    e = os.environ if env is None else env
+    out: Dict[str, object] = {"ran": False, "why": "", "verdicts": []}
+    try:
+        if not watch_enabled(e):
+            out["why"] = "сторож выключен (${0}=off)".format(WATCH_ENV)
+            return out
+        home = Path(home) if home is not None else paths.control_home()
+        age = _stamp_age(home)
+        if _throttled(home, THROTTLE_SEC - TICK_SLACK_SEC):
+            out["why"] = "проход был {0} с назад (хук или таймер) — пропуск".format(
+                int(age) if age is not None else "?")
+            return out
+        out["ran"] = True
+        out["verdicts"] = sweep(home, env=e, **kw)
+    except Exception as exc:  # noqa: BLE001 — таймер тоже не падает
+        out["why"] = "ошибка: {0}".format(exc)
+    return out
+
+
+def tick_line(res: Dict[str, object], *, now: Optional[datetime] = None) -> str:
+    """Одна строка в лог агента launchd на каждый тик (пруф проходов)."""
+    stamp = (now or datetime.now()).isoformat(timespec="seconds")
+    if not res.get("ran"):
+        return "{0} orphan-tick: {1}".format(stamp, res.get("why") or "пропуск")
+    vs = [v for v in res.get("verdicts") or [] if isinstance(v, dict)]
+    orphans = [v for v in vs if v.get("orphan")]
+    tail = "".join(" · СИРОТА {0}/{1}".format(v.get("project"), v.get("thread"))
+                   for v in orphans)
+    return "{0} orphan-tick: проход — нитей {1}, сирот {2}{3}".format(
+        stamp, len(vs), len(orphans), tail)
+
+
+def tide_argv() -> List[str]:
+    """Как звать tide из launchd: тот же ``tide`` из PATH, что у хуков; нет — модуль."""
+    import shutil
+    exe = shutil.which("tide")
+    return [exe] if exe else [sys.executable, "-m", "tide"]
+
+
+def tick_plist(home: Path, *, env: Optional[Dict[str, str]] = None,
+               argv: Optional[List[str]] = None) -> Dict[str, object]:
+    """launchd-агент :data:`TICK_LABEL` (образец — ``com.tide.board``): раз в
+    :data:`TICK_INTERVAL` с ``tide hook orphan-tick``; env — PATH как у доски,
+    ``TIDE_HOME`` и ``$TIDE_ALERT_CMD`` (доставка менеджеру; ``route=manager``
+    ставит сам :func:`_alert_manager`); лог — ``state/orphan-watch.log``."""
+    e = os.environ if env is None else env
+    home = Path(home)
+    user = Path(e.get("HOME") or Path.home())
+    envd = {
+        "PATH": ":".join(["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+                          str(user / ".local" / "bin"), "/usr/bin", "/bin", "/usr/sbin",
+                          "/sbin"]),
+        "HOME": str(user),
+        "LANG": "en_US.UTF-8",
+        "PYTHONUNBUFFERED": "1",
+        paths.TIDE_HOME_ENV: str(home),
+    }
+    for key in ("TIDE_ALERT_CMD", "TIDE_AO_BIN"):
+        if (e.get(key) or "").strip():
+            envd[key] = e[key].strip()
+    log = str(paths.state_dir(home) / TICK_LOG)
+    return {
+        "Label": TICK_LABEL,
+        "ProgramArguments": list(argv or tide_argv()) + ["hook", "orphan-tick"],
+        "WorkingDirectory": str(home),
+        "EnvironmentVariables": envd,
+        "StartInterval": TICK_INTERVAL,
+        "RunAtLoad": True,
+        "ProcessType": "Background",
+        "Nice": 10,
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+    }
+
+
+def _xml_value(v: object, pad: str) -> List[str]:
+    if isinstance(v, bool):
+        return [pad + ("<true/>" if v else "<false/>")]
+    if isinstance(v, int):
+        return [pad + "<integer>{0}</integer>".format(v)]
+    if isinstance(v, dict):
+        out = [pad + "<dict>"]
+        for k, x in v.items():
+            out.append(pad + "  <key>{0}</key>".format(_xml_escape(str(k))))
+            out.extend(_xml_value(x, pad + "  "))
+        return out + [pad + "</dict>"]
+    if isinstance(v, (list, tuple)):
+        out = [pad + "<array>"]
+        for x in v:
+            out.extend(_xml_value(x, pad + "  "))
+        return out + [pad + "</array>"]
+    return [pad + "<string>{0}</string>".format(_xml_escape(str(v)))]
+
+
+def _xml_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def plist_xml(d: Dict[str, object]) -> str:
+    """plist XML без :mod:`plistlib` — у brew python 3.12 на этом маке pyexpat не
+    грузится (``_XML_SetAllocTrackerActivationThreshold``), а plistlib тянет его на импорте."""
+    return "\n".join([
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">'] + _xml_value(d, "") + ["</plist>", ""])
+
+
+def cmd_orphan_tick(args) -> int:
+    """``tide hook orphan-tick`` — проход по таймеру (launchd :data:`TICK_LABEL`).
+    ``--print-plist`` — напечатать plist агента для ``~/Library/LaunchAgents``:
+
+        tide hook orphan-tick --print-plist > ~/Library/LaunchAgents/com.tide.orphan-watch.plist
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tide.orphan-watch.plist
+    """
+    if getattr(args, "print_plist", False):
+        try:
+            home = paths.control_home()
+        except FileNotFoundError as exc:
+            print("tide: {0}".format(exc), file=sys.stderr)
+            return 1
+        sys.stdout.write(plist_xml(tick_plist(home)))
+        return 0
+    print(tick_line(on_tick()), flush=True)
+    return 0
+
+
+def register_hook(hsub) -> None:
+    """``tide hook orphan-tick`` — в группе хуков (зовёт launchd, не Claude Code)."""
+    tp = hsub.add_parser("orphan-tick", help="timer (launchd com.tide.orphan-watch, every "
+                         "2 min): the orphan-thread sweep without a session (SOC-171)")
+    tp.add_argument("--print-plist", action="store_true",
+                    help="print the launchd plist for ~/Library/LaunchAgents and exit")
+    tp.set_defaults(func=cmd_orphan_tick, _cmd="hook orphan-tick")
 
 
 # --- CLI ----------------------------------------------------------------------------------
@@ -630,7 +804,7 @@ def register(hsub) -> None:
 
 
 __all__ = ["CONFIG_KEY", "FRESH_ENV", "RAISE_ENV", "REPEAT_ENV", "WATCH_ENV", "alarm", "alarmed_recently",
-           "manager_text", "on_prompt", "open_offer", "paused", "raise_enabled_for",
-           "lazy_procs", "raise_switch", "register", "run_raise", "scan", "sweep",
-           "transcript_age_min",
+           "manager_text", "on_prompt", "on_tick", "open_offer", "paused", "raise_enabled_for",
+           "lazy_procs", "raise_switch", "register", "register_hook", "run_raise", "scan",
+           "plist_xml", "sweep", "tick_line", "tick_plist", "transcript_age_min",
            "verdict"]

@@ -209,6 +209,10 @@ def register_hook_group(subparsers) -> None:
     from .context_watch import cmd_context_watch  # lazy: keep hook wiring import-light
     cw.set_defaults(func=cmd_context_watch, _cmd="hook context-watch")
 
+    # SOC-171: детектор нити-сироты по таймеру launchd (не Claude Code) — раз в 2 мин
+    from .orphan import register_hook as register_orphan_tick  # lazy: import-light
+    register_orphan_tick(hsub)
+
     se = hsub.add_parser(
         "session-end",
         help="SessionEnd: stamp ended: on this sid's session passport (closing bookend)",
