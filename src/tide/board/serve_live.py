@@ -137,22 +137,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._pg_assets()
         if self.path.startswith("/work-add"):
             return self._work_add()
-        if self.path.startswith("/work-check"):
-            return self._work_check()
-        if self.path.startswith("/work-close"):
-            return self._work_close()
+        # ШЕСТИ ПИШУЩИХ РУЧЕК РАБОТЫ ЗДЕСЬ БОЛЬШЕ НЕТ (слово человека 02.09,
+        # поверх решения 37 нити: подтверждение идёт через чат, доска — витрина).
+        # Сняты /work-check, /work-reopen, /work-item-add, /work-close,
+        # /work-deadline, /work-fav — все шесть писали второй, СВОЙ журнал в
+        # work.md мимо вербов и мимо актов. Карточка работы осталась читаемой:
+        # состояние, пункты, пруфы, журнал видно, нажимать нечего.
         if self.path.startswith("/work-title"):
             return self._work_title()
-        if self.path.startswith("/work-deadline"):
-            return self._work_deadline()
-        if self.path.startswith("/work-reopen"):
-            return self._work_reopen()
         if self.path.startswith("/work-desc"):
             return self._work_desc()
-        if self.path.startswith("/work-fav"):
-            return self._work_fav()
-        if self.path.startswith("/work-item-add"):
-            return self._work_item_add()
         if self.path.startswith("/work-item-edit"):
             return self._work_item_edit()
         if self.path.startswith("/work-item-del"):
@@ -329,16 +323,66 @@ class Handler(BaseHTTPRequestHandler):
                           "<a href='/' style='color:#4f93e0'>← к доске</a></body>"
                           .format(msg)).encode())
 
-    def _tide(self, args, cwd=None, timeout=30):
+    def _tide(self, args, cwd=None, timeout=30, sid=None):
         """Прогнать ``tide <args>`` через дверь-сабпроцесс → (ok, вывод). Тонкий
         адаптер: доска не несёт своей копии механики (правки паспортов/planов —
-        только вербами tide)."""
+        только вербами tide).
+
+        *sid* — ОТ ЧЬЕГО ИМЕНИ пишется жест. С 02.09 верб кладёт своё событие
+        одним актом в паспорт сессии-вызывателя и больше никуда: у доски своей
+        сессии нет, и без этого жест кнопки («да» на плане, «поехали») не
+        оставлял бы следа ВООБЩЕ. Подставляем ведущую сессию нити, к которой
+        кнопка и уводит человека (`_work_route`), — событие ложится ровно туда,
+        где живёт разговор о работе, и называет свой канал словом («да —
+        кнопкой с доски»). Нет ведущей сессии — жест по-прежнему без следа, и
+        врать про это нечем.
+        """
+        env = dict(_TIDE_ENV)
+        if sid:
+            env["CLAUDE_CODE_SESSION_ID"] = sid
         try:
             r = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
-                               cwd=cwd, env=_TIDE_ENV)
+                               cwd=cwd, env=env)
             return r.returncode == 0, (r.stdout + r.stderr).strip()
         except Exception as exc:
             return False, str(exc)
+
+    def _head_sid(self, thread, root=None):
+        """Chat-id ведущей сессии нити *thread* — или «».
+
+        Тот же резолв, которым доска рисует ↗ на карточке работы и которым
+        `_work_route` возвращает человека в сессию (`live_projection.
+        _head_session`): жест кнопки обязан ложиться в ТУ ЖЕ сессию, в которую
+        она уводит, иначе акт и человек приедут в разные места.
+        """
+        if not thread:
+            return ""
+        import sys as _sys
+        if str(HERE) not in _sys.path:
+            _sys.path.insert(0, str(HERE))
+        proot = Path(root) if root else HERE.parent
+        home, _, bare = (thread or "").strip().rpartition("/")
+        if home:
+            named = self._roster_root(home)
+            if named:
+                proot, thread = Path(named), bare
+        try:
+            import live_projection as _lp
+            by_dir = {t["dir"]: t for t in _lp.read_threads(proot.name, proot)}
+            t = by_dir.get(thread) or by_dir.get(thread.rsplit("/", 1)[-1])
+            if t is None:
+                return ""
+            head = _lp._head_session(t) or {}
+            return head.get("claude") or ""
+        except Exception:      # вердикт кнопки важнее следа — молча без sid
+            return ""
+
+    def _work_sid(self, f, lines=None):
+        """Ведущая сессия НИТИ ЭТОЙ РАБОТЫ — от её имени и пишется жест кнопки."""
+        if lines is None:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        return self._head_sid(self._work_meta(lines, "thread"),
+                              self._work_root(f))
 
     # ── жест, ничего не изменивший, следа не оставляет (кандидат 164) ────────
     # Журнал паспорта читают ГЛАЗАМИ: по нему считают, сколько раз человек
@@ -628,7 +672,8 @@ class Handler(BaseHTTPRequestHandler):
         thread = self._work_meta(lines, "thread")
         by = "нить " + re.sub(r"^\d+-@?", "", thread) if thread else "агент"
         self._tide(["tide", "work", "dispatch", slug, "--to", by],
-                   cwd=str(root), timeout=30)
+                   cwd=str(root), timeout=30,
+                   sid=self._head_sid(thread, root))
         msg = "строитель отправлен"
         msg += self._work_go(f, st)
         return self._say_plain(200, msg)
@@ -938,78 +983,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write("работа заведена".encode())
 
-    def _work_close(self):
-        """Закрыть работу рукой человека (гейт по work-cycle.md): status → done
-        + строка в ## журнал. Кнопка живёт на карточке в состоянии review."""
-        import urllib.parse as _up
-        from datetime import datetime
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        f = self._work_file(q)
-        if not f:
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: не нашёл".encode()); return
-        slug = f.parent.name
-        text = f.read_text(encoding="utf-8")
-        if not re.search(r"^status: ", text, flags=re.M):
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: паспорт без status".encode()); return
-        if re.search(r"^status: done\s*$", text, flags=re.M):
-            return self._same("работа уже закрыта")
-        text = re.sub(r"^status: .*$", "status: done", text, count=1,
-                      flags=re.M)
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        line = "- {0} — закрыта владельцем (кнопка на доске)".format(stamp)
-        if re.search(r"^## журнал", text, flags=re.M):
-            text = text.rstrip("\n") + "\n" + line + "\n"
-        else:
-            text = text.rstrip("\n") + "\n\n## журнал\n" + line + "\n"
-        f.write_text(text, encoding="utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write("работа закрыта".encode())
-
-    def _work_deadline(self):
-        """Поставить/сменить/снять дедлайн кликом по чипу (решение 16.07):
-        d=YYYY-MM-DD — ставит/меняет, пустой d — снимает. Жест — в журнал."""
-        import urllib.parse as _up
-        from datetime import datetime
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        f = self._work_file(q)
-        d = (q.get("d") or [""])[0].strip()
-        if not f:
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: не нашёл".encode()); return
-        if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: кривой дедлайн".encode()); return
-        text = f.read_text(encoding="utf-8")
-        had = re.search(r"^deadline: (.*)$", text, flags=re.M)
-        if (had.group(1).strip() if had else "") == d:
-            return self._same("дедлайн уже {0}".format(d) if d
-                              else "дедлайна и не было")
-        if d and had:
-            text = re.sub(r"^deadline: .*$", "deadline: " + d, text,
-                          count=1, flags=re.M)
-        elif d:
-            text = re.sub(r"^created: .*$", "\\g<0>\ndeadline: " + d, text,
-                          count=1, flags=re.M)
-        elif had:
-            text = re.sub(r"^deadline: .*\n?", "", text, count=1, flags=re.M)
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        line = ("- {0} — дедлайн → {1} (рука человека, доска)".format(stamp, d)
-                if d else
-                "- {0} — дедлайн снят (рука человека, доска)".format(stamp))
-        if re.search(r"^## журнал", text, flags=re.M):
-            text = text.rstrip("\n") + "\n" + line + "\n"
-        else:
-            text = text.rstrip("\n") + "\n\n## журнал\n" + line + "\n"
-        f.write_text(text, encoding="utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(("дедлайн: " + (d or "снят")).encode())
-
     def _work_title(self):
         """Переписать заголовок работы кликом по тексту (решение 16.07)."""
         import urllib.parse as _up
@@ -1031,76 +1004,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write("ok".encode()); return
         self.send_response(400); self.end_headers()
         self.wfile.write("work: паспорт без заголовка".encode())
-
-    def _work_review_ready(self, lines):
-        """Чеклист закрыт: все согласованные пункты чекнуты и ни одного
-        предложения не висит. Тот же гейт, что у движка (work._review_ready):
-        считаем обе секции — фикс держит приёмку наравне с шагом плана, а
-        стоящее `- [?]` значит, что не закрыт сам разговор о плане."""
-        seen = done = 0
-        section = ""
-        for l in lines:
-            if l.startswith("## "):
-                section = l[3:].strip(); continue
-            if section not in ("чеклист", "фиксы"):
-                continue
-            m = re.match(r"- \[( |x|\?)\] ", l)
-            if not m:
-                continue
-            if m.group(1) == "?":
-                return False
-            seen += 1
-            done += m.group(1) == "x"
-        return bool(seen) and seen == done
-
-    def _work_reopen(self):
-        """Открыть закрытую работу обратно (решение 16.07) — в тот живой статус,
-        который ЧИТАЕТСЯ ИЗ ПАСПОРТА, а не всегда в open.
-
-        Передумал закрывать — это про статус done, и только про него: исполнитель
-        как числился в `taken-by`, так и числится, чеки как стояли, так и стоят.
-        Штамповать «open» поверх всего этого — сочинять состояние, которого не
-        бывает (кандидат 168: работа 31 висела open, за 04-pult и 1/1 сделано, и
-        записка передачи звала следующую сессию делать сделанное). Поэтому:
-        есть исполнитель и чеклист закрыт — review (работа готова, человек просто
-        не дозакрыл); есть исполнитель, работа не доделана — taken; никто не
-        брал — open."""
-        import urllib.parse as _up
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        f = self._work_file(q)
-        if not f:
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: не нашёл".encode()); return
-        lines = f.read_text(encoding="utf-8").splitlines()
-        st = self._work_status_of(lines)
-        if not st:
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: паспорт без status".encode()); return
-        if st != "done":
-            return self._same("работа уже открыта")
-        who = ""
-        for l in lines:
-            m = re.match(r"taken-by:\s*(\S.*)$", l)
-            if m:
-                who = m.group(1).strip(); break
-        if not who:
-            new, notes = "open", ["открыта заново (рука человека, доска)"]
-        elif self._work_review_ready(lines):
-            new = "review"
-            notes = ["открыта заново → числится за {0} (рука человека, доска)".format(who),
-                     "все пункты чекнуты → review, ждёт закрытия человеком"]
-        else:
-            new = "taken"
-            notes = ["открыта заново → taken, числится за {0} "
-                     "(рука человека, доска)".format(who)]
-        for j, l in enumerate(lines):
-            if l.startswith("status:"):
-                lines[j] = "status: " + new; break
-        self._work_journal(f, lines, *notes)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write("открыта заново ({0})".format(new).encode())
 
     def _work_desc(self):
         """Переписать описание (свободный текст между паспортом и чеклистом)
@@ -1136,58 +1039,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write("описание обновлено".encode())
 
-    def _work_fav(self):
-        """★ на работе (решение 30.07, фикс 7 работы 21): строка `fav: yes` в
-        шапке паспорта — сразу после status, тем же руслом, что у артефакта
-        (`_artifact_fav`). on=0 строку убирает. Отсутствие строки и есть «не
-        избранная», старые паспорта живут как жили. Доска ставит избранные
-        первыми — и на общей вкладке, и в нити.
-
-        Жест пишет строку в ## журнал, как все руки человека: в tide ничего не
-        тонет молча. Замок от даблклика стоит на кнопке (dataset.busy), но и
-        сюда повторный клик приходит безобидным — «уже в избранных» отвечаем
-        без второй записи в журнал."""
-        import urllib.parse as _up
-        from datetime import datetime
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        f = self._work_file(q)
-        on = (q.get("on") or ["1"])[0] == "1"
-        if not f:
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: не нашёл".encode()); return
-        text = f.read_text(encoding="utf-8")
-        if not re.search(r"^status: ", text, flags=re.M):
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: паспорт без status".encode()); return
-        had = re.search(r"^fav: (.*)$", text, flags=re.M)
-        is_on = bool(had) and had.group(1).strip().lower() in ("yes", "true", "1")
-        if is_on == on:  # доска могла не успеть обновиться — молча соглашаемся
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(("★ уже в избранных" if on
-                              else "уже не в избранных").encode()); return
-        if on and had:
-            text = re.sub(r"^fav: .*$", "fav: yes", text, count=1, flags=re.M)
-        elif on:
-            text = re.sub(r"^status: .*$", "\\g<0>\nfav: yes", text, count=1,
-                          flags=re.M)
-        else:
-            text = re.sub(r"^fav: .*\n?", "", text, count=1, flags=re.M)
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        line = "- {0} — {1} (рука человека, доска)".format(
-            stamp, "в избранных" if on else "убрана из избранных")
-        if re.search(r"^## журнал", text, flags=re.M):
-            text = text.rstrip("\n") + "\n" + line + "\n"
-        else:
-            text = text.rstrip("\n") + "\n\n## журнал\n" + line + "\n"
-        f.write_text(text, encoding="utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(("★ в избранных" if on
-                          else "убрана из избранных").encode())
-
     def _work_file(self, q):
         """Валидный work.md по ?f=<ключ> или None (общая дверь ручек работ).
 
@@ -1222,44 +1073,6 @@ class Handler(BaseHTTPRequestHandler):
         """
         return f.parents[4]
 
-    def _work_item_add(self):
-        """Дописать пункт чеклиста рукой человека с доски (слово 16.07):
-        строка `- [ ] <текст>` в конец секции ## чеклист.
-
-        РАБОТА НА ПРИЁМКЕ — другой случай (фикс 6 работы 22): то, что человек
-        дописал, глядя на сделанное, это не тихий пункт плана, а ФИКС. Ложится
-        в `## фиксы` тем же руслом, что и верб `tide work fix`, и возвращает
-        работу в taken — на столе снова работа, а не вердикт. Иначе накидка у
-        гейта пряталась бы среди плановых шагов, а работа так и висела бы
-        «готова к закрытию» с невыполненным пунктом внутри."""
-        import urllib.parse as _up
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        f = self._work_file(q)
-        text = (q.get("t") or [""])[0].strip()[:300]
-        if not f or not text:
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: не нашёл / пустой пункт".encode()); return
-        lines = f.read_text(encoding="utf-8").splitlines()
-        if self._work_status_of(lines) == "review":
-            return self._work_fix_add(f, lines, text)
-        try:
-            end = next(i for i, l in enumerate(lines)
-                       if l.startswith("## чеклист"))
-        except StopIteration:
-            self.send_response(400); self.end_headers()
-            self.wfile.write("work: паспорт без чеклиста".encode()); return
-        for j in range(end + 1, len(lines)):
-            if lines[j].startswith("## "):
-                break
-            if lines[j].strip():
-                end = j
-        lines.insert(end + 1, "- [ ] " + text)
-        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write("пункт добавлен".encode())
-
     def _work_status_of(self, lines):
         """`status:` из шапки паспорта работы («» — поля нет)."""
         for l in lines:
@@ -1267,69 +1080,6 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 return m.group(1)
         return ""
-
-    def _work_section(self, lines, title):
-        """(строка заголовка, строка ЗА последней строкой секции) или None."""
-        head = None
-        for j, l in enumerate(lines):
-            if not l.startswith("## "):
-                continue
-            if head is not None:
-                return head, j
-            if l[3:].strip() == title:
-                head = j
-        return (head, len(lines)) if head is not None else None
-
-    def _work_count_items(self, lines):
-        """Сколько пунктов работы лежит в этих строках. Считаем обе секции —
-        нумерация на доске сквозная через чеклист и фиксы, и номер нового
-        фикса продолжает её (тот же счёт, что у `_work_item_line`)."""
-        n, section = 0, ""
-        for l in lines:
-            if l.startswith("## "):
-                section = l[3:].strip(); continue
-            if section in ("чеклист", "фиксы") and re.match(r"- \[( |x|\?)\] ", l):
-                n += 1
-        return n
-
-    def _work_fix_add(self, f, lines, text):
-        """Накидка у приёмки → пункт в `## фиксы`, работа обратно в taken.
-
-        Пункт ложится сразу согласованным (`- [ ]`, не `- [?]`): его написала
-        рука человека, и просить у него «да» на своё же слово незачем. Секция
-        родится, если её ещё нет, — строго между чеклистом и журналом: номера
-        фиксов продолжают чеклист, а журнал по контракту work.md остаётся
-        последним."""
-        found = self._work_section(lines, "фиксы")
-        if found:
-            head, end = found
-            at = end
-            while at > head + 1 and not lines[at - 1].strip():
-                at -= 1  # за последним фиксом, до пустого хвоста секции
-            body = ["- [ ] " + text]
-        else:
-            found = self._work_section(lines, "чеклист")
-            if found:
-                at = found[1]
-            else:
-                jr = self._work_section(lines, "журнал")
-                at = jr[0] if jr else len(lines)
-            gap = [""] if at and lines[at - 1].strip() else []
-            body = gap + ["## фиксы", "- [ ] " + text, ""]
-        n = self._work_count_items(lines[:at]) + 1
-        lines = lines[:at] + body + lines[at:]
-        for j, l in enumerate(lines):
-            if l.startswith("status:"):
-                lines[j] = "status: taken"; break
-        self._work_journal(
-            f, lines,
-            "фикс {0} добавлен рукой с доски".format(n),
-            "фикс вернул в работу (review → taken)")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(
-            "фикс {0} добавлен · работа вернулась в работу".format(n).encode())
 
     # ── сделанное неприкосновенно (решение 30.07, фикс 5 работы 22) ───────────
     # Пункт с галочкой — уже история: на него сослался журнал («пункт N ✓ …»
@@ -1434,54 +1184,6 @@ class Handler(BaseHTTPRequestHandler):
                 return j, m.group(1)
         return None
 
-    def _work_check(self):
-        """Тоггл пункта чеклиста работы: переписывает `- [ ]`↔`- [x]` строки i."""
-        import urllib.parse as _up
-        q = _up.parse_qs(_up.urlparse(self.path).query)
-        idx = (q.get("i") or [""])[0]
-        f = self._work_file(q)
-        if not f or not idx.isdigit():
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: не нашёл".encode()); return
-        i = int(idx)
-        lines = f.read_text(encoding="utf-8").splitlines()
-        hit = self._work_item_line(lines, i)
-        if hit is None:
-            self.send_response(404); self.end_headers()
-            self.wfile.write("work: нет такого пункта".encode()); return
-        j, state = hit
-        if state == "?":
-            # предложенный агентом пункт чекать нечем: сперва «да» человека
-            self.send_response(400); self.end_headers()
-            self.wfile.write(
-                "work: пункт ещё не согласован — сначала «да»".encode()); return
-        was_done = state == "x"
-        lines[j] = ("- [ ] " if was_done else "- [x] ") + lines[j][6:]
-        # ченджлог работы (решение 16.07): и жест руки — строка в ## журнал,
-        # чтобы видно было, кто когда что сделал
-        self._work_journal(f, lines, "пункт {0} {1} (рука человека, доска)".format(
-            i + 1, "расчекнут" if was_done else "чекнут"))
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write("ok".encode())
-
-    def _work_journal(self, f, lines, *notes):
-        """Записать паспорт работы и дописать *notes* строками в ## журнал
-        (секция заводится, если её ещё нет) — общая дверь жестов доски,
-        меняющих чеклист: ничего не тонет молча. Нот бывает несколько: один
-        жест несёт два факта (фикс лёг И вернул работу в taken) — и читаться
-        они должны отдельными строками, как их пишет верб."""
-        from datetime import datetime
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        text = "\n".join(lines) + "\n"
-        block = "".join("- {0} — {1}\n".format(stamp, n) for n in notes)
-        if re.search(r"^## журнал", text, flags=re.M):
-            text = text.rstrip("\n") + "\n" + block
-        else:
-            text = text.rstrip("\n") + "\n\n## журнал\n" + block
-        f.write_text(text, encoding="utf-8")
-
     # ── ГЕЙТ СОГЛАСОВАНИЯ ПЛАНА: «да» кнопкой (решение 07.08, работа 44) ──────
     # Гейт висел словом в чат: человек видел карточку на доске, шёл в терминал,
     # диктовал «да», агент звал `tide work agree`, потом `take`, потом строил.
@@ -1554,7 +1256,8 @@ class Handler(BaseHTTPRequestHandler):
         st = self._work_status_of(lines)
         ok, out = self._tide(["tide", "work", "agree", slug,
                               "--word", self.GATE_YES],
-                             cwd=str(self._work_root(f)), timeout=30)
+                             cwd=str(self._work_root(f)), timeout=30,
+                             sid=self._work_sid(f, lines))
         if not ok:
             self.send_response(500)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1598,7 +1301,8 @@ class Handler(BaseHTTPRequestHandler):
         ok, out = self._tide(["tide", "work", "agree", f.parent.name,
                               "--drop", str(int(idx) + 1),
                               "--word", self.GATE_NO],
-                             cwd=str(self._work_root(f)), timeout=30)
+                             cwd=str(self._work_root(f)), timeout=30,
+                             sid=self._work_sid(f, lines))
         self.send_response(200 if ok else 500)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
@@ -1653,7 +1357,8 @@ class Handler(BaseHTTPRequestHandler):
             by = "нить " + re.sub(r"^\d+-@?", "", thread) if thread else "агент"
             ok, out = self._tide(["tide", "work", "take", slug,
                                   "--by", by, "--word", self.GATE_YES],
-                                 cwd=str(self._work_root(f)), timeout=30)
+                                 cwd=str(self._work_root(f)), timeout=30,
+                                 sid=self._head_sid(thread, self._work_root(f)))
             tail = " · взята" if ok else " · не взялась ({0})".format(out[:80])
             if not ok:
                 return tail
@@ -1850,8 +1555,9 @@ class Handler(BaseHTTPRequestHandler):
         отсутствие строки и есть «не сохранён».
 
         Повторный клик (★ по уже сохранённому, ✕ по несохранённому) ничего не
-        меняет — отвечаем «уже так» без строки в журнал, тем же руслом, что у
-        работы (`_work_fav`)."""
+        меняет — отвечаем «уже так» без строки в журнал. Такая же звезда была и
+        у работы; её сняли вместе с остальными пятью пишущими кнопками карточки
+        (слово человека 02.09) — у артефакта рука человека осталась."""
         import urllib.parse as _up
         q = _up.parse_qs(_up.urlparse(self.path).query)
         f = self._artifact_file(q)

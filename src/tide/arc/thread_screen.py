@@ -381,6 +381,11 @@ def render(root: Path, ref: Optional[str] = None) -> str:
     # --- works in flight / waiting on the human
     out += [""] + _works_block(root, tdir)
 
+    # --- what the leading session actually DID, in its own act lines
+    acted = _acts_block(tdir)
+    if acted:
+        out += [""] + acted
+
     # --- sessions: which arc holds what
     out += [""] + _sessions_block(tdir)
 
@@ -510,6 +515,58 @@ def _works_block(root: Path, tdir: Path) -> List[str]:
         out += _capped(["    {0}  {1}".format(n, _clip(c, 56)) for n, c in table],
                        "tide artifact list")
     return out
+
+
+# Как длинно акт говорит на этом экране, и сколько их берётся с хвоста. Десять —
+# это примерно рабочий день ведущей сессии: меньше не история, больше не экран.
+ACTS_TAIL = 10
+ACT_WIDTH = 96
+
+
+def _acts_block(tdir: Path) -> List[str]:
+    """Лента актов ведущей сессии — новое сверху; ПУСТО, когда актов нет.
+
+    Акт это то, что сессия сделала, сказанное одной строкой: что · пруф · адрес
+    (:mod:`tide.acts`). До этого экран показывал, что работа «в полёте», и ни
+    слова о том, ЧТО по ней сделано за день — за этим приходилось открывать
+    паспорт сессии, чего никто не делал.
+
+    Берётся ведущая сессия, а не вся нить: экран отвечает «где мы сейчас», и
+    чужая линия работы в этом ответе была бы шумом (вся нить — в паспортах,
+    ``where to look`` показывает дорогу). Молчит целиком, а не строкой «none»:
+    у нити без актов нет и вопроса, на который эта строка отвечала бы.
+    """
+    from .. import acts
+
+    try:
+        head = acts.head_session(Path(tdir))
+        if head is None:
+            return []
+        rows = [a for a in acts.read_acts(Path(tdir)) if a.session == head]
+    except Exception:       # noqa: BLE001 — вид не смеет уронить экран
+        return []
+    if not rows:
+        return []
+    out = ["acts · {0} from {1}{2}".format(
+        len(rows), head.name,
+        " (last {0})".format(ACTS_TAIL) if len(rows) > ACTS_TAIL else "")]
+    for a in rows[:ACTS_TAIL]:
+        out.append("  {0}  {1}".format(a.at.strftime("%H:%M"), _act_text(a)))
+    return out
+
+
+def _act_text(a) -> str:
+    """Строка акта как есть, а если длинна — с сохранённым хвостом-адресом.
+
+    Адрес (``#66.4``) режется последним из всего, что есть в акте: без него
+    строка перестаёт говорить, ПО ЧЕМУ сделан жест, а это половина её смысла.
+    """
+    from .. import acts
+
+    if len(a.text) <= ACT_WIDTH or not a.ref:
+        return _clip(a.text, ACT_WIDTH)
+    tail = " · #" + a.ref
+    return _clip(acts.strip_ref(a.text), ACT_WIDTH - len(tail)) + tail
 
 
 def _sessions_block(tdir: Path) -> List[str]:

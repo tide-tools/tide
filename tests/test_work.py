@@ -22,6 +22,43 @@ def _text(root, key="01"):
     return (work._find(root, key) / "work.md").read_text(encoding="utf-8")
 
 
+def _view(root, key="01"):
+    """Журнал работы так, как его читают, — ВИД на акты (то, что печатает show).
+
+    Сырьё ``work.md`` для журнала больше не годится (работа 66 п.1, финал):
+    жест ложится АКТОМ в паспорт сессии, а ``## журнал`` файла не дописывается.
+    Написанное в файл до того дня читается вечно, поэтому вид собирает и файл,
+    и акты — и проверять жест надо по нему, а не по сырому паспорту.
+    """
+    wdir = work._find(root, key)
+    return "\n".join(work.journal_view(
+        root, wdir, (wdir / "work.md").read_text(encoding="utf-8")))
+
+
+def _acts_of(session):
+    """Акты сессии как текст — то, что верб на самом деле записал.
+
+    Нужен там, где вид с карточки жест не покажет: акты работы читаются через
+    её ``thread:``, и если карточка смотрит в нить, которой на диске нет (или
+    нить у неё сняли), с карточки они невидимы, хотя записаны и целы.
+    """
+    return (session / "arc.md").read_text(encoding="utf-8")
+
+
+def _old_journal(root, *lines, key="01"):
+    """Дописать строки в ``## журнал`` файла РУКАМИ — «работа, написанная до 66».
+
+    Так выглядели все паспорта, пока журнал писал сам верб. Движок так больше
+    не делает, а читать такие файлы обязан вечно, — и это единственный способ
+    завести их в тесте.
+    """
+    f = work._find(root, key) / "work.md"
+    text = f.read_text(encoding="utf-8").rstrip("\n")
+    if "## журнал" not in text:
+        text += "\n\n## журнал"
+    f.write_text(text + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _seed(item="x", key="01"):
     """Первый пункт чеклиста руками — то, что раньше клал сам ``add``.
 
@@ -66,7 +103,7 @@ def _shelf(root):
     return paths.candidates_dir(root)
 
 
-def test_add_from_candidate_carries_the_text_and_clears_the_shelf(in_project):
+def test_add_from_candidate_carries_the_text_and_clears_the_shelf(in_project, acting):
     """Кандидат 174: один верб вместо двух жестов — иначе полка дублирует стол."""
     cli.main(["candidate", "add", "живой пульт", "механика движка: верб рождения"])
     assert (_shelf(in_project) / "01-zhivoy-pult.md").is_file()
@@ -78,7 +115,9 @@ def test_add_from_candidate_carries_the_text_and_clears_the_shelf(in_project):
     assert "status: open" in text          # цикл согласования не обойдён
     assert "## план" in text
     assert "механика движка: верб рождения" in text
-    assert "рождена из кандидата 01-zhivoy-pult" in text
+    # связь — полем паспорта (решение 38, 02.09), а не жестом на ленте актов:
+    # акт живёт в сессии-вызывателе, а кнопка доски бывает без сессии вовсе
+    assert "from-cand: 01" in text
     # с полки ушёл, но не с диска
     assert not (_shelf(in_project) / "01-zhivoy-pult.md").exists()
     assert (_shelf(in_project) / "__dropped__" / "01-zhivoy-pult.md").is_file()
@@ -113,6 +152,27 @@ def test_plain_add_still_touches_no_candidate(in_project):
     assert "## план" not in _text(in_project)
 
 
+def test_plain_add_has_no_from_cand_field(in_project):
+    """Работа без кандидата — без строки ``from-cand:`` вовсе, не пустой."""
+    cli.main(["work", "add", "Работа"])
+    text = _text(in_project)
+    assert "from-cand" not in text
+
+
+def test_from_cand_field_is_set_once_and_no_verb_touches_it(in_project, acting):
+    """Решение 38: поле ставится один раз при рождении, как ``created:`` — ни
+    ``take``, ``propose``/``agree``, ``check`` с пруфом, ни ``close`` его не трогают."""
+    cli.main(["candidate", "add", "один", "тело идеи"])
+    cli.main(["work", "add", "Работа", "--cand", "01"])
+    assert "from-cand: 01" in _text(in_project)
+    cli.main(["work", "take", "01", "--by", "строитель"])
+    cli.main(["work", "propose", "01", "пункт"])
+    cli.main(["work", "agree", "01", "--word", "да"])
+    cli.main(["work", "check", "01", "1", "--proof", "готово"])
+    cli.main(["work", "close", "01", "--word", "готово"])
+    assert "from-cand: 01" in _text(in_project)
+
+
 def test_candidate_gist_drops_the_header_not_the_prose(in_project):
     """Первая строка идеи часто выглядит ключом («механика движка: …»)."""
     text = ("# 07-ideya\n\nfrom: -\ndropped: 2026-08-01 14:25\n\n"
@@ -123,7 +183,7 @@ def test_candidate_gist_drops_the_header_not_the_prose(in_project):
 
 # --- checklist ----------------------------------------------------------------
 
-def test_checklist_replaces_raw_item_and_journals(in_project):
+def test_checklist_replaces_raw_item_and_journals(in_project, acting):
     cli.main(["work", "add", "вылить выплаты"])
     rc = cli.main(["work", "checklist", "01", "поднять прод", "прогнать смоук"])
     assert rc == 0
@@ -131,7 +191,7 @@ def test_checklist_replaces_raw_item_and_journals(in_project):
     assert "- [ ] поднять прод" in text
     assert "- [ ] прогнать смоук" in text
     assert "- [ ] вылить выплаты" not in text
-    assert "чеклист согласован: 2 пункт(ов)" in text
+    assert "чеклист согласован: 2 пункт(ов)" in _view(in_project)
 
 
 def test_checklist_refuses_over_checked_progress_without_force(in_project, capsys):
@@ -147,7 +207,7 @@ def test_checklist_refuses_over_checked_progress_without_force(in_project, capsy
 
 # --- plan (## план) -----------------------------------------------------------
 
-def test_plan_lands_between_description_and_checklist(in_project):
+def test_plan_lands_between_description_and_checklist(in_project, acting):
     cli.main(["work", "add", "вылить выплаты"])
     rc = cli.main(["work", "plan", "01", "снять слепок\\nпрогнать смоук"])
     assert rc == 0
@@ -156,10 +216,10 @@ def test_plan_lands_between_description_and_checklist(in_project):
     assert "снять слепок\nпрогнать смоук" in text  # \n стал переносом
     assert text.index("## план") < text.index("## чеклист")
     assert text.index("created:") < text.index("## план")
-    assert "план предложен агентом" in text
+    assert "план предложен агентом" in _view(in_project)
 
 
-def test_plan_replaces_body_and_moves_no_status(in_project):
+def test_plan_replaces_body_and_moves_no_status(in_project, acting):
     cli.main(["work", "add", "x"])
     cli.main(["work", "plan", "01", "первый заход"])
     assert cli.main(["work", "plan", "01", "второй заход"]) == 0
@@ -168,7 +228,7 @@ def test_plan_replaces_body_and_moves_no_status(in_project):
     assert "первый заход" not in text
     assert text.count("## план") == 1
     assert "status: open" in text  # план — слово агента, не жест статуса
-    assert "план обновлён агентом" in text
+    assert "план обновлён агентом" in _view(in_project)
 
 
 def test_plan_refuses_empty_and_closed(in_project, capsys):
@@ -182,7 +242,7 @@ def test_plan_refuses_empty_and_closed(in_project, capsys):
 
 # --- propose (- [?]) ----------------------------------------------------------
 
-def test_propose_appends_question_items_with_real_numbers(in_project, capsys):
+def test_propose_appends_question_items_with_real_numbers(in_project, acting, capsys):
     cli.main(["work", "add", "вылить выплаты"])  # даёт пункт 1
     _seed("вылить выплаты")
     capsys.readouterr()
@@ -193,7 +253,7 @@ def test_propose_appends_question_items_with_real_numbers(in_project, capsys):
     assert "- [ ] вылить выплаты" in text
     assert "- [?] поднять прод" in text
     assert "- [?] прогнать смоук" in text
-    assert "предложены шаги 2–3 (ждут «да» человека)" in text
+    assert "предложены шаги 2–3 (ждут «да» человека)" in _view(in_project)
     assert "status: open" in text
 
 
@@ -214,6 +274,8 @@ def test_propose_hint_puts_the_verb_first_no_bare_button_promise(in_project, cap
 
 
 def test_review_hint_puts_close_word_first_no_bare_button_promise(in_project, capsys):
+    """Кнопки «закрыть» на доске больше нет вовсе (слово 02.09) — и подсказка
+    её не обещает ни в каком виде: путь один, слово человека и верб."""
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -222,15 +284,14 @@ def test_review_hint_puts_close_word_first_no_bare_button_promise(in_project, ca
     out = capsys.readouterr().out
     assert "→ review" in out
     assert "tide work close --word" in out
-    assert "кнопка на доске" not in out
-    assert "живой доске" in out
+    assert "кнопк" in out and "нет" in out      # сказано прямо: кнопки нет
 
 
-def test_propose_single_item_speaks_singular(in_project):
+def test_propose_single_item_speaks_singular(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     assert cli.main(["work", "propose", "01", "добить хвост"]) == 0
-    assert "предложен шаг 2 (ждёт «да» человека)" in _text(in_project)
+    assert "предложен шаг 2 (ждёт «да» человека)" in _view(in_project)
 
 
 def test_standing_offer_holds_review_back(in_project):
@@ -451,7 +512,7 @@ def test_item_blocks_read_description_back(in_project):
     assert blocks == [(" ", "x", ""), ("?", "Тайтл", "подробности")]
 
 
-def test_description_does_not_shift_item_numbers(in_project, capsys):
+def test_description_does_not_shift_item_numbers(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "Первый\\nдетали первого", "Второй"])
     cli.main(["work", "take", "01"])
@@ -459,7 +520,8 @@ def test_description_does_not_shift_item_numbers(in_project, capsys):
     assert cli.main(["work", "check", "01", "2", "--proof", "коммит abc"]) == 0
     text = _text(in_project)
     assert "- [ ] Первый\n  детали первого\n- [x] Второй\n" in text
-    assert "пункт 2 ✓ «Второй»" in text  # в журнал идёт тайтл, не описание
+    # в жест идёт ТАЙТЛ пункта, не его описание
+    assert "пункт 2 ✓ «Второй»" in _view(in_project)
 
 
 def test_check_keeps_description_and_autoreviews(in_project):
@@ -498,7 +560,8 @@ def test_show_prints_description_indented_under_title(in_project, capsys):
 
 # --- propose --replace --------------------------------------------------------
 
-def test_propose_replace_withdraws_old_offers_with_descriptions(in_project, capsys):
+def test_propose_replace_withdraws_old_offers_with_descriptions(in_project, acting,
+                                                                capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "propose", "01", "Старое\\nстарые детали", "Тоже старое"])
@@ -507,14 +570,14 @@ def test_propose_replace_withdraws_old_offers_with_descriptions(in_project, caps
     assert rc == 0
     assert "предложения заменены: шаг 2" in capsys.readouterr().out
     text = _text(in_project)
-    assert "Старое" not in text.split("## журнал")[0]
+    assert "Старое" not in text
     assert "старые детали" not in text
-    assert "Тоже старое" not in text.split("## журнал")[0]
+    assert "Тоже старое" not in text
     assert "- [?] Новое\n  новые детали\n" in text
-    assert "предложения заменены: шаг 2 (ждёт «да» человека)" in text
+    assert "предложения заменены: шаг 2 (ждёт «да» человека)" in _view(in_project)
 
 
-def test_propose_replace_keeps_agreed_and_checked_items(in_project):
+def test_propose_replace_keeps_agreed_and_checked_items(in_project, acting):
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "Согласованный", "Второй согласованный"])
     cli.main(["work", "take", "01"])
@@ -527,7 +590,7 @@ def test_propose_replace_keeps_agreed_and_checked_items(in_project):
     assert "- [ ] Второй согласованный" in text
     assert "- [?] Предложение" not in text
     assert "- [?] А теперь так" in text
-    assert "предложения заменены: шаги 3–4" in text
+    assert "предложения заменены: шаги 3–4" in _view(in_project)
     assert "status: taken" in text  # замена предложений — не жест статуса
 
 
@@ -542,7 +605,7 @@ def test_propose_without_replace_still_appends(in_project):
 
 # --- agree (слово человека вместо кнопки) -------------------------------------
 
-def test_agree_flips_proposal_and_keeps_description(in_project, capsys):
+def test_agree_flips_proposal_and_keeps_description(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "propose", "01", "Поднять прод\\nсначала смоук"])
@@ -553,7 +616,7 @@ def test_agree_flips_proposal_and_keeps_description(in_project, capsys):
     text = _text(in_project)
     assert "- [ ] Поднять прод\n  сначала смоук\n" in text
     assert "[?]" not in text
-    assert "пункт 2 подтверждён словом: «да, давай так»" in text
+    assert "пункт 2 подтверждён · слово: «да, давай так»" in _view(in_project)
     assert "status: open" in text  # согласование — не жест статуса
 
 
@@ -580,16 +643,16 @@ def test_agree_refuses_agreed_and_checked_items(in_project, capsys):
     assert "нет пункта 9" in capsys.readouterr().err
 
 
-def test_agree_without_numbers_takes_every_offer(in_project):
+def test_agree_without_numbers_takes_every_offer(in_project, acting):
     cli.main(["work", "add", "x"])
     cli.main(["work", "propose", "01", "Первое\\nдетали", "Второе"])
     assert cli.main(["work", "agree", "01", "--word", "да всё верно"]) == 0
     text = _text(in_project)
     assert "- [ ] Первое\n  детали\n- [ ] Второе\n" in text
-    assert "предложения подтверждены словом: «да всё верно»" in text
+    assert "предложения подтверждены · слово: «да всё верно»" in _view(in_project)
 
 
-def test_agree_all_flag_matches_bare_call(in_project, capsys):
+def test_agree_all_flag_matches_bare_call(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     cli.main(["work", "propose", "01", "Первое", "Второе"])
     capsys.readouterr()
@@ -597,7 +660,7 @@ def test_agree_all_flag_matches_bare_call(in_project, capsys):
     assert "(все предложения)" in capsys.readouterr().out
     text = _text(in_project)
     assert "[?]" not in text
-    assert "предложения подтверждены словом: «да»" in text
+    assert "предложения подтверждены · слово: «да»" in _view(in_project)
 
 
 def test_agree_all_refuses_when_nothing_is_offered(in_project, capsys):
@@ -606,20 +669,21 @@ def test_agree_all_refuses_when_nothing_is_offered(in_project, capsys):
     assert "нет предложенных пунктов" in capsys.readouterr().err
 
 
-def test_agree_takes_part_of_the_offer_and_leaves_the_rest(in_project):
+def test_agree_takes_part_of_the_offer_and_leaves_the_rest(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "propose", "01", "Первое", "Второе", "Третье"])
     assert cli.main(["work", "agree", "01", "2", "4", "--word", "эти два"]) == 0
     text = _text(in_project)
     assert "- [ ] Первое\n- [?] Второе\n- [ ] Третье\n" in text
-    assert "пункт 2 подтверждён словом: «эти два»" in text
-    assert "пункт 4 подтверждён словом: «эти два»" in text
+    view = _view(in_project)
+    assert "пункт 2 подтверждён · слово: «эти два»" in view
+    assert "пункт 4 подтверждён · слово: «эти два»" in view
 
 
 # --- agree --drop (симметричное «нет») ----------------------------------------
 
-def test_agree_drop_removes_item_with_its_description(in_project, capsys):
+def test_agree_drop_removes_item_with_its_description(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "propose", "01", "Лишнее\\nлишние детали", "Нужное"])
@@ -628,10 +692,10 @@ def test_agree_drop_removes_item_with_its_description(in_project, capsys):
     assert rc == 0
     assert "снято: шаг 2" in capsys.readouterr().out
     text = _text(in_project)
-    assert "Лишнее" not in text.split("## журнал")[0]
+    assert "Лишнее" not in text
     assert "лишние детали" not in text
     assert "- [?] Нужное" in text
-    assert "пункт 2 снят словом: «это не надо»" in text
+    assert "предложенный пункт 2 снят · слово: «это не надо»" in _view(in_project)
 
 
 def test_agree_drop_renumbers_the_rest_for_the_next_gesture(in_project):
@@ -646,7 +710,7 @@ def test_agree_drop_renumbers_the_rest_for_the_next_gesture(in_project):
     assert "- [ ] Второе\n- [?] Третье\n" in _text(in_project)
 
 
-def test_agree_drop_several_keeps_the_numbers_the_human_saw(in_project):
+def test_agree_drop_several_keeps_the_numbers_the_human_saw(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "propose", "01", "Первое", "Второе\\nдетали", "Третье"])
@@ -654,8 +718,9 @@ def test_agree_drop_several_keeps_the_numbers_the_human_saw(in_project):
                      "--word", "оба мимо"]) == 0
     text = _text(in_project)
     assert [t for _, t in work.all_items(text)] == ["x", "Второе"]
-    assert "пункт 2 снят словом: «оба мимо»" in text
-    assert "пункт 4 снят словом: «оба мимо»" in text
+    view = _view(in_project)
+    assert "предложенный пункт 2 снят · слово: «оба мимо»" in view
+    assert "предложенный пункт 4 снят · слово: «оба мимо»" in view
 
 
 def test_agree_drop_refuses_agreed_item_and_mixed_call(in_project, capsys):
@@ -672,7 +737,7 @@ def test_agree_drop_refuses_agreed_item_and_mixed_call(in_project, capsys):
 
 # --- гейт review: висящее предложение держит приёмку ---------------------------
 
-def test_propose_pulls_a_reviewed_work_back_to_taken(in_project, capsys):
+def test_propose_pulls_a_reviewed_work_back_to_taken(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -683,7 +748,8 @@ def test_propose_pulls_a_reviewed_work_back_to_taken(in_project, capsys):
     assert "работа вернулась в работу" in capsys.readouterr().out
     text = _text(in_project)
     assert "status: taken" in text
-    assert "предложены шаги — работа вернулась в работу (review → taken)" in text
+    assert ("предложены шаги — работа вернулась в работу (review → taken)"
+            in _view(in_project))
 
 
 def test_agree_of_last_offer_waits_for_the_proof(in_project, capsys):
@@ -702,7 +768,7 @@ def test_agree_of_last_offer_waits_for_the_proof(in_project, capsys):
     assert "status: review" in _text(in_project)
 
 
-def test_agree_pulls_back_a_work_left_in_review_with_offers(in_project):
+def test_agree_pulls_back_a_work_left_in_review_with_offers(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -714,10 +780,10 @@ def test_agree_pulls_back_a_work_left_in_review_with_offers(in_project):
     assert cli.main(["work", "agree", "01", "2", "--word", "да"]) == 0
     text = _text(in_project)
     assert "status: taken" in text
-    assert "чеклист снова неполон → taken" in text
+    assert "чеклист снова неполон → taken" in _view(in_project)
 
 
-def test_drop_of_last_offer_closes_the_review_gate(in_project, capsys):
+def test_drop_of_last_offer_closes_the_review_gate(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -730,7 +796,7 @@ def test_drop_of_last_offer_closes_the_review_gate(in_project, capsys):
     assert "→ review" in capsys.readouterr().out
     text = _text(in_project)
     assert "status: review" in text
-    assert "все пункты чекнуты → review" in text
+    assert "все пункты чекнуты → review" in _view(in_project)
 
 
 def test_drop_of_one_of_two_offers_keeps_the_work_open(in_project):
@@ -753,7 +819,7 @@ def test_fix_refuses_without_word_and_keeps_the_file(in_project, capsys):
     assert _text(in_project) == before  # отказ файл не трогает
 
 
-def test_fix_lands_agreed_in_its_own_section(in_project, capsys):
+def test_fix_lands_agreed_in_its_own_section(in_project, acting, capsys):
     cli.main(["work", "add", "вылить выплаты"])
     _seed("вылить выплаты")
     capsys.readouterr()
@@ -766,13 +832,12 @@ def test_fix_lands_agreed_in_its_own_section(in_project, capsys):
     # слово человека = согласование: пункт сразу «- [ ]», пунктир не нужен
     assert "- [ ] Добить хвост\n  ещё и кабинет\n" in text
     assert "[?]" not in text
-    assert "фикс 2 добавлен словом: «тут ещё хвост остался»" in text
-    # секция между чеклистом и журналом — номера продолжают чеклист
+    assert "фикс 2 добавлен · слово: «тут ещё хвост остался»" in _view(in_project)
+    # секция стоит СРАЗУ ЗА чеклистом — номера фиксов продолжают его
     assert text.index("## чеклист") < text.index("## фиксы")
-    assert text.index("## фиксы") < text.index("## журнал")
 
 
-def test_fix_numbering_runs_through_both_sections(in_project, capsys):
+def test_fix_numbering_runs_through_both_sections(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "Первый", "Второй", "Третий", "Четвёртый"])
     capsys.readouterr()
@@ -786,20 +851,20 @@ def test_fix_numbering_runs_through_both_sections(in_project, capsys):
     assert cli.main(["work", "check", "01", "5", "--proof", "коммит abc"]) == 0
     text = _text(in_project)
     assert "- [x] Пятым будет фикс" in text
-    assert "пункт 5 ✓ «Пятым будет фикс»" in text
+    assert "пункт 5 ✓ «Пятым будет фикс»" in _view(in_project)
     assert "- [ ] Четвёртый" in text  # соседний номер не съехал
 
 
-def test_fix_span_speaks_plural(in_project, capsys):
+def test_fix_span_speaks_plural(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     capsys.readouterr()
     assert cli.main(["work", "fix", "01", "Раз", "Два", "--word", "и вот это"]) == 0
     assert "фиксы 2–3 добавлены" in capsys.readouterr().out
-    assert "фиксы 2–3 добавлены словом: «и вот это»" in _text(in_project)
+    assert "фиксы 2–3 добавлены · слово: «и вот это»" in _view(in_project)
 
 
-def test_second_fix_appends_to_the_same_section(in_project):
+def test_second_fix_appends_to_the_same_section(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "fix", "01", "Первый фикс", "--word", "раз"])
@@ -807,10 +872,10 @@ def test_second_fix_appends_to_the_same_section(in_project):
     text = _text(in_project)
     assert text.count("## фиксы") == 1
     assert "- [ ] Первый фикс\n- [ ] Второй фикс\n" in text
-    assert "фикс 3 добавлен словом: «два»" in text
+    assert "фикс 3 добавлен · слово: «два»" in _view(in_project)
 
 
-def test_fix_pulls_a_reviewed_work_back_to_taken(in_project, capsys):
+def test_fix_pulls_a_reviewed_work_back_to_taken(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -822,7 +887,7 @@ def test_fix_pulls_a_reviewed_work_back_to_taken(in_project, capsys):
     assert "работа вернулась в работу" in capsys.readouterr().out
     text = _text(in_project)
     assert "status: taken" in text
-    assert "фикс вернул в работу (review → taken)" in text
+    assert "фикс вернул в работу (review → taken)" in _view(in_project)
 
 
 def test_review_waits_for_the_fixes_too(in_project, capsys):
@@ -869,7 +934,7 @@ def test_checklist_replacement_leaves_the_fixes_alone(in_project):
     assert text.index("Новый шаг") < text.index("Накидка")
 
 
-def test_proposal_takes_its_number_before_the_fixes(in_project, capsys):
+def test_proposal_takes_its_number_before_the_fixes(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "fix", "01", "Накидка", "--word", "ещё вот это"])
@@ -882,7 +947,7 @@ def test_proposal_takes_its_number_before_the_fixes(in_project, capsys):
     assert cli.main(["work", "agree", "01", "2", "--word", "да"]) == 0
     text = _text(in_project)
     assert "- [ ] Предложение\n" in text
-    assert "пункт 2 подтверждён словом: «да»" in text
+    assert "пункт 2 подтверждён · слово: «да»" in _view(in_project)
 
 
 def test_list_counts_both_blocks_as_one_progress(in_project, capsys):
@@ -909,7 +974,7 @@ def test_show_prints_the_fixes_section(in_project, capsys):
 
 # --- take --------------------------------------------------------------------
 
-def test_take_moves_open_to_taken_and_journals(in_project):
+def test_take_moves_open_to_taken_and_journals(in_project, acting):
     cli.main(["work", "add", "вылить выплаты"])
     rc = cli.main(["work", "take", "01", "--by", "myapp-agent",
                    "--word", "возьми выплаты"])
@@ -918,8 +983,8 @@ def test_take_moves_open_to_taken_and_journals(in_project):
     assert "status: taken" in text
     assert "taken-by: myapp-agent" in text
     assert "taken-at: " in text
-    assert "## журнал" in text
-    assert "взята в работу (myapp-agent) по слову: «возьми выплаты»" in text
+    assert ("взята в работу (myapp-agent) · нить 01-@release · "
+            "слово: «возьми выплаты»" in _view(in_project))
 
 
 def test_take_refuses_second_take_and_done(in_project, capsys):
@@ -934,7 +999,8 @@ def test_take_refuses_second_take_and_done(in_project, capsys):
 
 # --- dispatch (строитель отправлен) -------------------------------------------
 
-def test_dispatch_journals_the_builder_and_moves_no_status(in_project, capsys):
+def test_dispatch_journals_the_builder_and_moves_no_status(in_project, acting,
+                                                           capsys):
     """Кандидаты 179/180: отправку строителя больше не держит голова."""
     cli.main(["work", "add", "x"])
     cli.main(["work", "take", "01"])
@@ -942,20 +1008,19 @@ def test_dispatch_journals_the_builder_and_moves_no_status(in_project, capsys):
     rc = cli.main(["work", "dispatch", "01", "--to", "04-pult"])
     assert rc == 0
     assert "строитель отправлен: 04-pult" in capsys.readouterr().out
-    text = _text(in_project)
-    assert "строитель отправлен: 04-pult" in text
-    assert "status: taken" in text  # событие, а не состояние
+    assert "строитель отправлен: 04-pult" in _view(in_project)
+    assert "status: taken" in _text(in_project)  # событие, а не состояние
 
 
-def test_dispatch_again_is_another_line_not_an_error(in_project):
+def test_dispatch_again_is_another_line_not_an_error(in_project, acting):
     """Воркера переотправляют — каждая отправка свой факт со своим временем."""
     cli.main(["work", "add", "x"])
     cli.main(["work", "take", "01"])
     assert cli.main(["work", "dispatch", "01", "--to", "первый"]) == 0
     assert cli.main(["work", "dispatch", "01", "--to", "второй"]) == 0
-    text = _text(in_project)
-    assert "строитель отправлен: первый" in text
-    assert "строитель отправлен: второй" in text
+    view = _view(in_project)
+    assert "строитель отправлен: первый" in view
+    assert "строитель отправлен: второй" in view
 
 
 def test_dispatch_refuses_a_work_nobody_took(in_project, capsys):
@@ -987,24 +1052,25 @@ def test_dispatch_wants_a_name(in_project, capsys):
 
 # --- responsible thread (нить) ------------------------------------------------
 
-def test_take_records_explicit_thread(in_project):
+def test_take_records_explicit_thread(in_project, acting):
     cli.main(["work", "add", "x"])
     rc = cli.main(["work", "take", "01", "--thread", "19-@work"])
     assert rc == 0
     text = _text(in_project)
     assert "thread: 19-@work" in text
-    assert "нить 19-@work" in text  # journal tail names the owner
+    # нити 19-@work на диске нет, вид с карточки её акты не найдёт — читаем
+    # там, где верб их и написал: в паспорте сессии
+    assert "нить 19-@work" in _acts_of(acting)
 
 
-def test_thread_verb_sets_and_clears(in_project):
+def test_thread_verb_sets_and_clears(in_project, acting):
     cli.main(["work", "add", "x"])
     assert cli.main(["work", "thread", "01", "--set", "12-@news"]) == 0
     assert "thread: 12-@news" in _text(in_project)
-    assert "ответственная нить → 12-@news" in _text(in_project)
+    assert "ответственная нить → 12-@news" in _acts_of(acting)
     assert cli.main(["work", "thread", "01", "--clear"]) == 0
-    text = _text(in_project)
-    assert "thread:" not in text
-    assert "нить снята" in text
+    assert "thread:" not in _text(in_project)
+    assert "нить снята" in _acts_of(acting)
 
 
 def test_take_auto_resolves_caller_thread(in_project, monkeypatch):
@@ -1104,7 +1170,7 @@ def test_add_stamps_the_callers_thread_and_its_current_step(in_project, monkeypa
     assert "thread: 09-@build" in text
     assert "step: 2" in text
     assert text.index("thread:") < text.index("step:")  # шаг читается рядом с нитью
-    assert "ответственная нить → 09-@build (сессия-автор)" in text
+    assert "ответственная нить → 09-@build (сессия-автор)" in _view(in_project)
     assert "status: open" in text  # адрес — не жест статуса
 
 
@@ -1169,7 +1235,10 @@ def test_step_follows_the_thread_and_leaves_with_it(in_project, monkeypatch):
     assert cli.main(["work", "thread", "01", "--set", "77-@bez-plana"]) == 0
     text = _text(in_project)
     assert "step:" not in text  # у новой нити плана нет — старый адрес снят
-    assert "шаг снят (в плане нити его нет)" in text
+    # жест лёг актом в паспорт сессии-вызывателя; карточка теперь смотрит в
+    # 77-@bez-plana, поэтому читаем там, где написано
+    sess = work.paths.arcs_dir(in_project) / "09-@build" / "arcs" / "01-do"
+    assert "шаг плана снят (в плане нити его нет)" in _acts_of(sess)
     assert cli.main(["work", "thread", "01", "--set", "09-@build"]) == 0
     assert "step: 2" in _text(in_project)
     assert cli.main(["work", "thread", "01", "--clear"]) == 0
@@ -1184,7 +1253,7 @@ def test_step_verb_sets_names_and_clears(in_project, monkeypatch, capsys):
     assert "шаг плана 3 «карта стека»" in capsys.readouterr().out
     text = _text(in_project)
     assert "step: 3" in text
-    assert "шаг плана → 3 «карта стека» (рукой)" in text
+    assert "шаг плана → 3 «карта стека» (рукой)" in _view(in_project)
     assert cli.main(["work", "step", "01", "--clear"]) == 0
     assert "step:" not in _text(in_project)
 
@@ -1233,7 +1302,8 @@ def test_step_reads_a_cross_project_address(tmp_project, tmp_path, monkeypatch):
 
 # --- drop (снять согласованный пункт словом человека) -------------------------
 
-def test_drop_removes_the_item_with_its_description_and_journals(in_project, capsys):
+def test_drop_removes_the_item_with_its_description_and_journals(in_project, acting,
+                                                                 capsys):
     """Кандидат 183: снять обычный пункт было НЕЧЕМ — только словом человека."""
     cli.main(["work", "add", "работа"])
     cli.main(["work", "checklist", "01", "Лишний\\nлишние детали", "Нужный"])
@@ -1242,10 +1312,11 @@ def test_drop_removes_the_item_with_its_description_and_journals(in_project, cap
     assert rc == 0
     assert "пункт 1 «Лишний» снят" in capsys.readouterr().out
     text = _text(in_project)
-    assert "Лишний" not in text.split("## журнал")[0]
+    assert "Лишний" not in text
     assert "лишние детали" not in text
     assert [t for _, t in work.all_items(text)] == ["Нужный"]
-    assert "пункт 1 «Лишний» снят словом: «этот пункт не нужен»" in text
+    assert ("пункт 1 «Лишний» снят · слово: «этот пункт не нужен»"
+            in _view(in_project))
 
 
 def test_drop_requires_the_human_word_and_keeps_the_file(in_project, capsys):
@@ -1272,7 +1343,8 @@ def test_drop_sends_a_proposal_and_a_checked_item_to_their_own_gestures(
     assert "нет пункта 9" in capsys.readouterr().err
 
 
-def test_drop_moves_the_cursor_and_the_acceptances_with_the_numbers(in_project):
+def test_drop_moves_the_cursor_and_the_acceptances_with_the_numbers(in_project,
+                                                                    acting):
     """Номер пункта — адрес: живые ссылки на него едут следом, история — нет."""
     cli.main(["work", "add", "работа"])
     cli.main(["work", "checklist", "01", "Первый", "Второй", "Третий"])
@@ -1287,18 +1359,17 @@ def test_drop_moves_the_cursor_and_the_acceptances_with_the_numbers(in_project):
     assert "пункт 2 принят рукой" in text          # приёмка «Третьего» — тоже
     assert work.accepted_items(text) == [2]
     # история жеста цела: «пункт 3 ✓» так и остался рассказом со своим текстом
-    assert "пункт 3 ✓ «Третий»" in text
+    assert "пункт 3 ✓ «Третий»" in _view(in_project)
 
 
-def test_drop_of_the_cursors_own_item_takes_the_cursor_off(in_project):
+def test_drop_of_the_cursors_own_item_takes_the_cursor_off(in_project, acting):
     cli.main(["work", "add", "работа"])
     cli.main(["work", "checklist", "01", "Первый", "Второй"])
     cli.main(["work", "take", "01"])
     cli.main(["work", "at", "01", "1"])
     assert cli.main(["work", "drop", "01", "1", "--word", "не делаем"]) == 0
-    text = _text(in_project)
-    assert "\nat:" not in text
-    assert "курсор снят: его пункт снят" in text
+    assert "\nat:" not in _text(in_project)
+    assert "курсор снят: его пункт снят" in _view(in_project)
 
 
 def test_drop_of_the_last_undone_item_closes_the_review_gate(in_project, capsys):
@@ -1332,7 +1403,7 @@ def test_check_requires_proof_and_take(in_project, capsys):
     assert "сначала tide work take" in capsys.readouterr().err
 
 
-def test_check_marks_item_journals_proof_and_autoreviews(in_project, capsys):
+def test_check_marks_item_journals_proof_and_autoreviews(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -1342,9 +1413,10 @@ def test_check_marks_item_journals_proof_and_autoreviews(in_project, capsys):
     assert "→ review" in out  # the last check announces the auto-move
     text = _text(in_project)
     assert "- [x] x" in text
-    assert "коммит abc123" in text
     assert "status: review" in text
-    assert "все пункты чекнуты → review" in text
+    view = _view(in_project)
+    assert "пункт 1 ✓ «x» · пруф: коммит abc123" in view
+    assert "все пункты чекнуты → review" in view
 
 
 def test_check_no_review_while_items_remain(in_project):
@@ -1366,7 +1438,7 @@ def test_check_double_and_missing_index_fail(in_project, capsys):
     assert "нет пункта 9" in capsys.readouterr().err
 
 
-def test_uncheck_falls_back_from_review_to_taken(in_project):
+def test_uncheck_falls_back_from_review_to_taken(in_project, acting):
     cli.main(["work", "add", "x"])
     _seed()
     cli.main(["work", "take", "01"])
@@ -1376,21 +1448,21 @@ def test_uncheck_falls_back_from_review_to_taken(in_project):
     text = _text(in_project)
     assert "- [ ] x" in text
     assert "status: taken" in text
-    assert "чеклист снова неполон → taken" in text
-    assert "не вылилось" in text
+    view = _view(in_project)
+    assert "чеклист снова неполон → taken" in view
+    assert "не вылилось" in view
 
 
 # --- close / reopen ----------------------------------------------------------
 
-def test_close_requires_word_and_journals_it(in_project, capsys):
+def test_close_requires_word_and_journals_it(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     assert cli.main(["work", "close", "01", "--word", " "]) == 1
     assert "done ставит человек" in capsys.readouterr().err
     rc = cli.main(["work", "close", "01", "--word", "закрывай"])
     assert rc == 0
-    text = _text(in_project)
-    assert "status: done" in text
-    assert "закрыта по слову человека: «закрывай»" in text
+    assert "status: done" in _text(in_project)
+    assert "закрыта по слову человека · слово: «закрывай»" in _view(in_project)
 
 
 def test_reopen_only_from_done(in_project, capsys):
@@ -1402,7 +1474,7 @@ def test_reopen_only_from_done(in_project, capsys):
     assert "status: open" in _text(in_project)
 
 
-def test_reopen_gives_a_taken_work_back_to_its_taker(in_project):
+def test_reopen_gives_a_taken_work_back_to_its_taker(in_project, acting):
     """Кандидат 168: taken-by никуда не делся — «open» соврал бы, что работа ничья."""
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "Шаг", "Хвост"])
@@ -1414,10 +1486,11 @@ def test_reopen_gives_a_taken_work_back_to_its_taker(in_project):
     assert "status: taken" in text
     assert "taken-by: 04-pult" in text
     assert "- [x] Шаг" in text
-    assert "открыта заново → taken (04-pult)" in text
+    assert "открыта заново → taken (04-pult)" in _view(in_project)
 
 
-def test_reopen_of_a_finished_work_lands_on_the_review_gate(in_project, capsys):
+def test_reopen_of_a_finished_work_lands_on_the_review_gate(in_project, acting,
+                                                            capsys):
     """Всё чекнуто и человек передумал закрывать — работе место на приёмке,
     а не в очереди: делать в ней нечего, ждёт она руку."""
     cli.main(["work", "add", "x"])
@@ -1431,8 +1504,9 @@ def test_reopen_of_a_finished_work_lands_on_the_review_gate(in_project, capsys):
     text = _text(in_project)
     assert "status: review" in text
     assert "taken-by: 04-pult" in text
-    assert "открыта заново по слову: «погоди» → taken (04-pult)" in text
-    assert "все пункты чекнуты → review" in text
+    view = _view(in_project)
+    assert "открыта заново → taken (04-pult) · слово: «погоди»" in view
+    assert "все пункты чекнуты → review" in view
 
 
 def test_reopen_of_a_work_nobody_took_goes_back_to_the_queue(in_project):
@@ -1447,11 +1521,13 @@ def test_reopen_of_a_work_nobody_took_goes_back_to_the_queue(in_project):
 # --- приёмка: у пункта два факта — «сделано» и «принято» ----------------------
 
 def _hand_accepts(root, index, key="01"):
-    """Рука с доски: попунктная приёмка — строка журнала, чеклист не трогает."""
-    f = work._find(root, key) / "work.md"
-    text = f.read_text(encoding="utf-8").rstrip("\n")
-    f.write_text("{0}\n- 2026-07-30 14:02 — пункт {1} принят рукой\n".format(
-        text, index), encoding="utf-8")
+    """Рука с доски: попунктная приёмка — строка журнала, чеклист не трогает.
+
+    Кнопки на доске больше нет (слово 02.09), но такие строки лежат в живых
+    паспортах и читаются как раньше: приёмка выводится из журнала файла.
+    """
+    _old_journal(root, "- 2026-07-30 14:02 — пункт {0} принят рукой".format(index),
+                 key=key)
 
 
 def _two_items(root):
@@ -1461,30 +1537,32 @@ def _two_items(root):
     cli.main(["work", "take", "01"])
 
 
-def test_close_accepts_everything_checked_by_the_same_word(in_project, capsys):
+def test_close_accepts_everything_checked_by_the_same_word(in_project, acting,
+                                                           capsys):
     _two_items(in_project)
     cli.main(["work", "check", "01", "1", "--proof", "коммит abc"])
     capsys.readouterr()
     assert cli.main(["work", "close", "01", "--word", "принято, закрывай"]) == 0
     assert "принято сделанное — 1 пункт(ов)" in capsys.readouterr().out
-    text = _text(in_project)
-    assert work.ACCEPT_ALL_LINE in text
+    view = _view(in_project)
+    assert work.ACCEPT_ALL_LINE in view
     # порядок в журнале: сперва приёмка сделанного, следом само закрытие
-    assert text.index(work.ACCEPT_ALL_LINE) < text.index("закрыта по слову")
-    # чеклист не переписан — приёмка живёт строкой журнала
+    assert view.index(work.ACCEPT_ALL_LINE) < view.index("закрыта по слову")
+    # чеклист не переписан — приёмка живёт записью журнала
+    text = _text(in_project)
     assert "- [x] поднять прод\n" in text
     assert "- [ ] прогнать смоук\n" in text
 
 
-def test_close_with_nothing_checked_accepts_nothing(in_project, capsys):
+def test_close_with_nothing_checked_accepts_nothing(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     capsys.readouterr()
     assert cli.main(["work", "close", "01", "--word", "не надо, закрывай"]) == 0
     out = capsys.readouterr().out
-    text = _text(in_project)
-    assert work.ACCEPT_ALL_LINE not in text  # принимать нечего — строки нет
+    view = _view(in_project)
+    assert work.ACCEPT_ALL_LINE not in view  # принимать нечего — записи нет
     assert "принято сделанное" not in out
-    assert "закрыта по слову человека: «не надо, закрывай»" in text
+    assert "закрыта по слову человека · слово: «не надо, закрывай»" in view
 
 
 def test_show_marks_an_item_accepted_by_hand(in_project, capsys):
@@ -1501,7 +1579,7 @@ def test_show_marks_an_item_accepted_by_hand(in_project, capsys):
     assert "✓✓" not in _text(in_project)
 
 
-def test_show_marks_checked_items_of_a_closed_work(in_project, capsys):
+def test_show_marks_checked_items_of_a_closed_work(in_project, acting, capsys):
     _two_items(in_project)
     cli.main(["work", "check", "01", "1", "--proof", "коммит abc"])
     cli.main(["work", "close", "01", "--word", "остального не надо"])
@@ -1510,11 +1588,14 @@ def test_show_marks_checked_items_of_a_closed_work(in_project, capsys):
     out = capsys.readouterr().out
     assert "- [x] поднять прод ✓✓" in out
     assert "- [ ] прогнать смоук\n" in out  # несделанное принимать нечем
-    assert work.accepted_items(_text(in_project)) == [1]
+    # массовая приёмка теперь ТОЛЬКО акт — читается вместе с ним
+    text = _text(in_project)
+    rows = work.work_acts(in_project, work._find(in_project, "01"), text)
+    assert work.accepted_items(text, work.act_lines(rows)) == [1]
 
 
 def test_reopen_keeps_the_journal_but_the_mass_word_stops_speaking(in_project,
-                                                                  capsys):
+                                                                  acting, capsys):
     _two_items(in_project)
     cli.main(["work", "check", "01", "1", "--proof", "коммит abc"])
     _hand_accepts(in_project, 1)
@@ -1522,8 +1603,7 @@ def test_reopen_keeps_the_journal_but_the_mass_word_stops_speaking(in_project,
     cli.main(["work", "reopen", "01", "--word", "вернём, есть хвост"])
     cli.main(["work", "take", "01"])
     cli.main(["work", "check", "01", "2", "--proof", "коммит def"])
-    text = _text(in_project)
-    assert work.ACCEPT_ALL_LINE in text  # история не трётся
+    assert work.ACCEPT_ALL_LINE in _view(in_project)  # история не трётся
     capsys.readouterr()
     cli.main(["work", "show", "01"])
     out = capsys.readouterr().out
@@ -1531,7 +1611,7 @@ def test_reopen_keeps_the_journal_but_the_mass_word_stops_speaking(in_project,
     # закрытия, и старое слово за него не говорит
     assert "- [x] поднять прод ✓✓" in out
     assert "- [x] прогнать смоук\n" in out
-    assert work.accepted_items(text) == [1]
+    assert work.accepted_items(_text(in_project)) == [1]
 
 
 def test_unchecked_item_wears_no_acceptance_mark(in_project, capsys):
@@ -1548,7 +1628,7 @@ def test_unchecked_item_wears_no_acceptance_mark(in_project, capsys):
 
 # --- title (имя работы — подпись человека) ------------------------------------
 
-def test_title_rewrites_h1_by_the_human_word(in_project, capsys):
+def test_title_rewrites_h1_by_the_human_word(in_project, acting, capsys):
     cli.main(["work", "add", "вылить выплаты"])
     capsys.readouterr()
     rc = cli.main(["work", "title", "01", "вылить выплаты и рефералку",
@@ -1558,7 +1638,8 @@ def test_title_rewrites_h1_by_the_human_word(in_project, capsys):
     text = _text(in_project)
     assert "# вылить выплаты и рефералку\n" in text
     assert "# вылить выплаты\n" not in text
-    assert "переименована словом: «назови точнее» (было: вылить выплаты)" in text
+    assert ("переименована (было: вылить выплаты) · слово: «назови точнее»"
+            in _view(in_project))
     assert "status: open" in text  # имя — не жест статуса
     # слаг папки не трогаем: это адрес, который уже держат доска и журнал
     assert work._find(in_project, "01").name == "01-vylit-vyplaty"
@@ -1604,14 +1685,14 @@ def test_title_renames_a_closed_work_and_says_so(in_project, capsys):
     assert "status: done" in text  # переименование закрытую не открывает
 
 
-def test_title_clips_the_old_name_in_the_journal(in_project):
+def test_title_clips_the_old_name_in_the_journal(in_project, acting):
     old = "очень длинное имя работы, которое человек однажды написал в поле " \
           "формы на доске"
     cli.main(["work", "add", old])
     assert cli.main(["work", "title", "01", "короче", "--word", "ок"]) == 0
-    text = _text(in_project)
-    assert "(было: {0}…)".format(old[:59].rstrip()) in text
-    assert old not in text.split("## журнал")[1]
+    view = _view(in_project)
+    assert "(было: {0}…)".format(old[:59].rstrip()) in view
+    assert old not in view
 
 
 def test_list_shows_the_new_name(in_project, capsys):
@@ -1676,18 +1757,38 @@ def test_list_marks_proposed_items_apart_from_agreed(in_project, capsys):
     assert "0/1+1?" in capsys.readouterr().out
 
 
-def test_show_prints_raw_passport_with_plan_and_proposals(in_project, capsys):
+def test_show_prints_the_passport_verbatim_but_the_journal_as_a_view(in_project,
+                                                                     capsys):
+    """Работа 66 п.1: файл — правда обо ВСЁМ, кроме журнала; журнал — вид на акты.
+
+    Раньше ``show`` печатал паспорт дословно целиком. Шапка, план и чеклист так и
+    печатаются — они и живут в файле; а ``## журнал`` стал проекцией, потому что
+    жест теперь пишется в одном месте (акты сессии), и читать его надо оттуда.
+    Здесь актов нет, и вид честно вырождается в тот же файл — но собирает его
+    :func:`work.journal_view`, а не срез текста.
+    """
     cli.main(["work", "add", "x"])
     cli.main(["work", "plan", "01", "как думаю делать"])
     cli.main(["work", "propose", "01", "предложение"])
+    _old_journal(in_project, "- 2026-09-02 10:00 — старая строка журнала")
     capsys.readouterr()
     rc = cli.main(["work", "show", "01"])
     assert rc == 0
     out = capsys.readouterr().out
+
+    text = _text(in_project)
+    head, _, journal = text.partition("## журнал")
+    assert head.strip() in out                       # всё до журнала — дословно
     assert "kind: work" in out
     assert "## план" in out
     assert out.index("## план") < out.index("## чеклист")
     assert "- [?] предложение" in out
+
+    wdir = work._find(in_project, "01")
+    assert work.work_acts(in_project, wdir, text) == []          # актов нет
+    assert (work.journal_view(in_project, wdir, text)
+            == [ln for ln in journal.splitlines() if ln.strip()])
+    assert "старая строка журнала" in _journal_of(out)
 
 
 # --- cross-project ------------------------------------------------------------
@@ -1713,19 +1814,18 @@ def test_project_flag_targets_rostered_neighbour(tmp_project, tmp_path, monkeypa
 
 # --- курсор работы (фикс 15 работы 25) ----------------------------------------
 
-def test_at_marks_the_cursor_and_journals(in_project, capsys):
+def test_at_marks_the_cursor_and_journals(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "x", "второй"])
     cli.main(["work", "take", "01"])
     rc = cli.main(["work", "at", "01", "2"])
     assert rc == 0
     assert "курсор на пункте 2 «второй»" in capsys.readouterr().out
-    text = _text(in_project)
-    assert "at: 2" in text
-    assert "— курсор на пункте 2 «второй»" in text
+    assert "at: 2" in _text(in_project)
+    assert "курсор на пункте 2 «второй»" in _view(in_project)
 
 
-def test_at_moves_and_clears(in_project, capsys):
+def test_at_moves_and_clears(in_project, acting, capsys):
     cli.main(["work", "add", "x"])
     cli.main(["work", "checklist", "01", "x", "второй"])
     cli.main(["work", "take", "01"])
@@ -1735,9 +1835,9 @@ def test_at_moves_and_clears(in_project, capsys):
     assert "\nat: 2" in text and "\nat: 1" not in text  # курсор один, он переезжает
     assert cli.main(["work", "at", "01", "--clear"]) == 0
     assert "курсор снят" in capsys.readouterr().out
-    text = _text(in_project)
-    assert "\nat:" not in text          # «taken-at:» не в счёт — курсор с начала строки
-    assert "— курсор снят" in text
+    # «taken-at:» не в счёт — курсор читается с начала строки
+    assert "\nat:" not in _text(in_project)
+    assert "курсор снят" in _view(in_project)
 
 
 def test_at_refuses_missing_item_and_empty_call(in_project, capsys):
@@ -1762,3 +1862,187 @@ def test_check_clears_the_cursor_of_its_own_item_only(in_project):
     # чек СВОЕГО — снимает: держать «я тут» на сделанном значит врать
     cli.main(["work", "check", "01", "2", "--proof", "p"])
     assert "\nat:" not in _text(in_project)
+
+
+# --- журнал как ВИД на акты (работа 66 п.1) -----------------------------------
+
+def _at(h, m):
+    from datetime import datetime
+    return datetime(2026, 9, 2, h, m)
+
+
+@pytest.fixture
+def acting(in_project, monkeypatch, tmp_path):
+    """Нить с ПРИНЯТОЙ сессией: вербы работы пишут и журнал файла, и акт.
+
+    Возвращает саму папку сессии — в её ``## context`` акты и ложатся.
+    """
+    from tide import fields
+    from tide.arc import stream
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    stream.new_thread(in_project, "release", goal="акты в одном месте")
+    s = stream.new_session(in_project, "release", "stroyka")
+    fields.set_field(s / "arc.md", "claude-session", "sid-66")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-66")
+    return s
+
+
+def _mute(monkeypatch):
+    """Жест БЕЗ сессии-вызывателя — так работал движок до актов (и так пишет доска)."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+
+def _journal_of(out):
+    return out.partition("## журнал")[2]
+
+
+def test_show_journal_glues_the_file_and_the_acts_without_doubling(
+        in_project, acting, capsys):
+    """Склейка: строки СТАРОГО файла плюс акты — и ни одна не пропала."""
+    work.new_work(in_project, "акты в одном месте", now=_at(10, 0))
+    work.set_checklist(in_project, "01", ["Писатель", "Читатель"], now=_at(10, 5))
+    work.set_thread(in_project, "01", "01-@release", now=_at(10, 10))
+    _old_journal(in_project,                             # как писали до 66
+                 "- 2026-09-02 10:20 — взята в работу (агент) по слову: «берём»")
+    work.take(in_project, "01", word="берём", now=_at(10, 21))
+    work.check(in_project, "01", 1, "модуль acts.py", now=_at(11, 0))
+
+    capsys.readouterr()
+    cli.main(["work", "show", "01"])
+    journal = _journal_of(capsys.readouterr().out)
+
+    assert journal.count("пункт 1 ✓") == 1               # жест сказан один раз
+    assert "акт: пункт 1 ✓ «Писатель» · пруф: модуль acts.py · #1.1" in journal
+    assert "взята в работу (агент) по слову: «берём»" in journal   # старое, из файла
+    assert journal.index("взята в работу") < journal.index("акт: пункт 1")
+
+
+def test_a_work_without_acts_is_read_from_its_file_whole(in_project, acting,
+                                                         monkeypatch, capsys):
+    """Старые работы актов не имеют — их журнал читается из файла целиком и вечно."""
+    _mute(monkeypatch)
+    work.new_work(in_project, "старая работа", now=_at(9, 0))
+    work.set_checklist(in_project, "01", ["Пункт"], now=_at(9, 10))
+    _old_journal(in_project,
+                 "- 2026-09-02 09:10 — чеклист согласован: 1 пункт(ов)",
+                 "- 2026-09-02 09:20 — взята в работу (агент) по слову: «да»",
+                 "- 2026-09-02 09:30 — пункт 1 ✓ «Пункт»: коммит abc")
+
+    capsys.readouterr()
+    cli.main(["work", "show", "01"])
+    journal = _journal_of(capsys.readouterr().out)
+    for line in _journal_of(_text(in_project)).strip().splitlines():
+        assert line in journal
+    assert "акт:" not in journal
+
+
+def test_a_work_without_a_thread_keeps_its_file_journal(in_project, acting, capsys):
+    """Нити нет — акты искать негде, и вид честно вырождается в файл.
+
+    Это ЦЕНА одного места: адрес актов работы — её ``thread:``, и работа, у
+    которой нить снята, свои жесты с карточки больше не показывает (они целы, но
+    лежат в паспорте сессии). Старое, написанное в файл, читается как читалось.
+    """
+    work.new_work(in_project, "без нити", now=_at(12, 0))
+    _old_journal(in_project, "- 2026-09-02 12:05 — чеклист согласован: 1 пункт(ов)")
+    work.set_thread(in_project, "01", None, now=_at(12, 6))
+    capsys.readouterr()
+    cli.main(["work", "show", "01"])
+    out = _journal_of(capsys.readouterr().out)
+    assert "чеклист согласован" in out           # файл читается вечно
+    assert "нить снята" not in out               # а свежий жест — только в сессии
+
+
+def test_accepted_items_sees_acceptance_that_came_as_an_act(in_project):
+    """Приёмка читается ОБЪЕДИНЕНИЕМ: рука с доски пишет в файл, close — и актом."""
+    cli.main(["work", "add", "x"])
+    _seed("поднять прод")
+    cli.main(["work", "take", "01"])
+    cli.main(["work", "check", "01", "1", "--proof", "коммит abc"])
+    cli.main(["work", "close", "01", "--word", "принято"])
+
+    bare = _text(in_project).partition("## журнал")[0] + "## журнал\n"
+    assert work.accepted_items(bare) == []               # в файле приёмки нет
+    mass = "- 2026-09-02 12:00 — акт: {0} · #1".format(work.ACCEPT_ALL_LINE)
+    assert work.accepted_items(bare, [mass]) == [1]
+    one = "- 2026-09-02 12:00 — акт: пункт 1 принят рукой · #1.1"
+    assert work.accepted_items(bare, [one]) == [1]
+
+
+def test_show_marks_an_item_accepted_through_the_acts(in_project, acting, capsys):
+    """Полный путь: close из сессии → акт → ✓✓ на экране."""
+    work.new_work(in_project, "работа", now=_at(13, 0))
+    work.set_checklist(in_project, "01", ["поднять прод"], now=_at(13, 5))
+    work.take(in_project, "01", word="да", now=_at(13, 10))
+    work.check(in_project, "01", 1, "коммит abc", now=_at(13, 20))
+    work.close(in_project, "01", "принято", now=_at(13, 30))
+
+    ctx = (acting / "arc.md").read_text(encoding="utf-8")
+    assert "акт: {0} · #1".format(work.ACCEPT_ALL_LINE) in ctx
+    capsys.readouterr()
+    cli.main(["work", "show", "01"])
+    assert "- [x] поднять прод ✓✓" in capsys.readouterr().out
+
+
+def test_the_file_journal_is_not_written_any_more(in_project, acting):
+    """Финал работы 66 п.1: второго места записи нет — жест только акт.
+
+    В ``work.md`` не появляется ни строки: ни ``## журнал``, ни самой записи.
+    Читается жест видом (:func:`work.journal_view`) — и через него он на месте.
+    """
+    work.new_work(in_project, "работа", now=_at(14, 0))
+    work.set_checklist(in_project, "01", ["Пункт"], now=_at(14, 5))
+    work.take(in_project, "01", word="да", now=_at(14, 10))
+    work.check(in_project, "01", 1, "коммит abc", now=_at(14, 20))
+
+    text = _text(in_project)
+    assert "## журнал" not in text
+    assert "коммит abc" not in text
+    assert "пункт 1 ✓ «Пункт» · пруф: коммит abc" in _view(in_project)
+
+
+def test_a_file_line_without_an_act_twin_survives_the_glue(in_project, acting,
+                                                           monkeypatch, capsys):
+    """Рука с доски сессии не имеет — её строка живёт только в файле, и её видно.
+
+    Границы времени тут мало: акты в паспорт пишет и человек руками, и с этой
+    минуты вся дальнейшая работа доски исчезла бы с экрана. Поэтому молодая
+    строка выпадает из вида, только если у неё ЕСТЬ акт-двойник.
+    """
+    from tide import acts
+
+    work.new_work(in_project, "работа", now=_at(10, 0))
+    work.set_checklist(in_project, "01", ["поднять прод"], now=_at(10, 5))
+    work.take(in_project, "01", word="да", now=_at(10, 20))
+    work.check(in_project, "01", 1, "коммит abc", now=_at(10, 30))
+    acts.write_act(acting, "фикс 5 накинут словом", ref="1", now=_at(11, 0))
+    # рука с доски сессии не имела и писала прямо в файл — такие строки живы
+    _old_journal(in_project, "- 2026-09-02 11:30 — пункт 1 принят рукой")
+
+    capsys.readouterr()
+    cli.main(["work", "show", "01"])
+    out = capsys.readouterr().out
+    journal = _journal_of(out)
+    assert "пункт 1 принят рукой" in journal        # рука не потерялась
+    assert "акт: фикс 5 накинут словом" in journal
+    assert "пункт 1 ✓ «поднять прод» · пруф: коммит abc" in journal
+    assert "- [x] поднять прод ✓✓" in out
+
+
+def test_a_twin_of_an_act_is_dropped_from_the_view(in_project, acting, capsys):
+    """Тот же жест, сказанный и в файл, и актом, читается один раз.
+
+    Двойники рождались, пока верб писал в оба места; такие ``work.md`` живы, и
+    сито их разбирает по ЖЕСТУ — та же минута, одно начало текста.
+    """
+    work.new_work(in_project, "работа", now=_at(10, 0))
+    work.set_checklist(in_project, "01", ["Пункт"], now=_at(10, 5))
+    work.take(in_project, "01", word="да", now=_at(10, 10))
+    work.dispatch(in_project, "01", "строитель B", now=_at(10, 20))
+    _old_journal(in_project,     # та же отправка, как её писал старый верб
+                 "- 2026-09-02 10:20 — строитель отправлен: строитель B")
+
+    view = _view(in_project)
+    assert view.count("строитель отправлен: строитель B") == 1
+    assert "акт: строитель отправлен: строитель B · #1" in view

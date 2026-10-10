@@ -747,7 +747,14 @@ def read_sessions(tdir):
             # вкладку можно закрыть, когда содержимое видно с доски
             "summary": " ".join(section(text, "summary").split())[:300],
             "next": " ".join(section(text, "next").split())[:300],
-            "context": [ln.strip("- ").strip() for ln in section(text, "context").splitlines() if ln.strip()][-3:],
+            # ЛЕНТА ЦЕЛИКОМ, а не три хвоста (работа 66, пункт 1). Пока жест
+            # писался в двух местах, `## context` держал редкий пульс головы, и
+            # трёх строк на карточку хватало. С тех пор как акт стал ЕДИНСТВЕННЫМ
+            # местом жеста, сюда ложится вся работа сессии — за день строк
+            # десятки, и хвост из трёх не покрывал даже утро. Потолок переехал на
+            # ВИД (CTX_SHOW): читаем всё, показываем головой вперёд, остальное —
+            # под тапом; иначе история молча обрезалась бы ещё на чтении.
+            "context": [ln.strip("- ").strip() for ln in section(text, "context").splitlines() if ln.strip()],
             "mtime": pp.stat().st_mtime,
             # honest activity fallbacks (cand 09): offload stamp + creation time, NOT mtime
             "offloaded": _offloaded_ts(text),
@@ -2331,25 +2338,19 @@ def _work_is_fav(meta):
 
 
 def _work_star(slug, fav):
-    """★ на работе — ровно звезда нити (_card_fav) и артефакта (_artifact_star):
-    залитая значит «моё, держу сверху», клик снимает. Избранные работы идут
-    первыми в списке — и на общей вкладке, и в нити.
+    """★ на работе — ИНДИКАТОР «моё, держу сверху», а не кнопка (слово 02.09).
 
-    Жест ЗАПЕРТ на один запрос (болячка 30.07, артефакт 100: повторный клик до
-    свопа доски дописывал в журнал лишние строки): stopPropagation не пускает
-    клик ни в проваливание карточки, ни в делегаты вкладки, а замок busy глушит
-    второй клик, пока первый едет, — узел со свопом уезжает, снимать нечего."""
-    on, glyph = ("0", ICON_STAR_ON) if fav else ("1", ICON_STAR)
-    title = "убрать из избранных" if fav else "в избранные"
-    s = re.sub(r"[\"'\\\n\r]", "", slug)
-    oc = ("event.preventDefault();event.stopPropagation();"
-          "if(this.dataset.busy)return false;this.dataset.busy='1';"
-          "fetch('/work-fav?on={on}&f='+encodeURIComponent('{s}'))"
-          ".then(function(r){{return r.text()}}).then(function(x){{deckToast(x);"
-          "if(typeof boardRefresh==='function')boardRefresh();}})").format(
-              on=on, s=s)
-    return '<a class="pjhold wkfav" href="#" title="{0}" onclick="{1}">{2}</a>'.format(
-        title, oc, glyph)
+    Звезда была шестой пишущей рукой доски: клик дописывал `fav: yes` и строку
+    в `## журнал` работы — второе место записи мимо вербов и мимо актов. Кнопку
+    сняли вместе с пятью остальными; сама избранность осталась (по ней работы
+    идут первыми и на общей вкладке, и в нити), поэтому залитая звезда
+    рисуется, а пустой нет: пустая была бы кнопкой, которая молча ничего не
+    делает, — это хуже, чем её отсутствие. Ставит и снимает избранность рука
+    человека в паспорте или верб."""
+    if not fav:
+        return ""
+    return ('<span class="wkfav on" title="избранная — держится сверху">{0}'
+            '</span>'.format(ICON_STAR_ON))
 
 
 def _dive_btn(lead, oc):
@@ -3156,6 +3157,22 @@ _WEV = (
 # у одной нити их за те же два дня набралось под сотню
 _WEV_LOUD = ("closed",)
 _WEV_INLINE_MAX = 4
+# сколько записей ленты сессии видно СРАЗУ, без тапа (работа 66, пункт 1).
+# Читаем `## context` целиком (потолка на чтении больше нет), но показывать
+# всё разом нельзя: акт стал единственным местом жеста, и за день сессия
+# пишет их десятками — узел таймлайна раздулся бы в простыню. Десять — это
+# примерно рабочее утро: столько человек прочитывает глазом, не прокручивая.
+CTX_SHOW = 10
+
+
+def _ctx_split(context, limit=CTX_SHOW):
+    """Лента сессии → (что показать, что спрятать) — обе части новейшим вперёд.
+
+    Одно правило на все три вида ленты (узел таймлайна, карточка сессии, ряд
+    аккордеона): разъедься они, человек видел бы на одной странице три разных
+    ответа на вопрос «что делала сессия»."""
+    rows = list(reversed(context or []))
+    return rows[:limit], rows[limit:]
 
 
 def _thread_work_events(proj, tdir):
@@ -3220,9 +3237,12 @@ def _mix_steps(context, events):
     Плотность: одиннадцать закрытий за два дня не должны утопить рассказ головы,
     поэтому вехи (сдана/закрыта) стоят в ленте всегда, а сопровождение
     (заведена/взята) уезжает в тихую свёртку, как только событий становится
-    больше горстки."""
+    больше горстки. С тех пор как жест пишется актом (работа 66, пункт 1), тем
+    же порогом меряется и сам рассказ: свежие CTX_SHOW записей в ленте, хвост —
+    в такой же тихой свёртке."""
+    head, older = _ctx_split(context)
     rows = []
-    for c in context:
+    for c in head:
         m = re.match(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})", c)
         when = None
         if m:
@@ -3241,6 +3261,11 @@ def _mix_steps(context, events):
     rows.sort(key=lambda r: (r[0] is not None, r[0] or datetime.min),
               reverse=True)
     html = "".join(h for _w, h in rows)
+    if older:
+        html += ('<details class="sub wevmore"><summary><span class="sm"></span>'
+                 '<span>ещё {0} · раньше в этой сессии</span></summary>'
+                 '<div class="wevd">{1}</div></details>'.format(
+                     len(older), "".join(_ctx_item(c) for c in older)))
     if quiet:
         html += ('<details class="sub wevmore"><summary><span class="sm"></span>'
                  '<span>ещё {0} · заведены, взяты, сданы</span></summary>'
@@ -3753,8 +3778,13 @@ def _session_card(t, s, acts=""):
         return v[:n] + "…" if len(v) > n else v
 
     title = _short(s["title"] or s["name"], 90)
-    notes = [_note_parts(c) for c in s["context"]]
-    last_time = next((tm for tm, _tx in reversed(notes) if tm), "")
+    # лента НОВЕЙШИМ ВПЕРЁД и с потолком (работа 66, пункт 1): раньше тут лежали
+    # три хвоста из read_sessions, и порядок был не виден; теперь записей за день
+    # десятки, и файловый порядок прятал бы свежее под старым
+    head_notes, older_notes = _ctx_split(s["context"])
+    notes = [_note_parts(c) for c in head_notes]
+    older = [_note_parts(c) for c in older_notes]
+    last_time = next((tm for tm, _tx in notes if tm), "")
     # сложенная шапка: подпись в языке доски + курсор обычной краской, без цветов;
     # роль (планирование/экзекьюция) — чипом, чтобы окна не путались (решение 08.07);
     # оркестратор помечен особо — «мы здесь»: якорь глаза при открытой развилке
@@ -3782,14 +3812,22 @@ def _session_card(t, s, acts=""):
                 esc(_human(_short(s["cursor"])) or title), role))
     body = ['<div style="border-top:1px solid var(--line-2);margin-top:10px;padding-top:10px">'
             '<span style="color:var(--ink-dim)">{0}</span></div>'.format(esc(title))]
+    def _note_row(time, text):
+        return ('<div style="display:flex;gap:12px;padding:2px 0">'
+                '<span style="color:var(--ink-faint);font-family:var(--mono);'
+                'font-size:11px;min-width:38px;padding-top:2px">{0}</span>'
+                '<span style="color:var(--ink-dim)">{1}</span></div>'.format(
+                    esc(time), esc(text)))
     if notes:
         body.append('<div style="margin-top:8px">')
         for time, text in notes:
-            body.append('<div style="display:flex;gap:12px;padding:2px 0">'
-                        '<span style="color:var(--ink-faint);font-family:var(--mono);'
-                        'font-size:11px;min-width:38px;padding-top:2px">{0}</span>'
-                        '<span style="color:var(--ink-dim)">{1}</span></div>'.format(
-                            esc(time), esc(text)))
+            body.append(_note_row(time, text))
+        # хвост ленты — тем же тапом, что и всё прочее глубокое на доске
+        if older:
+            body.append('<details class="tld"><summary>ещё {0} · раньше'
+                        '</summary><div class="tldd">{1}</div></details>'.format(
+                            len(older),
+                            "".join(_note_row(tm, tx) for tm, tx in older)))
         body.append('</div>')
     if s.get("next"):
         body.append('<div style="display:flex;gap:12px;padding:2px 0">'
@@ -3857,10 +3895,19 @@ def _session_done_row(t, s, when="", live=False):
             esc(s["from"]), " · принята {0}".format(esc(when)) if when else ""))
     if s.get("summary"):
         body.append('<div class="srow">{0}</div>'.format(esc(s["summary"])))
-    for c in reversed(s["context"]):  # новейшее сверху (закон дома)
+    # новейшее сверху (закон дома), потолок и хвост — общим правилом _ctx_split
+    head_ctx, older_ctx = _ctx_split(s["context"])
+
+    def _srow(c):
         tm, tx = _note_parts(c)
-        body.append('<div class="srow"><span class="stime">{0}</span>'
-                    '<span>{1}</span></div>'.format(esc(tm), esc(tx)))
+        return ('<div class="srow"><span class="stime">{0}</span>'
+                '<span>{1}</span></div>'.format(esc(tm), esc(tx)))
+    for c in head_ctx:
+        body.append(_srow(c))
+    if older_ctx:
+        body.append('<details class="tld"><summary>ещё {0} · раньше</summary>'
+                    '<div class="tldd">{1}</div></details>'.format(
+                        len(older_ctx), "".join(_srow(c) for c in older_ctx)))
     if not body:
         body = ['<div class="srow" style="color:var(--ink-faint)">паспорт пуст — '
                 'сессия ничего о себе не записала</div>']
@@ -4844,10 +4891,11 @@ WORK_MODAL_JS = """
     if(t.closest&&t.closest('.wkblkcol .wkfull')) return;
     const dw=t.closest&&t.closest('[data-wkopen]');
     if(!dw) return;
-    // руки, живущие на самом лице (имя, чип дедлайна, «закрыть», прыжок в
-    // ведущего), остаются собой — по ним карточка не проваливается
+    // руки, живущие на самом лице (имя и прыжок в ведущего), остаются собой —
+    // по ним карточка не проваливается. Чипа дедлайна тут больше нет: он стал
+    // текстом (слово 02.09, пишущие кнопки карточки сняты)
     if(t.closest('button,a,input,select,summary,[contenteditable="true"],'
-      +'.wkdl[data-dl],.wknm[data-title]')) return;
+      +'.wknm[data-title]')) return;
     e.preventDefault(); wkmOpen(dw.dataset.wkopen);
   });
   document.addEventListener('keydown',e=>{
@@ -5866,9 +5914,10 @@ FRESH_CHECK_MIN = 180
 # «{текст}»: {пруф}» — вытаскиваем время и номер пункта, чтобы знать свежесть
 _CHECK_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — пункт (\d+) ✓")
 # приёмка рукой (работа 22) — контракт с движком, строки журнала дословны.
-# Попунктную писала доска тапом по кружку; с работы 27 этого жеста НЕТ (ручка
-# /work-item-accept осталась вербам), но старые записи в журналах живы и
-# читаются по-прежнему. Массовую пишет `tide work close` — слово человека
+# Попунктную писала доска тапом по кружку; с работы 27 этого жеста нет, а с
+# 02.09 у доски нет и ни одной пишущей ручки на работе — но старые записи в
+# журналах живы и читаются по-прежнему. Массовую пишет `tide work close`,
+# слово человека, и приезжает она теперь АКТОМ
 _ACCEPT_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — пункт (\d+) принят рукой$")
 _ACCEPT_ALL_RE = re.compile(
@@ -5879,6 +5928,193 @@ _ACCEPT_ALL_RE = re.compile(
 # ровно « чекнут», а там стоит « расчекнут» — и сдвинуться `\d+` некуда
 _HAND_CHECK_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — пункт (\d+) чекнут(?: \(([^)]*)\))?")
+
+
+# ── журнал работы как ВИД НА АКТЫ (работа 66, пункт 1) ───────────────────────
+# Одно событие писалось дважды: строкой в `## журнал` работы и актом в
+# `## context` паспорта сессии, из которой жест сделан. Место остаётся ОДНО —
+# акт. Доска читает его через МОСТ: акт пересобирается в строку СТАРОЙ формы
+# журнала, и дальше по файлу не меняется ничего — ни семь регулярок, ни девять
+# функций-читателей, ни вёрстка карточки. Переезд — одна функция, а не
+# диффузная правка: разъехавшись, читатели начали бы врать по одному.
+_ACTS_CACHE = {}
+_ACT_PROOF_SEP = " · пруф: "
+_ACT_WORD_SEP = " · слово: "
+
+
+def _acts_module():
+    """Модуль `tide.acts` — или None, если пакет отсюда не виден.
+
+    Лениво и под try, ровно тем же приёмом, что `from tide.arc import
+    thread_screen` (главное нити): доска обязана подниматься и в питоне, который
+    движка не знает, — тогда она просто читает журналы из файлов, как раньше.
+    Модульного `import tide` тут нет и не будет: он стоит ~0.25 с на КАЖДЫЙ
+    рендер, а проекция пересобирается на каждый запрос."""
+    try:
+        from tide import acts
+        return acts
+    except Exception:
+        return None
+
+
+def _work_thread_dir(f, meta):
+    """Каталог нити, отвечающей за работу, — там и лежат сессии с её актами.
+
+    Адрес с карточки бывает голым слагом (`26-@release`) и кросс-проектным
+    (`tide-stack/26-@release`). Голый читается от проекта, в котором лежит сам
+    `work.md`, — так его и пишет движок (`resolve_caller_thread` штампует без
+    дома ровно тогда, когда работа и нить в одном проекте). Закрытая нить
+    (`__NN-@нить__`) находится тоже: история не убывает от того, что нить
+    закрыли."""
+    addr = (meta.get("thread") or "").strip().rstrip("/")
+    if not addr:
+        return None
+    home, _, slug = addr.rpartition("/")
+    slug = slug.strip("_")
+    if not slug:
+        return None
+    if home:
+        roots = [p for name, p in roster_projects() if _proj_match(home, name)]
+    else:
+        try:  # <проект>/.tide/arcs/works/NN-слаг/work.md → <проект>
+            roots = [f.resolve().parents[4]]
+        except IndexError:
+            return None
+    for root in roots:
+        d = Path(root) / ".tide" / "arcs"
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir()):
+            if p.is_dir() and p.name.strip("_") == slug:
+                return p
+    return None
+
+
+def _act_journal_line(act, mod):
+    """Акт — СТРОКОЙ старого журнала, дословно той, что читают семь регулярок.
+
+    Акт пишется как «акт: что · пруф: чем · слово: «…» · #66.4», журнальная
+    строка — как «2026-09-02 16:13 — что: чем». Три вещи, ради которых мост и
+    написан, и каждая ломает доску молча, если её не сделать:
+
+    * метка времени БЕЗ `T` и БЕЗ секунд — `_WORK_JRN_TS` требует ровно пробел
+      между датой и временем; не узнав строку, доска разом гасит зелёную точку,
+      «N мин», всю тишину и доверие курсору: работа выглядит мёртвой при живой
+      стройке;
+    * хвостовой адрес `#66.4` снимается — доска и так знает, чью карточку рисует,
+      а в журнальной форме его никогда не было;
+    * пруф прицепляется через `»: ` — тем самым швом, по которому его и достают
+      (`_work_checkmap`, `_work_proofs`): тело чекового акта кончается на
+      `«имя пункта»`, и `«имя»` + `: ` + пруф даёт ровно старую строку. Не
+      сделать этого — и под пунктом встанет не пустота, а ЧУЖОЙ текст."""
+    body = mod.strip_ref(act.text)
+    kind = getattr(mod, "KIND", "акт") + ": "
+    if body.startswith(kind):
+        body = body[len(kind):]
+    proof, word = "", ""
+    what, sep, tail = body.partition(_ACT_PROOF_SEP)
+    if sep:
+        proof, _w, word = tail.partition(_ACT_WORD_SEP)
+    else:
+        what, _w, word = body.partition(_ACT_WORD_SEP)
+    line = what.strip()
+    if proof.strip():
+        line = "{0}: {1}".format(line, proof.strip())
+    if word.strip():
+        line = "{0}{1}{2}".format(line, _ACT_WORD_SEP, word.strip())
+    return "{0} — {1}".format(act.at.strftime("%Y-%m-%d %H:%M"), line)
+
+
+def _work_acts(f, meta):
+    """Акты ЭТОЙ работы — объектами `Act`, новое сверху (пусто, когда их нет).
+
+    Кеш по нити, а не по работе: `_work_read` зовут пятеро, каждый по всем
+    работам, а сессии нити у них общие — без кеша один рендер перечитал бы
+    десятки паспортов сотни раз."""
+    mod = _acts_module()
+    if mod is None:
+        return []
+    num = re.match(r"(\d+)", f.parent.name)
+    if not num:
+        return []
+    tdir = _work_thread_dir(f, meta)
+    if tdir is None:
+        return []
+    key = str(tdir)
+    if key not in _ACTS_CACHE:
+        try:
+            _ACTS_CACHE[key] = mod.read_acts(tdir)
+        except Exception:
+            _ACTS_CACHE[key] = []
+    want = str(int(num.group(1)))
+    return [a for a in _ACTS_CACHE[key]
+            if a.ref == want or a.ref.startswith(want + ".")]
+
+
+_JRN_BODY_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*—\s*(.*)$", re.S)
+
+
+def _jrn_line_at(line):
+    """Метка времени журнальной СТРОКИ как datetime — или None, если её нет.
+
+    Не путать с `_jrn_at` ниже: тот приводит уже выдранную метку и кривую
+    метку кладёт в начало времён, а сито двойников обязано отличать «нет
+    метки» от «полночь первого года» — жест без времени не имеет двойника."""
+    m = _WORK_JRN_TS.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def _jrn_head(line):
+    """Первая строка тела журнальной записи — то, по чему узнаётся ЖЕСТ.
+
+    Запись бывает многострочной (норма 31.07: короткая строка человеку, ниже
+    техника), но акт однострочен по построению, и сверять с ним надо ровно
+    первую строку."""
+    b = _JRN_BODY_RE.match(line.split("\n", 1)[0])
+    return b.group(1).strip() if b else ""
+
+
+def _work_journal_view(f, meta, journal):
+    """`## журнал` работы как ВИД НА АКТЫ: акты плюс всё, чего в актах нет.
+
+    Работа без актов (а это все шестьдесят пять старых) читается из файла
+    целиком и вечно — ни одна строка не пропадает. У работы с актами файл
+    читается тоже, но строка, ПОВТОРЯЮЩАЯ акт, выбрасывается: у работ, которые
+    писались до финала работы 66, один жест лежит в двух местах, и без этого
+    сита карточка двоила бы каждый чек.
+
+    САМО СИТО ЗДЕСЬ НЕ ЖИВЁТ — оно одно на всех, в движке
+    (`tide.acts.sift_journal`), и `tide work show` зовёт его же. Две копии
+    правила у доски и движка уже разъехались однажды (одна резала по жесту,
+    другая по времени первого акта) и показывали человеку две разные истории
+    одной работы. Здесь остаётся только разбор СВОЕЙ формы строки: у доски
+    журнальная запись приходит без ведущего «- » и бывает многострочной.
+
+    Порядок строго хронологический: `_work_quiet` различает три вида тишины по
+    тому, стоит ли отправка строителя ПОСЛЕДНЕЙ в списке."""
+    rows = _work_acts(f, meta)
+    if not rows:
+        return journal
+    mod = _acts_module()
+    sift = getattr(mod, "sift_journal", None)
+    if sift is None:            # движок старше сита — лучше двойник, чем падение
+        return journal
+    entries, last = [], datetime.min
+    for i, j in enumerate(journal):
+        at = _jrn_line_at(j)
+        last = at or last
+        entries.append((at, _jrn_head(j), (last, 0, i, j)))
+    merged = list(sift(entries, rows))
+    for i, a in enumerate(reversed(rows)):          # старое первым, как в файле
+        merged.append((a.at.replace(second=0, microsecond=0), 1, i,
+                       _act_journal_line(a, mod)))
+    merged.sort(key=lambda r: (r[0], r[1], r[2]))
+    return [r[3] for r in merged]
 
 
 def _work_read(f):
@@ -5893,8 +6129,10 @@ def _work_read(f):
         # `step` — адрес работы В ПЛАНЕ нити (работа 44): номер шага, под
         # которым она стоит на вкладке «работы». Поле ставит станок; работа без
         # него не ломается, а просто ложится в группу «без шага»
+        # `from-cand` — работа рождена из кандидата NN (решение 38, 02.09):
+        # ставится один раз при рождении, дальше никто его не трогает
         m = re.match(r"(kind|project|deadline|status|created"
-                     r"|taken-by|taken-at|thread|fav|at|step):\s*(.*)", l)
+                     r"|taken-by|taken-at|thread|fav|at|step|from-cand):\s*(.*)", l)
         if m:
             meta[m.group(1)] = m.group(2).strip(); continue
         if l.startswith("## "):
@@ -5940,9 +6178,12 @@ def _work_read(f):
     # строк в описании несут структуру, разметку делает карточка
     # (white-space:pre-line). Список ОДИН на обе секции — по нему и считаются
     # сквозные data-i, которыми доска чекает.
+    # журнал наружу — ВИДОМ НА АКТЫ (работа 66, пункт 1): источник строк
+    # подменяется ровно здесь, в одной точке, и все девять читателей ниже
+    # получают ту же старую форму, что и раньше
     return (title, meta, " ".join(desc),
             [(s, t, "\n".join(d), fx) for s, t, d, fx in items],
-            journal, "\n".join(plan).strip())
+            _work_journal_view(f, meta, journal), "\n".join(plan).strip())
 
 
 def _work_checkmap(journal):
@@ -6088,9 +6329,22 @@ def _work_accepted(items, journal):
         if it[0] != "x" or i in out:
             continue
         when = cm.get(i + 1, ("", ""))[0]
-        if not when or when <= mass:  # «ГГГГ-ММ-ДД ЧЧ:ММ» сравнивается строкой
+        if not when or _jrn_at(when) <= _jrn_at(mass):
             out[i] = mass
     return out
+
+
+def _jrn_at(stamp):
+    """Метка журнальной строки → datetime (кривая — в самое начало времён).
+
+    Сравнивать метки СТРОКАМИ больше нельзя (работа 66, пункт 1): журнал стал
+    видом на акты, и хотя мост приводит акт к «ГГГГ-ММ-ДД ЧЧ:ММ», в файле
+    остаются старые строки — стоит форматам разъехаться хоть на секунды или на
+    `T`, и лексикографика соврёт («T» > пробела), а приёмка посыплется молча."""
+    try:
+        return datetime.strptime((stamp or "").strip(), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return datetime.min
 
 
 def _work_lead_jump(meta, by_dir):
@@ -6364,25 +6618,17 @@ def _work_parts(slug, meta, desc, items, journal, plan, by_dir, dl, today,
     st = meta.get("status", "open")
     proj = ('<span class="wkproj">{0}</span>'.format(esc(meta["project"]))
             if meta.get("project") else "")
-    # дедлайн переключается кликом по чипу (решение 16.07); без дедлайна —
-    # пунктирный «+ дедлайн»; закрытые — просто текст. Поставленный срок —
-    # на лице (это ограничение, его смотрят), а пустая рука «+ дедлайн» — в
-    # полном виде: ставят срок редко и уже вдумавшись в работу
-    dl_chip = dl_add = ""
+    # дедлайн — ТЕКСТ, а не жест (слово 02.09): клик по чипу писал срок в
+    # паспорт и строку в `## журнал` мимо вербов, и это была одна из шести
+    # пишущих рук доски. Чип остался ровно тем, ради чего его смотрят, —
+    # ограничением на лице карточки; пунктирная рука «поставить» ушла совсем,
+    # чтобы не осталось кнопки, которая ничего не делает. Срок ставит
+    # `tide work` или рука человека в паспорте.
+    dl_chip = ""
     if dl:
         cls = ("bad" if dl < today else "warn" if dl == today else "")
-        dl_chip = '<span class="wkdl {0}"{1}>до {2}</span>'.format(
-            cls,
-            (' data-dl="{0}" data-iso="{1}"'.format(
-                esc(slug), dl.isoformat()) if st != "done" else ""),
-            dl.strftime("%d.%m"))
-    elif st != "done":
-        # «поставить», а не «+ дедлайн» (фикс 5 работы 26): чип живёт ТОЛЬКО
-        # в паспорте-табличке, где слово «дедлайн» уже сказано меткой слева;
-        # плюс перед ним читался бы вторым названием строки. Жест тот же —
-        # класс, data-dl и обработчик не менялись
-        dl_add = ('<span class="wkdl add" data-dl="{0}">поставить</span>'
-                  .format(esc(slug)))
+        dl_chip = '<span class="wkdl {0}">до {1}</span>'.format(
+            cls, dl.strftime("%d.%m"))
     # кто взял работу и когда (единый слой, шов 1): чип рисуем только когда
     # паспорт реально знает исполнителя (статус taken/review) — у open его
     # нет. Имя может быть длинным (адрес сессии) — режем, полное в title;
@@ -6474,8 +6720,8 @@ def _work_parts(slug, meta, desc, items, journal, plan, by_dir, dl, today,
             cls += " acc"
         # УЗЛЫ ОТМЕТОК ОСТАЮТСЯ, НО ПУСТЫ (решение 31.07, фикс 14 работы 25):
         # рисунок состояния переехал на цифру (кружок), галочки скрыты
-        # правилом, а разметка цела — на ней держится контракт с сервером и
-        # чужой разбор. Подсказка ушла ВМЕСТЕ с рисунком: на скрытом узле
+        # правилом, а разметка цела — на ней держится индекс пункта и чужой
+        # разбор. Подсказка ушла ВМЕСТЕ с рисунком: на скрытом узле
         # она не всплыла бы, наводить не на что. Всё, что о состоянии можно
         # сказать словами — пруф последнего чека, время приёмки,
         # приглашение к жесту, — висит теперь на самой цифре.
@@ -6520,12 +6766,10 @@ def _work_parts(slug, meta, desc, items, journal, plan, by_dir, dl, today,
                 nt=' title="{0}"'.format(esc(ntit)) if ntit else "",
                 tx=esc(txt), d=dhtml, pf=pfh, x=xbtn))
     rows = "".join(rows_html)
-    # рукой человека с доски (16.07): дописать пункт — только у живых работ.
-    # Стоит ВПРИТЫК к чеклисту, до блока фиксов: жест пишет именно в
-    # `## чеклист`, и разной формой про это врать нельзя
-    if st != "done":
-        rows += ('<div class="wkadd" data-add="{0}">+ пункт</div>'
-                 .format(esc(slug)))
+    # «+ ПУНКТА» ЗДЕСЬ БОЛЬШЕ НЕТ (слово 02.09): рука дописывала `- [ ] …` в
+    # `## чеклист` (а на приёмке — фикс) и свою строку в `## журнал`, минуя
+    # вербы и акты. Пункт кладёт агент вербом, «да» ему человек говорит словом
+    # в чат — доска показывает результат.
     # фиксы (решение 30.07, работа 19) — то, что человек накидал у приёмки:
     # своим блоком под плановыми шагами, отделён тихим заголовком с
     # волосяной линией. Пункт визуально тот же (квадратик, тайтл,
@@ -6600,13 +6844,17 @@ def _work_parts(slug, meta, desc, items, journal, plan, by_dir, dl, today,
     pass_rows = []
     if meta.get("project"):
         pass_rows.append(("дом", esc(meta["project"])))
-    if dl_chip or dl_add:
-        pass_rows.append(("дедлайн", dl_chip or dl_add))
+    if dl_chip:
+        pass_rows.append(("дедлайн", dl_chip))
     if taken_val:
         pass_rows.append(("взял", taken_val))
     lead_val = _work_lead_val(meta, by_dir)
     if lead_val:
         pass_rows.append(("ведёт", lead_val))
+    # рождена из идеи (решение 38, 02.09): поле ставится один раз при рождении
+    # и больше не меняется, как «дом» — просто печатаем, если оно есть
+    if meta.get("from-cand"):
+        pass_rows.append(("идея", "#" + esc(meta["from-cand"])))
     passport = "".join(
         '<div class="wkprow"><span class="wkpk">{0}</span>'
         '<span class="wkpv">{1}</span></div>'.format(k, v)
@@ -6614,7 +6862,7 @@ def _work_parts(slug, meta, desc, items, journal, plan, by_dir, dl, today,
     # куда работа ведёт (работа 44) — первой строкой полного вида, до паспорта:
     # это не справка, а рамка, в которой всё остальное читается
     goes = _work_goes(meta, by_dir, steps, in_thread)
-    return {"st": st, "proj": proj, "dl_chip": dl_chip, "dl_add": dl_add,
+    return {"st": st, "proj": proj, "dl_chip": dl_chip,
             "taken": taken, "age_chip": age_chip, "cursor": cursor,
             "rows": rows, "n_done": n_done, "n_agreed": len(agreed),
             "dsc": dsc, "pln": pln, "jrn": jrn, "passport": passport,
@@ -6702,16 +6950,13 @@ def _works_panel(threads=None):
         star = _work_star(slug, _work_is_fav(meta)) if st != "done" else ""
         # ряд чипов закрытой карточки — прежний, минус номер: он и у закрытых
         # теперь живёт в заголовке (фикс 10 работы 22)
-        chips = [p["proj"], dl_chip, p["dl_add"], p["taken"], age_chip]
-        # статусы в файле — жесты агента. РАЗВОРОТ решения 16.07 «„в работе"
-        # убрать вообще» единым слоем: воркер теперь виден живьём — taken/review
-        # рисуются бейджем в шапке (шов 2 ниже); кнопка же знает лишь
-        # закрыть/открыть — закрыть можно всегда, закрытую открыть обратно
-        # (решение 16.07), done — рука человека
-        btn = ('<button class="nbtn wkdone" data-close="{0}">закрыть</button>'
-               .format(esc(slug)) if st != "done" else
-               '<button class="nbtn wkdone" data-reopen="{0}">открыть'
-               '</button>'.format(esc(slug)))
+        chips = [p["proj"], dl_chip, p["taken"], age_chip]
+        # КНОПОК «закрыть»/«открыть» ЗДЕСЬ БОЛЬШЕ НЕТ (слово 02.09, поверх
+        # решения 37 нити): обе писали статус и строку в `## журнал` сами,
+        # вторым журналом мимо вербов. `done` по-прежнему ставит только
+        # человек — но словом в чат, а агент фиксирует его
+        # `tide work close --word`. Состояние работы видно бейджем в шапке и
+        # строкой состояния, подвал живой карточки уехал вместе с кнопкой.
         # «22 · Название»: номер СВОИМ span-ом ВНЕ редактируемой зоны — жест
         # правки (wkEdit) берёт textContent именно с .wknm[data-title], и
         # номер не должен уезжать в текст при сохранении. Обёртка .wknmw несёт
@@ -6745,10 +6990,10 @@ def _works_panel(threads=None):
                 '<span class="wkchips">{g}{c}</span></div>{d}{th}{p}'
                 '<div class="wkitems">{r}</div>{j}'
                 '<div class="wkfoot"><span class="wkprog">{nd}/{n}</span>'
-                '{b}</div></div>'.format(
+                '</div></div>'.format(
                     s=esc(slug), t=nm, g=badge, c="".join(chips),
                     d=dsc, th=thr, p=pln, r=rows, j=jrn,
-                    nd=n_done, n=n_agreed, b=btn))))
+                    nd=n_done, n=n_agreed))))
             continue
         # ЛИЦО ≠ ПОЛНЫЙ ВИД (решение 30.07, работа 21). На лице — НАЗВАНИЕ во всю
         # ширину, под ним ОДНА тихая мета-строка и СТРОКА СОСТОЯНИЯ (главный
@@ -6773,12 +7018,10 @@ def _works_panel(threads=None):
             '<div class="wkcard" data-wk="{s}" data-wkopen="{s}">'
             '<div class="wkhead">{t}</div>'
             '<div class="wkmeta">{g}{dl}{ag}{h}</div>'
-            '{stl}{full}'
-            '<div class="wkfoot one">{b}</div></div>'.format(
+            '{stl}{full}</div>'.format(
                 s=esc(slug), t=nm, g=badge, dl=dl_chip, ag=age_chip,
                 h=hands, stl=_work_state_html(st, items, journal, now, title,
-                                              cursor=cursor),
-                full=full, b=btn))
+                                              cursor=cursor), full=full))
     label = ('<div class="slabel">работы · {0}</div>'.format(len(cards))
              if cards else '<div class="slabel">работ пока нет</div>')
     # закрытые — внизу под спойлером, свежие сверху (кандидат 121, решение 16.07)
@@ -6925,7 +7168,7 @@ html.wkmlock,html.wkmlock body,html.wkmlock .detail{overflow:hidden}
 /* поставленный срок на лице — не пилюля, а такая же тихая мета; рука цела
    (клик открывает календарь), подсказка о ней — пунктир на ховере */
 .wkmeta .wkdl{border:none;padding:0;font-size:10px}
-.wkmeta .wkdl[data-dl]:hover{border:none;
+.wkmeta .wkdl:hover{border:none;
   text-decoration:underline dashed var(--ink-mute);text-underline-offset:3px}
 .wkmeta .wkdl input{font-size:10px;width:104px}
 /* паспортные чипы (дом · «взял» · постановка срока) уехали в полный вид —
@@ -6941,10 +7184,6 @@ html.wkmlock,html.wkmlock body,html.wkmlock .detail{overflow:hidden}
   color:var(--ink-faint);white-space:normal}
 #wkmodal .wkfchips>*+*::before{content:'·';margin-right:7px;
   color:var(--ink-mute)}
-/* рука «+ дедлайн» цела — про неё говорит пунктир по наведению, как у всякого
-   правимого текста доски, а не рамка */
-#wkmodal .wkfchips .wkdl[data-dl]:hover{border:none;color:var(--ink);
-  text-decoration:underline dashed var(--ink-mute);text-underline-offset:3px}
 /* «ведёт: …» — вторая строка того же тихого блока, вплотную к чипам */
 #wkmodal .wklead{margin:4px 0 0;font-size:10.5px;color:var(--ink-faint)}
 /* ── ШАПКА МОДАЛКИ ДЫШИТ (решение 31.07, фикс 11 работы 25: «сверху кучно») ────
@@ -6977,14 +7216,9 @@ html.wkmlock,html.wkmlock body,html.wkmlock .detail{overflow:hidden}
   letter-spacing:.18em;text-transform:uppercase;color:var(--ink-mute)}
 .wkpv{flex:1;min-width:0;font-size:12px;color:var(--ink-dim);
   overflow-wrap:anywhere}
-/* чип дедлайна внутри таблички — не пилюля, а такой же текст со своей рукой:
-   пунктир по наведению говорит, что он правится (мотив всего правимого доски) */
-/* border-WIDTH, а не border:none: ниже `.wkdl.add` возвращает пунктир стилем,
-   и обнулённая одним словом рамка вернулась бы к нему толщиной по умолчанию —
-   «поставить» снова читалось бы пилюлей в таблице */
+/* чип дедлайна внутри таблички — не пилюля, а такой же тихий текст; руки у
+   него больше нет (слово 02.09), поэтому нет и пунктира по наведению */
 .wkpv .wkdl{border-width:0;padding:0;font-size:12px;color:var(--ink-dim)}
-.wkpv .wkdl[data-dl]:hover{border:none;color:var(--ink);
-  text-decoration:underline dashed var(--ink-mute);text-underline-offset:3px}
 /* описание — тихая строка, не второй заголовок (фикс 11) */
 #wkmodal .wkdesc{margin-top:16px;font-size:12px;color:var(--ink-mute)}
 /* ── МОДАЛКА БЕЗ КРЕСТИКОВ (решение 31.07, фикс 13 работы 25) ─────────────────
@@ -6993,7 +7227,7 @@ html.wkmlock,html.wkmlock body,html.wkmlock .detail{overflow:hidden}
    курсором. Жест закрыт и в обработчике — рисунок и поведение должны говорить
    одно (см. WORK_JS). Карточки вкладки «работа» это не касается: там правка
    рукой осталась, и правило живёт под #wkmodal. */
-#wkmodal .wkx,#wkmodal .wkadd{display:none}
+#wkmodal .wkx{display:none}
 #wkmodal .wki .wkt,#wkmodal .wknm,#wkmodal .wkdt{cursor:default}
 #wkmodal .wki .wkt:hover,#wkmodal .wknm[data-title]:hover,
 #wkmodal .wkdt:hover{text-decoration:none}
@@ -7032,12 +7266,7 @@ html.wkmlock,html.wkmlock body,html.wkmlock .detail{overflow:hidden}
 .wkfav{align-self:center}
 .wkdl.warn{border-color:var(--warn);color:var(--warn)}
 .wkdl.bad{border-color:var(--bad);color:var(--bad)}
-.wkdl[data-dl]{cursor:pointer}
-.wkdl[data-dl]:hover{border-style:dashed;color:var(--ink)}
-.wkdl.add{border-style:dashed;color:var(--ink-faint)}
-.wkdl input{background:none;border:none;outline:none;color:inherit;
-  font-family:var(--mono);font-size:10.5px;width:112px;padding:0;
-  color-scheme:dark;cursor:pointer}
+
 html[data-palette="sand"] .wkdl input{color-scheme:light}
 .wkdesc{display:flex;gap:8px;align-items:flex-start;
   font-size:12.5px;color:var(--ink-dim);margin:8px 0 0}
@@ -7102,9 +7331,6 @@ html[data-palette="sand"] .wkdl input{color-scheme:light}
 .wkx{color:var(--ink-faint);cursor:pointer;font-size:18px;line-height:1;
   padding:0 6px;flex:none}
 .wkx:hover{color:var(--bad)}
-.wkadd{font-family:var(--mono);font-size:12px;color:var(--ink-faint);
-  cursor:pointer;padding:8px 0 0;user-select:none}
-.wkadd:hover{color:var(--ink)}
 /* ГЕЙТ СОГЛАСОВАНИЯ (работа 44) — «да» кнопкой. Своей краски у блока нет: он
    берёт .abtn.primary, ту самую амберную пилюлю, которой кит метит «твой ход»
    на карточке нити. Разметка одна на карточку работы и на стол, значит и
@@ -7133,16 +7359,15 @@ button.wksend[disabled]{opacity:.45;pointer-events:none}
   cursor:pointer;user-select:none}
 .wkno:hover{color:var(--bad);border-color:var(--bad)}
 .wkno[data-busy]{opacity:.4;pointer-events:none}
-.wkadd .nurl{width:100%;padding:5px 9px;font-size:12px}
-.wkcard.closed .wkx,.wkcard.closed .wkadd{display:none!important}
+.wkcard.closed .wkx{display:none!important}
 /* ── ГАЛОЧЕК В РИСУНКЕ НЕТ (решение 31.07, фикс 14 работы 25) ─────────────────
    Две отметки (✓ исполнителя и ✓✓ руки, работа 22) сказали своё и уступили
    место кружку вокруг цифры: одна вещь на ряд вместо трёх, и колонка состояния
    схлопнулась — тайтлы встали по одной вертикали сами, без подпорок.
-   УЗЛЫ ОСТАЮТСЯ В РАЗМЕТКЕ и не удалены: на них держится контракт с сервером
-   (индекс пункта, ручки /work-check и /work-item-accept) и разбор чужого кода,
-   который их ищет. Прятать дешевле, чем вырезать и потом искать, где отвалилось;
-   жест переехал на .wkn явным селектором (см. WORK_JS).
+   УЗЛЫ ОСТАЮТСЯ В РАЗМЕТКЕ и не удалены: на них держится индекс пункта, по
+   которому карточку читают, и разбор чужого кода, который их ищет. Пишущих
+   ручек за ними больше нет вовсе (слово 02.09) — доска работу только
+   показывает. Прятать дешевле, чем вырезать и потом искать, где отвалилось.
    Маркера «здесь сейчас воркер» тут по-прежнему НЕТ: жеста-источника у доски
    не существует, рисовать его значило бы гадать. */
 .wkbox,.wkacc{display:none}
@@ -7329,7 +7554,7 @@ button.wksend[disabled]{opacity:.45;pointer-events:none}
 .wkblkcol .wkblk:not(.done) .wki:not(.don) .wkt:hover,
 .wkblkcol .wkblk:not(.done) .wkdt:hover{
   text-decoration:underline dashed var(--ink-mute);text-underline-offset:3px}
-.wkblkcol .wkblk.done .wkx,.wkblkcol .wkblk.done .wkadd{display:none!important}
+.wkblkcol .wkblk.done .wkx{display:none!important}
 /* ── ЧЕКЛИСТ ТУТ ЧИТАЮТ, А НЕ ПРОСМАТРИВАЮТ (решение 07.08, iPhone: «вёрстка ещё
    не супер удачная») ────────────────────────────────────────────────────────
    Развёрнутый вид приехал сюда с плотностью списка ВНУТРИ модалки — там его
@@ -7414,11 +7639,7 @@ button.wksend[disabled]{opacity:.45;pointer-events:none}
 .wkdive:hover{color:var(--c1);border-color:var(--c1);background:var(--c1-soft)}
 .wkfoot{margin-top:auto;padding-top:10px;display:flex;
   justify-content:space-between;align-items:center}
-/* на лице в подвале осталась одна кнопка «закрыть» — прогресс уехал в строку
-   состояния; жмём её вправо, чтобы подвал не выглядел оборванным слева */
-.wkfoot.one{justify-content:flex-end}
 .wkprog{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)}
-.wkdone{padding:4px 12px;font-size:11px}
 .wkjrn{margin-top:10px}
 .wkjrn summary{font-family:var(--mono);font-size:10.5px;
   color:var(--ink-faint);cursor:pointer;user-select:none;padding:2px 0}
@@ -7480,7 +7701,8 @@ document.addEventListener('click',async e=>{
   // data-proj/data-thread есть только у формы нити: заведённая оттуда работа
   // сразу приписана дому И нити страницы и потому видна в том же списке,
   // откуда её завели (список нити сит по нити).
-  // Даты в форме нет — дедлайн ставится чипом на карточке (/work-deadline)
+  // Даты в форме нет: дедлайн работы ставит `tide work`, доска его только
+  // показывает (слово 02.09 — пишущие кнопки карточки сняты)
   const go=t&&t.closest&&t.closest('.wkgo');
   if(go){
     const form=go.closest('.wkform');
@@ -7492,30 +7714,14 @@ document.addEventListener('click',async e=>{
       ti.value='';
       (window.deckToast||alert)('работа заведена'); boardRefresh(); }
     return; }
-  // дедлайн на карточке: клик по чипу → инлайн-календарь → /work-deadline
-  const dlc=t.closest&&t.closest('.wkdl[data-dl]');
-  if(dlc&&!dlc.querySelector('input')&&!window.__wkEditing){
-    window.__wkEditing=true;
-    const slug=dlc.dataset.dl, iso=dlc.dataset.iso||'';
-    dlc.innerHTML='<input type="date" value="'+iso+'">';
-    const inp=dlc.querySelector('input');
-    const fin=async save=>{ inp.onchange=null; inp.onblur=null;
-      window.__wkEditing=false;
-      if(save&&inp.value!==iso){
-        await wkCall('/work-deadline?f='+encodeURIComponent(slug)
-                     +'&d='+encodeURIComponent(inp.value||'')); }
-      boardRefresh(); };
-    inp.onchange=()=>fin(true);
-    inp.onblur=()=>fin(inp.value!==iso);
-    inp.onkeydown=ev=>{ if(ev.key==='Escape'){ inp.onblur=null; fin(false); } };
-    try{ if(inp.showPicker) inp.showPicker(); }catch(err){}
-    return; }
-  if(t&&t.classList&&t.classList.contains('wkdone')){
-    const url=t.dataset.close
-      ?'/work-close?f='+encodeURIComponent(t.dataset.close)
-      :'/work-reopen?f='+encodeURIComponent(t.dataset.reopen);
-    if(await wkCall(url)) boardRefresh();
-    return; }
+  // ШЕСТИ ПИШУЩИХ РУК КАРТОЧКИ ЗДЕСЬ БОЛЬШЕ НЕТ (слово человека 02.09, поверх
+  // решения 37 нити: подтверждение идёт через чат, доска — витрина). Отсюда
+  // ушли инлайн-календарь дедлайна (/work-deadline), кнопки «закрыть» и
+  // «открыть» (/work-close, /work-reopen) и «+ пункт» (/work-item-add); чек
+  // пункта рукой (/work-check) снялся ещё решением 31.07, а звезда работы
+  // (/work-fav) — вместе с этими. Все шесть писали свой, ВТОРОЙ журнал прямо в
+  // work.md, мимо вербов и мимо актов. Разметку жестов сняли вместе с
+  // обработчиками: кнопка, которая молча ничего не делает, хуже её отсутствия.
   if(window.__wkEditing) return;
   // МОДАЛКА — ЧТЕНИЕ И РУКА, НЕ РЕДАКТОР (решение 31.07, фикс 13 работы 25).
   // Планом управляют голосом в сессию: пункт кладёт агент вербом, «да» ему
@@ -7526,7 +7732,7 @@ document.addEventListener('click',async e=>{
   // закрыть работу. На карточке вкладки «работа» все жесты живут как жили —
   // правило скоупнуто модалкой, а не вырезано из движка.
   if(t.closest&&t.closest('#wkmodal')&&t.closest(
-      '.wkx,.wkadd,.wknm[data-title],.wkdesc[data-desc] .wkdt,'
+      '.wkx,.wknm[data-title],.wkdesc[data-desc] .wkdt,'
       +'.wki:not(.don) .wkt')) return;
   // ГЕЙТ СОГЛАСОВАНИЯ (работа 44): «да» на план целиком и «нет» одному
   // предложению. Обработчик ОДИН на все площадки — карточка работы, блок нити,
@@ -7596,27 +7802,6 @@ document.addEventListener('click',async e=>{
         +encodeURIComponent(card.dataset.wk)+'&i='+row.dataset.i
         +'&t='+encodeURIComponent(v)); });
     return; }
-  const ad=t.closest&&t.closest('.wkadd');
-  if(ad&&!ad.querySelector('input')&&!ad.dataset.busy){
-    window.__wkEditing=true;
-    ad.innerHTML='<input class="nurl" placeholder="новый пункт">';
-    const inp=ad.querySelector('input'); inp.focus();
-    // замок от даблклика: Enter и blur гонятся за один и тот же текст, а на
-    // работе в review жест дописывает ФИКС — второй заход положил бы пункт
-    // дважды и дважды соврал бы журналу (болячка 30.07: четыре «закрыта»)
-    const done=async ok=>{ const v=inp.value.trim();
-      if(ad.dataset.busy) return;
-      ad.dataset.busy='1';
-      window.__wkEditing=false; ad.textContent='+ пункт';
-      if(ok&&v) await wkCall('/work-item-add?f='
-        +encodeURIComponent(ad.dataset.add)+'&t='+encodeURIComponent(v));
-      delete ad.dataset.busy;
-      boardRefresh(); };
-    inp.onkeydown=ev=>{
-      if(ev.key==='Enter'){ inp.onblur=null; done(true); }
-      if(ev.key==='Escape'){ inp.onblur=null; done(false); } };
-    inp.onblur=()=>done(true);
-    return; }
   // ПУНКТОВЫХ ЖЕСТОВ РУКИ НА ДОСКЕ БОЛЬШЕ НЕТ (решение 31.07, работа 27).
   // Тут стоял последний — тап по кружку сделанного писал «принято рукой». Он и
   // подвёл: три пункта приняты СЛУЧАЙНЫМИ нажатиями, и в журнале осталась
@@ -7625,9 +7810,10 @@ document.addEventListener('click',async e=>{
   // нечем: цена ошибки и цена жеста разошлись.
   // Приёмка и «да» идут словом в сессию (решение 06), «сделано» — вербом
   // исполнителя с пруфом. Кружок остался ЧИСТЫМ ИНДИКАТОРОМ: ни курсора, ни
-  // подсветки, ни обработчика. Ручка /work-item-accept на сервере жива и
-  // принадлежит вербам — сервер не трогали, снялась только рука с доски.
-  // Властные кнопки человека на месте: «закрыть» работы и «да» на плане.
+  // подсветки, ни обработчика.
+  // Из властных кнопок человека на карточке осталось «да» на плане: «закрыть»
+  // работы снято 02.09 вместе с остальными пятью пишущими руками — done тоже
+  // ставится словом в чат, а агент фиксирует его `tide work close --word`.
 });
 document.addEventListener('keydown',e=>{
   // Enter в поле имени = «завести», но кнопку жмём СВОЕЙ формы
@@ -8329,9 +8515,9 @@ ISSUES_CSS = """
 /* рука человека на артефакте (решение 30.07): ★ сохранить себе и «забрал ✓».
    Они правят паспорт, а переходы рядом только уносят взгляд, — поэтому своей
    группой в хвосте ряда и БЕЗ растяжки: пилюля перехода живёт половиной ряда,
-   жест руки — ровно по себе. Кнопка взята у «закрыть» на кухне (.nbtn.wkdone,
-   тот же кит): рука человека везде на доске выглядит одинаково, и «забрал»
-   отличается от «закрыть» только словом. Звезда — ровно ★ карточки нити */
+   жест руки — ровно по себе. Кнопка того же кита, каким была «закрыть» на
+   карточке работы (её сняли 02.09): рука человека везде на доске выглядит
+   одинаково. Звезда — ровно ★ карточки нити */
 .ishand{flex:none;display:flex;align-items:center;gap:9px;margin-left:auto}
 .istake{padding:4px 12px;font-size:11px;white-space:nowrap}
 /* полка «сохранённые» — забранное, оставленное себе звездой. Свёрнута и тиха:

@@ -53,7 +53,9 @@ machine here: **open → taken → review → done**.
 * ``add`` / ``list`` / ``show`` — housekeeping (``add`` mirrors the board form).
   ``add --cand NN`` РОЖДАЕТ работу из кандидата одним жестом: текст кандидата
   ложится черновиком в ``## план``, сам кандидат уходит с полки в
-  ``candidates/__dropped__/`` (восстановим), связь пишется в журнал.
+  ``candidates/__dropped__/`` (восстановим), связь пишется полем паспорта
+  ``from-cand: NN`` — решение 38, 02.09: это факт рождения, а не жест на ленте
+  актов, и он не должен зависеть от того, есть ли у кнопки доски своя сессия.
 
 Имя работы — это H1, а НЕ первый пункт чеклиста: ``add`` рождает работу с пустым
 ``## чеклист``. Пункт-двойник имени случался трижды (работы 23, 41, 44) — он
@@ -112,8 +114,14 @@ runs straight through them in file order: with four items in the checklist the
 first fix is item 5. Every hand (``check``, ``uncheck``, ``agree``, the board)
 counts the same way, so a number said out loud means one line everywhere.
 
-Every verb appends a ``## журнал`` line — nothing sinks silently. All logic is
-plain functions (argparse-free); :func:`register` wires the thin handlers.
+Every gesture lands as an ACT in the passport of the session that made it
+(:mod:`tide.acts`) — and NOWHERE ELSE. Since work 66 п.1 (финал) ``_journal`` no
+longer appends to ``## журнал`` of ``work.md``: there is one place, the journal a
+reader sees is a VIEW over the acts plus whatever the file already holds
+(:func:`journal_view`, printed by :func:`show`), and every ``## журнал`` written
+before that day is read as it is, forever — nothing is migrated or cleaned up.
+All logic is plain functions (argparse-free); :func:`register` wires the thin
+handlers.
 """
 
 from __future__ import annotations
@@ -143,9 +151,15 @@ JOURNAL_TITLE = "журнал"
 # сделано, ✓✓ — сделано И принято (второй факт читается только из журнала)
 ACCEPTED_MARK = "✓✓"
 ACCEPT_ALL_LINE = "все сделанные пункты приняты словом"
-# лениво к штампу (строку про пункт пишет РУКА с доски, не мы), строго к фразе
-_ACCEPT_ONE_RE = re.compile(r"^- .+ — пункт (\d+) принят рукой\s*$")
-_ACCEPT_ALL_RE = re.compile(r"^- .+ — {0}\s*$".format(re.escape(ACCEPT_ALL_LINE)))
+# лениво к штампу (строку про пункт пишет РУКА с доски, не мы), строго к фразе.
+# Тот же жест приходит и АКТОМ («акт: … · #NN»), поэтому род и адрес читаются
+# необязательными: приёмка одна, а мест записи с работы 66 стало два
+_ACT_KIND = r"(?:акт: )?"
+_ACT_TAIL = r"(?: · #\d{1,4}(?:\.\d{1,4})?)?"
+_ACCEPT_ONE_RE = re.compile(r"^- .+ — {0}пункт (\d+) принят рукой{1}\s*$".format(
+    _ACT_KIND, _ACT_TAIL))
+_ACCEPT_ALL_RE = re.compile(r"^- .+ — {0}{1}{2}\s*$".format(
+    _ACT_KIND, re.escape(ACCEPT_ALL_LINE), _ACT_TAIL))
 # шаг плана нити: «- [>] 3. имя шага | что делается | результат: «…»»
 # состояние — [x] пройден, [>] текущий, [ ] будущий (пишет curate.validate_step)
 _PLAN_STEP_RE = re.compile(r"^- \[([x>~ ])\]\s*(\d{1,3})\.\s*(.*)$")
@@ -236,11 +250,87 @@ def _set_status(text: str, new: str) -> str:
     return _STATUS_RE.sub("status: " + new, text, count=1)
 
 
-def _journal(text: str, line: str) -> str:
-    """Append a journal line, creating the (always-last) section when absent."""
-    if re.search(r"^## журнал", text, re.M):
-        return text.rstrip("\n") + "\n" + line + "\n"
-    return text.rstrip("\n") + "\n\n## журнал\n" + line + "\n"
+def _journal(text: str, line: str, *, wdir: Optional[Path] = None,
+             item: Optional[int] = None, what: Optional[str] = None,
+             proof: Optional[str] = None, word: Optional[str] = None,
+             now: Optional[datetime] = None) -> str:
+    """Записать жест — АКТОМ в паспорт сессии-вызывателя. В файл больше НИЧЕГО.
+
+    Второго места хранения не осталось (работа 66 п.1, финал): ``## журнал``
+    файла работы не дописывается, *text* возвращается как есть. Читается журнал
+    видом на акты (:func:`journal_view`), и уже написанные ``## журнал`` старых
+    ``work.md`` читаются оттуда ВЕЧНО — их никто не мигрирует и не чистит.
+
+    *line* — журнальная формулировка жеста; она осталась параметром, потому что
+    из неё берётся текст акта, когда *what* не задан, и потому что ею жест
+    называется в коде вербов человеческими словами. *what* задаёт текст акта,
+    когда журнальная формулировка для него не годится (в журнале слово человека
+    вшито в строку, в акте у него своё поле).
+
+    *wdir* — папка работы, то есть АДРЕС акта (``#NN``). Без неё жеста нет
+    нигде: раз запись в файл погашена, вызов без *wdir* — событие-сирота. Нет
+    сессии-вызывателя — акта тоже нет, и верб не падает: вербы зовут и из
+    скриптов, и из тестов.
+    """
+    if wdir is not None:
+        _act(wdir, what if what is not None else _journal_body(line),
+             item=item, proof=proof, word=word, now=now)
+    return text
+
+
+def _journal_body(line: str) -> str:
+    """«- 2026-09-02 16:13 — текст» → «текст» (метку акт ставит свою)."""
+    m = re.match(r"^-\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\s+—\s+(.*)$",
+                 line, re.S)
+    return m.group(1).strip() if m else line.lstrip("- ").strip()
+
+
+def _act(wdir: Path, what: str, *, item: Optional[int] = None,
+         proof: Optional[str] = None, word: Optional[str] = None,
+         now: Optional[datetime] = None) -> None:
+    """Мягкий мост «журнал → акт»: пишет, если есть куда, и молчит, если нет.
+
+    Три вещи, ради которых он и написан:
+    * адрес — ``#NN`` работы, ``#NN.M`` для пунктового жеста;
+    * длинный пруф не роняет верб и не теряется: полный текст уезжает ФАЙЛОМ в
+      ``workspace/proofs/`` сессии, а в акт идёт первая строка пруфа и путь к
+      файлу (слово человека 02.09: «одна строка, длинное — файлом»). Обрезать
+      пруф больше нельзя: журнал работы стал видом на акты, и обрезок стал бы
+      единственной записью;
+    * ЛЮБАЯ ошибка проглатывается — акт это витрина жеста, а не сам жест.
+    """
+    try:
+        from .. import acts
+        entry = acts.caller_session()
+        if entry is None:
+            return
+        ref = acts.make_ref(Path(wdir).name, item)
+        try:
+            acts.write_act(entry, what, proof=proof, word=word, ref=ref, now=now)
+        except ValueError:
+            short = _spilled_proof(acts, entry, what, proof,
+                                   word=word, ref=ref, now=now)
+            if not short:
+                return
+            acts.write_act(entry, what, proof=short, word=word, ref=ref, now=now)
+    except Exception:  # noqa: BLE001  акт не смеет ломать верб
+        return
+
+
+def _spilled_proof(acts, entry: Path, what: str, proof: Optional[str], *,
+                   word: Optional[str], ref: str,
+                   now: Optional[datetime] = None) -> str:
+    """Пруф, не влезший в акт: положить файлом и вернуть «первая строка · путь».
+
+    Не вышло написать файл (некуда, права, диск) — падаем на обрезок с «…»:
+    начало пруфа хуже целого пруфа, но лучше жеста без всякого следа.
+    """
+    try:
+        f = acts.spill_proof(entry, proof, ref=ref, now=now)
+        return acts.file_proof(what, proof, acts.proof_ref(entry, f),
+                               word=word, ref=ref)
+    except OSError:
+        return acts.fit_proof(what, proof, word=word, ref=ref)
 
 
 def _stamp(now: Optional[datetime]) -> str:
@@ -377,7 +467,7 @@ def new_work(
         "\n## чеклист\n"
     ).format(t=title, p=for_project or "", c=stamp,
              dl="deadline: {0}\n".format(deadline) if deadline else "")
-    body, _ = _autostamp_thread(root, body, now)
+    body, _ = _autostamp_thread(root, body, now, d)
     _io.atomic_write(d / "work.md", body)
     return d
 
@@ -425,6 +515,12 @@ def new_work_from_candidate(
 
     Кандидат уходит в ``candidates/__dropped__/`` тем же путём, что крестик на
     доске (:func:`tide.arc.curate.drop_candidate`) — с полки, но не с диска.
+    Связь «рождена из кандидата NN» ложится полем паспорта ``from-cand: NN``
+    (решение 38, 02.09) — НЕ актом: акт живёт в паспорте сессии-вызывателя
+    (:func:`tide.acts.caller_session`), а кнопку доски `/work-from-cand` жмут
+    без сессии — акт просто не родился бы, и связь потерялась бы молча. Поле
+    ставится один раз, здесь, и больше никакой верб его не трогает — как
+    ``created:``.
     Returns ``(work_dir, candidate_stem)``.
     """
     # соседние домены — локальным импортом, как это делают _root и candidate._cmd_drop
@@ -441,9 +537,11 @@ def new_work_from_candidate(
     # заводим ПЕРВЫМ делом: кривой тайтл или дедлайн должны упасть до того, как
     # кандидат уедет с полки, — иначе жест разваливается пополам
     d = new_work(root, text, deadline=deadline, for_project=for_project, now=now)
-    f, doc = _read(d)
-    doc = _journal(doc, "- {0} — рождена из кандидата {1}".format(_stamp(now), stem))
-    _io.atomic_write(f, doc)
+    num = stem.partition("-")[0]
+    if num.isdigit():
+        f, doc = _read(d)
+        doc = _set_meta(doc, "from-cand", num)
+        _io.atomic_write(f, doc)
     if gist:
         set_plan(root, d.name, gist, now=now)
     drop_candidate(root, stem)
@@ -489,6 +587,7 @@ def _review_ready(text: str) -> bool:
 def _resync_status(
     text: str,
     now: Optional[datetime] = None,
+    wdir: Optional[Path] = None,
 ) -> Tuple[str, Optional[str]]:
     """Re-hang the review gate after the checklist moved under it.
 
@@ -496,16 +595,25 @@ def _resync_status(
     offer) closes the gate, an unchecked item (or a fresh offer agreed into the
     plan) re-opens it. ``done`` is never touched — that one is the human's.
     Returns ``(text, moved_to)``; *moved_to* is None when nothing moved.
+
+    *wdir* — адрес акта. Ход гейта делает автоматика, но событие это не менее
+    настоящее, чем чек: «работа доделана и ждёт человека» — ровно то, ради чего
+    в ленту нити и смотрят. Зовут ``_resync_status`` только вербы, у которых
+    папка работы в руках, поэтому адрес есть всегда.
     """
     st = _status_of(text)
     if st == "taken" and _review_ready(text):
         text = _set_status(text, "review")
         return _journal(text, "- {0} — все пункты чекнуты → review, ждёт "
-                              "закрытия человеком".format(_stamp(now))), "review"
+                              "закрытия человеком".format(_stamp(now)),
+                        wdir=wdir, what="все пункты чекнуты → review, ждёт "
+                                        "закрытия человеком",
+                        now=now), "review"
     if st == "review" and not _review_ready(text):
         text = _set_status(text, "taken")
         return _journal(text, "- {0} — чеклист снова неполон → taken".format(
-            _stamp(now))), "taken"
+            _stamp(now)), wdir=wdir, what="чеклист снова неполон → taken",
+            now=now), "taken"
     return text, None
 
 
@@ -544,8 +652,8 @@ def set_plan(
     if not doc.endswith("\n"):
         doc += "\n"
     doc = _journal(doc, "- {0} — план {1} агентом".format(
-        _stamp(now), "обновлён" if found else "предложен"))
-    doc, owner = _autostamp_thread(root, doc, now)
+        _stamp(now), "обновлён" if found else "предложен"), wdir=wdir, now=now)
+    doc, owner = _autostamp_thread(root, doc, now, wdir)
     _io.atomic_write(f, doc)
     return wdir.name, bool(found), owner
 
@@ -622,13 +730,16 @@ def propose(
     if not doc.endswith("\n"):
         doc += "\n"
     doc = _journal(doc, "- {0} — {1}".format(
-        _stamp(now), _proposal_words(first, last, replace)))
+        _stamp(now), _proposal_words(first, last, replace)), wdir=wdir, now=now)
     reopened = _status_of(doc) == "review"
     if reopened:
         doc = _set_status(doc, "taken")
         doc = _journal(doc, "- {0} — предложены шаги — работа вернулась в "
-                            "работу (review → taken)".format(_stamp(now)))
-    doc, owner = _autostamp_thread(root, doc, now)
+                            "работу (review → taken)".format(_stamp(now)),
+                       wdir=wdir,
+                       what="предложены шаги — работа вернулась в работу "
+                            "(review → taken)", now=now)
+    doc, owner = _autostamp_thread(root, doc, now, wdir)
     _io.atomic_write(f, doc)
     return wdir.name, first, last, reopened, owner
 
@@ -745,12 +856,14 @@ def agree(
         doc += "\n"
     if every:
         doc = _journal(doc, "- {0} — предложения подтверждены словом: «{1}»".format(
-            _stamp(now), w))
+            _stamp(now), w), wdir=wdir, what="предложения подтверждены", word=w,
+            now=now)
     else:
         for n in nums:
             doc = _journal(doc, "- {0} — пункт {1} подтверждён словом: «{2}»".format(
-                _stamp(now), n, w))
-    doc, moved = _resync_status(doc, now)
+                _stamp(now), n, w), wdir=wdir, item=n,
+                what="пункт {0} подтверждён".format(n), word=w, now=now)
+    doc, moved = _resync_status(doc, now, wdir)
     _io.atomic_write(f, doc)
     return wdir.name, nums, every, moved
 
@@ -790,16 +903,18 @@ def drop_proposed(
         doc += "\n"
     for n in nums:
         doc = _journal(doc, "- {0} — пункт {1} снят словом: «{2}»".format(
-            _stamp(now), n, w))
+            _stamp(now), n, w), wdir=wdir, item=n,
+            what="предложенный пункт {0} снят".format(n), word=w, now=now)
     # тем же порядком, что резали, — с хвоста: иначе второй сдвиг уедет
     for n in reversed(nums):
-        doc = _shift_refs(doc, n, now)
-    doc, moved = _resync_status(doc, now)
+        doc = _shift_refs(doc, n, now, wdir)
+    doc, moved = _resync_status(doc, now, wdir)
     _io.atomic_write(f, doc)
     return wdir.name, nums, moved
 
 
-def _shift_refs(text: str, removed: int, now: Optional[datetime] = None) -> str:
+def _shift_refs(text: str, removed: int, now: Optional[datetime] = None,
+                wdir: Optional[Path] = None) -> str:
     """Свести ЖИВЫЕ ссылки на номера пунктов после того, как пункт *removed* снят.
 
     Номер пункта — адрес строки в файле, и снятие двигает всё, что ниже. Живых
@@ -819,11 +934,12 @@ def _shift_refs(text: str, removed: int, now: Optional[datetime] = None) -> str:
         if n == removed:
             text = _set_meta(text, "at", "")
             text = _journal(text, "- {0} — курсор снят: его пункт снят".format(
-                _stamp(now)))
+                _stamp(now)), wdir=wdir, now=now)
         elif n > removed:
             text = _set_meta(text, "at", str(n - 1))
             text = _journal(text, "- {0} — курсор переехал на пункт {1} "
-                                  "(номера сдвинулись)".format(_stamp(now), n - 1))
+                                  "(номера сдвинулись)".format(_stamp(now), n - 1),
+                            wdir=wdir, item=n - 1, now=now)
     lines = text.splitlines()
     found = _section(lines, JOURNAL_TITLE)
     if not found:
@@ -902,9 +1018,10 @@ def drop_item(
     if not doc.endswith("\n"):
         doc += "\n"
     doc = _journal(doc, "- {0} — пункт {1} «{2}» снят словом: «{3}»".format(
-        _stamp(now), index, title, w))
-    doc = _shift_refs(doc, index, now)
-    doc, moved = _resync_status(doc, now)
+        _stamp(now), index, title, w), wdir=wdir, item=index,
+        what="пункт {0} «{1}» снят".format(index, title), word=w, now=now)
+    doc = _shift_refs(doc, index, now, wdir)
+    doc, moved = _resync_status(doc, now, wdir)
     _io.atomic_write(f, doc)
     return wdir.name, title, moved
 
@@ -943,7 +1060,8 @@ def set_checklist(
     if not text.endswith("\n"):
         text += "\n"
     text = _journal(text, "- {0} — чеклист согласован: {1} пункт(ов)".format(
-        _stamp(now), len(texts)))
+        _stamp(now), len(texts)), wdir=wdir,
+        what="чеклист согласован: {0} пункт(ов)".format(len(texts)), now=now)
     _io.atomic_write(f, text)
     return wdir.name
 
@@ -1019,12 +1137,14 @@ def add_fixes(
     if not doc.endswith("\n"):
         doc += "\n"
     doc = _journal(doc, "- {0} — {1} словом: «{2}»".format(
-        _stamp(now), _fix_words(first, last), w))
+        _stamp(now), _fix_words(first, last), w), wdir=wdir,
+        what=_fix_words(first, last), word=w, now=now)
     reopened = _status_of(doc) == "review"
     if reopened:
         doc = _set_status(doc, "taken")
         doc = _journal(doc, "- {0} — фикс вернул в работу (review → taken)".format(
-            _stamp(now)))
+            _stamp(now)), wdir=wdir,
+            what="фикс вернул в работу (review → taken)", now=now)
     _io.atomic_write(f, doc)
     return wdir.name, first, last, reopened
 
@@ -1075,7 +1195,9 @@ def set_title(
     if not text.endswith("\n"):
         text += "\n"
     text = _journal(text, "- {0} — переименована словом: «{1}» (было: {2})".format(
-        _stamp(now), w, _clip(old, _TITLE_IN_JOURNAL)))
+        _stamp(now), w, _clip(old, _TITLE_IN_JOURNAL)), wdir=wdir,
+        what="переименована (было: {0})".format(_clip(old, _TITLE_IN_JOURNAL)),
+        word=w, now=now)
     _io.atomic_write(f, text)
     return wdir.name, old, new, _status_of(text) == "done"
 
@@ -1246,6 +1368,7 @@ def _follow_step(
     text: str,
     thread: str,
     now: Optional[datetime] = None,
+    wdir: Optional[Path] = None,
 ) -> Tuple[str, Optional[int]]:
     """Перечитать ``step:`` из плана нити *thread* — шаг всегда ходит за нитью.
 
@@ -1260,19 +1383,24 @@ def _follow_step(
             return text, None
         text = _set_meta(text, "step", "")
         return _journal(text, "- {0} — шаг снят (в плане нити его нет)".format(
-            _stamp(now))), None
+            _stamp(now)), wdir=wdir, what="шаг плана снят (в плане нити его нет)",
+            now=now), None
     if was and int(was.group(1)) == step:
         return text, step
     text = _set_meta(text, "step", str(step), after="thread")
     title = plan_step_title(root, thread, step)
     return _journal(text, "- {0} — шаг плана → {1}{2} (из плана нити)".format(
-        _stamp(now), step, " «{0}»".format(title) if title else "")), step
+        _stamp(now), step, " «{0}»".format(title) if title else ""), wdir=wdir,
+        what="шаг плана → {0}{1} (из плана нити)".format(
+            step, " «{0}»".format(title) if title else ""),
+        now=now), step
 
 
 def _autostamp_thread(
     root: Path,
     text: str,
     now: Optional[datetime] = None,
+    wdir: Optional[Path] = None,
 ) -> Tuple[str, str]:
     """Проставить нить (и её шаг) из сессии-автора, если на карточке их нет.
 
@@ -1288,8 +1416,9 @@ def _autostamp_thread(
         return text, ""
     text = _set_meta(text, "thread", owner)
     text = _journal(text, "- {0} — ответственная нить → {1} (сессия-автор)".format(
-        _stamp(now), owner))
-    text, _ = _follow_step(root, text, owner, now)
+        _stamp(now), owner), wdir=wdir,
+        what="ответственная нить → {0} (сессия-автор)".format(owner), now=now)
+    text, _ = _follow_step(root, text, owner, now, wdir)
     return text, owner
 
 
@@ -1312,8 +1441,8 @@ def set_thread(
     line = ("- {0} — ответственная нить → {1} ({2})".format(_stamp(now), val, source)
             if val else
             "- {0} — нить снята ({1})".format(_stamp(now), source))
-    text = _journal(text, line)
-    text, _ = _follow_step(root, text, val, now)
+    text = _journal(text, line, wdir=wdir, now=now)
+    text, _ = _follow_step(root, text, val, now, wdir)
     _io.atomic_write(f, text)
     return wdir.name
 
@@ -1342,7 +1471,8 @@ def set_step(
         text = _set_meta(text, "step", "")
         text = _journal(text, "- {0} — шаг снят{1}".format(
             _stamp(now), " словом: «{0}»".format(word.strip())
-            if word and word.strip() else ""))
+            if word and word.strip() else ""), wdir=wdir, what="шаг плана снят",
+            word=word, now=now)
         _io.atomic_write(f, text)
         return wdir.name, None, ""
     if step < 1:
@@ -1354,7 +1484,9 @@ def set_step(
     text = _set_meta(text, "step", str(step), after="thread")
     title = plan_step_title(root, m.group(1), step)
     text = _journal(text, "- {0} — шаг плана → {1}{2} (рукой)".format(
-        _stamp(now), step, " «{0}»".format(title) if title else ""))
+        _stamp(now), step, " «{0}»".format(title) if title else ""), wdir=wdir,
+        what="шаг плана → {0}{1} (рукой)".format(
+            step, " «{0}»".format(title) if title else ""), now=now)
     _io.atomic_write(f, text)
     return wdir.name, step, title
 
@@ -1396,9 +1528,10 @@ def take(
     note = " по слову: «{0}»".format(word.strip()) if word and word.strip() else ""
     tail = " · нить {0}".format(owner) if owner else ""
     text = _journal(text, "- {0} — взята в работу ({1}){2}{3}".format(
-        _stamp(now), who, note, tail))
+        _stamp(now), who, note, tail), wdir=wdir,
+        what="взята в работу ({0}){1}".format(who, tail), word=word, now=now)
     if owner:
-        text, _ = _follow_step(root, text, owner, now)
+        text, _ = _follow_step(root, text, owner, now, wdir)
     _io.atomic_write(f, text)
     return wdir.name, owner
 
@@ -1446,7 +1579,7 @@ def dispatch(
             "work: {0} не в работе (status: {1}) — строителя шлют на ВЗЯТУЮ: "
             "план согласован, работа взята, тогда dispatch".format(wdir.name, st))
     text = _journal(text, "- {0} — строитель отправлен: {1}".format(
-        _stamp(now), who))
+        _stamp(now), who), wdir=wdir, now=now)
     _io.atomic_write(f, text)
     return wdir.name, who
 
@@ -1492,7 +1625,8 @@ def at(
         if not re.search(r"^at:\s*.*$", text, re.M):
             raise WorkError("work: {0} — курсор и так не стоит".format(wdir.name))
         text = _set_meta(text, "at", "")
-        text = _journal(text, "- {0} — курсор снят".format(_stamp(now)))
+        text = _journal(text, "- {0} — курсор снят".format(_stamp(now)),
+                        wdir=wdir, now=now)
         _io.atomic_write(f, text)
         return wdir.name, ""
     if index < 1:
@@ -1500,7 +1634,7 @@ def at(
     item = _item_text(text, index)
     text = _set_meta(text, "at", str(index))
     text = _journal(text, "- {0} — курсор на пункте {1} «{2}»".format(
-        _stamp(now), index, item))
+        _stamp(now), index, item), wdir=wdir, item=index, now=now)
     _io.atomic_write(f, text)
     return wdir.name, item
 
@@ -1528,14 +1662,15 @@ def check(
                 wdir.name, st))
     text, item_text = _mark_item(text, index, True)
     text = _journal(text, "- {0} — пункт {1} ✓ «{2}»: {3}".format(
-        _stamp(now), index, item_text, proof.strip()))
+        _stamp(now), index, item_text, proof.strip()), wdir=wdir, item=index,
+        what="пункт {0} ✓ «{1}»".format(index, item_text), proof=proof, now=now)
     # курсор снимается сам, когда его пункт закрыт (фикс 15): держать «я тут» на
     # сделанном — врать, а требовать от агента второго жеста значит гарантировать,
     # что он его забудет. Курсор на ДРУГОМ пункте не трогаем: воркеров бывает
     # несколько, и чужую метку этот чек не отменяет
     if re.search(r"^at:\s*{0}\s*$".format(index), text, re.M):
         text = _set_meta(text, "at", "")
-    text, moved = _resync_status(text, now)
+    text, moved = _resync_status(text, now, wdir)
     _io.atomic_write(f, text)
     return wdir.name, moved == "review"
 
@@ -1558,8 +1693,10 @@ def uncheck(
     text, item_text = _mark_item(text, index, False)
     why = ": {0}".format(reason.strip()) if reason and reason.strip() else ""
     text = _journal(text, "- {0} — пункт {1} расчекнут «{2}»{3}".format(
-        _stamp(now), index, item_text, why))
-    text, _ = _resync_status(text, now)
+        _stamp(now), index, item_text, why), wdir=wdir, item=index,
+        what="пункт {0} расчекнут «{1}»".format(index, item_text),
+        proof=reason, now=now)
+    text, _ = _resync_status(text, now, wdir)
     _io.atomic_write(f, text)
     return wdir.name
 
@@ -1585,9 +1722,13 @@ def close(root: Path, key: str, word: str,
     accepted = sum(1 for done, _ in items(text) if done)
     text = _set_status(text, "done")
     if accepted:
-        text = _journal(text, "- {0} — {1}".format(_stamp(now), ACCEPT_ALL_LINE))
+        # приёмка — такой же жест, как и всё остальное: ложится и в журнал, и
+        # актом, иначе `show` увидит её только у тех, кто читает файл
+        text = _journal(text, "- {0} — {1}".format(_stamp(now), ACCEPT_ALL_LINE),
+                        wdir=wdir, what=ACCEPT_ALL_LINE, now=now)
     text = _journal(text, "- {0} — закрыта по слову человека: «{1}»".format(
-        _stamp(now), word.strip()))
+        _stamp(now), word.strip()), wdir=wdir,
+        what="закрыта по слову человека", word=word, now=now)
     _io.atomic_write(f, text)
     return wdir.name, accepted
 
@@ -1618,11 +1759,14 @@ def reopen(root: Path, key: str, word: Optional[str] = None,
     if who:
         text = _set_status(text, "taken")
         text = _journal(text, "- {0} — открыта заново{1} → taken ({2})".format(
-            _stamp(now), note, who.group(1).strip()))
-        text, _ = _resync_status(text, now)  # чеклист закрыт → сразу review
+            _stamp(now), note, who.group(1).strip()), wdir=wdir, word=word,
+            what="открыта заново → taken ({0})".format(who.group(1).strip()),
+            now=now)
+        text, _ = _resync_status(text, now, wdir)  # чеклист закрыт → сразу review
     else:
         text = _set_status(text, "open")
-        text = _journal(text, "- {0} — открыта заново{1}".format(_stamp(now), note))
+        text = _journal(text, "- {0} — открыта заново{1}".format(_stamp(now), note),
+                        wdir=wdir, what="открыта заново", word=word, now=now)
     _io.atomic_write(f, text)
     return wdir.name, _status_of(text)
 
@@ -1725,7 +1869,7 @@ def thread_works(root: Path, thread: str,
     return out
 
 
-def accepted_items(text: str) -> List[int]:
+def accepted_items(text: str, acts_lines: Optional[List[str]] = None) -> List[int]:
     """Numbers of the items the human has ACCEPTED, read off the journal.
 
     Two hands write acceptance, both as journal lines (see the module
@@ -1734,10 +1878,16 @@ def accepted_items(text: str) -> List[int]:
     it accepted the checklist as it stood at that moment, and after a ``reopen``
     the checklist moves on. Read inside ``## журнал`` alone: a passport's free
     text may well quote the same words without being a record of a gesture.
+
+    *acts_lines* — те же жесты, пришедшие АКТАМИ в паспорт сессии (работа 66
+    п.1: журнал стал видом на акты). Приёмка читается из обоих мест ОБЪЕДИНЕНИЕМ,
+    а не «из нового вместо старого»: рука с доски сессии не имеет и пишет только
+    в файл, ``close`` из сессии пишет и туда, и актом — потерять любое из двух
+    значит соврать про приёмку в половине живых работ.
     """
     lines = text.splitlines()
     found = _section(lines, JOURNAL_TITLE)
-    journal = lines[found[0]:found[1]] if found else []
+    journal = (lines[found[0]:found[1]] if found else []) + list(acts_lines or [])
     nums = set()
     for ln in journal:
         m = _ACCEPT_ONE_RE.match(ln)
@@ -1749,7 +1899,7 @@ def accepted_items(text: str) -> List[int]:
     return sorted(nums)
 
 
-def _mark_accepted(text: str) -> str:
+def _mark_accepted(text: str, acts_lines: Optional[List[str]] = None) -> str:
     """Append ``✓✓`` to every checked-AND-accepted item — display only.
 
     The file keeps the plain ``- [x]`` line: acceptance is a journal fact, and
@@ -1757,7 +1907,7 @@ def _mark_accepted(text: str) -> str:
     An accepted item that was later unchecked wears no mark — the two facts are
     shown together or not at all.
     """
-    nums = accepted_items(text)
+    nums = accepted_items(text, acts_lines)
     if not nums:
         return text
     lines = text.splitlines()
@@ -1772,17 +1922,137 @@ def _mark_accepted(text: str) -> str:
     return "\n".join(lines)
 
 
+# «- 2026-09-02 16:13 — …» и «- 2026-09-02T16:13:37 — …»: журнал пишет минуты,
+# акт — секунды, а читать их приходится одной лентой
+_JRN_AT_RE = re.compile(
+    r"^-\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?\s+—")
+
+
+def _journal_at(line: str) -> Optional[datetime]:
+    """Метка времени журнальной строки — или None, если её там нет."""
+    m = _JRN_AT_RE.match(line)
+    if not m:
+        return None
+    d = [int(x) for x in m.group(1).split("-")]
+    return datetime(d[0], d[1], d[2], int(m.group(2)), int(m.group(3)),
+                    int(m.group(4) or 0))
+
+
+def _journal_entries(text: str) -> List[Tuple[Optional[datetime], List[str]]]:
+    """``## журнал`` файла записями: ``(метка, строки)``, в файловом порядке.
+
+    Запись — это ``- …`` и всё, что под ней с отступа: чек по норме 31.07 пишет
+    короткую строку человеку, пустую строку и технику ниже, и разорвать её при
+    склейке значило бы показать половину пруфа.
+    """
+    lines = text.splitlines()
+    found = _section(lines, JOURNAL_TITLE)
+    if not found:
+        return []
+    out: List[Tuple[Optional[datetime], List[str]]] = []
+    for ln in lines[found[0] + 1:found[1]]:
+        if ln.startswith("- "):
+            out.append((_journal_at(ln), [ln]))
+        elif out:
+            out[-1][1].append(ln)
+        elif ln.strip():
+            out.append((None, [ln]))
+    while out and not any(l.strip() for l in out[-1][1]):
+        out.pop()
+    return out
+
+
+def work_acts(root: Path, wdir: Path, text: str) -> List[object]:
+    """Акты этой работы — все сессии её нити, новое сверху; ``[]``, если нет нити.
+
+    Адрес читается с карточки (``thread:``), фильтр — номер работы, так что
+    ``#66`` приносит и пунктовые ``#66.4``. Любая беда по дороге (нет ростера,
+    битый паспорт сессии) — пустой список: вид на акты не смеет уронить ``show``.
+    """
+    try:
+        from .. import acts
+
+        m = re.search(r"^thread:\s*(\S+)", text, re.M)
+        if not m:
+            return []
+        tdir = thread_dir(Path(root), m.group(1))
+        if tdir is None:
+            return []
+        return acts.read_acts(tdir, ref=acts.make_ref(Path(wdir).name))
+    except Exception:       # noqa: BLE001
+        return []
+
+
+def act_lines(rows: List[object]) -> List[str]:
+    """Акты журнальными строками, старое сверху — как их читают в журнале."""
+    return ["- {0} — {1}".format(r.at.strftime(_STAMP_FMT), r.text)
+            for r in reversed(rows)]
+
+
+def journal_view(root: Path, wdir: Path, text: str,
+                 rows: Optional[List[object]] = None) -> List[str]:
+    """``## журнал`` работы как ВИД на акты сессий её нити (работа 66 п.1).
+
+    Склейка: **акты** этой работы плюс те строки файла, у которых акта-двойника
+    нет. Старая работа актов не имеет и читается из файла целиком и вечно; новая
+    читается из актов; работа, у которой есть и то и другое, не двоится.
+
+    Само сито живёт ОДНО на всех — :func:`tide.acts.sift_journal`; доска зовёт
+    его же. Здесь остаётся только разбор своей формы строки: журнал этого файла
+    пишется как ``- 2026-09-02 16:13 — текст``, и первая строка записи — то, по
+    чему жест узнаётся.
+
+    Порядок — хронологический, как в файле: журнал читают историей работы.
+    """
+    entries = _journal_entries(text)
+    rows = work_acts(root, wdir, text) if rows is None else rows
+    if not rows:
+        return [ln for _, block in entries for ln in block]
+    from .. import acts
+    prepared, last = [], datetime.min
+    for i, (at, block) in enumerate(entries):
+        last = at or last
+        prepared.append((at, _journal_body(block[0]), (last, 0, i, block)))
+    merged = list(acts.sift_journal(prepared, rows))
+    for i, r in enumerate(reversed(rows)):       # старое первым, как в файле
+        merged.append((r.at.replace(second=0, microsecond=0), 1, i,
+                       ["- {0} — {1}".format(r.at.strftime(_STAMP_FMT), r.text)]))
+    merged.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [ln for row in merged for ln in row[3]]
+
+
+def _project_journal(root: Path, wdir: Path, text: str,
+                     rows: Optional[List[object]] = None) -> str:
+    """Подменить в тексте секцию ``## журнал`` её видом на акты."""
+    view = journal_view(root, wdir, text, rows)
+    lines = text.splitlines()
+    found = _section(lines, JOURNAL_TITLE)
+    if not view:
+        return text
+    head = ["## " + JOURNAL_TITLE]
+    if not found:
+        return "\n".join(lines + [""] + head + view) + "\n"
+    return "\n".join(lines[:found[0]] + head + view + lines[found[1]:]) + "\n"
+
+
 def show(root: Path, key: str) -> str:
-    """The work.md as it is — the file IS the truth, plus the acceptance mark.
+    """The work.md as it is — plus the acceptance mark and the journal's view.
 
     Raw is nearly the whole rendering: ``## план`` sits where it lives (after the
     description, before the checklist), a proposed item shows its own ``?`` and
-    an item's description is already indented under its title. The one thing
-    added is ``✓✓`` on an item that is both done and accepted — that second fact
+    an item's description is already indented under its title. Two things are
+    added. ``✓✓`` on an item that is both done and accepted — that second fact
     lives in the journal, and a reader shouldn't have to walk it line by line.
+    And ``## журнал`` comes back as a VIEW (:func:`journal_view`): the work's
+    acts from the sessions of its thread, plus the file's own older lines. The
+    gesture is written in one place now, so the journal has to be read from it —
+    the file's section stays where it is and keeps being written for the board.
     """
-    _, text = _read(_find(root, key))
-    return _mark_accepted(text).rstrip("\n")
+    wdir = _find(root, key)
+    _, text = _read(wdir)
+    rows = work_acts(root, wdir, text)
+    return _mark_accepted(_project_journal(root, wdir, text, rows),
+                          act_lines(rows)).rstrip("\n")
 
 
 # --- CLI wiring --------------------------------------------------------------
@@ -1857,8 +2127,8 @@ def _print_move(name: str, moved: Optional[str]) -> None:
     """Say a status move out loud — the gate must never move silently."""
     if moved == "review":
         print("tide: {0} — все пункты чекнуты, предложений нет → review; done "
-              "ставит человек — его слово фиксируешь tide work close --word "
-              "(на живой доске есть и кнопка)".format(name))
+              "ставит человек — скажет слово, фиксируешь tide work close "
+              "--word (кнопки на доске нет: доска — витрина)".format(name))
     elif moved == "taken":
         print("tide: {0} — есть несделанное → снова taken (review снят)".format(name))
 
