@@ -4,10 +4,14 @@
 #   tide-ci                      # весь набор
 #   tide-ci tests/test_work.py   # аргументы уходят в pytest как есть
 #   tide-ci -k seam -x
+#   TIDE_CI_REF=HEAD tide-ci     # чистый коммит: без чужих незакоммиченных правок
 #
 # Что делает:
-#   1. rsync рабочего дерева (как есть, с незакоммиченными правками, с .git)
-#      в ~/tide-ci на mac2; --delete только внутри ~/tide-ci, .venv там не трогается.
+#   1. rsync в ~/tide-ci на mac2; --delete только внутри ~/tide-ci, .venv там не
+#      трогается. По умолчанию везёт рабочее дерево как есть (с незакоммиченным);
+#      с TIDE_CI_REF=<ref> — снимок этого коммита (git archive во временную папку).
+#      .git не возит никогда (тестам он не нужен — они заводят свои git-репо в tmp),
+#      поэтому работает и из основного дерева, и из linked worktree, где .git — файл.
 #   2. venv ~/tide-ci/.venv на brew python3.12; pip install -e '.[test]' + pytest-xdist
 #      — только если поменялся хеш pyproject.toml/uv.lock (метка .venv/.tide-ci-deps).
 #   3. pytest -q -n auto в чистом окружении (env -i): временный HOME, нет
@@ -15,7 +19,8 @@
 #      и не видят ничей живой tide-home.
 #   4. Одна итоговая строка + список упавших; код возврата = код pytest.
 #
-# Настройка через env: TIDE_CI_HOST (groovamp-mac2), TIDE_CI_DIR (tide-ci, от $HOME на mac2),
+# Настройка через env: TIDE_CI_REF (пусто = рабочее дерево; HEAD, sha, ветка = снимок),
+# TIDE_CI_HOST (groovamp-mac2), TIDE_CI_DIR (tide-ci, от $HOME на mac2),
 # TIDE_CI_PY (/opt/homebrew/bin/python3.12). Полный лог последнего прогона:
 # ${TMPDIR}/tide-ci-last.log.
 set -uo pipefail
@@ -28,6 +33,7 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 SRC="$(cd "$(dirname "$SELF")/.." && pwd)"
 LOG="${TMPDIR:-/tmp}/tide-ci-last.log"
 LOCK="${TMPDIR:-/tmp}/tide-ci.lock"
+REF="${TIDE_CI_REF:-}"
 
 # Один прогон за раз: ~/tide-ci на mac2 общий.
 waited=0
@@ -37,17 +43,32 @@ until mkdir "$LOCK" 2>/dev/null; do
   if [ "$waited" -gt 1800 ]; then echo "tide-ci: замок занят >30 мин, выхожу" >&2; exit 3; fi
   sleep 1
 done
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+SNAP=""
+trap 'rmdir "$LOCK" 2>/dev/null; [ -n "$SNAP" ] && rm -rf "$SNAP"' EXIT
 
-sha="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo '?')"
-if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then sha="${sha}+dirty"; fi
+if [ -n "$REF" ]; then
+  # Чистый снимок коммита: tracked-файлы ровно как в $REF, без чужих правок в дереве.
+  sha="$(git -C "$SRC" rev-parse --short "$REF^{commit}" 2>/dev/null)" || {
+    echo "tide-ci: не знаю коммит '$REF' в $SRC" >&2; exit 5; }
+  SNAP="$(mktemp -d "${TMPDIR:-/tmp}/tide-ci-snap.XXXXXX")"
+  if ! git -C "$SRC" archive "$REF" | tar -x -C "$SNAP"; then
+    echo "tide-ci: git archive $REF не удался" >&2; exit 5
+  fi
+  SRC="$SNAP"
+else
+  sha="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then sha="${sha}+dirty"; fi
+fi
 
 t0=$(date +%s)
 
 RSLOG="${TMPDIR:-/tmp}/tide-ci-rsync.log"
+# Остатки .git от прошлых версий скрипта (папка с worktrees/ и т.п.) — это наша
+# одноразовая копия; убираем, иначе --delete спотыкается о непустую папку.
+ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" "rm -rf \"\$HOME\"/$(printf '%q' "$RDIR")/.git" >/dev/null 2>&1 || true
 rsync -a --delete \
   --exclude '/.venv/' \
-  --exclude '/.git/worktrees/' \
+  --exclude '/.git' \
   --exclude '__pycache__/' \
   --exclude '.pytest_cache/' \
   --exclude '*.tmp.*' \
