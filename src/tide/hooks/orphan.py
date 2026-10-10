@@ -23,7 +23,14 @@
   давно уснувшие нити не будим;
 * в очереди нет открытого оффера этой нити (``offered``, в том числе с резервом);
 * AO говорит, что сессия кончилась (``exited`` / ``terminated``). Не знаем
-  (AO не отвечает, перезапуск) — молчим: лучше пропустить проход, чем соврать.
+  (AO не отвечает, перезапуск) — молчим: лучше пропустить проход, чем соврать;
+* транскрипт ведущей (``claude-session:`` → ``~/.claude/projects/*/<id>.jsonl``)
+  не писался последние :data:`FRESH_MIN` минут (``$TIDE_ORPHAN_FRESH_MIN``). Живой
+  случай 10.10: AO после своего перезапуска в 11:32 показывал живую, пишущую
+  транскрипт tide-stack-40 как ``exited`` — по одному ответу AO вышла бы ложная
+  тревога менеджеру, а с автоподъёмом — вторая голова. Свежий транскрипт важнее
+  ответа AO: не сирота, в ``alerts.log`` строка «AO говорит exited, но транскрипт
+  свеж N мин — не сирота» (не чаще раза в :func:`repeat_minutes` по нити).
 
 Сирота → строка менеджеру (``send_alert(route=manager)``, нет команды — ``ao send``
 по ``tide whois manager``; Грише ничего — tg 3733) и строка в ``state/alerts.log``.
@@ -62,11 +69,14 @@ CONFIG_KEY = "orphan-autoraise"          # .tide/canon/config проекта: or
 REPEAT_ENV = "TIDE_ORPHAN_REPEAT_MIN"
 REPEAT_MIN = 60                          # по той же нити — не чаще раза в столько минут
 RECENT_HOURS = 6                         # след ведущей старше — нить спит, не сирота
+FRESH_ENV = "TIDE_ORPHAN_FRESH_MIN"
+FRESH_MIN = 15                           # транскрипт свежее — ведущая жива, что бы ни сказал AO
 STAMP = "orphan.last"
 THROTTLE_SEC = 120
 THROTTLE_FILE = "throttle.json"          # пульт лимита доски (пауза проектов)
 ALERT_LOG = "alerts.log"
 MARK = "нить-сирота"                     # метка строки в alerts.log (по ней и повтор)
+MARK_FRESH = "не-сирота"                 # отбой по свежему транскрипту — свой ключ, не глушит тревогу
 ROUTE_MANAGER = "manager"
 _ON = ("1", "on", "yes", "true", "да")
 _OFF = ("0", "off", "no", "false", "нет")
@@ -110,6 +120,16 @@ def repeat_minutes(env: Optional[Dict[str, str]] = None) -> int:
         return max(1, int(raw)) if raw else REPEAT_MIN
     except ValueError:
         return REPEAT_MIN
+
+
+def fresh_minutes(env: Optional[Dict[str, str]] = None) -> float:
+    """``$TIDE_ORPHAN_FRESH_MIN`` или :data:`FRESH_MIN`; 0 — проверка выключена."""
+    e = os.environ if env is None else env
+    raw = (e.get(FRESH_ENV) or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else float(FRESH_MIN)
+    except ValueError:
+        return float(FRESH_MIN)
 
 
 # --- пауза пульта лимита ------------------------------------------------------------
@@ -160,6 +180,21 @@ def _last_sign(entry: Path, sid: str) -> Optional[datetime]:
     return datetime.fromtimestamp(max(stamps)) if stamps else None
 
 
+def transcript_age_min(sid: str, *, now: Optional[datetime] = None) -> Optional[float]:
+    """Сколько минут назад писался транскрипт claude-сессии *sid* (тот же поиск, что у
+    контекст-хука: :func:`tide.context_fill.transcript_for`) — или None, нет на диске."""
+    from .. import context_fill
+
+    try:
+        p = context_fill.transcript_for(sid)
+        if p is None:
+            return None
+        mtime = datetime.fromtimestamp(Path(p).stat().st_mtime)
+    except OSError:
+        return None
+    return max(0.0, ((now or datetime.now()) - mtime).total_seconds() / 60.0)
+
+
 def open_offer(offers: List[Dict[str, object]], project: str, thread: str) -> str:
     """Имя открытого (``offered``, не взятого) оффера нити — или ``""``."""
     from .. import handoff_queue as hq
@@ -180,9 +215,11 @@ def open_offer(offers: List[Dict[str, object]], project: str, thread: str) -> st
 def verdict(home: Path, project: str, root: Path, thread_dir: Path, *,
             offers: List[Dict[str, object]], now: Optional[datetime] = None,
             session_of: Optional[Callable[[str], Optional[dict]]] = None,
-            recent_hours: float = RECENT_HOURS) -> Dict[str, object]:
+            recent_hours: float = RECENT_HOURS,
+            fresh_min: Optional[float] = None) -> Dict[str, object]:
     """Сирота ли нить *thread_dir* проекта *project* → ``{project, thread, session,
-    title, ao, ref, last, orphan, why}``. Только чтение; AO спрашивается последним."""
+    title, ao, ref, last, orphan, why}``. Только чтение; AO спрашивается последним,
+    его «кончилась» перебивает транскрипт свежее *fresh_min* минут (``fresh`` в ответе)."""
     from .. import acts, fields, slug
     from ..arc import holder, stream
     from .autoclose import ended
@@ -236,6 +273,13 @@ def verdict(home: Path, project: str, root: Path, thread_dir: Path, *,
     if not gone:
         return no("ведущая {0} жива".format(handle))
     out["gone"] = gone
+    # SOC-167: AO после своего перезапуска врёт «exited» про живую — транскрипт решает
+    window = fresh_minutes() if fresh_min is None else fresh_min
+    age = transcript_age_min(sid, now=now) if window > 0 else None
+    if age is not None and age < window:
+        out["fresh"] = int(age)
+        return no("AO говорит {0}, но транскрипт свеж {1} мин — не сирота".format(
+            gone, int(age)))
     out["orphan"] = True
     out["why"] = "ведущая {0} не жива в AO ({1}), оффера нет".format(handle, gone)
     return out
@@ -262,7 +306,8 @@ def _projects(home: Path) -> List[Dict[str, str]]:
 
 def scan(home: Path, *, now: Optional[datetime] = None,
          session_of: Optional[Callable[[str], Optional[dict]]] = None,
-         recent_hours: float = RECENT_HOURS) -> List[Dict[str, object]]:
+         recent_hours: float = RECENT_HOURS,
+         fresh_min: Optional[float] = None) -> List[Dict[str, object]]:
     """Вердикты по всем открытым нитям проектов ростера (архив и пауза — мимо)."""
     from .. import handoff_queue as hq
     from ..arc import stream
@@ -286,7 +331,8 @@ def scan(home: Path, *, now: Optional[datetime] = None,
         for tdir in threads:
             try:
                 out.append(verdict(home, proj["name"], root, tdir, offers=offers, now=now,
-                                   session_of=session_of, recent_hours=recent_hours))
+                                   session_of=session_of, recent_hours=recent_hours,
+                                   fresh_min=fresh_min))
             except Exception as exc:  # noqa: BLE001 — одна нить не роняет проход
                 out.append({"project": proj["name"], "thread": tdir.name,
                             "orphan": False, "why": "ошибка: {0}".format(exc)})
@@ -299,18 +345,18 @@ def _log_path(home: Path) -> Path:
     return paths.state_dir(Path(home)) / ALERT_LOG
 
 
-def _key(v: Dict[str, object]) -> str:
-    return "{0} · {1}/{2}".format(MARK, v["project"], v["thread"])
+def _key(v: Dict[str, object], mark: str = MARK) -> str:
+    return "{0} · {1}/{2}".format(mark, v["project"], v["thread"])
 
 
 def alarmed_recently(home: Path, v: Dict[str, object], *, now: Optional[datetime] = None,
-                     minutes: int = REPEAT_MIN) -> bool:
-    """В ``alerts.log`` уже есть тревога по этой нити свежее *minutes* минут."""
+                     minutes: int = REPEAT_MIN, mark: str = MARK) -> bool:
+    """В ``alerts.log`` уже есть строка *mark* (тревога) по этой нити свежее *minutes* мин."""
     try:
         lines = _log_path(home).read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
-    key = " {0} · ".format(_key(v))
+    key = " {0} · ".format(_key(v, mark))
     now = now or datetime.now()
     for ln in reversed(lines):
         if key not in ln:
@@ -324,9 +370,9 @@ def alarmed_recently(home: Path, v: Dict[str, object], *, now: Optional[datetime
 
 
 def journal(home: Path, v: Dict[str, object], tail: str, *,
-            now: Optional[datetime] = None) -> Optional[str]:
+            now: Optional[datetime] = None, mark: str = MARK) -> Optional[str]:
     line = "{0} {1} · {2} · {3}".format(
-        (now or datetime.now()).isoformat(timespec="seconds"), _key(v),
+        (now or datetime.now()).isoformat(timespec="seconds"), _key(v, mark),
         v.get("ao") or "?", tail)
     try:
         path = _log_path(home)
@@ -464,10 +510,15 @@ def sweep(home: Path, *, env: Optional[Dict[str, str]] = None,
           now: Optional[datetime] = None, **kw) -> List[Dict[str, object]]:
     """Найти сирот и поднять тревогу по каждой (:func:`alarm`)."""
     act = {k: kw.pop(k) for k in ("alert", "spawn") if k in kw}
+    kw.setdefault("fresh_min", fresh_minutes(env))
     out = []
     for v in scan(home, now=now, **kw):
         if v.get("orphan"):
             v["alarm"] = alarm(home, v, env=env, now=now, **act)
+        elif "fresh" in v and not alarmed_recently(home, v, now=now,
+                                                   minutes=repeat_minutes(env),
+                                                   mark=MARK_FRESH):
+            journal(home, v, str(v["why"]), now=now, mark=MARK_FRESH)
         out.append(v)
     return out
 
@@ -543,6 +594,7 @@ def register(hsub) -> None:
     hsub._choices_actions = [a for a in hsub._choices_actions if a.dest != "orphan-raise"]
 
 
-__all__ = ["CONFIG_KEY", "RAISE_ENV", "REPEAT_ENV", "WATCH_ENV", "alarm", "alarmed_recently",
+__all__ = ["CONFIG_KEY", "FRESH_ENV", "RAISE_ENV", "REPEAT_ENV", "WATCH_ENV", "alarm", "alarmed_recently",
            "manager_text", "on_prompt", "open_offer", "paused", "raise_enabled_for",
-           "raise_switch", "register", "run_raise", "scan", "sweep", "verdict"]
+           "raise_switch", "register", "run_raise", "scan", "sweep", "transcript_age_min",
+           "verdict"]

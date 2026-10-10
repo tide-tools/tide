@@ -169,6 +169,74 @@ def test_exited_agent_in_live_ao_session_is_orphan(world, box):
     assert any(v.get("orphan") for v in _sweep(world, box, states=lambda h: st))
 
 
+
+# --- SOC-167: свежий транскрипт важнее ответа AO ------------------------------------------
+
+def _transcript(sid: str, *, age_min: float) -> Path:
+    """Транскрипт claude-сессии *sid* в изолированном CLAUDE_CONFIG_DIR, mtime age_min назад."""
+    d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "-tmp-proj"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "{0}.jsonl".format(sid)
+    p.write_text('{"type":"user"}\n', encoding="utf-8")
+    t = (datetime.now() - timedelta(minutes=age_min)).timestamp()
+    os.utime(p, (t, t))
+    return p
+
+
+def _fresh_lines(home: Path):
+    p = home / ".tide" / "state" / "alerts.log"
+    return [ln for ln in p.read_text(encoding="utf-8").splitlines()
+            if orphan.MARK_FRESH in ln] if p.is_file() else []
+
+
+def test_ao_exited_but_fresh_transcript_is_not_orphan(world, box, monkeypatch):
+    """Живой случай 10.10: AO после перезапуска 11:32 зовёт живую tide-stack-40 exited,
+    а её транскрипт пишется — тишина менеджеру, без подъёма, строка в журнал."""
+    monkeypatch.delenv(orphan.FRESH_ENV, raising=False)
+    _transcript(SID_HEAD, age_min=2)
+    res = _sweep(world, box, env={orphan.RAISE_ENV: "on"})
+    v = next(v for v in res if v.get("session") == "06-board-6")
+    assert not v["orphan"] and v["fresh"] == 2
+    assert v["why"] == "AO говорит terminated, но транскрипт свеж 2 мин — не сирота"
+    assert box.alerts == [] and box.spawned == []
+    assert _alert_lines(world["home"]) == []          # тревожной строки нет
+    lines = _fresh_lines(world["home"])
+    assert len(lines) == 1 and "транскрипт свеж 2 мин — не сирота" in lines[0]
+    _sweep(world, box)                                 # повтор не пишется
+    assert len(_fresh_lines(world["home"])) == 1
+
+
+def test_ao_exited_wording_and_old_transcript_alarms(world, box, monkeypatch):
+    st = {"isTerminated": False, "status": "working", "activity": {"state": "exited"}}
+    _transcript(SID_HEAD, age_min=3)
+    v = next(v for v in _sweep(world, box, states=lambda h: st)
+             if v.get("session") == "06-board-6")
+    assert v["why"].startswith("AO говорит exited, но транскрипт свеж 3 мин")
+    _transcript(SID_HEAD, age_min=40)                  # старше 15 мин — AO прав
+    res = _sweep(world, box, now=datetime.now() + timedelta(minutes=61))
+    assert any(v.get("orphan") for v in res) and len(box.alerts) == 1
+
+
+def test_fresh_window_from_env(world, box, monkeypatch):
+    _transcript(SID_HEAD, age_min=10)
+    assert any(v.get("orphan") for v in _sweep(world, box, env={orphan.FRESH_ENV: "5"}))
+    box.alerts.clear()
+    res = orphan.sweep(world["home"], env={orphan.FRESH_ENV: "30", orphan.REPEAT_ENV: "1"},
+                       now=datetime.now() + timedelta(minutes=2),
+                       session_of=_states(**{"tide-stack-33": DEAD}), alert=box.alert,
+                       spawn=box.spawn)
+    assert not any(v.get("orphan") for v in res) and box.alerts == []
+
+
+def test_run_raise_does_not_raise_over_fresh_transcript(world, box, monkeypatch):
+    """Автоподъём перепроверяет вердикт — свежий транскрипт не даёт второй головы."""
+    monkeypatch.delenv(orphan.FRESH_ENV, raising=False)
+    _transcript(SID_HEAD, age_min=1)
+    out, calls = _run_raise(world, box, monkeypatch)
+    assert out["action"] == "skip" and calls == [] and box.alerts == []
+    assert "транскрипт свеж" in out["why"]
+
+
 def test_autoclose_with_accepted_new_is_quiet(world, box, monkeypatch):
     """Старая закрыта автозакрытием, новая приняла — ведущая новая, и она жива."""
     _session(world["thread"], "07-board-7", "sid-board-7")
