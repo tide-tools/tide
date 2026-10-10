@@ -135,6 +135,10 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # Every real raise schedules a DETACHED `tide handoffs watch-reception` (SOC-143):
     # it would outlive the test, probe AO and message the manager — off.
     monkeypatch.setenv("TIDE_RECEPTION_WATCH", "off")
+    # Autoclose of the old session is ON by default for tide-stack (management-24):
+    # a hook reached by a test must never sweep (and journal into) a real home.
+    # Autoclose tests pass their own env / delenv this.
+    monkeypatch.setenv("TIDE_AUTOCLOSE_OLD", "off")
     monkeypatch.setenv("TIDE_GLOBAL_SETTINGS", str(tmp_path / "global-claude-settings.json"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # `tide init` delivers the skills as part of the install (work 49) — point the

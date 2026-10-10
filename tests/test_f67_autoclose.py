@@ -125,7 +125,13 @@ def pair(tmp_control_home, monkeypatch, tmp_path):
     monkeypatch.setattr(handed_off, "successor",
                         lambda home, rec: {"ao_session": "new-9", "title": "новая"})
     monkeypatch.setattr(reception, "titles", lambda home, rec: ("handoffs · 05", "handoffs · 04"))
+    # строки менеджеру в журнал пульта — не наружу (management-24)
+    monkeypatch.setattr(ac, "_note_manager", lambda text, src: NOTES.append((src, text)))
+    NOTES.clear()
     return tmp_control_home
+
+
+NOTES: list = []
 
 
 def _v(home, tr, alive=True, **kw):
@@ -218,14 +224,22 @@ def test_sweep_never_kills_calling_session(pair, tmp_path):
     assert not killed and res[0]["close"] is False
 
 
-def test_on_prompt_off_by_default(pair, monkeypatch):
+def test_on_prompt_env_off_does_nothing(pair, monkeypatch):
     monkeypatch.setattr(ac, "sweep", lambda *a, **k: pytest.fail("sweep при выключенном"))
-    assert ac.on_prompt({"session_id": "x"}, home=pair, env={}) == []
+    for word in ("0", "off"):
+        assert ac.on_prompt({"session_id": "x"}, home=pair, env={ac.ENV: word}) == []
+
+
+def test_on_prompt_default_sweeps_gated_by_project(pair, monkeypatch):
+    got = {}
+    monkeypatch.setattr(ac, "sweep", lambda home, **k: got.update(k) or [])
+    ac.on_prompt({"session_id": "x"}, home=pair, env={})
+    assert got["gate"] is True and got["env"] == {}
 
 
 def test_on_prompt_on_sweeps_skipping_self(pair, monkeypatch):
     got = {}
-    monkeypatch.setattr(ac, "sweep", lambda home, skip=(): got.update(skip=list(skip)) or [])
+    monkeypatch.setattr(ac, "sweep", lambda home, skip=(), **k: got.update(skip=list(skip)) or [])
     ac.on_prompt({"session_id": "me"}, home=pair, env={ac.ENV: "1"})
     assert "me" in got["skip"]
     got.clear()
@@ -266,14 +280,19 @@ def test_cli_live_without_env_and_offer_closes_nothing(pair, tmp_control_home, m
     # герметично: control-home — tmp с roster.md, а не живой ростер машины (SOC-143)
     monkeypatch.setenv(paths.TIDE_HOME_ENV, str(tmp_control_home))
     got = {}
-    monkeypatch.setattr(ac, "sweep", lambda home, dry_run=False, offer=None: got.update(
-        dry=dry_run, offer=offer) or [])
+    monkeypatch.setattr(ac, "sweep", lambda home, dry_run=False, offer=None, gate=False:
+                        got.update(dry=dry_run, offer=offer, gate=gate) or [])
+    # management-24: без env — живой проход только по включённым проектам (gate)
     ac.cmd_autoclose(argparse.Namespace(dry_run=False, offer=None))
-    assert got == {"dry": True, "offer": None} and "выключено" in capsys.readouterr().out
+    assert got == {"dry": False, "offer": None, "gate": True}
+    monkeypatch.setenv(ac.ENV, "0")
+    ac.cmd_autoclose(argparse.Namespace(dry_run=False, offer=None))
+    assert got == {"dry": True, "offer": None, "gate": True}
+    assert "выключено" in capsys.readouterr().out
     ac.cmd_autoclose(argparse.Namespace(dry_run=False, offer="299"))
-    assert got == {"dry": False, "offer": "299"}
+    assert got == {"dry": False, "offer": "299", "gate": False}
     ac.cmd_autoclose(argparse.Namespace(dry_run=True, offer="299"))
-    assert got == {"dry": True, "offer": "299"}
+    assert got == {"dry": True, "offer": "299", "gate": False}
 
 
 def test_new_is_offer_taker_not_thread_head(pair, tmp_path, monkeypatch):
@@ -515,3 +534,189 @@ def test_close_kill_failed_old_alive_tells_new_nothing(pair, tmp_path):
     assert "автозакрытие не вышло: timeout" in m and "жива" in m
     assert "закрой руками" in m and "Закрываю" not in m
     assert "НЕ ВЫШЛО · причина: timeout" in log and "старая всё ещё жива" in log
+
+
+# --- management-24: по умолчанию в tide-stack, не при живых воркерах, след менеджеру ---
+
+def _project(home, tmp_path, name, config):
+    """Проект *name* в ростере control-home с ``.tide/canon/config`` = *config*."""
+    from tide import roster
+    root = tmp_path / ("proj-" + name)
+    paths.canon_config(root).parent.mkdir(parents=True, exist_ok=True)
+    paths.canon_config(root).write_text(config, encoding="utf-8")
+    roster.add(home, name, str(root))
+    return root
+
+
+@pytest.fixture
+def projects(pair, tmp_path, monkeypatch):
+    _project(pair, tmp_path, "tide-stack", "lang=en\nautoclose-old=on\n")
+    _project(pair, tmp_path, "music", "lang=ru\n")
+    return pair
+
+
+def _live(home, tr, rec, env, calls):
+    """Живой проход хука (gate) с подменённым AO; офферы подменяет тест."""
+    return ac.sweep(home, gate=True, env=env, now=NOW,
+                    session_of=lambda h: {"isTerminated": False} if h else None,
+                    transcript_of=lambda sid: tr,
+                    alert=lambda text, src: calls.append(("manager", text)),
+                    say=lambda h, text: calls.append(("say", h, text)) or True,
+                    kill=lambda h: calls.append(("kill", h)) or True)
+
+
+def test_config_value_reads_key(tmp_path):
+    from tide.canon import store
+    paths.canon_config(tmp_path).parent.mkdir(parents=True)
+    paths.canon_config(tmp_path).write_text("lang=en\n# autoclose-old=off\nautoclose-old = on\n",
+                                            encoding="utf-8")
+    assert store.config_value(tmp_path, "autoclose-old") == "on"
+    assert store.config_value(tmp_path, "nope") is None
+    assert store.config_value(tmp_path / "missing", "lang") is None
+
+
+def test_enabled_for_project_config_and_env(projects):
+    assert ac.enabled_for(projects, "tide-stack", {}) is True
+    assert ac.enabled_for(projects, "music", {}) is False
+    assert ac.enabled_for(projects, "nowhere", {}) is False
+    assert ac.enabled_for(projects, "tide-stack", {ac.ENV: "off"}) is False
+    assert ac.enabled_for(projects, "tide-stack", {ac.ENV: "0"}) is False
+    assert ac.enabled_for(projects, "music", {ac.ENV: "on"}) is True
+    assert ac.enabled_for(projects, "music", {ac.ENV: "1"}) is True
+
+
+def test_default_tide_stack_closes_quiet_old(projects, tmp_path, monkeypatch):
+    rec = dict(REC, project="tide-stack")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(rec)])
+    monkeypatch.setattr(hq, "is_dissolved", lambda home, sid: rec if sid == "old-sid" else None)
+    calls = []
+    res = _live(projects, _transcript(tmp_path), rec, {}, calls)
+    assert res[0]["closed"] is True
+    assert [c[0] for c in calls] == ["kill", "manager", "say"]
+    log = (paths.state_dir(projects) / ac.LOG).read_text(encoding="utf-8")
+    assert "закрываю · old-7" in log and "kill old-7 · ok" in log
+
+
+def test_default_other_project_not_closed(projects, tmp_path, monkeypatch):
+    rec = dict(REC, project="music")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(rec)])
+    monkeypatch.setattr(hq, "is_dissolved", lambda home, sid: rec if sid == "old-sid" else None)
+    calls = []
+    res = _live(projects, _transcript(tmp_path), rec, {}, calls)
+    assert res[0]["close"] is False and res[0]["kind"] == "off" and not calls
+    assert "music" in ac.render(res[0], dry_run=False)
+    assert not (paths.state_dir(projects) / ac.LOG).exists() and not NOTES
+    # env on — включено везде: закрывает и в music
+    res = _live(projects, _transcript(tmp_path), rec, {ac.ENV: "on"}, calls)
+    assert res[0]["closed"] is True
+
+
+def test_env_off_beats_tide_stack_config(projects, tmp_path, monkeypatch):
+    rec = dict(REC, project="tide-stack")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(rec)])
+    calls = []
+    res = _live(projects, _transcript(tmp_path), rec, {ac.ENV: "off"}, calls)
+    assert res[0]["kind"] == "off" and not calls
+
+
+def test_live_worker_defers_with_line_to_manager(projects, tmp_path, monkeypatch):
+    rec = dict(REC, project="tide-stack")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(rec)])
+    monkeypatch.setattr(hq, "is_dissolved", lambda home, sid: rec if sid == "old-sid" else None)
+    calls = []
+    tr = _transcript(tmp_path, live_worker=True)
+    res = _live(projects, tr, rec, {}, calls)
+    assert res[0]["close"] is False and res[0]["kind"] == "wait" and not calls
+    log = (paths.state_dir(projects) / ac.LOG).read_text(encoding="utf-8")
+    assert "300-30-handoffs · отложена · old-7 · → new-9 · воркеры старой живы" in log
+    assert len(NOTES) == 1 and "отложено" in NOTES[0][1] and "прогон тестов" in NOTES[0][1]
+    assert NOTES[0][0] == "300-30-handoffs/autoclose"
+    # та же причина на следующем проходе — без новой строки
+    _live(projects, tr, rec, {}, calls)
+    assert len(NOTES) == 1
+    assert (paths.state_dir(projects) / ac.LOG).read_text(encoding="utf-8").count("отложена") == 1
+    # воркер сдал, итог переслан — закрывает
+    _live(projects, _transcript(tmp_path), rec, {}, calls)
+    assert [c[0] for c in calls] == ["kill", "manager", "say"]
+
+
+def test_skip_decision_logged_once(projects, tmp_path, monkeypatch):
+    rec = dict(REC, project="tide-stack")
+    monkeypatch.setattr(hq, "list_offers", lambda home, status=None: [dict(rec)])
+    monkeypatch.setattr(hq, "is_dissolved", lambda home, sid: None)  # старая снова голова
+    calls = []
+    _live(projects, _transcript(tmp_path), rec, {}, calls)
+    _live(projects, _transcript(tmp_path), rec, {}, calls)
+    log = (paths.state_dir(projects) / ac.LOG).read_text(encoding="utf-8")
+    assert log.count("· пропущена ·") == 1 and "другую нить" in log
+    assert len(NOTES) == 1 and "пропущено" in NOTES[0][1] and not calls
+
+
+def _bg_rows(tmp_path, *, notified):
+    t0 = NOW - timedelta(minutes=30)
+    rows = [
+        _row("assistant", t0, [{"type": "tool_use", "id": "b1", "name": "Bash",
+                                "input": {"command": "scripts/tide-ci", "run_in_background": True,
+                                          "description": "полный прогон CI"}}]),
+        _row("user", t0, [{"type": "tool_result", "tool_use_id": "b1",
+                           "content": "Command running in background with ID: bx42. "
+                                      "Output is being written to: /tmp/bx42.output"}]),
+    ]
+    if notified:
+        rows.append(_row("user", t0 + timedelta(minutes=5),
+                         "<task-notification>\n<task-id>bx42</task-id>\n<tool-use-id>b1"
+                         "</tool-use-id>\n<status>completed</status>\n<summary>Background "
+                         "command completed</summary>\n</task-notification>"))
+    p = tmp_path / ("bg-%s.jsonl" % notified)
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+def test_background_shell_of_old_blocks_close(pair, tmp_path):
+    from tide.arc import workers
+    live = _bg_rows(tmp_path, notified=False)
+    assert workers.background_shells(live) == ["bx42 «полный прогон CI»"]
+    assert workers.background_shells(_bg_rows(tmp_path, notified=True)) == []
+    v = _v(pair, live)
+    assert v["close"] is False and "фоновые команды старой" in v["why"] and v["kind"] == "wait"
+
+
+def _spawn_transcript(tmp_path, handles):
+    t0 = NOW - timedelta(minutes=40)
+    rows = [
+        _row("assistant", t0, [{"type": "tool_use", "id": "s1", "name": "Bash",
+                                "input": {"command": "ao spawn --project music --name w1"}}]),
+        _row("user", t0, [{"type": "tool_result", "tool_use_id": "s1",
+                           "content": "\n".join('spawned session {0} "w" (idle)'.format(h)
+                                                for h in handles)}]),
+        _row("assistant", NOW - timedelta(minutes=10), [{"type": "text", "text": "жду"}]),
+    ]
+    p = tmp_path / "spawn.jsonl"
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+def test_ao_worker_spawned_by_old_blocks_close(pair, tmp_path):
+    from tide.arc import workers
+    tr = _spawn_transcript(tmp_path, ["music-30", "new-9"])
+    assert workers.ao_spawned(tr) == ["music-30", "new-9"]
+
+    def state(alive):
+        return lambda h: ({"isTerminated": False} if h in ("old-7", "new-9")
+                          else ({"isTerminated": not alive} if h else None))
+    v = ac.verdict(pair, REC, now=NOW, session_of=state(True), transcript_of=lambda s: tr)
+    assert v["close"] is False and "ao-воркеры старой живы (1): music-30" in v["why"]
+    # ao-воркер вышел — держать нечем; поднятая старой новая (new-9) не в счёт
+    v = ac.verdict(pair, REC, now=NOW, session_of=state(False), transcript_of=lambda s: tr)
+    assert v["close"] is True, v["why"]
+
+
+def test_note_goes_to_manager_journal_not_telegram(monkeypatch):
+    """Строка «отложена/пропущена» — в журнал пульта менеджера (route=log), не Грише."""
+    from tide.launcher import autohandoff
+    sent = []
+    monkeypatch.setattr(autohandoff, "send_alert",
+                        lambda text, route, source="", **k: sent.append((route, source, text)))
+    ac._note_manager("tide: автозакрытие 300 отложено", "300/autoclose")
+    assert sent == [("log", "300/autoclose", "tide: автозакрытие 300 отложено")]
+    assert ac.ROUTE_LOG == "log" and ac.ROUTE_LOG != getattr(autohandoff, "ROUTE_HUMAN", "human")

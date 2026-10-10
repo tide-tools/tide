@@ -539,7 +539,7 @@ def cmd_prompt(args) -> int:
             note = redirect(payload)
             if note:
                 print(note)
-            # старая без воркеров закрывается сама — только при $TIDE_AUTOCLOSE_OLD=1
+            # старая без воркеров закрывается сама — по умолчанию в проектах с autoclose-old=on (tide-stack)
             from . import autoclose
             autoclose.on_prompt(payload)
             # F72: отложенное «закрыть старую?» — когда воркеры сдали и итоги пересланы

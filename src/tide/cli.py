@@ -549,7 +549,7 @@ def _register_handoffs(sub) -> None:
     register_two_heads(hsub)  # SOC-101 F49: multiples шлёт тревогу «две головы»
     from .hooks.autoclose import register_autoclose
 
-    register_autoclose(hsub)  # SOC-101: автозакрытие старой ($TIDE_AUTOCLOSE_OLD=1)
+    register_autoclose(hsub)  # SOC-101: автозакрытие старой (конфиг проекта / $TIDE_AUTOCLOSE_OLD)
     from .seam_sync import register_sync
 
     register_sync(hsub)  # SOC-143: шов-синк «сделано / дальше / что решить»

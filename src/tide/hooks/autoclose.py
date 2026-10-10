@@ -1,5 +1,6 @@
 """tide.hooks.autoclose — старая сессия закрывается сама, когда ей больше нечего делать
-(SOC-101, слово менеджера; ВЫКЛЮЧЕНО по умолчанию до живой проверки на паре).
+(SOC-101; по умолчанию ВКЛЮЧЕНО для проектов с ``autoclose-old=on`` в
+``.tide/canon/config`` — tide-stack, решение management-24; остальным — выключено).
 
 После приёма оффера (``taken-at``) нить ведёт новая, а старая только доводит своих
 фоновых воркеров и пересылает их итоги новой. Когда воркеров нет и все итоги
@@ -16,19 +17,28 @@
   сида «в работе прямо сейчас» (:func:`tide.launcher.seed_draft.background_workers`);
   и ни один сабагент не сдал лишь промежуточный итог — последнее уведомление
   «background work of its own still running … may be interim» или письмо ему после
-  итога = воркер жив (:func:`interim_workers`, SOC-143);
+  итога = воркер жив (:func:`interim_workers`, SOC-143); нет её собственных фоновых
+  команд без итога (``Bash run_in_background``, :func:`tide.arc.workers.background_shells`)
+  и живых ao-воркеров, поднятых ею ``ao spawn`` (:func:`tide.arc.workers.ao_spawned` +
+  статус по AO; management-24, случай music-21);
 * каждый итог воркера, пришедший старой после передачи (``<task-notification>``),
   она потом переслала новой — ход старой, где назван AO-id новой (``ao send``,
   SendMessage); и в ``state/forward-pending.jsonl`` нет писем этой пары;
 * старая молчит не меньше :data:`QUIET_MIN` минут (не посреди хода).
 
-Перед закрытием: строка в ``state/autoclose.log`` (рядом с ``raises.log``), строка
+Закрытие: строка в ``state/autoclose.log`` (рядом с ``raises.log``), строка
 менеджеру (``send_alert(route=manager)``, нет команды — ``ao send`` менеджеру по
 whois) и последнее сообщение новой «старая закрыта в ЧЧ:ММ». Одна пара — одно
-закрытие (ключ оффера в журнале).
+закрытие (ключ оффера в журнале). Не закрыла — тоже след (management-24): строка
+«отложена · …» (ждёт воркеров/тишины, повтор на следующем хуке) или «пропущена · …»
+в ``autoclose.log`` и та же строка в журнал менеджера (``send_alert(route=log)`` —
+журнал пульта, не Telegram); повтор той же причины по паре не пишется. Грише —
+ничего. Ручного письма автоматический режим не ждёт.
 
-Включатель — ``$TIDE_AUTOCLOSE_OLD=1`` (все пары) или ``tide handoffs autoclose
---offer <id>`` (одна пара, SOC-143). Пруф без действий —
+Включатель (management-24): ``$TIDE_AUTOCLOSE_OLD`` — ``1/on`` все проекты, ``0/off``
+никакие; не задан — по проекту оффера (``project:`` → путь по ростеру →
+``.tide/canon/config``: ``autoclose-old=on``). ``tide handoffs autoclose --offer <id>``
+— одна пара руками, мимо включателя (SOC-143). Пруф без действий —
 ``tide handoffs autoclose --dry-run [--offer <id>]``: кого закрыл бы и почему / почему нет.
 Новая пары — принявшая этот оффер (``taken-by`` → AO-id), не нынешняя голова нити.
 Срабатывает на хуке ``handoff-confirm`` (UserPromptSubmit) любой сессии, кроме
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
@@ -48,22 +59,64 @@ from .. import paths
 # Признаки воркеров по транскрипту — общие с приёмом и сидом (SOC-143, слои):
 # живут в tide.arc.workers, автозакрытие берёт оттуда.
 from ..arc.workers import (  # noqa: F401 — часть публичного имени autoclose
-    FINAL_STATUSES, ended, interim_workers, last_activity, unforwarded_results,
+    FINAL_STATUSES, ao_spawned, background_shells, ended, interim_workers,
+    last_activity, unforwarded_results,
     rows as _rows, row_at as _at, parse_iso as _parse_iso, pending_for as _pending_for,
 )
 
 ENV = "TIDE_AUTOCLOSE_OLD"
+CONFIG_KEY = "autoclose-old"   # .tide/canon/config проекта: autoclose-old=on
 LOG = "autoclose.log"
 STAMP = "autoclose.last"
 LOOKBACK_HOURS = 24
 QUIET_MIN = 3
 THROTTLE_SEC = 120
 ROUTE_MANAGER = "manager"
+ROUTE_LOG = "log"          # журнал пульта менеджера — не Telegram, не письмо в окно
+_ON = ("1", "on", "yes", "true", "да")
+_OFF = ("0", "off", "no", "false", "нет")
+
+
+def env_switch(env: Optional[Dict[str, str]] = None) -> Optional[bool]:
+    """``$TIDE_AUTOCLOSE_OLD``: True — включено везде, False — выключено везде,
+    None — не задан (решает конфиг проекта)."""
+    e = os.environ if env is None else env
+    raw = (e.get(ENV) or "").strip().lower()
+    if raw in _ON:
+        return True
+    if raw in _OFF:
+        return False
+    return None
 
 
 def enabled(env: Optional[Dict[str, str]] = None) -> bool:
-    e = os.environ if env is None else env
-    return (e.get(ENV) or "").strip().lower() in ("1", "on", "yes", "true")
+    """Включено ли env'ом для ВСЕХ проектов (``$TIDE_AUTOCLOSE_OLD=1``)."""
+    return env_switch(env) is True
+
+
+def project_switch(home: Path, project: str) -> bool:
+    """``autoclose-old=on`` в ``.tide/canon/config`` проекта *project* (имя по ростеру
+    control-home, как в ``project:`` оффера). Нет проекта/конфига/ключа — False."""
+    name = str(project or "").strip()
+    if not name or name == "-":
+        return False
+    try:
+        from .. import roster
+        from ..canon import store
+        entry = next((e for e in roster.read_roster(Path(home)) if e.get("name") == name),
+                     None)
+        if entry is None:
+            return False
+        raw = store.config_value(Path(entry["path"]).expanduser(), CONFIG_KEY)
+    except Exception:  # noqa: BLE001 — не прочли — выключено
+        return False
+    return str(raw or "").strip().lower() in _ON
+
+
+def enabled_for(home: Path, project: str, env: Optional[Dict[str, str]] = None) -> bool:
+    """Включено ли автозакрытие для пар проекта *project*: env важнее конфига."""
+    sw = env_switch(env)
+    return sw if sw is not None else project_switch(home, project)
 
 
 def _log_path(home: Path) -> Path:
@@ -132,14 +185,16 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
         "new": with_ao_id(new_t, new_ao) if new_ao else new_t,
         "close": False, "why": ""}
 
-    def no(why: str) -> Dict[str, object]:
-        out["why"] = why
+    def no(why: str, kind: str = "skip") -> Dict[str, object]:
+        # kind: skip — пропущена (не закрою эту пару в таком виде), wait — отложена
+        # (повторю на следующем хуке), quiet — без строки (уже записано другим путём)
+        out["why"], out["kind"] = why, kind
         return out
 
     if (hq.is_dissolved(home, old_sid) or {}).get("name") != rec.get("name"):
         return no("старая потом взяла другую нить — она снова голова, не закрываю")
     if _closed_before(home, offer):
-        return no("уже закрыта автозакрытием (state/{0})".format(LOG))
+        return no("уже закрыта автозакрытием (state/{0})".format(LOG), "quiet")
     taken = _parse_iso(rec.get("taken_at"))
     if taken is None:
         return no("нет taken-at — приём не подтверждён")
@@ -160,7 +215,8 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     gone = ended(s)
     if gone:
         out["gone"] = gone
-        return no("старая {0} уже вышла (AO: {1}) — kill не нужен".format(old_ao, gone))
+        return no("старая {0} уже вышла (AO: {1}) — kill не нужен".format(old_ao, gone),
+                  "quiet")
     n = session_of(new_ao)
     if not n or ended(n):
         return no("новая {0} не жива (AO: {1}) — старую не закрываю".format(
@@ -177,23 +233,43 @@ def verdict(home: Path, rec: Dict[str, object], *, now: Optional[datetime] = Non
     live = workers_of(tr)
     if live:
         return no("воркеры старой живы ({0}): {1} — жду".format(
-            len(live), "; ".join(ln.lstrip("- ").split(" — ", 1)[0] for ln in live[:3])))
+            len(live), "; ".join(ln.lstrip("- ").split(" — ", 1)[0] for ln in live[:3])),
+            "wait")
     interim = interim_workers(tr)
     if interim:
         return no("воркеры старой не сдали итог (промежуточный/возобновлён) ({0}): {1} — "
-                  "жду".format(len(interim), "; ".join(interim[:3])))
+                  "жду".format(len(interim), "; ".join(interim[:3])), "wait")
+    shells = background_shells(tr)
+    if shells:
+        return no("фоновые команды старой ещё идут ({0}): {1} — жду".format(
+            len(shells), "; ".join(shells[:3])), "wait")
+    mine = {old_ao, new_ao, head_ao}
+    ao_live = []
+    for h in ao_spawned(tr):
+        if h in mine:
+            continue  # поднятая старой новая/голова нити — не её воркер
+        try:
+            st = session_of(h)
+        except Exception:  # noqa: BLE001 — AO не ответил: не знаем — не держим
+            st = None
+        if st and not ended(st):
+            ao_live.append(h)
+    if ao_live:
+        return no("ao-воркеры старой живы ({0}): {1} — жду".format(
+            len(ao_live), ", ".join(ao_live[:5])), "wait")
     raised = _parse_iso(rec.get("raised_at"))
     since = min(t for t in (taken, raised) if t is not None)
     left = unforwarded_results(tr, since, forward_to)
     if left:
-        return no("итоги воркеров не пересланы новой: {0} — жду".format(", ".join(left[:3])))
+        return no("итоги воркеров не пересланы новой: {0} — жду".format(", ".join(left[:3])),
+                  "wait")
     queued = _pending_for(home, offer)
     if queued:
-        return no("в очереди пересылки {0} писем этой пары — жду".format(queued))
+        return no("в очереди пересылки {0} писем этой пары — жду".format(queued), "wait")
     last = last_activity(tr)
     if last is not None and now - last < timedelta(minutes=QUIET_MIN):
         return no("старая работала {0} мин назад — жду тишины {1} мин".format(
-            int((now - last).total_seconds() // 60), QUIET_MIN))
+            int((now - last).total_seconds() // 60), QUIET_MIN), "wait")
     out["close"] = True
     out["why"] = "воркеров нет, итоги пересланы, тихо с {0}".format(
         last.strftime("%H:%M") if last else "?")
@@ -328,28 +404,108 @@ def close(home: Path, v: Dict[str, object], *, say=None, alert=None, kill=None,
     return ok
 
 
+def off_verdict(rec: Dict[str, object], project: str,
+                env: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    """Пара проекта, где автозакрытие выключено: не смотрим и не пишем ничего."""
+    why = ("автозакрытие выключено (${0}=0)".format(ENV) if env_switch(env) is False else
+           "автозакрытие выключено для проекта {0} (нет {1}=on в .tide/canon/config; "
+           "${2}=1 — везде)".format(project or "?", CONFIG_KEY, ENV))
+    return {"offer": str(rec.get("name") or "?"), "old": "", "new": "", "old_ao": "",
+            "new_ao": "", "close": False, "kind": "off", "why": why}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\d+", "#", str(text or ""))
+
+
+def _decision_parts(v: Dict[str, object]) -> List[str]:
+    word = "отложена" if v.get("kind") == "wait" else "пропущена"
+    return [str(v["offer"]), word, str(v.get("old_ao") or "?"),
+            "→ " + str(v.get("new_ao") or "?"), str(v.get("why") or "")]
+
+
+def _already_noted(home: Path, parts: List[str]) -> bool:
+    """Последняя строка «отложена/пропущена» этой пары — та же (цифры не в счёт)."""
+    try:
+        lines = _log_path(home).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    head = " · {0} · ".format(parts[0])
+    for ln in reversed(lines):
+        if head in ln and (" · отложена · " in ln or " · пропущена · " in ln):
+            return _norm(ln.split(" · ", 1)[-1]) == _norm(" · ".join(parts))
+    return False
+
+
+def note_text(v: Dict[str, object]) -> str:
+    if v.get("kind") == "wait":
+        return ("tide: автозакрытие {0} отложено — старая {1} → новая {2}: {3}. "
+                "Повторю сам на следующем ходе любой сессии.".format(
+                    v["offer"], v["old"], v["new"], v["why"]))
+    return ("tide: автозакрытие {0} пропущено — старая {1} → новая {2}: {3}.".format(
+        v["offer"], v["old"], v["new"], v["why"]))
+
+
+def _note_manager(text: str, source: str) -> None:
+    """Строка в журнал менеджера (пульт, ``route=log``): не Telegram, не письмо в окно."""
+    from ..launcher import autohandoff as _ah
+    _ah.send_alert(text, route=ROUTE_LOG, source=source)
+
+
+def note(home: Path, v: Dict[str, object], *, send=None) -> Optional[str]:
+    """След решения «не закрываю» (management-24): строка в ``autoclose.log`` и та же
+    менеджеру в журнал. Та же причина по паре подряд — не повторяем; ``quiet``/``off``
+    — без строки. → строка журнала или None."""
+    if v.get("close") or v.get("kind") in ("quiet", "off", None):
+        return None
+    parts = _decision_parts(v)
+    if _already_noted(home, parts):
+        return None
+    line = journal(home, *parts)
+    try:
+        (send or _note_manager)(note_text(v), "{0}/autoclose".format(v["offer"]))
+    except Exception:  # noqa: BLE001
+        pass
+    return line
+
+
 def sweep(home: Path, *, dry_run: bool = False, skip: Iterable[str] = (),
           now: Optional[datetime] = None, offer: Optional[str] = None,
+          gate: bool = False, env: Optional[Dict[str, str]] = None,
           **kw) -> List[Dict[str, object]]:
-    """Пройти свежие пары; не *dry_run* — закрыть тех, кого можно. *skip* — claude-id
-    сессий, которых не закрываем (та, в чьём хуке идём); *offer* — только эта пара."""
+    """Пройти свежие пары; не *dry_run* — закрыть тех, кого можно, остальным — след
+    в журнале (:func:`note`). *skip* — claude-id сессий, которых не закрываем (та, в
+    чьём хуке идём); *offer* — только эта пара; *gate* — только пары проектов, где
+    автозакрытие включено (:func:`enabled_for`; хук и ``autoclose`` без ``--offer``)."""
     skip = {s for s in skip if s}
     act = {k: kw.pop(k) for k in ("say", "alert", "kill") if k in kw}
+    noter = kw.pop("note", None)
     out = []
     seen = set()
+    on: Dict[str, bool] = {}
     for rec in candidates(home, now=now, offer=offer):
         sid = str(rec.get("from_session") or "")
         if sid in seen:
             continue  # у сессии важна последняя отдача
         seen.add(sid)
+        if gate:
+            proj = str(rec.get("project") or "")
+            if proj not in on:
+                on[proj] = enabled_for(home, proj, env)
+            if not on[proj]:
+                out.append(off_verdict(rec, proj, env))
+                continue
         v = verdict(home, rec, now=now, **kw)
         if v.get("gone") and not dry_run and not _gone_logged(home, str(v["offer"])):
             journal(home, str(v["offer"]), "уже вышла", str(v["old_ao"]),
                     "AO: " + str(v["gone"]), "без kill")
         if v["close"] and sid in skip:
-            v["close"], v["why"] = False, "это мой собственный ход — закрою со стороны"
+            v["close"], v["why"], v["kind"] = (
+                False, "это мой собственный ход — закрою со стороны", "quiet")
         if v["close"] and not dry_run:
             v["closed"] = close(home, v, now=now, session_of=kw.get("session_of"), **act)
+        elif not dry_run:
+            note(home, v, send=noter)
         out.append(v)
     return out
 
@@ -376,22 +532,25 @@ def _throttled(home: Path) -> bool:
 
 def on_prompt(payload: Dict[str, object], *, home: Optional[Path] = None,
               env: Optional[Dict[str, str]] = None) -> List[Dict[str, object]]:
-    """Хук handoff-confirm: включено — подмести пары. Никогда не падает."""
+    """Хук handoff-confirm: подмести пары проектов, где автозакрытие включено
+    (:func:`enabled_for`; ``$TIDE_AUTOCLOSE_OLD=0`` — ничего). Никогда не падает."""
     try:
         e = os.environ if env is None else env
-        if not enabled(e):
+        if env_switch(e) is False:
             return []
         home = Path(home) if home is not None else paths.control_home()
         if _throttled(home):
             return []
         mine = [str(payload.get("session_id") or ""),
                 (e.get("CLAUDE_CODE_SESSION_ID") or "").strip()]
-        return sweep(home, skip=mine)
+        return sweep(home, skip=mine, gate=True, env=e)
     except Exception:  # noqa: BLE001 — хук не смеет уронить сессию
         return []
 
 
 def render(v: Dict[str, object], *, dry_run: bool) -> str:
+    if v.get("kind") == "off":
+        return "{0} не трогаю: {1}".format(v["offer"], v["why"])
     if v.get("close"):
         head = "закрыл бы" if dry_run else (
             "закрыла" if v.get("closed") else "пыталась закрыть (kill не вышел)")
@@ -409,16 +568,17 @@ def render(v: Dict[str, object], *, dry_run: bool) -> str:
 def cmd_autoclose(args) -> int:
     """``tide handoffs autoclose [--dry-run] [--offer <id>]``.
 
-    Без ``--offer`` живой запуск закрывает только при ``$TIDE_AUTOCLOSE_OLD=1``;
+    Без ``--offer`` — пары проектов, где включено (:func:`enabled_for`: env, иначе
+    ``autoclose-old=on`` в конфиге проекта); ``$TIDE_AUTOCLOSE_OLD=0`` — ничего живого.
     ``--offer`` — явный включатель на одну пару (остальные не трогаются)."""
     home = paths.control_home()
     dry = bool(getattr(args, "dry_run", False))
     offer = (getattr(args, "offer", None) or "").strip() or None
-    if not dry and not offer and not enabled():
-        print("tide: автозакрытие выключено (${0}=1 — включить, или --offer <id> — "
-              "на одну пару); смотри --dry-run".format(ENV))
+    if not dry and not offer and env_switch() is False:
+        print("tide: автозакрытие выключено (${0}=0; --offer <id> — на одну пару); "
+              "смотри --dry-run".format(ENV))
         dry = True
-    res = sweep(home, dry_run=dry, offer=offer)
+    res = sweep(home, dry_run=dry, offer=offer, gate=not offer)
     if not res:
         if offer:
             print("tide: оффер {0} — не среди свежих принятых continue-пар (за {1} ч)".format(
@@ -432,14 +592,18 @@ def cmd_autoclose(args) -> int:
 
 def register_autoclose(hsub) -> None:
     ap = hsub.add_parser("autoclose", help="close the old session of a taken handoff when "
-                         "it has no live workers (TIDE_AUTOCLOSE_OLD=1; --dry-run shows)")
+                         "it has no live workers (on for projects with autoclose-old=on in "
+                         ".tide/canon/config; TIDE_AUTOCLOSE_OLD=1/0 forces all/none; "
+                         "--dry-run shows)")
     ap.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="only print whom it would close and why / why not")
     ap.add_argument("--offer", default=None, metavar="ID",
                     help="only this offer (299 or 299-30-handoffs); without --dry-run "
-                         "closes this one pair even when TIDE_AUTOCLOSE_OLD is off")
+                         "closes this one pair even where autoclose is off")
     ap.set_defaults(func=cmd_autoclose, _cmd="handoffs autoclose")
 
 
-__all__ = ["ENV", "LOG", "candidates", "ended", "interim_workers", "offer_matches", "close", "cmd_autoclose", "enabled", "on_prompt",
-           "register_autoclose", "render", "sweep", "unforwarded_results", "verdict"]
+__all__ = ["CONFIG_KEY", "ENV", "LOG", "candidates", "ended", "enabled_for", "env_switch",
+           "interim_workers", "note", "offer_matches", "close", "cmd_autoclose", "enabled",
+           "on_prompt", "project_switch", "register_autoclose", "render", "sweep",
+           "unforwarded_results", "verdict"]

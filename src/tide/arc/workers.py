@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -174,6 +175,85 @@ def interim_workers(transcript: Path, until: Optional[datetime] = None,
             what = " ".join((s_.group(1) if s_ else "итог воркера").split())[:80]
             state[t.group(1)] = (any(k in body for k in _INTERIM), what)
     return ["{0} «{1}»".format(a, w) for a, (live, w) in state.items() if live]
+
+
+_BG_ID = re.compile(r"running in background with ID:\s*([\w-]+)")
+_TASK_ID = re.compile(r"<task-id>\s*([\w-]+)\s*</task-id>")
+_AO_SPAWN_CMD = re.compile(r"(?:^|[\s;&|(`$])ao\s+spawn\b")
+_AO_SPAWNED = re.compile(r"spawned session (\S+)")
+
+
+def _tool_result_text(block: dict) -> str:
+    c = block.get("content")
+    if isinstance(c, list):
+        return "\n".join(str(x.get("text") or "") for x in c if isinstance(x, dict))
+    return str(c or "")
+
+
+def background_shells(transcript: Path,
+                      source_rows: Optional[Iterable[dict]] = None) -> List[str]:
+    """Фоновые команды самой сессии (``Bash`` с ``run_in_background``), у которых ещё
+    нет ``<task-notification>`` со своим task-id и которые не остановлены
+    (``TaskStop``/``KillShell``) — команда ещё идёт (полный pytest, CI). Сабагентов
+    здесь нет — их ведёт ``background_workers``/:func:`interim_workers`.
+    → ``["<task-id> «описание»", …]``."""
+    calls: Dict[str, str] = {}      # tool_use_id → описание
+    launched: Dict[str, str] = {}   # task-id → описание
+    done = set()
+    for row in (rows(transcript) if source_rows is None else source_rows):
+        msg = row.get("message") or {}
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if row.get("type") == "assistant" and isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") == "Bash" and inp.get("run_in_background"):
+                    calls[str(b.get("id"))] = " ".join(str(
+                        inp.get("description") or inp.get("command") or "").split())[:80]
+                elif b.get("name") in ("TaskStop", "KillShell", "KillBash"):
+                    for v in inp.values():
+                        done.add(str(v))
+            continue
+        blob = json.dumps(row, ensure_ascii=False)
+        if "task-notification" in blob:
+            done.update(_TASK_ID.findall(blob.replace("\\n", " ")))
+        if isinstance(content, list):
+            for b in content:
+                if (isinstance(b, dict) and b.get("type") == "tool_result"
+                        and str(b.get("tool_use_id")) in calls):
+                    m = _BG_ID.search(_tool_result_text(b))
+                    if m:
+                        launched[m.group(1)] = calls[str(b.get("tool_use_id"))]
+    return ["{0} «{1}»".format(t, d or "фоновая команда")
+            for t, d in launched.items() if t not in done]
+
+
+def ao_spawned(transcript: Path,
+               source_rows: Optional[Iterable[dict]] = None) -> List[str]:
+    """AO-сессии, которые сессия сама подняла ``ao spawn`` (Bash; ответ AO
+    «spawned session <id>») — её ao-воркеры. Живы ли — решает зовущий по AO
+    (у AO нет поля «кто породил»). → AO-id в порядке запуска, без повторов."""
+    calls = set()
+    out: List[str] = []
+    for row in (rows(transcript) if source_rows is None else source_rows):
+        msg = row.get("message") or {}
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if (row.get("type") == "assistant" and b.get("type") == "tool_use"
+                    and b.get("name") == "Bash"
+                    and _AO_SPAWN_CMD.search(str((b.get("input") or {}).get("command") or ""))):
+                calls.add(str(b.get("id")))
+            elif b.get("type") == "tool_result" and str(b.get("tool_use_id")) in calls:
+                for h in _AO_SPAWNED.findall(_tool_result_text(b)):
+                    h = h.strip("\"'.,;")
+                    if h and h not in out:
+                        out.append(h)
+    return out
 
 
 def last_activity(transcript: Path) -> Optional[datetime]:

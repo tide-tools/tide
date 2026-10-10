@@ -86,6 +86,21 @@ def config_text(lang: str = DEFAULT_LANG) -> str:
     return "lang={0}\n".format(lang)
 
 
+def config_value(root: Path, key: str) -> Optional[str]:
+    """Value of ``key=…`` in the project's ``canon/config`` (one ``key=value`` per
+    line, ``#`` comments), or None — no file / no key / unreadable. Last one wins."""
+    try:
+        text = paths.canon_config(Path(root)).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    out: Optional[str] = None
+    for line in text.splitlines():
+        k, sep, v = line.strip().partition("=")
+        if sep and not k.startswith("#") and k.strip() == key:
+            out = v.strip()
+    return out
+
+
 def init(
     root: Path,
     name: Optional[str] = None,
