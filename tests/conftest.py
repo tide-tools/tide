@@ -139,6 +139,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # a hook reached by a test must never sweep (and journal into) a real home.
     # Autoclose tests pass their own env / delenv this.
     monkeypatch.setenv("TIDE_AUTOCLOSE_OLD", "off")
+    # SOC-167: сторож нити-сироты на хуке handoff-confirm — тесты сироты delenv это.
+    monkeypatch.setenv("TIDE_ORPHAN_WATCH", "off")
+    monkeypatch.delenv("TIDE_ORPHAN_AUTORAISE", raising=False)
     monkeypatch.setenv("TIDE_GLOBAL_SETTINGS", str(tmp_path / "global-claude-settings.json"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # `tide init` delivers the skills as part of the install (work 49) — point the

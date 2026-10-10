@@ -553,6 +553,9 @@ def _register_handoffs(sub) -> None:
     from .seam_sync import register_sync
 
     register_sync(hsub)  # SOC-143: шов-синк «сделано / дальше / что решить»
+    from .hooks.orphan import register as register_orphan
+
+    register_orphan(hsub)  # SOC-167: нить-сирота (orphans — пруф; orphan-raise — скрытая)
 
 
 def _register_offload(sub) -> None:

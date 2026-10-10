@@ -548,6 +548,10 @@ def cmd_prompt(args) -> int:
             # SOC-143: шов-синк без ответа > 30 мин — одна строка менеджеру на пару
             from .. import seam_sync
             seam_sync.on_prompt()
+            # SOC-167: нить-сирота — ведущей нет в живых, оффера нет → менеджеру;
+            # автоподъём — за выключателем ($TIDE_ORPHAN_AUTORAISE / orphan-autoraise=on)
+            from . import orphan
+            orphan.on_prompt()
     except Exception as exc:  # noqa: BLE001 — хук не смеет уронить сессию
         print("tide: [handed-off] skipped: {0}".format(exc), file=sys.stderr)
     return rc
