@@ -424,8 +424,107 @@ def merge_tails(tails: Sequence[str], inflight: Sequence[str]) -> List[str]:
     extra = tails_from_inflight(inflight)
     if not extra:
         return list(tails)
-    named = [] if tails and tails[0].strip() == contract.TAILS_NONE else list(tails)
+    named = list(tails)
+    if tails and tails[0].strip() == contract.TAILS_NONE:  # снятые (F74) остаются
+        named = [ln for ln in tails[1:] if _bare(ln).lower().startswith(CLOSED_TAIL)]
     return named + extra
+
+
+# SOC-143 F74: хвост «plan.md нити без «главное»» остался в сиде, хотя тот же шов
+# вписал «главное» за 8 с до сборки. Хвост про пустой/старый слой нити сверяется со
+# слоем на момент сборки: слой есть (или правлен после пульса) — хвост снят строкой
+# «снято: … — причина: …» (как решения, F63), приём её открытой не считает.
+CLOSED_TAIL = "снято:"
+# Слой нити → как его зовут в хвосте. «главное» живёт в plan.md, прочие — в goal-файле.
+_LAYER_NAMES = (
+    ("main", re.compile(r"главно", re.IGNORECASE)),
+    ("expectation", re.compile(r"ожидани", re.IGNORECASE)),
+    ("where", re.compile(r"где\s+мы", re.IGNORECASE)),
+    ("experience", re.compile(r"(?<!\w)опыт", re.IGNORECASE)),
+)
+# Хвост говорит именно о слое: «слой», «plan.md», «*-goal.md» или имя слоя в «…».
+_LAYER_REF = re.compile(r"сло[йяюеё]|plan\.md|-goal\.md|«(?:главное|ожидание|где мы|опыт)",
+                        re.IGNORECASE)
+_LAYER_EMPTY = re.compile(r"(?<!\w)(?:без|нет|пуст\w*|не\s+заполн\w*|не\s+вписан\w*|"
+                          r"не\s+дописан\w*)(?!\w)", re.IGNORECASE)
+_LAYER_STALE = re.compile(r"стар\w*|устарел\w*|не\s+обновл\w*|не\s+правлен\w*",
+                          re.IGNORECASE)
+_TAIL_STAMP = re.compile(r"\(пульс (\d\d:\d\d)\)")
+
+
+def _layer_state(thread_entry: Path, key: str) -> "tuple[bool, Optional[float], Path]":
+    """``(есть ли живые строки, mtime файла, файл)`` слоя *key* нити сейчас."""
+    from ..arc import plan_main
+
+    if key == "main":
+        f = Path(thread_entry) / plan_main.PLAN_FILE
+        has = bool(plan_main.live_lines(thread_entry))
+    else:
+        f = _stream.passport_path(thread_entry)
+        has = bool(layer(layers(_read(f)), key))
+    try:
+        mtime = f.stat().st_mtime
+    except OSError:
+        mtime = None
+    return has, mtime, f
+
+
+def _tail_pulse_at(line: str, context: Sequence[str]):
+    """Полное время пульса хвоста («(пульс ЧЧ:ММ)») — по последнему пульсу с этим
+    ЧЧ:ММ в ``## context``; не нашёлся — None."""
+    m = _TAIL_STAMP.search(line)
+    if not m:
+        return None
+    hits = [at for at, _ln in _pulse_stamps(context) if at.strftime("%H:%M") == m.group(1)]
+    return hits[-1] if hits else None
+
+
+def close_layer_tails(tails: Sequence[str], thread_entry: Path,
+                      context: Sequence[str] = ()) -> List[str]:
+    """Хвосты про пустой/старый слой нити, закрытые к сборке (F74), → «снято: …».
+
+    Хвост про пустой слой («plan.md нити без «главное»», «слой «опыт» пуст») снят,
+    если слой сейчас не пуст. Хвост про старый слой («ожидание Гриши устарело»)
+    снят, если файл слоя правлен позже пульса хвоста. Причина — со временем правки
+    (mtime на момент сборки). Не осталось открытых — сверху «— нет»."""
+    from datetime import datetime
+
+    out: List[str] = []
+    closed = 0
+    for ln in tails:
+        body = _bare(ln)
+        if not body or body.lower().startswith(CLOSED_TAIL) or ln.strip() in (
+                contract.TAILS_NONE,) or not _LAYER_REF.search(body):
+            out.append(ln)
+            continue
+        key = next((k for k, rx in _LAYER_NAMES if rx.search(body)), "")
+        empty, stale = _LAYER_EMPTY.search(body), _LAYER_STALE.search(body)
+        why = ""
+        if key and (empty or stale):
+            has, mtime, f = _layer_state(thread_entry, key)
+            at = _tail_pulse_at(body, context)
+            fresh = mtime is not None and at is not None and \
+                datetime.fromtimestamp(mtime) > at
+            when = datetime.fromtimestamp(mtime).strftime("%d.%m %H:%M:%S") \
+                if mtime is not None else "?"
+            name = contract.name(key)
+            if empty and has:
+                why = "слой «{0}» вписан ({1}, правка {2}) — на момент сборки не пуст".format(
+                    name, f, when)
+            elif stale and not empty and has and fresh:
+                why = "слой «{0}» правлен после пульса ({1}, правка {2})".format(
+                    name, f, when)
+        if why:
+            out.append("- {0} {1} — причина: {2}".format(CLOSED_TAIL, body, why))
+            closed += 1
+        else:
+            out.append(ln)
+    if closed and not any(
+            _bare(x) and not _bare(x).lower().startswith(CLOSED_TAIL)
+            and x.strip() != contract.TAILS_NONE and not x.strip().startswith("(")
+            for x in out):
+        out = [contract.TAILS_NONE] + [x for x in out if x.strip() != contract.TAILS_NONE]
+    return out
 
 
 def block_final(thread_goal: str, session_goal: str) -> List[str]:
@@ -3040,7 +3139,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                 context, section_body(
                     sections(_read(_stream.passport_path(thread_entry))), "context")))[:5]),
         WHERE: where,
-        TAILS: merge_tails(block_tails(context, labels.get(TAILS_KEY, [])), inflight),
+        # F74: хвост про пустой/старый слой, закрытый к сборке (тем же швом), — снят
+        TAILS: merge_tails(close_layer_tails(block_tails(context, labels.get(TAILS_KEY, [])),
+                                             thread_entry, context), inflight),
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
         # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.
         EXPERIENCE: block_experience(

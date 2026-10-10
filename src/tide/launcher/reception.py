@@ -256,7 +256,7 @@ def open_tails(seed_text: str) -> List[str]:
         if ln[:1].isspace() or s.startswith(("<", "(")):
             continue  # продолжение пункта, заглушка, строка-источник
         body = s[2:].strip() if s.startswith(("- ", "* ")) else s
-        if not _NO_TAILS.match(body):
+        if not _NO_TAILS.match(body) and not body.lower().startswith("снято:"):  # F74
             items.append(body)
     return items
 
