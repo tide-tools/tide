@@ -18,6 +18,12 @@
 Правки применяются по порядку строк файла: последняя главнее. Неизвестные
 ``kind`` без ``dir`` пропускаются.
 
+Уверенность привязки ответа к вопросу (``link_confidence``): ``reply`` — реплай
+в Telegram, ``link`` — ручная строка ``kind: link``; ``time`` — пульт привязал
+только по времени (``q_ref_how: loose``) — это догадка, не «вопрос отвечен»;
+``none`` — без вопроса. Вопрос, закрытый лишь по времени (``q_state: answered``
+c ``how: loose``), остаётся в открытых с пометкой «возможно отвечен».
+
 Без аргумента — темы проекта, в корне которого стоит cwd (AO-worktree сводится к
 main, как у всего ``tide truth``); из management или вне проектов — все темы.
 Каталог журналов: ``$TIDE_TG_THREADS`` → корень ``management`` из ростера +
@@ -47,6 +53,8 @@ HOW_WORD = {"reply": "реплай", "loose": "по времени", "link": "п
 SOC_SRC_WORD = {"text": "в тексте", "q_ref": "от вопроса", "alert": "флаг алерта",
                 "default": "по умолчанию темы", "link": "привязано вручную"}
 _OPS = ("edit", "delete", "link", "q_state")
+SURE = ("reply", "link")
+LINK_HINT = "pult.py thread-link --tg {0} --soc {1} --q {2}"
 
 
 # --- где лежит --------------------------------------------------------------
@@ -126,7 +134,8 @@ def parse(path: Path) -> Dict:
             "reply_to_tg": r.get("reply_to_tg"),
             "soc": list(r.get("soc") or []), "soc_src": r.get("soc_src"),
             "q_ref": r.get("q_ref"), "q_ref_how": r.get("q_ref_how"),
-            "q_state": r.get("q_state"), "answered_by": None,
+            "q_state": r.get("q_state"), "answered_by": None, "answered_how": None,
+            "q_ref_manual": False,
             "line": n, "edited": [], "linked": [], "deleted": False,
         }
         msgs.append(m)
@@ -150,10 +159,12 @@ def parse(path: Path) -> Dict:
                 if r.get("q_ref") is not None:
                     m["q_ref"] = r["q_ref"]
                     m["q_ref_how"] = r.get("q_ref_how") or "link"
+                    m["q_ref_manual"] = True
                 m["linked"].append(n)
             elif k == "q_state":
                 m["q_state"] = r.get("q_state")
                 m["answered_by"] = r.get("answered_by")
+                m["answered_how"] = r.get("how")
     return {"exists": True, "msgs": msgs, "by_id": by_id, "closed": closed}
 
 
@@ -179,6 +190,42 @@ def _link(group: Optional[str], tg: List[int]) -> str:
     return "tg:{0}/{1}".format(group or "?", tg[0] if tg else "?")
 
 
+def confidence(m: Dict) -> str:
+    """Насколько входящее *m* точно отвечает на свой ``q_ref``: reply | link | time | none."""
+    q = m["q_ref"]
+    if q is None:
+        return "none"
+    if m["q_ref_how"] == "reply" or (dtg._is_int(q) and m["reply_to_tg"] == q):
+        return "reply"
+    if m["q_ref_manual"] or m["q_ref_how"] == "link":
+        return "link"
+    return "time"
+
+
+def question_status(qm: Dict, live: List[Dict], by_id: Dict[int, Dict]) -> Tuple[str, List[int]]:
+    """Вопрос: (open | answered | maybe, tg-номера ответов «по времени»).
+
+    answered — только если пульт закрыл его не по времени или есть уверенный
+    ответ (реплай / ручная link). Закрытый ``how: loose`` — maybe, не answered.
+    """
+    q = qm["tg"][0] if qm["tg"] else None
+    refs = [m for m in live if m["dir"] == "in" and q is not None and m["q_ref"] == q]
+    sure = any(confidence(m) in SURE for m in refs)
+    loose = [m["tg"][0] for m in refs if m["tg"] and confidence(m) == "time"]
+    if qm["q_state"] == "answered":
+        how = qm["answered_how"]
+        ab = qm["answered_by"]
+        if how is None:
+            am = by_id.get(ab) if dtg._is_int(ab) else None
+            how = "loose" if am is not None and am["q_ref"] == q and confidence(am) == "time" else "state"
+        if sure or how not in ("loose", "time"):
+            return "answered", []
+        if dtg._is_int(ab) and ab not in loose:
+            loose.insert(0, ab)
+        return "maybe", loose
+    return ("maybe" if loose else "open"), loose
+
+
 def topic_view(t: Dict, d: Path, limit: int) -> Dict:
     """Одна тема: шапка, открытые вопросы, последние *limit* ответов Гриши."""
     path = d / "{0}.jsonl".format(t["slug"])
@@ -190,13 +237,21 @@ def topic_view(t: Dict, d: Path, limit: int) -> Dict:
     by_id = p["by_id"]
     live = [m for m in p["msgs"] if not m["deleted"]]
     group = t["group"]
+    status: Dict[int, Tuple[str, List[int]]] = {}
     for m in sorted(live, key=_key, reverse=True):
-        if m["dir"] == "out" and m["q_state"] == "open":
-            view["questions"].append({
-                "tg": m["tg"][0] if m["tg"] else None, "link": _link(m["group"] or group, m["tg"]),
-                "at": m["at"], "when": _when(m["at"]), "text": _text(m, QUESTION_CHARS),
-                "soc": m["soc"], "where": "{0}:{1}".format(path, m["line"]),
-            })
+        if m["dir"] != "out" or m["q_state"] not in ("open", "answered"):
+            continue
+        st, maybe = question_status(m, live, by_id)
+        if m["tg"]:
+            status[m["tg"][0]] = (st, maybe)
+        if st == "answered":
+            continue
+        view["questions"].append({
+            "tg": m["tg"][0] if m["tg"] else None, "link": _link(m["group"] or group, m["tg"]),
+            "at": m["at"], "when": _when(m["at"]), "text": _text(m, QUESTION_CHARS),
+            "soc": m["soc"], "where": "{0}:{1}".format(path, m["line"]),
+            "state": st, "maybe_answered_by": maybe,
+        })
     answers = [m for m in live if m["dir"] == "in"]
     view["answers_total"] = len(answers)
     for m in sorted(answers, key=_key, reverse=True)[:limit]:
@@ -206,9 +261,10 @@ def topic_view(t: Dict, d: Path, limit: int) -> Dict:
             "tg": m["tg"][0] if m["tg"] else None, "link": _link(m["group"] or group, m["tg"]),
             "at": m["at"], "when": _when(m["at"]), "kind": m["kind"], "voice": m["voice"],
             "text": _text(m, ANSWER_CHARS), "edited": bool(m["edited"]),
-            "q_ref": q, "q_ref_how": m["q_ref_how"],
+            "q_ref": q, "q_ref_how": m["q_ref_how"], "link_confidence": confidence(m),
             "question": _text(qm, QUESTION_CHARS) if qm else None,
-            "question_state": qm["q_state"] if qm else None,
+            "question_state": (status.get(q, ("open", []))[0] if qm and qm["q_state"]
+                               else None),
             "soc": m["soc"], "soc_src": m["soc_src"],
             "where": "{0}:{1}".format(path, m["line"]),
             "also": ["{0}:{1}".format(path, n) for n in m["edited"] + m["linked"]],
@@ -274,8 +330,12 @@ def render_topic(v: Dict) -> str:
     qs = v["questions"]
     out.append("  открытые вопросы — {0}{1}".format(len(qs), ":" if qs else ""))
     for q in qs:
-        out.append("    {0}  {1}  {2}  «{3}»  {4}".format(
-            q["when"], q["link"], _soc(q["soc"]), q["text"], q["where"]))
+        maybe = ""
+        if q.get("maybe_answered_by"):
+            maybe = "  возможно отвечен: tg {0} (по времени)".format(
+                ", ".join(str(n) for n in q["maybe_answered_by"]))
+        out.append("    {0}  {1}  {2}  «{3}»{4}  {5}".format(
+            q["when"], q["link"], _soc(q["soc"]), q["text"], maybe, q["where"]))
     ans = v["answers"]
     if not ans:
         out.append("  ответов Гриши нет")
@@ -285,14 +345,18 @@ def render_topic(v: Dict) -> str:
     for a in ans:
         mark = (" (голос)" if a["voice"] else "") + (" (правлено)" if a["edited"] else "")
         out.append("    {0}  «{1}»{2}".format(a["when"], a["text"], mark))
-        if a["q_ref"] is not None:
-            q = "к вопросу {0} ({1})".format(a["q_ref"], HOW_WORD.get(a["q_ref_how"],
-                                                                     a["q_ref_how"] or "?"))
+        if a["q_ref"] is not None and a["link_confidence"] == "time":
+            q = "к вопросу {0}? (по времени — не уверено, подтверди: {1})".format(
+                a["q_ref"], LINK_HINT.format(a["tg"], (a["soc"] or ["SOC-N"])[0], a["q_ref"]))
+            if a["question"]:
+                q += " «{0}»".format(dtg.short(a["question"], 60))
+        elif a["q_ref"] is not None:
+            q = "к вопросу {0} ({1})".format(a["q_ref"], HOW_WORD.get(a["link_confidence"]))
             if a["question"]:
                 q += " «{0}»".format(dtg.short(a["question"], 60))
             if a["question_state"] == "answered":
                 q += ", вопрос отвечен"
-            elif a["question_state"] == "open":
+            elif a["question_state"] in ("open", "maybe"):
                 q += ", вопрос ещё открыт"
         else:
             q = "без вопроса"

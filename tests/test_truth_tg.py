@@ -30,19 +30,32 @@ def _in(tg, text, at, **kw):
                 soc=["SOC-162"], soc_src="default", reply_to_tg=None, **kw)
 
 
+# Как в живом groovamp.jsonl: 1263 пульт привязал к 1258 по времени, менеджер
+# подтвердил ручной link; 1303 привязан к 1302 только по времени (а по смыслу — не о
+# нём), пульт ещё и закрыл 1302 c how=loose; 1307 — честный реплай на 1306.
 GROOVAMP = [
     _out(1258, "❓ Новый джем: подписи по-английски или по-русски?",
          "2026-10-10T04:49:42+00:00", q_state="open"),
     _in(1263, "Все на Английском", "2026-10-10T04:51:53+00:00", q_ref=1258, q_ref_how="loose"),
-    _row(kind="q_state", tg_msg_id=1258, q_state="answered", answered_by=1263),
+    _row(kind="q_state", tg_msg_id=1258, q_state="answered", answered_by=1263, how="loose"),
     _out(1301, "❓ Делаем анонс?", "2026-10-10T14:07:00+00:00", q_state="open"),
+    _out(1302, "❓ Для замера на Android нужен твой телефон", "2026-10-10T14:07:01+00:00",
+         q_state="open"),
     {"kind": "future_kind", "whatever": 1},  # неизвестное — пропускается
     "not json",
-    _in(1303, "А как слои переключать", "2026-10-10T14:07:39+00:00"),
+    _in(1303, "А как слои переключать", "2026-10-10T14:07:39+00:00", q_ref=1302,
+        q_ref_how="loose"),
+    _row(kind="q_state", tg_msg_id=1302, q_state="answered", answered_by=1303, how="loose"),
     _row(kind="edit", tg_msg_id=1303, text="А как слои переключать?"),
     _in(1305, "лишнее", "2026-10-10T14:08:00+00:00"),
     _row(kind="delete", tg_msg_id=1305),
-    _row(kind="link", tg_msg_id=1303, soc=["SOC-170"], q_ref=1301, q_ref_how="link", by="m-24"),
+    _row(kind="link", tg_msg_id=1263, soc=["SOC-162"], q_ref=1258, q_ref_how="link", by="m-24"),
+    _row(kind="link", tg_msg_id=1303, soc=["SOC-170"], by="m-24"),  # только SOC, не вопрос
+    _out(1306, "❓ Кнопка записи — красная?", "2026-10-10T14:08:30+00:00", q_state="open"),
+    _row(dir="in", kind="tg", tg_msg_id=1307, text="Да, красная", at="2026-10-10T14:09:00+00:00",
+         ts="2026-10-10T14:09:00+00:00", soc=["SOC-162"], soc_src="q_ref", reply_to_tg=1306,
+         q_ref=1306, q_ref_how="reply"),
+    _row(kind="q_state", tg_msg_id=1306, q_state="answered", answered_by=1307, how="reply"),
 ]
 
 
@@ -98,15 +111,75 @@ def test_default_is_cwd_project(world, capsys):
     # новейшие сверху: 1303 выше 1263; время −03
     assert out.index("tg:factory/1303") < out.index("tg:factory/1263")
     assert "10.10 01:51  «Все на Английском»" in out
-    assert "к вопросу 1258 (по времени)" in out and "вопрос отвечен" in out
+    assert "к вопросу 1258 (привязано вручную)" in out
     assert "groovamp.jsonl:2" in out  # файл:строка входящего
+
+
+def _answer_line(out, tg):
+    lines = out.splitlines()
+    i = next(n for n, ln in enumerate(lines) if "tg:factory/{0}".format(tg) in ln)
+    return lines[i]
+
+
+def test_manual_link_is_sure(world, capsys):
+    (v,) = _json(capsys)
+    a = {a["tg"]: a for a in v["answers"]}[1263]
+    assert a["link_confidence"] == "link" and a["question_state"] == "answered"
+    _, out = _run(capsys)
+    assert "к вопросу 1258 (привязано вручную)" in _answer_line(out, 1263)
+    assert "вопрос отвечен" in _answer_line(out, 1263)
+
+
+def test_reply_is_sure(world, capsys):
+    (v,) = _json(capsys)
+    a = {a["tg"]: a for a in v["answers"]}[1307]
+    assert a["link_confidence"] == "reply" and a["question_state"] == "answered"
+    _, out = _run(capsys)
+    line = _answer_line(out, 1307)
+    assert "к вопросу 1306 (реплай)" in line and "вопрос отвечен" in line
+
+
+def test_time_link_is_not_sure(world, capsys):
+    (v,) = _json(capsys)
+    a = {a["tg"]: a for a in v["answers"]}[1303]
+    assert a["link_confidence"] == "time" and a["question_state"] == "maybe"
+    _, out = _run(capsys)
+    line = _answer_line(out, 1303)
+    assert "к вопросу 1302? (по времени — не уверено, подтверди: " in line
+    assert "pult.py thread-link --tg 1303 --soc SOC-170 --q 1302" in line
+    assert "вопрос отвечен" not in line
+
+
+def test_no_question_is_none(world, capsys):
+    with open(world["dir"] / "groovamp.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(_in(1310, "просто так", "2026-10-10T15:00:00+00:00")) + "\n")
+    (v,) = _json(capsys)
+    assert {a["tg"]: a for a in v["answers"]}[1310]["link_confidence"] == "none"
 
 
 def test_open_questions(world, capsys):
     (v,) = _json(capsys)
-    assert [q["tg"] for q in v["questions"]] == [1301]  # 1258 закрыт строкой q_state
-    assert v["questions"][0]["link"] == "tg:factory/1301"
-    assert v["questions"][0]["soc"] == ["SOC-162"]
+    # 1258 закрыт уверенно (ручная link), 1306 — реплаем; 1302 закрыт пультом только
+    # по времени — остаётся открытым с пометкой
+    assert [q["tg"] for q in v["questions"]] == [1302, 1301]
+    q1302, q1301 = v["questions"]
+    assert q1302["state"] == "maybe" and q1302["maybe_answered_by"] == [1303]
+    assert q1301["state"] == "open" and q1301["maybe_answered_by"] == []
+    assert q1301["link"] == "tg:factory/1301" and q1301["soc"] == ["SOC-162"]
+    _, out = _run(capsys)
+    assert "возможно отвечен: tg 1303 (по времени)" in _answer_line(out, 1302)
+    assert "возможно отвечен" not in _answer_line(out, 1301)
+
+
+def test_loose_without_how_is_not_sure(world, capsys):
+    """Старые строки q_state без how: уверенность берём у answered_by."""
+    with open(world["dir"] / "groovamp.jsonl", "a", encoding="utf-8") as f:
+        for r in (_out(1311, "❓ Ещё вопрос", "2026-10-10T15:01:00+00:00", q_state="open"),
+                  _in(1312, "мимо", "2026-10-10T15:02:00+00:00", q_ref=1311, q_ref_how="loose"),
+                  _row(kind="q_state", tg_msg_id=1311, q_state="answered", answered_by=1312)):
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    (v,) = _json(capsys)
+    assert 1311 in [q["tg"] for q in v["questions"]]
 
 
 def test_edit_link_delete(world, capsys):
@@ -116,14 +189,13 @@ def test_edit_link_delete(world, capsys):
     a = by[1303]
     assert a["text"] == "А как слои переключать?" and a["edited"]
     assert a["soc"] == ["SOC-170"] and a["soc_src"] == "link"
-    assert a["q_ref"] == 1301 and a["q_ref_how"] == "link"
-    assert a["question_state"] == "open"
+    assert a["q_ref"] == 1302 and a["q_ref_how"] == "loose"  # link только с SOC — не вопрос
     assert len(a["also"]) == 2  # строки edit и link
 
 
 def test_limit(world, capsys):
     (v,) = _json(capsys, "--limit", "1")
-    assert [a["tg"] for a in v["answers"]] == [1303] and v["answers_total"] == 2
+    assert [a["tg"] for a in v["answers"]] == [1307] and v["answers_total"] == 3
 
 
 def test_project_filter_and_empty(world, capsys):
