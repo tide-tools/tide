@@ -263,5 +263,27 @@ def test_unreadable_checked_says_so_in_one_line(tmp_path):
     # поля нет вовсе — это «не сверялась», а не «нечитаемо»
     f.write_text("без поля\n", encoding="utf-8")
     assert "не сверялась" in sd.topic_stale_line(f, datetime(2026, 10, 9, 22, 0))
-    # и в шов-синк такая строка не попадает как «отстала»
-    assert ss.topic_stale_items("- топик: 02-x — страница топика: сверено нечитаемо — проверь дату") == []
+    # и в шов-синк такая строка попадает пунктом «топик» (SOC-105), хоть и не «отстала»
+    assert ss.topic_stale_items("- топик: 02-x — страница топика: сверено нечитаемо — проверь дату") == [
+        "02-x — страница топика: сверено нечитаемо — проверь дату"]
+
+
+def test_unreadable_checked_mark_is_seam_sync_item_closed_by_page_name():
+    seed = SEED + ("  - топик: 03-doska — страница топика: сверено нечитаемо — проверь дату\n")
+    assert ss.seed_items(seed)["topic"] == [
+        "02-peredacha-raboty — страница топика отстала на 4 ч — "
+        "освежи «где мы / в полёте / сверено»",
+        "03-doska — страница топика: сверено нечитаемо — проверь дату"]
+    rep = ss.reconcile(seed, PASSPORT.format("- 2026-10-09T18:10:00 — довести шов-синк"), n=3)
+    rows = [r for r in rep["items"] if r["block"] == "topic"]
+    assert [r["status"] for r in rows] == ["missing", "missing"]
+    assert "- [топик] 03-doska — страница топика: сверено нечитаемо" in ss.render(rep)
+    # закрывается так же — по имени страницы; соседнюю («02-…») не закрывает
+    named = ss.reconcile(seed, PASSPORT.format(
+        "- 2026-10-09T18:10:00 — беру: проверяю дату на странице 03-doska"), n=3)
+    st = {r["text"][:2]: r["status"] for r in named["items"] if r["block"] == "topic"}
+    assert st == {"02": "missing", "03": "named"}
+    gone = ss.reconcile(seed, PASSPORT.format(
+        "- 2026-10-09T18:10:00 — снимаю: страница 03-doska — дату правит main"), n=3)
+    row = next(r for r in gone["items"] if r["block"] == "topic" and r["text"].startswith("03"))
+    assert row["status"] == "dropped" and "main" in row["why"]
