@@ -8,6 +8,11 @@
   кладёт письмо в ``<нить>/inbox/NNN-от-<кто>.md`` — без лимита размера;
 * затем короткий пинг (< 500 байт) ``ao send`` ведущей сессии нити — её ищем
   тем же путём, что ``tide whois <нить>`` (:func:`tide.whois.thread`);
+* нить с несколькими живыми сессиями (принятые, не передавшие, AO не
+  terminated) — пинг всем, в пинге строка «в нити N живых сессий — письмо
+  общее»; адрес можно уточнить сессией: ``<проект>/<нить>@<ao-id | techlead-13>``
+  — письмо в тот же ящик с ``to-session:`` в шапке, пинг только ей, квитанция
+  и повторы — от неё (SOC-143);
 * квитанция: ``tide mail read <нить> NNN`` печатает письмо и пишет ``ack``
   (кто, когда) в журнал ``inbox/log.jsonl``; ``tide mail ls <нить>`` —
   непрочитанное / прочитанное;
@@ -170,11 +175,18 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
         num = m.group(1)
         mine = [e for e in evs if e.get("num") == num]
         sent = next((e for e in mine if e.get("ev") == "sent"), {})
+        acks = [e for e in mine if e.get("ev") == "ack"]
+        to_session = str(sent.get("to_session") or "")
+        to_ao = str(sent.get("to_ao") or "")
         out.append({
             "num": num, "path": p, "sender": str(sent.get("from") or m.group(2)),
             "sent": str(sent.get("at") or ""), "bytes": int(sent.get("bytes") or 0),
             "first": str(sent.get("first") or ""),
-            "acks": [e for e in mine if e.get("ev") == "ack"],
+            "acks": acks,
+            # SOC-143: письмо сессии — прочитано, когда квитанцию дал адресат
+            "acked": any(_ack_by_addressee(str(a.get("by") or ""), to_session, to_ao)
+                         for a in acks) if to_session else bool(acks),
+            "to_session": to_session, "to_ao": to_ao,
             "pings": [e for e in mine if e.get("ev") == "ping"],
             "alerted": any(e.get("ev") == "alert" for e in mine),
             # SOC-157: своё окно до тревоги менеджеру (эскалация) — None у обычного письма
@@ -202,7 +214,21 @@ def letter(tdir: Path, num: object) -> Dict[str, object]:
 
 
 def unread(tdir: Path) -> List[Dict[str, object]]:
-    return [r for r in letters(tdir) if not r["acks"]]
+    return [r for r in letters(tdir) if not r["acked"]]
+
+
+def _ack_by_addressee(by: str, to_session: str, to_ao: str) -> bool:
+    """Квитанция *by* — от сессии-адресата (её AO-id, uds-имя «ao-id-xx», имя
+    арки «13-techlead-13» / «techlead-13» или «нить·13-techlead-13»)."""
+    by = (by or "").strip()
+    if not by:
+        return False
+    if to_ao and (by == to_ao or by.startswith(to_ao + "-")):
+        return True
+    if to_session:
+        names = {to_session, slug.entry_slug(to_session)}
+        return by in names or any(by.endswith("·" + n) for n in names)
+    return False
 
 
 def _first_line(text: str) -> str:
@@ -247,9 +273,12 @@ def _write_new(box: Path, sender: str, content: str) -> Tuple[str, Path]:
     raise MailError("mail: не нашёл свободный номер в {0}".format(box))
 
 
-def ping_text(num: str, sender: str, first: str, addr: str) -> str:
-    """Пинг < 500 байт: «почта NNN от X: <первая строка> — tide mail read <нить> NNN»."""
+def ping_text(num: str, sender: str, first: str, addr: str, note: str = "") -> str:
+    """Пинг < 500 байт: «почта NNN от X: <первая строка> — tide mail read <нить> NNN»;
+    *note* — ещё одна строка (SOC-143: «в нити N живых сессий — письмо общее»)."""
     tail = " — tide mail read {0} {1}".format(addr, num)
+    if note:
+        tail += "\n" + note
     head = "почта {0} от {1}: ".format(num, sender)
     room = PING_MAX_BYTES - len((head + tail).encode("utf-8"))
     line = first
@@ -270,21 +299,151 @@ def _holder_ao(tdir: Path) -> str:
         return ""
 
 
+# --- сессии нити (SOC-143: несколько живых сессий, адрес @сессия) ----------------
+
+LIVE_NOTE = "в нити {0} живых сессий — письмо общее"
+
+
+def _home() -> Optional[Path]:
+    try:
+        return paths.control_home()
+    except Exception:  # noqa: BLE001 — нет control-home: AO-id только из названий
+        return None
+
+
+def _ao_terminated() -> set:
+    """AO-сессии, которые AO пометил terminated (чтение). Ошибка — пусто."""
+    try:
+        from .adapters import ao
+
+        return set(ao.terminated_sessions())
+    except Exception:  # noqa: BLE001 — AO не ответил: считаем всех живыми
+        return set()
+
+
+def thread_sessions(tdir: Path) -> List[Dict[str, object]]:
+    """Открытые, не отпущенные рукой сессии нити →
+    ``{entry, name, sid, ao, handed}`` (``handed`` — уже передала/закончила)."""
+    from . import fields
+    from .arc import holder
+
+    sub = Path(tdir) / paths.ARCS_DIRNAME
+    if not sub.is_dir():
+        return []
+    home = _home()
+    out: List[Dict[str, object]] = []
+    for entry in sorted(sub.iterdir()):
+        pp = entry / "arc.md"
+        if not (entry.is_dir() and slug.is_entry(entry.name) and pp.is_file()):
+            continue
+        if slug.is_closed_entry(entry.name) or (fields.read_field(pp, "dismissed") or "").strip():
+            continue
+        sid = (fields.read_field(pp, "claude-session") or "").strip()
+        ao = holder.ao_handle_for(home, sid) if sid else ""
+        if not ao:
+            title = (fields.read_field(pp, "title") or "").strip()
+            m = re.search(r" · (\S+-\d+)$", title)
+            ao = m.group(1) if m else ""
+        handed = any((fields.read_field(pp, f) or "").strip()
+                     for f in ("handed-off", "ended"))
+        if not handed and sid and home is not None:
+            try:
+                from . import handoff_queue as hq
+
+                handed = hq.is_dissolved(home, sid) is not None
+            except Exception:  # noqa: BLE001
+                pass
+        out.append({"entry": entry, "name": entry.name, "sid": sid, "ao": ao,
+                    "handed": handed})
+    return out
+
+
+def live_sessions(tdir: Path) -> List[Dict[str, object]]:
+    """Живые сессии нити: приняты (есть claude-session и AO-id), не передали и
+    не закончили, AO не пометил их terminated. AO спрашиваем, только когда
+    кандидатов больше одного — одна нить, одна сессия: как раньше, без AO."""
+    rows = [r for r in thread_sessions(tdir) if r["sid"] and r["ao"] and not r["handed"]]
+    if len(rows) < 2:
+        return rows
+    dead = _ao_terminated()
+    return [r for r in rows if r["ao"] not in dead]
+
+
+def resolve_session(tdir: Path, want: str) -> Dict[str, object]:
+    """Сессия нити по AO-id (или uds-имени «ao-id-xx») или имени арки
+    («13-techlead-13» / «techlead-13»). Нет — :class:`MailError`."""
+    want = (want or "").strip()
+    rows = thread_sessions(tdir)
+    for r in rows:
+        ao = str(r["ao"] or "")
+        if ao and (want == ao or want.startswith(ao + "-")):
+            return r
+    for r in rows:
+        if want == r["name"] or slug.entry_slug(str(r["name"])) == slug.slugify(want):
+            return r
+    raise MailError("mail: в нити {0} нет открытой сессии {1!r}".format(
+        slug.entry_slug(Path(tdir).name), want))
+
+
+def target(ref: str, root: Optional[Path] = None) -> Tuple[Path, str]:
+    """``<нить>`` | ``<проект>/<нить>`` [``@<сессия>``] → (каталог нити, сессия или "").
+
+    Имя нити само может нести «@» (``02-@techlead``): сначала адрес целиком, и
+    только если такой нити нет — уточнение после последней «@»."""
+    try:
+        return thread_dir(ref, root), ""
+    except MailError:
+        head, at, want = (ref or "").strip().rpartition("@")
+        if not (at and head and want.strip()) or head.endswith("/"):
+            raise
+        return thread_dir(head, root), want.strip()
+
+
 def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
-    """Пинг ведущей сессии о письме *num*; жест пишется в журнал. Не падает."""
+    """Пинг о письме *num*; жест пишется в журнал. Не падает.
+
+    Кому (SOC-143): письмо сессии (``to-session``) — только ей; иначе живым
+    сессиям нити — всем, когда их несколько (в пинге строка «письмо общее»);
+    одна живая или ни одной — ведущей сессии нити, как раньше."""
     from .launcher.autohandoff import _ao_send
 
     rec = letter(tdir, num)
-    text = ping_text(rec["num"], rec["sender"], rec["first"], address_of(tdir))
-    to = _holder_ao(tdir)
-    code: Optional[int] = None
-    if to:
+    note = ""
+    if rec.get("to_session"):
+        to_ao = str(rec.get("to_ao") or "")
+        if not to_ao:
+            try:
+                to_ao = str(resolve_session(tdir, str(rec["to_session"]))["ao"] or "")
+            except MailError:
+                to_ao = ""
+        targets = [to_ao] if to_ao else []
+    else:
         try:
-            code = _ao_send(to, text)
+            live = live_sessions(tdir)
+        except Exception:  # noqa: BLE001 — не прочитали сессии: как раньше
+            live = []
+        if len(live) > 1:
+            targets = list(dict.fromkeys(str(r["ao"]) for r in live))
+            note = LIVE_NOTE.format(len(targets))
+        else:
+            holder_ao = _holder_ao(tdir)
+            targets = [holder_ao] if holder_ao else []
+    text = ping_text(rec["num"], rec["sender"], rec["first"], address_of(tdir), note=note)
+    codes: List[Optional[int]] = []
+    for to in targets:
+        try:
+            codes.append(_ao_send(to, text))
         except Exception:  # noqa: BLE001
-            code = -1
-    ev = {"ev": "ping", "num": rec["num"], "at": _iso(_now()), "to": to or None,
-          "code": code, "kind": kind, "bytes": len(text.encode("utf-8"))}
+            codes.append(-1)
+    code: Optional[int] = None
+    if codes:
+        code = next((c for c in codes if c), codes[0])
+    ev: Dict[str, object] = {"ev": "ping", "num": rec["num"], "at": _iso(_now()),
+                             "to": ", ".join(targets) or None, "code": code,
+                             "kind": kind, "bytes": len(text.encode("utf-8"))}
+    if len(targets) > 1:
+        ev["to_all"] = targets
+        ev["codes"] = codes
     _append(tdir, ev)
     return ev
 
@@ -299,19 +458,29 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
     отправки — ожидальщик сразу шлёт тревогу менеджеру, не дожидаясь повторов."""
     if not (text or "").strip():
         raise MailError("mail: пустое письмо")
-    tdir = thread_dir(ref, root)
+    tdir, want = target(ref, root)
+    to_row = resolve_session(tdir, want) if want else None
     who = (sender or "").strip() or _who_am_i()
     body = text if text.endswith("\n") else text + "\n"
     raw = body.encode("utf-8")
     at = _iso(_now())
-    head = ("---\nfrom: {0}\nto: {1}\nsent: {2}\nbytes: {3}\nsha256: {4}\n---\n\n").format(
-        who, address_of(tdir), at, len(raw), hashlib.sha256(raw).hexdigest())
+    to_line = ""
+    if to_row is not None:
+        to_line = "to-session: {0}{1}\n".format(
+            to_row["name"], " ({0})".format(to_row["ao"]) if to_row["ao"] else "")
+    head = ("---\nfrom: {0}\nto: {1}\n{5}sent: {2}\nbytes: {3}\nsha256: {4}\n---\n\n"
+            ).format(who, address_of(tdir), at, len(raw), hashlib.sha256(raw).hexdigest(),
+                     to_line)
     num, path = _write_new(inbox(tdir), who, head + body)
     sent_ev: Dict[str, object] = {"ev": "sent", "num": num, "at": at, "from": who,
                                   "file": path.name, "bytes": len(raw),
                                   "first": _first_line(text)[:200]}
     if kind:
         sent_ev["kind"] = kind
+    if to_row is not None:
+        sent_ev["to_session"] = str(to_row["name"])
+        if to_row["ao"]:
+            sent_ev["to_ao"] = str(to_row["ao"])
     if _alert_after(alert_after_min):
         sent_ev["alert_after"] = float(alert_after_min)  # type: ignore[arg-type]
     _append(tdir, sent_ev)
@@ -329,7 +498,7 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
 def read(ref: str, num: object, *, by: Optional[str] = None,
          root: Optional[Path] = None) -> Tuple[str, Dict[str, object]]:
     """Текст письма + квитанция ``ack`` (кто, когда) в журнал."""
-    tdir = thread_dir(ref, root)
+    tdir = target(ref, root)[0]
     rec = letter(tdir, num)
     text = Path(rec["path"]).read_text(encoding="utf-8")
     ack = {"ev": "ack", "num": rec["num"], "at": _iso(_now()),
@@ -373,7 +542,7 @@ def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
     now = now or _now()
     minutes = minutes if minutes is not None else retry_minutes()
     rec = letter(tdir, num)
-    if rec["acks"]:
+    if rec["acked"]:
         return "acked"
     if rec["alerted"]:
         return "done"
@@ -437,7 +606,7 @@ def _watch_enabled() -> bool:
 
 def pending(tdir: Path) -> List[Dict[str, object]]:
     """Письма, которые ещё ждут ожидальщика: без квитанции и без тревоги."""
-    return [r for r in letters(tdir) if not r["acks"] and not r["alerted"]]
+    return [r for r in letters(tdir) if not r["acked"] and not r["alerted"]]
 
 
 def _try_lock(tdir: Path):
@@ -604,7 +773,7 @@ def _revive_cli(ref: Optional[str] = None) -> None:
         if root is not None:
             revive_project(root)
         if ref:
-            revive(thread_dir(ref))
+            revive(target(ref)[0])
     except Exception:  # noqa: BLE001
         pass
 
@@ -622,6 +791,8 @@ def _cmd_send(args) -> int:
     if not args.no_ping:
         if p.get("to"):
             how = "пинг {0} → код {1}".format(p["to"], p.get("code"))
+            if p.get("to_all"):
+                how += " ({0})".format(LIVE_NOTE.format(len(p["to_all"])))
         else:
             how = "пинг не ушёл: у нити нет ведущей AO-сессии (ожидальщик повторит)"
     else:
@@ -639,18 +810,20 @@ def _cmd_read(args) -> int:
 
 
 def _cmd_ls(args) -> int:
-    tdir = thread_dir(args.thread)
+    tdir = target(args.thread)[0]
     _revive_cli(args.thread)
     recs = letters(tdir)
-    new = [r for r in recs if not r["acks"]]
+    new = [r for r in recs if not r["acked"]]
     print("почта нити {0}: {1} непрочитанных, {2} прочитанных".format(
         address_of(tdir), len(new), len(recs) - len(new)))
     for r in recs:
-        if r["acks"]:
+        if r["acked"]:
             last = r["acks"][-1]
             state = "прочитано {0} {1}".format(last.get("by"), last.get("at"))
         else:
-            state = "НЕ ПРОЧИТАНО · пингов {0}".format(len(r["pings"]))
+            state = "НЕ ПРОЧИТАНО{0} · пингов {1}".format(
+                " адресатом {0}".format(r["to_session"]) if r["to_session"] else "",
+                len(r["pings"]))
             if r["alerted"]:
                 state += " · тревога менеджеру"
         print("  {0} от {1} · {2} · {3} Б · {4} · {5}".format(
@@ -666,7 +839,7 @@ def _cmd_watch(args) -> int:
 
 
 def _cmd_retry(args) -> int:
-    tdir = thread_dir(args.thread)
+    tdir = target(args.thread)[0]
     for r in unread(tdir):
         print("{0}: {1}".format(r["num"], step(tdir, r["num"])))
     _revive_cli(args.thread)
@@ -680,7 +853,8 @@ def register(subparsers) -> None:
     sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|watch>")
 
     s = sub.add_parser("send", help="drop a letter into <thread>/inbox and ping its holder")
-    s.add_argument("thread", help="<нить> | <проект>/<нить>")
+    s.add_argument("thread", help="<нить> | <проект>/<нить>[@<ao-id | сессия>] — "
+                                  "@ уточняет адресата: пинг и квитанция только её")
     s.add_argument("text", nargs="?", help="letter text ('-' or omitted — stdin)")
     s.add_argument("--file", help="read the letter from a file (no size limit)")
     s.add_argument("--from", dest="sender", help="who writes (default: $AO_SESSION_ID)")
@@ -710,7 +884,8 @@ def register(subparsers) -> None:
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
-__all__ = ["MAX_RETRIES", "MailError", "RETRY_ENV", "WATCH_ENV", "address_of",
+__all__ = ["LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
+           "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
            "pending", "retry_minutes", "revive", "revive_project", "send", "session_line", "step", "thread_dir", "unread", "watch",
            "watch_box", "watcher_alive"]
