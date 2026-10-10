@@ -296,7 +296,8 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         rules = ("правила: работа → в workspace/ своей арки · "
                  "пульс по ходу → tide offload · передать дальше → /handoff")
         # SOC-143: гарантированный канал — почта нити, а не ao send (режет ~4 КБ);
-        # срезы окна п.2–3 (tg 1223): ao send — только сигнал, итог сабагента короткий
+        # срезы окна п.2–3 (tg 1223): ao send — только сигнал, итог сабагента короткий;
+        # management-25: тесты дольше ~4,5 мин — в фоне (строка в window_rules)
         from .. import escalate_rules as _esc
         lines = ["## нить (throughline — держи за шагом)"]
         # SOC-101 F32: адрес менеджера в goal: нити устаревает (ao-control при живом

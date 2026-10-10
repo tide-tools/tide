@@ -273,10 +273,12 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     new = stream.new_session(tmp_project, "main", "main-4", goal="шаг")
     fields.set_field(new / "arc.md", "from", "main-3")
     head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
-    assert head[-6].startswith("правила: работа → в workspace/ своей арки")
+    assert head[-7].startswith("правила: работа → в workspace/ своей арки")
     # срезы окна п.2–3 (tg 1223): итог сабагента короткий, ao send — только сигнал
     from tide import escalate_rules
-    assert head[-5] == escalate_rules.SUBAGENT_RESULT_RULE
+    assert head[-6] == escalate_rules.SUBAGENT_RESULT_RULE
+    # management-25: тесты дольше ~4,5 мин — в фоне, из константы
+    assert head[-5] == escalate_rules.TEST_WAIT_RULE
     assert head[-4] == escalate_rules.MAIL_RULE
     assert "только сигнал" in head[-4] and "tide mail send <проект>/<нить>" in head[-4]
     # SOC-166: сабагентов хук не видит — их держит правило троттлинга

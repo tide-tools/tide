@@ -23,6 +23,7 @@ Every arc is `input/ → workspace/ → output/`:
 
 ## Итог (срез окна п.2)
 - итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу.
+- тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — долгие (полный tide-ci) в фоне (Bash run_in_background), проверка по готовности.
 
 ## What you NEVER do
 - **Never merge canon** (`tide canon merge`) — orchestrator-only.

@@ -31,6 +31,12 @@ AO_SEND_SIGNAL_CHARS = 400     # длиннее — ao send уже не сигн
 
 SUBAGENT_RESULT_RULE = ("итог сабагента — не длиннее ~600 токенов (~2000 знаков); "
                         "подробности — файлом в workspace/ своей арки, в итоге — путь к файлу")
+# Проба менеджера (management-25, обратимо): пауза >5 мин перезаписывает кэш
+# (404 $, 16% дня) — сабагент не висит на тестах дольше ~4,5 мин в одном вызове.
+TEST_WAIT_SEC = 270
+TEST_WAIT_RULE = ("тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — "
+                  "долгие (полный tide-ci) в фоне (Bash run_in_background), "
+                  "проверка по готовности")
 MAIL_RULE = ("почта: ao send между сессиями — только сигнал: 1–2 строки + "
              "«письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>")
 
@@ -49,8 +55,9 @@ def ao_send_hint(chars: int) -> str:
 
 
 def window_rules() -> str:
-    """Правила окна для сида: итог сабагента, ao send — сигнал, троттлинг (SOC-166)."""
-    return "{0}\n{1}\n{2}".format(SUBAGENT_RESULT_RULE, MAIL_RULE, THROTTLE_RULE)
+    """Правила окна для сида: итог сабагента, тесты в фоне (management-25),
+    ao send — сигнал, троттлинг (SOC-166)."""
+    return "\n".join((SUBAGENT_RESULT_RULE, TEST_WAIT_RULE, MAIL_RULE, THROTTLE_RULE))
 
 
 def seed_rules() -> str:

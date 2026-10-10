@@ -51,3 +51,19 @@ def test_window_rules_ride_in_role_prompts_and_seed():
     assert e.SUBAGENT_RESULT_RULE in s and e.MAIL_RULE in s
     # SOC-166: правило троттлинга — в сиде и у ведущей (Agent хук не видит)
     assert e.THROTTLE_RULE in s and e.THROTTLE_RULE in orch
+
+
+def test_test_wait_rule_rides_in_worker_template_and_seed():
+    """Проба management-25: сабагент не ждёт тесты дольше ~4,5 мин — в фоне."""
+    from tide import escalate_rules as e
+    assert "~4,5 мин" in e.TEST_WAIT_RULE and "run_in_background" in e.TEST_WAIT_RULE
+    assert e.TEST_WAIT_SEC < 300  # кэш живёт 5 мин
+    orch = seed.read_role_prompt("orchestrator") or ""
+    worker = seed.read_role_prompt("worker") or ""
+    dispatch = (paths.global_rules_dir() / "subagents.md").read_text(encoding="utf-8")
+    assert e.TEST_WAIT_RULE in worker and e.TEST_WAIT_RULE in dispatch
+    assert e.TEST_WAIT_RULE in orch
+    s = seed.build_seed(project_name="proj", arc_ref="worker-1", thread_name="worker",
+                        arc_text="x")
+    assert e.TEST_WAIT_RULE in s
+    assert e.TEST_WAIT_RULE in e.window_rules().splitlines()
