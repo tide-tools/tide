@@ -271,3 +271,32 @@ def test_human_output(world, capsys):
     out = capsys.readouterr().out
     assert out.startswith("нагрузка нитей на ")
     assert "!! demo/alpha" in out and "предлагаю разделить" in out
+
+
+def test_human_has_no_none_for_empty_values(world, capsys):
+    """Пустое в человеческом выводе — «—», слова None нет; в --json те же поля остаются null."""
+    rc = cli.main(["thread", "load", "--project", "demo", "--now", NOW.isoformat(), "--linear", ""])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "None" not in out
+    assert "хвосты — " in out
+
+    d = _run(capsys, "--linear", "")
+    t = d["threads"][0]
+    assert t["open_tails"] is None and t["mail"]["max_ack_delay_min"] is not None
+    assert "context_k" in t["head"] and "median_interval_h" in t["handoffs"]
+
+
+def test_human_all_fields_empty():
+    """Все поля строки нити пусты — ни одного None, ни одного падения."""
+    d = dict(generated_at=None, rule=dict(name="tuned", need=2, signals={}), threads=[dict(
+        project="p", thread="01-@t", name="t", flag=False,
+        head=dict(context_k=None), handoffs=dict(count_24h=0, median_interval_h=None),
+        mail=dict(unread=0, oldest_unacked_min=None), linear=dict(in_progress=0, in_review=0),
+        workers=[], incoming_24h=0, open_tails=None, spend=dict(usd_per_h=None),
+        stuck=dict(markers=[]), signals=[dict(signal="x", value=None, rule=">= 1")], split=None)])
+    out = thread_load.human(d)
+    assert "None" not in out
+    assert "почта —" in out and "хвосты —" in out and "контекст — тыс." in out
+    d["threads"][0]["mail"] = dict(unread=2, oldest_unacked_min=None)
+    assert "None" not in thread_load.human(d)

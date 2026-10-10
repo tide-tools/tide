@@ -759,21 +759,34 @@ def collect(project_filter=None, now=None, linear_path=None, rule_name="tuned", 
                 threads=out)
 
 
+def _v(x):
+    """Человеческое значение: нет данных (None) — «—», а не слово None. В --json null остаётся null."""
+    return "—" if x is None or x == "" else x
+
+
+def _mail_part(m):
+    """Почта: нет непрочитанных — «—» (не «0/None мин»); есть — «N/возраст мин»."""
+    if not m["unread"]:
+        return "почта —"
+    return "почта {0}/{1} мин".format(m["unread"], _v(m["oldest_unacked_min"]))
+
+
 def human(d):
     lines = ["нагрузка нитей на {0} (правило {1}: {2} из {3})".format(
-        d["generated_at"], d["rule"]["name"], d["rule"]["need"], len(d["rule"]["signals"]))]
+        _v(d["generated_at"]), d["rule"]["name"], d["rule"]["need"], len(d["rule"]["signals"]))]
     for r in sorted(d["threads"], key=lambda r: (-len(r["signals"]), r["project"], r["thread"])):
         h = r["handoffs"]
-        lines.append("{flag} {p}/{n}: контекст {c} тыс. · передач {hc} (интервал {hi} ч) · почта {mu}/{mo} мин · "
+        lines.append("{flag} {p}/{n}: контекст {c} тыс. · передач {hc} (интервал {hi} ч) · {mail} · "
                      "Linear {lp}+{lr} · сабагенты {w} · входящие {inc} · хвосты {t} · {usd} $/ч".format(
                          flag="!!" if r["flag"] else "  ", p=r["project"], n=r["name"],
-                         c=r["head"]["context_k"], hc=h["count_24h"], hi=h["median_interval_h"],
-                         mu=r["mail"]["unread"], mo=r["mail"]["oldest_unacked_min"],
-                         lp=r["linear"]["in_progress"], lr=r["linear"]["in_review"], w=len(r["workers"]),
-                         inc=r["incoming_24h"], t=r["open_tails"], usd=r["spend"]["usd_per_h"])
+                         c=_v(r["head"]["context_k"]), hc=_v(h["count_24h"]), hi=_v(h["median_interval_h"]),
+                         mail=_mail_part(r["mail"]),
+                         lp=_v(r["linear"]["in_progress"]), lr=_v(r["linear"]["in_review"]),
+                         w=len(r["workers"]), inc=_v(r["incoming_24h"]), t=_v(r["open_tails"]),
+                         usd=_v(r["spend"]["usd_per_h"]))
                      + (" · застревание: " + ", ".join(r["stuck"]["markers"]) if r["stuck"]["markers"] else ""))
         if r["signals"]:
-            lines.append("     сигналы: " + "; ".join("{0}={1} ({2})".format(s["signal"], s["value"], s["rule"])
+            lines.append("     сигналы: " + "; ".join("{0}={1} ({2})".format(s["signal"], _v(s["value"]), s["rule"])
                                                      for s in r["signals"]))
         if r["split"]:
             lines.append("     " + r["split"]["text"])
