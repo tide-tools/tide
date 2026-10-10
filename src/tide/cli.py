@@ -409,6 +409,7 @@ def _register_thread(sub) -> None:
     register_thread(sub)
     _register_thread_holder(sub)
     _register_thread_layers(sub)
+    _register_thread_load(sub)
 
 
 def _register_thread_holder(sub) -> None:
@@ -482,6 +483,33 @@ def _register_thread_layers(sub) -> None:
         if ref == "layer":
             return thread_layers.cmd_layer(args)
         return thread_layers.cmd_layers(args)
+
+    p.set_defaults(func=_dispatch)
+
+
+def _register_thread_load(sub) -> None:
+    # SOC-153: `tide thread load [--project P] [--json] [--rule tuned|draft]
+    # [--linear PATH] [--now ISO]` — нагрузка живых нитей и предложение разделить;
+    # --json — контракт доски (load-format.md continuity-audit · 04). Только чтение.
+    p = sub.choices.get("thread")
+    if p is None:
+        return
+    p.add_argument("--project", dest="load_project", default=None,
+                   help="with `load`: only this project")
+    p.add_argument("--rule", dest="load_rule", default="tuned", choices=("draft", "tuned"),
+                   help="with `load`: flag rule (default tuned, «2 из 6»)")
+    p.add_argument("--linear", dest="load_linear", default=None,
+                   help="with `load`: Linear cache JSON; '' — tasks from the handoff seed")
+    p.add_argument("--now", dest="load_now", default=None,
+                   help="with `load`: ISO moment to judge «as it was» (no zone = local)")
+    prev = p.get_default("func")
+
+    def _dispatch(args) -> int:
+        if getattr(args, "ref", None) != "load":
+            return prev(args)
+        from .arc import thread_load
+
+        return thread_load.cmd_load(args)
 
     p.set_defaults(func=_dispatch)
 

@@ -125,20 +125,31 @@ _INTERIM = ("background work of its own still running", "may be interim",
             "notifies again")
 
 
-def interim_workers(transcript: Path) -> List[str]:
+def interim_workers(transcript: Path, until: Optional[datetime] = None,
+                    source_rows: Optional[Iterable[dict]] = None) -> List[str]:
     """Сабагенты, чей ПОСЛЕДНИЙ ``<task-notification>`` промежуточный (SOC-143):
     «stopped with background work of its own still running … result below may be
     interim» — воркер ещё гоняет своё (полный pytest), итог впереди. Сюда же —
     сабагент, которому старая написала SendMessage после его последнего уведомления
     (возобновлён, итога ещё нет). ``background_workers`` считает концом любое
-    уведомление — этого мало. → ``["agentId «summary»", …]``."""
+    уведомление — этого мало. → ``["agentId «summary»", …]``.
+
+    *until* — судить «как было» на этот момент (строки позже — не в счёт; SOC-153
+    ``tide thread load --now``); *source_rows* — уже прочитанные строки транскрипта
+    (сборщик нагрузки читает файл один раз)."""
     import re
 
     notif = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
     tid_re = re.compile(r"<task-id>\s*([^<\s]+)\s*</task-id>")
     summ = re.compile(r"<summary>(.*?)</summary>", re.S)
+    if until is not None and until.tzinfo is not None:
+        until = until.astimezone().replace(tzinfo=None)
     state: Dict[str, tuple] = {}  # agentId → (живой?, подпись)
-    for row in rows(transcript):
+    for row in (rows(transcript) if source_rows is None else source_rows):
+        if until is not None:
+            at = row_at(row)
+            if at is not None and at > until:
+                continue
         if row.get("type") == "assistant":
             for b in (row.get("message") or {}).get("content") or []:
                 if (isinstance(b, dict) and b.get("type") == "tool_use"
