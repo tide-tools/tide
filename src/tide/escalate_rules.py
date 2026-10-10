@@ -21,7 +21,8 @@ ESCALATE_RULE = (
     "(ждать ответа Гриши/менеджера — не застревание), "
     "или задача вне твоей роли/прав (отказ role-gate — отдай сабагенту, это не повод); "
     "письмо уйдёт main проекта, "
-    "без квитанции {2} мин — менеджеру").format(FAILED_ATTEMPTS, STALL_MIN, ACK_TIMEOUT_MIN)
+    "без квитанции {2} мин — менеджеру; "
+    'закрыть — tide escalate --close NNN --word "чем"').format(FAILED_ATTEMPTS, STALL_MIN, ACK_TIMEOUT_MIN)
 
 
 # Срезы окна (continuity-audit · 04, рек. 2–3; tg 1223).

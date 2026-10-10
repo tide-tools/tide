@@ -37,6 +37,7 @@ Every arc is `input/ → workspace/ → output/`:
 - Не справляешься (критерий — `tide escalate --help`: неудачные попытки одного шага,
   стоп без прогресса (ждать ответа Гриши/менеджера — не застревание), задача вне
   роли/прав (отказ role-gate — отдай сабагенту, это не повод)) — `tide escalate --what … --tried … --need …`.
+- Закрыть эскалацию — `tide escalate --close NNN --word "чем"`.
 
 ## Drift
 If the SessionStart board flags **drift** on your arc (canon moved since the arc was stamped),

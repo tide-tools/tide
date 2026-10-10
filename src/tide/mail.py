@@ -49,6 +49,7 @@ from .arc.stream import StreamError
 
 INBOX_DIRNAME = "inbox"
 LOG_NAME = "log.jsonl"
+CLOSED_EV = "escalation-closed"   # SOC-157: явное закрытие эскалации (tide escalate --close)
 RETRY_ENV = "TIDE_MAIL_RETRY_MIN"
 RETRY_DEFAULT_MIN = 15.0
 WATCH_ENV = "TIDE_MAIL_WATCH"
@@ -192,6 +193,8 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
             # SOC-157: своё окно до тревоги менеджеру (эскалация) — None у обычного письма
             "alert_after": _alert_after(sent.get("alert_after")),
             "kind": str(sent.get("kind") or ""),
+            # SOC-157: эскалацию закрыли явно (``tide escalate --close``) — None, если нет
+            "closed": next((e for e in mine if e.get("ev") == CLOSED_EV), None),
         })
     return out
 
@@ -536,7 +539,7 @@ def escalation_alert_text(tdir: Path, rec: Dict[str, object], minutes: float) ->
 def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
          minutes: Optional[float] = None) -> str:
     """Один шаг ожидальщика по письму *num* → ``acked`` | ``wait`` | ``retry`` |
-    ``alert`` | ``done`` (тревога уже ушла)."""
+    ``alert`` | ``done`` (тревога уже ушла) | ``closed`` (эскалацию закрыли — не тревожить)."""
     from .launcher.autohandoff import send_alert
 
     now = now or _now()
@@ -544,6 +547,8 @@ def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
     rec = letter(tdir, num)
     if rec["acked"]:
         return "acked"
+    if rec.get("closed"):
+        return "closed"
     if rec["alerted"]:
         return "done"
     deadline = rec.get("alert_after")
@@ -580,7 +585,7 @@ def watch(tdir: Path, num: object, *, minutes: Optional[float] = None,
             res = step(tdir, num, minutes=minutes)
         except MailError:
             return "gone"
-        if res in ("acked", "alert", "done"):
+        if res in ("acked", "alert", "done", "closed"):
             return res
 
 
@@ -605,8 +610,9 @@ def _watch_enabled() -> bool:
 
 
 def pending(tdir: Path) -> List[Dict[str, object]]:
-    """Письма, которые ещё ждут ожидальщика: без квитанции и без тревоги."""
-    return [r for r in letters(tdir) if not r["acked"] and not r["alerted"]]
+    """Письма, которые ещё ждут ожидальщика: без квитанции, без тревоги, не закрытые."""
+    return [r for r in letters(tdir)
+            if not r["acked"] and not r["alerted"] and not r.get("closed")]
 
 
 def _try_lock(tdir: Path):
@@ -826,6 +832,8 @@ def _cmd_ls(args) -> int:
                 len(r["pings"]))
             if r["alerted"]:
                 state += " · тревога менеджеру"
+        if r.get("closed"):
+            state += " · эскалация закрыта"
         print("  {0} от {1} · {2} · {3} Б · {4} · {5}".format(
             r["num"], r["sender"], r["sent"], r["bytes"], state, r["first"][:80]))
     return 0
@@ -884,7 +892,7 @@ def register(subparsers) -> None:
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
-__all__ = ["LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
+__all__ = ["CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
            "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
            "pending", "retry_minutes", "revive", "revive_project", "send", "session_line", "step", "thread_dir", "unread", "watch",

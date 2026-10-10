@@ -130,3 +130,85 @@ def test_rules_carry_thresholds_and_land_in_seed():
     s = seed.build_seed(project_name="proj", arc_ref="worker-1", thread_name="worker",
                         arc_text="x")
     assert escalate.ESCALATE_RULE in s and escalate.EXP_RULE in s
+
+
+# --- закрытие: tide escalate --close NNN (SOC-157, просьба доски) ------------------
+
+def _closed_lines(tdir):
+    return [e for e in mail.events(tdir) if e.get("ev") == mail.CLOSED_EV]
+
+
+def test_close_writes_one_event_line(world):
+    _esc()
+    out = escalate.close("1", word="логи выдал main", thread="worker")
+    assert out["already"] is False and out["to"] == "proj/main"
+    (ev,) = _closed_lines(world["main"])
+    assert ev["num"] == "001" and ev["by"] == "proj-9" and ev["word"] == "логи выдал main"
+    assert mail._parse_iso(ev["at"]) is not None
+    assert mail.letter(world["main"], "1")["closed"] == ev
+
+
+def test_close_default_addressing_from_session(world, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-w1")
+    _esc()
+    out = escalate.close(1)          # без --thread: нить сессии → её main
+    assert out["to"] == "proj/main" and len(_closed_lines(world["main"])) == 1
+
+
+def test_close_explicit_box_thread(world):
+    _esc()
+    out = escalate.close("001", thread="proj/main")
+    assert out["to"] == "proj/main" and len(_closed_lines(world["main"])) == 1
+
+
+def test_close_twice_is_noop(world, capsys):
+    _esc()
+    assert cli.main(["escalate", "--close", "1", "--word", "решено", "--thread", "worker"]) == 0
+    assert "закрыта" in capsys.readouterr().out
+    assert cli.main(["escalate", "--close", "1", "--thread", "worker"]) == 0
+    assert "уже закрыта" in capsys.readouterr().out
+    assert len(_closed_lines(world["main"])) == 1
+
+
+def test_close_unknown_num_errors(world):
+    _esc()
+    with pytest.raises(escalate.EscalateError, match="письма 007 нет"):
+        escalate.close("7", thread="worker")
+    assert _closed_lines(world["main"]) == []
+
+
+def test_close_plain_letter_is_not_escalation(world):
+    mail.send("main", "обычное письмо", sender="x")
+    with pytest.raises(escalate.EscalateError, match="не эскалация"):
+        escalate.close("1", thread="worker")
+    assert _closed_lines(world["main"]) == []
+
+
+def test_closed_escalation_never_alerts(world):
+    _esc()
+    escalate.close("1", thread="worker")
+    rec = mail.letter(world["main"], "1")
+    late = mail._parse_iso(rec["sent"]) + timedelta(hours=2)
+    assert mail.step(world["main"], "1", now=late) == "closed"
+    assert world["alerts"] == [] and world["sent"][1:] == []   # ни тревоги, ни повтора
+    assert mail.pending(world["main"]) == []                    # ожидальщику ждать нечего
+
+
+def test_close_after_alert_does_not_repeat(world):
+    _esc()
+    rec = mail.letter(world["main"], "1")
+    after = mail._parse_iso(rec["sent"]) + timedelta(minutes=escalate.ACK_TIMEOUT_MIN)
+    assert mail.step(world["main"], "1", now=after) == "alert"
+    out = escalate.close("1", thread="worker")
+    assert out["alerted"] is True
+    assert mail.step(world["main"], "1", now=after + timedelta(hours=1)) == "closed"
+    assert len(world["alerts"]) == 1
+
+
+def test_cli_close_flags(world, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["escalate", "--help"])
+    h = capsys.readouterr().out
+    assert "--close NNN" in h and "--word" in h
+    assert cli.main(["escalate", "--close", "1", "--what", "x"]) != 0
+    assert cli.main(["escalate", "--what", "x"]) != 0
