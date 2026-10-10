@@ -21,6 +21,9 @@ Every arc is `input/ → workspace/ → output/`:
 4. Where the contract is strict: a **report** + **proof** the orchestrator can accept against the
    criteria (`tide contract report` / `tide contract proof`).
 
+## Итог (срез окна п.2)
+- итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу.
+
 ## What you NEVER do
 - **Never merge canon** (`tide canon merge`) — orchestrator-only.
 - **Never promote candidates** (`tide candidate promote`) — orchestrator-only.

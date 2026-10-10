@@ -1007,3 +1007,50 @@ def test_explain_names_the_ao_rule():
     assert "DENY" in text
     assert "ao session ls|show" in text
     assert "ao send" in text
+
+
+
+# ---------------------------------------------------------------------------
+# Soft hint: ao send is a signal, not a letter (window cut п.3, tg 1223)
+# ---------------------------------------------------------------------------
+
+def _ao_send_payload(text: str) -> str:
+    import json
+    cmd = "ao send --session tide-stack-12 --message " + __import__("shlex").quote(text)
+    return json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+
+
+@pytest.mark.parametrize("role", ["orchestrator", "worker"])
+def test_long_ao_send_passes_with_a_hint(monkeypatch, capsys, role):
+    import json
+    from tide import escalate_rules
+
+    text = "я" * (escalate_rules.AO_SEND_SIGNAL_CHARS + 1)
+    rc = _run_role_gate(monkeypatch, _ao_send_payload(text), role=role)
+    assert rc == role_gate.ALLOW_EXIT  # never a refusal
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in out  # no decision — the normal flow stays
+    hint = out["additionalContext"]
+    assert "{0} знаков".format(len(text)) in hint
+    assert "только сигнал" in hint and "tide mail send <проект>/<нить>" in hint
+
+
+def test_short_ao_send_is_silent(monkeypatch, capsys):
+    from tide import escalate_rules
+
+    text = "письмо 007 в почте нити"
+    assert len(text) <= escalate_rules.AO_SEND_SIGNAL_CHARS
+    rc = _run_role_gate(monkeypatch, _ao_send_payload(text))
+    assert rc == role_gate.ALLOW_EXIT
+    assert capsys.readouterr().out == ""
+
+
+def test_hint_only_for_ao_send():
+    long = "x" * 1000
+    assert role_gate.ao_send_hint("Bash", {"command": "echo " + long}) is None
+    assert role_gate.ao_send_hint("Bash", {"command": "ao session ls " + long}) is None
+    assert role_gate.ao_send_hint("Read", {"command": "ao send --message " + long}) is None
+    assert role_gate.ao_send_chars("ao send --session s --message=" + long) == 1000
+    assert role_gate.ao_send_chars("tide status && ao send --session s --message '"
+                                   + long + "'") == 1000

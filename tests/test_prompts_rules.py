@@ -33,3 +33,19 @@ def test_seed_now_embeds_shipped_orchestrator_prompt():
     assert "tide" in text and "session" in text.lower()
     assert "thread" in text.lower()
     assert "dispatch" in text.lower()  # dispatch is the norm, not a ban
+
+
+def test_window_rules_ride_in_role_prompts_and_seed():
+    """Срезы окна п.2–3 (tg 1223): итог сабагента ≤ ~2000 знаков, ao send — сигнал."""
+    from tide import escalate_rules as e
+
+    orch = seed.read_role_prompt("orchestrator") or ""
+    worker = seed.read_role_prompt("worker") or ""
+    dispatch = (paths.global_rules_dir() / "subagents.md").read_text(encoding="utf-8")
+    assert e.SUBAGENT_RESULT_RULE in orch and e.MAIL_RULE in orch
+    assert e.SUBAGENT_RESULT_RULE in worker
+    assert e.SUBAGENT_RESULT_RULE in dispatch
+    assert "~2000 знаков" in e.SUBAGENT_RESULT_RULE and "workspace/" in e.SUBAGENT_RESULT_RULE
+    s = seed.build_seed(project_name="proj", arc_ref="worker-1", thread_name="worker",
+                        arc_text="x")
+    assert e.SUBAGENT_RESULT_RULE in s and e.MAIL_RULE in s

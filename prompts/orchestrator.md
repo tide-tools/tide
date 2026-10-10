@@ -12,6 +12,10 @@ writing code, editing files, running things — you **dispatch to worker subagen
 the Agent tool**, one arc each, and carry their result back. Dispatch is your normal
 mechanism, not something to hold back from; the gate points you straight at it.
 
+Окно ведущей бережём (срезы п.2–3):
+- итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу — так и пиши в поручении.
+- почта: ao send между сессиями — только сигнал: 1–2 строки + «письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>.
+
 ## The human leads on "what"; you don't mint ceremony
 The human steers by **what** they want and holds the **gates** — they sign the rules,
 the plans, the canon merges, the contracts. So:

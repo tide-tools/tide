@@ -2,6 +2,11 @@
 
 Чистые данные, ничего не импортирует: сид (launcher), глагол ``tide escalate`` и
 тесты берут их отсюда. Пороги — одно место; уточнит continuity-audit · 04 по цифрам.
+
+Здесь же — правила окна (срезы п.2–3 по continuity-audit · 04, tg 1223): итоги
+сабагентов съедали 13% окна ведущей, переписка ao send — 20%. Те же строки
+кладутся в сид нити, в prompts/orchestrator.md и prompts/worker.md, а порог
+ao send читает подсказка role-gate.
 """
 
 FAILED_ATTEMPTS = 2       # неудачных попыток одного шага → эскалируй
@@ -17,6 +22,27 @@ ESCALATE_RULE = (
     "или задача вне твоей роли/прав (отказ role-gate — отдай сабагенту, это не повод); "
     "письмо уйдёт main проекта, "
     "без квитанции {2} мин — менеджеру").format(FAILED_ATTEMPTS, STALL_MIN, ACK_TIMEOUT_MIN)
+
+
+# Срезы окна (continuity-audit · 04, рек. 2–3; tg 1223).
+SUBAGENT_RESULT_CHARS = 2000   # ~600 токенов — потолок итога сабагента
+AO_SEND_SIGNAL_CHARS = 400     # длиннее — ao send уже не сигнал, а письмо
+
+SUBAGENT_RESULT_RULE = ("итог сабагента — не длиннее ~600 токенов (~2000 знаков); "
+                        "подробности — файлом в workspace/ своей арки, в итоге — путь к файлу")
+MAIL_RULE = ("почта: ao send между сессиями — только сигнал: 1–2 строки + "
+             "«письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>")
+
+
+def ao_send_hint(chars: int) -> str:
+    """Подсказка role-gate на длинный ao send (не отказ — отправка идёт)."""
+    return ("tide · подсказка: ao send {0} знаков (порог ~{1}) — отправка не "
+            "остановлена. {2}").format(chars, AO_SEND_SIGNAL_CHARS, MAIL_RULE)
+
+
+def window_rules() -> str:
+    """Две строки правил окна для сида (итог сабагента + ao send — сигнал)."""
+    return "{0}\n{1}".format(SUBAGENT_RESULT_RULE, MAIL_RULE)
 
 
 def seed_rules() -> str:

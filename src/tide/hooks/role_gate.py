@@ -600,6 +600,59 @@ def _explain_source(args) -> Tuple[Optional[str], Optional[str]]:
         return None, "tide: cannot read {0}: {1}".format(path, exc)
 
 
+# --- soft hint: ao send is a signal, not a letter (window cut п.3, tg 1223) ------
+
+def ao_send_chars(command: str) -> int:
+    """Length of the longest ``ao send --message`` text in *command* (0 — none).
+
+    Only read, never run. ``--message X`` and ``--message=X`` both count; any
+    other command, or a link that does not parse, counts as 0.
+    """
+    longest = 0
+    for seg in _split_segments((command or "").strip()) or []:
+        try:
+            parts = shlex.split(seg)
+        except ValueError:
+            continue
+        if len(parts) < 2 or parts[0] != "ao" or parts[1] != "send":
+            continue
+        rest = parts[2:]
+        for idx, tok in enumerate(rest):
+            text = None
+            if tok == "--message" and idx + 1 < len(rest):
+                text = rest[idx + 1]
+            elif tok.startswith("--message="):
+                text = tok.split("=", 1)[1]
+            if text is not None:
+                longest = max(longest, len(text))
+    return longest
+
+
+def ao_send_hint(tool_name: str, tool_input: dict) -> Optional[str]:
+    """The soft «ao send — only a signal» hint for a long ``ao send``, or None.
+
+    Never a refusal: the send goes through; the agent just hears the rule.
+    """
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command", "")
+    if not isinstance(command, str) or "ao" not in command or "send" not in command:
+        return None
+    from .. import escalate_rules
+
+    chars = ao_send_chars(command)
+    if chars <= escalate_rules.AO_SEND_SIGNAL_CHARS:
+        return None
+    return escalate_rules.ao_send_hint(chars)
+
+
+def _hint_json(text: str) -> str:
+    """PreToolUse JSON that adds *text* to the model's context WITHOUT a decision —
+    no ``permissionDecision``, so the normal permission flow stays as it was."""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "additionalContext": text}}, ensure_ascii=False)
+
+
 # --- payload parsing ----------------------------------------------------------
 
 def _read_payload(stream_in) -> dict:
@@ -661,4 +714,11 @@ def cmd_role_gate(args) -> int:
     if not allow:
         print(reason, file=sys.stderr)
         return BLOCK_EXIT
+    # Window cut п.3 (tg 1223): a long ao send passes, but the agent hears the rule.
+    try:
+        hint = ao_send_hint(tool_name, tool_input)
+    except Exception:  # noqa: BLE001 — a hint must never wedge the gate
+        hint = None
+    if hint:
+        print(_hint_json(hint))
     return ALLOW_EXIT

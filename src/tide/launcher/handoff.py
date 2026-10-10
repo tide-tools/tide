@@ -295,9 +295,9 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         # the seed already covers ~90% (cand 84).
         rules = ("правила: работа → в workspace/ своей арки · "
                  "пульс по ходу → tide offload · передать дальше → /handoff")
-        # SOC-143: гарантированный канал — почта нити, а не ao send (режет ~4 КБ)
-        mail_rule = ("почта: длинное или важное другой нити — "
-                     "tide mail send <проект>/<нить>, не ao send")
+        # SOC-143: гарантированный канал — почта нити, а не ao send (режет ~4 КБ);
+        # срезы окна п.2–3 (tg 1223): ao send — только сигнал, итог сабагента короткий
+        from .. import escalate_rules as _esc
         lines = ["## нить (throughline — держи за шагом)"]
         # SOC-101 F32: адрес менеджера в goal: нити устаревает (ao-control при живом
         # management-14) — вырезаем его из цели и даём живой через tide.whois.
@@ -307,9 +307,8 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         lines.append(_who_line(thread_entry, session_born, from_slug))
         lines.append(_manager_header_line())
         lines.append(rules)
-        lines.append(mail_rule)
+        lines.append(_esc.window_rules())
         # SOC-157: опыт пишется сразу, застрял — эскалируй (пороги — tide.escalate_rules)
-        from .. import escalate_rules as _esc
         lines.append(_esc.seed_rules())
         return "{0}\n---\n\n{1}".format("\n".join(lines), distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff
