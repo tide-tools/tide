@@ -7,7 +7,7 @@
 Гейт: в AO-сессии (``$AO_SESSION_ID`` задан), где за последние
 :data:`HUMAN_WINDOW_MIN` минут не было живой реплики человека, ``AskUserQuestion``
 отказывается — с текстом «отправь вопрос менеджеру через SendMessage» и адресом
-менеджера из ``~/.tide/manager.json``. Сам вопрос дописывается строкой в
+менеджера из manager.json (:func:`tide.whois._manager_file`). Сам вопрос дописывается строкой в
 ``<проект>/.tide/state/blocked-asks.jsonl`` — его подбирает ловец SOC-109
 (формат согласован с management-9, менять нельзя).
 
@@ -44,8 +44,9 @@ TOOL_NAME = "AskUserQuestion"
 OFF_ENV = "TIDE_ASK_GATE"
 AO_SESSION_ENV = "AO_SESSION_ID"
 
-# Адрес менеджера: стабильный файл (SOC-101 делает постоянный адрес); в тестах —
-# env или параметр.
+# Адрес менеджера: стабильный файл (SOC-101 делает постоянный адрес); путь
+# выбирает tide.whois._manager_file (env → control-home → старый ~/.tide); в
+# тестах — env или параметр. Константа — старый путь, для совместимости имени.
 MANAGER_FILE = Path.home() / ".tide" / "manager.json"
 MANAGER_FILE_ENV = "TIDE_MANAGER_FILE"
 # Адрес не нашёлся ни в manager.json, ни по цепочке хендоффов — без констант
@@ -91,10 +92,9 @@ def manager_address(path: Optional[Path] = None) -> str:
     иначе резолвер :func:`tide.whois.manager`: ``title``/``ao_session`` файла, без
     них — новейшая принятая сессия нити менеджера. Ничего — запасной текст."""
     try:
-        if path is None:
-            env = (os.environ.get(MANAGER_FILE_ENV) or "").strip()
-            path = Path(env).expanduser() if env else MANAGER_FILE
         from .. import whois
+        if path is None:
+            path = whois._manager_file()  # env → control-home/.tide/state → ~/.tide
         data = whois.read_manager_file(path)
         uds = data.get("uds_name", "")
         if uds:

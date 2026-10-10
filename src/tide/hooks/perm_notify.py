@@ -36,6 +36,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -201,10 +202,17 @@ def recently_sent(target: Path, key: str, now: datetime, minutes: int = DEDUP_MI
 
 
 def journal_path(root: Optional[Path]) -> Path:
-    """``<проект>/.tide/state/blocked-perms.jsonl``; без проекта — ``~/.tide/state/``."""
+    """``<проект>/.tide/state/blocked-perms.jsonl``; без проекта — state control-home.
+
+    Не ``~/.tide/state/``: ``~/.tide`` делал домашнюю папку «проектом» для
+    подъёма к корню (edit-gate блокировал репо без своей .tide). Нет и
+    control-home — временная папка, но не дом."""
     if root is not None:
         return paths.state_dir(Path(root)) / BLOCKED_PERMS_FILE
-    return Path.home() / ".tide" / "state" / BLOCKED_PERMS_FILE
+    try:
+        return paths.state_dir(paths.control_home()) / BLOCKED_PERMS_FILE
+    except Exception:  # noqa: BLE001 — нет control-home
+        return Path(tempfile.gettempdir()) / "tide-state" / BLOCKED_PERMS_FILE
 
 
 # --- сообщение -------------------------------------------------------------------

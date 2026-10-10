@@ -4,7 +4,8 @@
 хендоффа нить ведёт другая сессия, а скрипты, будильники и подсказки tide
 продолжали звать прежнюю. Один резолвер на всех:
 
-* :func:`manager` — адрес менеджера: ``~/.tide/manager.json``
+* :func:`manager` — адрес менеджера: ``<control-home>/.tide/state/manager.json``,
+  без него — старый ``~/.tide/manager.json`` (его пока пишет пульт)
   (``{"ao_session", "thread", "title"}``; ``$TIDE_MANAGER_FILE`` переопределяет);
   без файла (или без ``ao_session`` в нём) — цепочка хендоффов его нити: ведёт
   новейшая принятая сессия (:func:`tide.arc.holder.holder`).
@@ -26,7 +27,11 @@ from typing import Dict, Optional
 from . import fields, paths, roster
 from .arc.stream import StreamError
 
-MANAGER_FILE = Path.home() / ".tide" / "manager.json"
+# Старый адрес: ~/.tide делал домашнюю папку «tide-проектом» для подъёма к
+# корню (edit-gate блокировал репо без своей .tide). Только чтение с отката.
+MANAGER_FILE_LEGACY = Path.home() / ".tide" / "manager.json"
+MANAGER_FILE = MANAGER_FILE_LEGACY  # совместимость имени
+MANAGER_FILE_NAME = "manager.json"
 MANAGER_FILE_ENV = "TIDE_MANAGER_FILE"
 # Нить менеджера, когда файла нет: «<проект>/<нить>» (проект — имя ростера).
 MANAGER_THREAD = "management/main"
@@ -39,9 +44,25 @@ class WhoisError(StreamError):
     """Адрес не нашёлся."""
 
 
+def manager_file_home() -> Optional[Path]:
+    """Новое место manager.json — ``<control-home>/.tide/state/`` (как прочие
+    глобальные состояния); None — control-home не нашёлся."""
+    try:
+        return paths.state_dir(paths.control_home()) / MANAGER_FILE_NAME
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _manager_file() -> Path:
+    """``$TIDE_MANAGER_FILE``; иначе новое место, если файл там есть; иначе старый
+    ``~/.tide/manager.json`` (откат, чтобы живой пульт не сломался)."""
     env = (os.environ.get(MANAGER_FILE_ENV) or "").strip()
-    return Path(env).expanduser() if env else MANAGER_FILE
+    if env:
+        return Path(env).expanduser()
+    new = manager_file_home()
+    if new is not None and new.is_file():
+        return new
+    return MANAGER_FILE_LEGACY
 
 
 def read_manager_file(path: Optional[Path] = None) -> Dict[str, str]:
@@ -166,5 +187,5 @@ def register(subparsers) -> None:
     p.set_defaults(func=_cmd_whois, _cmd="whois")
 
 
-__all__ = ["MANAGER_FILE", "MANAGER_THREAD", "WhoisError", "address", "manager",
+__all__ = ["MANAGER_FILE", "MANAGER_FILE_LEGACY", "manager_file_home", "MANAGER_THREAD", "WhoisError", "address", "manager",
            "manager_address", "read_manager_file", "register", "thread"]

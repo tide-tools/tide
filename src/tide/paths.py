@@ -61,9 +61,35 @@ def find_tide_root(start: Optional[Path] = None) -> Optional[Path]:
     if mapped is not None:
         here = mapped
     for candidate in (here, *here.parents):
+        if not_project_root(candidate):
+            # Дом и всё выше — не проект: ~/.tide держит глобальные файлы
+            # (manager.json пульта, state/), и подъём до него делал «проектом»
+            # любой репо без своей .tide (edit-gate блокировал «no open arc»).
+            return None
         if (candidate / TIDE_DIR).is_dir():
             return candidate
     return None
+
+
+def _home_dir() -> Optional[Path]:
+    try:
+        return Path.home().resolve()
+    except (RuntimeError, KeyError, OSError):
+        return None
+
+
+def not_project_root(candidate: Path) -> bool:
+    """True when *candidate* is ``$HOME`` or one of its ancestors — never a project.
+
+    The home dir may carry a ``~/.tide`` of global files (the TG pult's
+    ``manager.json``, ``state/``); treating it as a project root would make every
+    repo under ``$HOME`` without its own ``.tide`` look like a tide project.
+    """
+    home = _home_dir()
+    if home is None:
+        return False
+    cand = Path(candidate)
+    return cand == home or cand in home.parents
 
 
 # --- Agent Orchestrator worktrees ------------------------------------------
