@@ -96,7 +96,7 @@ def test_hook_asks_expect_when_layer_older_than_pass(world):
     _age(world["thread"] / "plan.md", datetime(2026, 10, 9, 5, 0))
     fr = tl.freshness(world["thread"])
     assert fr["expect"] == "stale" and fr["main"] == "stale"
-    r = cw.watch_reason(world["proj"], _payload(world, 203_000))
+    r = cw.watch_reason(world["proj"], _payload(world, 253_000))
     assert "ожидание Гриши правлено 09.10 06:10, а пульс с «Ожидание Гриши:» — 09.10 16:50" in r
     assert "перепиши --expect" in r
     assert "tide thread layer seam --expect" in r and " --main " in r
@@ -111,7 +111,7 @@ def test_hook_fresh_layer_still_names_rule(world):
                     now=datetime(2026, 10, 9, 16, 50))
     fr = tl.freshness(world["thread"])
     assert fr["expect"] == "fresh" and fr["main"] == "fresh"
-    r = cw.watch_reason(world["proj"], _payload(world, 203_000))
+    r = cw.watch_reason(world["proj"], _payload(world, 253_000))
     assert "если ожидание в ПЕРЕДАЧЕ (шаг 1) новее слоя" in r
     assert "«главное» свежее" in r
     assert "--where заменяет «где мы» целиком" in r

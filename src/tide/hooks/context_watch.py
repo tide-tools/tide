@@ -1,22 +1,27 @@
 """tide.hooks.context_watch — Stop-хук ``tide hook context-watch``: сторож контекста.
 
 Сжатие tide не делает (вердикт Гриши 09.10): переполненная сессия ПЕРЕДАЁТ нить
-свежей. Сама сессия о контексте не думает — её пингует хук. Лестница порогов
-(решение 09.10, заменила 300/500), на КАЖДОМ пороге ровно один пинг — блок одной
-остановки с текстом, а не блок каждой остановки:
+свежей. Сама сессия о контексте не думает — её пингует хук. Порог передачи — по
+слову Гриши «Давай А» (SOC-143, 10.10; заменил лестницу 200/300/500):
 
-* ``SOFT`` (200 000) — порог передачи контракта сида
-  (:data:`tide.handoff_contract.HANDOFF_TOKENS`): передача начинается здесь, не
-  позже — «новое не начинай, доведи текущее действие, tide offload и
-  ``tide handoff continue --auto``»;
-* ``HARD`` (300 000) — жёстко: «доведи текущий шаг, новую работу не бери, хендофф
-  сейчас»;
-* ``ALARM`` (500 000) — тревога: сессия ещё раз получает требование хендоффа, и
-  менеджеру уходит сигнал (``$TIDE_ALERT_CMD`` с ``TIDE_ALERT_ROUTE=manager``).
+* ``SOFT`` (250 000) — порог передачи контракта сида
+  (:data:`tide.handoff_contract.HANDOFF_TOKENS`): с этого момента сессия передаёт
+  работу в ПЕРВЫЙ СПОКОЙНЫЙ МОМЕНТ — воркеры/сабагенты сдали, правки закоммичены.
+  Спокойно ли — по транскрипту: живые сабагенты (:func:`busy_workers` — тот же
+  признак, что у автозакрытия и сида, :mod:`tide.arc.workers`). Спокойно — пинг
+  передачи с тремя шагами и ``tide handoff continue --auto``; занята — короткий
+  пинг «передай в первый спокойный момент», ступень не засчитана (``ctx-ping:
+  250w``): на следующих остановках хук смотрит снова, повтор пинга — не чаще раза
+  в ``$TIDE_CTX_CALM_REMIND_MIN`` минут, спокойно — пинг передачи;
+* ``HARD`` (300 000) — жёсткий потолок: передача обязательна сейчас, спокойно или
+  нет — «доведи текущий шаг, новую работу не бери, хендофф сейчас»;
+* ``ALARM`` (500 000) — тревога сверх потолка: сессия ещё раз получает требование
+  хендоффа, и менеджеру уходит сигнал (``$TIDE_ALERT_CMD`` с
+  ``TIDE_ALERT_ROUTE=manager``).
 
 На мягком и жёстком пороге тот же текст кратко уходит в ``$TIDE_ALERT_CMD`` с
 ``TIDE_ALERT_ROUTE=log`` (пульт только пишет событие в лог). Нет команды — молча
-пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 200|300|500``):
+пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 250|300|500``):
 повторно не пингуем, скачок через несколько порогов — один пинг старшего.
 
 Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
@@ -24,8 +29,8 @@
 (``$TIDE_CTX_NUDGE`` — старый синоним мягкого). Субагенты хендофф не делают (у них
 SubagentStop). Молчит: вне tide-проекта, без арки-сессии, на продолжении после
 блока (``stop_hook_active``). Растворённая или уже передавшая сессия хендофф не
-получает, но контекст её считается (SOC-98): на 300 тыс. — пинг «доведи воркера,
-перешли итог, замолчи», на 500 — ещё и тревога менеджеру «закрой её». Любая
+получает, но контекст её считается (SOC-98): на потолке — пинг «доведи воркера,
+перешли итог, замолчи», на тревоге — ещё и сигнал менеджеру «закрой её». Любая
 ошибка — молчаливый exit 0.
 """
 
@@ -40,7 +45,8 @@ from typing import List, Optional, Tuple
 
 from .. import fields, handoff_contract, offload, paths, slug
 
-# Мягкий порог = порог передачи контракта сида: передача начинается здесь, не позже.
+# Мягкий порог = порог передачи контракта сида: с него — передача в первый спокойный
+# момент; жёсткий — потолок, передача обязательна (Гриша «Давай А», SOC-143 10.10).
 SOFT_TOKENS = handoff_contract.HANDOFF_TOKENS
 HARD_TOKENS = 300_000
 ALARM_TOKENS = 500_000
@@ -48,6 +54,10 @@ SOFT_ENV = "TIDE_CTX_SOFT"
 HARD_ENV = "TIDE_CTX_HARD"
 ALARM_ENV = "TIDE_CTX_ALARM"
 NUDGE_ENV = "TIDE_CTX_NUDGE"  # старое имя мягкого порога — синоним SOFT_ENV
+# мягкий порог в неспокойный момент: повтор пинга «передай, как станет спокойно» — не чаще
+CALM_REMIND_ENV = "TIDE_CTX_CALM_REMIND_MIN"
+CALM_REMIND_MIN = 10
+WAIT_MARK = "w"  # ``ctx-ping: 250w …`` — мягкий порог пройден, ждём спокойного момента
 
 AUTO_CMD = "tide handoff continue --auto"
 CTX_PING_FIELD = "ctx-ping"
@@ -154,12 +164,40 @@ def handoff_steps(entry: Path) -> str:
 
 def soft_text(entry: Path, tokens: int, soft: int, hard: int) -> str:
     return (
-        "tide: контекст сессии {0} токенов (порог передачи {1}) — передача нити "
-        "начинается сейчас, не позже. Новое не начинай, доведи текущее действие и:\n"
+        "tide: контекст сессии {0} токенов (порог передачи {1}), и сейчас спокойно — "
+        "воркеры сдали. Передай работу сейчас: новое не начинай, правки закоммить и:\n"
         "{2}\n"
-        "Новая сессия поднимется сама и продолжит с курсора. На {3} — хендофф "
-        "без отсрочек."
+        "Новая сессия поднимется сама и продолжит с курсора. {3} — потолок: там "
+        "передача обязательна."
     ).format(_k(tokens), _k(soft), handoff_steps(entry), _k(hard))
+
+
+def soft_wait_text(tokens: int, soft: int, hard: int, busy: List[str]) -> str:
+    return (
+        "tide: контекст сессии {0} токенов (порог передачи {1}). С этого момента "
+        "передай работу в первый спокойный момент: воркеры сдали, правки закоммичены → "
+        "/handoff (tide handoff continue --auto). Сейчас в работе: {2}. Новое не "
+        "начинай. {3} — потолок: передача обязательна."
+    ).format(_k(tokens), _k(soft), "; ".join(busy[:3]) or "воркеры", _k(hard))
+
+
+def busy_workers(payload: dict, session: str) -> List[str]:
+    """Живые сабагенты/воркеры сессии по её транскрипту — «неспокойно» (пусто —
+    спокойно). Признак один на tide: :func:`tide.launcher.seed_draft.worker_runs`
+    (запуск — Agent/SendMessage, конец — итог; промежуточный итог — ещё в полёте,
+    :func:`tide.arc.workers.interim_workers`) — им же сид пишет «в полёте», а
+    автозакрытие судит старую. Транскрипта нет / ошибка — спокойно."""
+    try:
+        from .. import context_fill
+        from ..launcher.seed_draft import worker_runs
+        target = payload.get("transcript_path") or ""
+        path = Path(target) if target else context_fill.transcript_for(session)
+        if path is None or not Path(path).is_file():
+            return []
+        live, _done = worker_runs(Path(path))
+        return ["«{0}»".format(desc or agent) for agent, desc, _at, _cwd in live]
+    except Exception:  # noqa: BLE001 — сторож не смеет упасть
+        return []
 
 
 def hard_text(entry: Path, tokens: int, hard: int) -> str:
@@ -180,8 +218,9 @@ def alarm_text(entry: Path, tokens: int, alarm: int) -> str:
 
 def _short(entry: Path, tokens: int, level: str) -> str:
     """Кратко для лога пульта (route=log): что сессия услышала."""
-    what = {"soft": "порог передачи: доведи текущее действие, offload и хендофф",
-            "hard": "жёсткий пинг: доведи шаг, хендофф сейчас"}[level]
+    what = {"soft": "порог передачи, спокойно: хендофф сейчас",
+            "soft-wait": "порог передачи, воркеры в работе: хендофф в первый спокойный момент",
+            "hard": "потолок: доведи шаг, хендофф сейчас"}[level]
     return "сессия {0} на {1} тыс. токенов — {2}".format(
         slug.entry_slug(entry.name), _kn(tokens), what)
 
@@ -385,7 +424,7 @@ def handed_alarm_text(entry: Path, session: str, tokens: int) -> str:
 
 
 def _alert_manager(root: Path, entry: Path, text: str) -> None:
-    """Тревога менеджеру тем же путём, что ступень 500 лестницы (``route=manager``);
+    """Тревога менеджеру тем же путём, что тревожная ступень лестницы (``route=manager``);
     нет ``$TIDE_ALERT_CMD`` — напрямую ``ao send`` менеджеру (как signal_stall)."""
     from ..launcher import autohandoff as _ah
 
@@ -396,7 +435,7 @@ def _alert_manager(root: Path, entry: Path, text: str) -> None:
 def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
                  now: Optional[datetime]) -> Optional[str]:
     """SOC-98: сессия, отдавшая нить, растёт дальше — на 300 тыс. пинг ей, на 500 —
-    ещё и тревога менеджеру. Ступень 200 ей не нужна (передача уже сделана).
+    ещё и тревога менеджеру. Мягкая ступень (250) ей не нужна (передача уже сделана).
     Один пинг на ступень — тот же штамп ``ctx-ping``."""
     tokens = fill_tokens(payload, session)
     if tokens is None:
@@ -421,6 +460,37 @@ def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
     except Exception:  # noqa: BLE001 — a signal must never break the ping
         pass
     return handed_ping_text(tokens)
+
+
+def _calm_remind_min() -> int:
+    return _env_int(CALM_REMIND_ENV, CALM_REMIND_MIN)
+
+
+def _soft_wait(root: Path, entry: Path, pp: Path, tokens: int, soft: int, hard: int,
+               busy: List[str], now: Optional[datetime]) -> Optional[str]:
+    """Мягкий порог, а сессия занята (живые воркеры): ступень не засчитана —
+    ``ctx-ping: <тыс.>w <время> <токены>``; пинг «передай в первый спокойный
+    момент» — сразу и потом не чаще :data:`CALM_REMIND_MIN` минут."""
+    now = now or datetime.now()
+    raw = (fields.read_field(pp, CTX_PING_FIELD) or "").strip().split()
+    if raw and raw[0] == "{0}{1}".format(_kn(soft), WAIT_MARK) and len(raw) > 1:
+        try:
+            last = datetime.fromisoformat(raw[1])
+            if (now.replace(tzinfo=None) - last).total_seconds() < _calm_remind_min() * 60:
+                return None
+        except ValueError:
+            pass
+        first = False
+    else:
+        first = True
+    fields.set_field(pp, CTX_PING_FIELD, "{0}{1} {2} {3}".format(
+        _kn(soft), WAIT_MARK, now.replace(tzinfo=None).isoformat(timespec="seconds"), tokens))
+    if first:
+        try:
+            _send("soft", root, entry, _short(entry, tokens, "soft-wait"))
+        except Exception:  # noqa: BLE001 — a signal must never break the ping
+            pass
+    return soft_wait_text(tokens, soft, hard, busy)
 
 
 def watch_reason(root: Path, payload: dict, *,
@@ -451,6 +521,10 @@ def watch_reason(root: Path, payload: dict, *,
         return None
     level = LEVELS[reached - 1]
     step = ladder[reached - 1]
+    if level == "soft":
+        busy = busy_workers(payload, session)
+        if busy:
+            return _soft_wait(root, entry, pp, tokens, step, ladder[1], busy, now)
     fields.set_field(pp, CTX_PING_FIELD, "{0} {1} {2}".format(
         _kn(step), (now or datetime.now()).isoformat(timespec="seconds"), tokens))
     if level == "soft":

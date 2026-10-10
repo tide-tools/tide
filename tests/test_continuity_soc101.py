@@ -345,3 +345,21 @@ def test_ao_terminated_sessions_read_from_ao_ls(monkeypatch):
     monkeypatch.setattr(ao, "_json", fake_json)
     assert ao.terminated_sessions() == {"music-4"}
     assert "--include-terminated" in seen["args"]
+
+
+# --- сид менеджера без сырого журнала (Гриша «Давай А», SOC-143 10.10) -------------
+
+def test_manager_seed_has_journal_pointer_not_raw_journal(scene, monkeypatch, tmp_path):
+    for i in range(12):
+        offload.write_pulse(scene["sess"], note="шаг {0:02d}: детали работы".format(i))
+    monkeypatch.setenv("TIDE_MANAGER_FILE", str(tmp_path / "нет-manager.json"))
+    monkeypatch.setenv("TIDE_MANAGER_THREAD", "чужой/main")
+    seed = ah.build_auto_seed(scene["sess"])
+    assert "шаг 00" in _block(seed, "сырой журнал")     # обычная нить — журнал как был
+    monkeypatch.setenv("TIDE_MANAGER_THREAD", "{0}/shov".format(scene["root"].name))
+    seed = ah.build_auto_seed(scene["sess"])
+    journal = _block(seed, "сырой журнал")
+    assert journal == "- сырой журнал — на диске: {0}, ## context".format(
+        scene["sess"].resolve() / "arc.md")
+    assert "шаг 00" not in seed                          # старый пульс остался на диске
+    assert "шаг 11" in seed                              # курсор (хвост пульса) — в «где мы»

@@ -47,7 +47,7 @@ def test_told_even_below_the_threshold(world):
 
 
 def test_not_handed_over_keeps_the_ladder(world):
-    assert cw.AUTO_CMD in cw.watch_reason(world["proj"], _payload(world, 210_000))
+    assert cw.AUTO_CMD in cw.watch_reason(world["proj"], _payload(world, 260_000))
 
 
 def test_a_later_take_outweighs_an_old_giveaway(world):
@@ -69,6 +69,6 @@ def test_a_later_take_outweighs_an_old_giveaway(world):
                    seed=str(mine / "input" / "handoff-seed.md"), from_session="prev")
     hq.take(world["home"], got.stem, session=SID)
     assert hq.is_dissolved(world["home"], SID) is None
-    reason = cw.watch_reason(world["proj"], _payload(world, 210_000))
+    reason = cw.watch_reason(world["proj"], _payload(world, 260_000))
     assert reason is None or "нить передана" not in reason
     assert not (fields.read_field(world["sess"] / "arc.md", cw.HANDED_TOLD_FIELD) or "")

@@ -14,6 +14,7 @@ import io
 import json
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -173,26 +174,26 @@ def _alerts(sink: Path):
 
 
 def test_watch_silent_below_soft(world):
-    assert cw.watch_reason(world["proj"], _payload(world, 199_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 249_000)) is None
     assert fields.read_field(world["sess"] / "arc.md", cw.CTX_PING_FIELD) is None
 
 
 def test_watch_ladder_one_ping_per_threshold(world, monkeypatch):
     sink = _alert_sink(world, monkeypatch)
     pp = world["sess"] / "arc.md"
-    assert cw.watch_reason(world["proj"], _payload(world, 199_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 249_000)) is None
     assert _alerts(sink) == []
-    # 200k — мягкий пинг, один; в лог пульта (route=log)
-    r1 = cw.watch_reason(world["proj"], _payload(world, 200_000))
+    # 250k — мягкий пинг, один (спокойно — воркеров нет); в лог пульта (route=log)
+    r1 = cw.watch_reason(world["proj"], _payload(world, 250_000))
     assert r1 and "tide offload seam/s1" in r1 and cw.AUTO_CMD in r1
-    assert "передача нити начинается сейчас" in r1
-    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("200 ")
+    assert "Передай работу сейчас" in r1
+    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("250 ")
     (a1,) = _alerts(sink)
     assert a1["TIDE_ALERT_ROUTE"] == "log"
     assert a1["TIDE_ALERT_SOURCE"] == "proj/seam/s1"
-    assert a1["argv"] == a1["TIDE_ALERT_TEXT"] and "200 тыс." in a1["argv"]
+    assert a1["argv"] == a1["TIDE_ALERT_TEXT"] and "250 тыс." in a1["argv"]
     # второй стоп между порогами — молчим
-    assert cw.watch_reason(world["proj"], _payload(world, 250_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 280_000)) is None
     assert len(_alerts(sink)) == 1
     # 300k — жёсткий пинг, один
     r2 = cw.watch_reason(world["proj"], _payload(world, 300_000))
@@ -224,7 +225,7 @@ def test_watch_jump_over_steps_pings_once_highest(world):
 
 
 def test_watch_without_alert_cmd_still_pings(world):
-    assert cw.watch_reason(world["proj"], _payload(world, 210_000))
+    assert cw.watch_reason(world["proj"], _payload(world, 260_000))
 
 
 def test_watch_stands_down_after_handing_over(world):
@@ -236,7 +237,7 @@ def test_watch_stands_down_after_handing_over(world):
 
 
 def test_watch_thresholds_from_env(world, monkeypatch):
-    assert cw.thresholds() == (200_000, 300_000, 500_000)
+    assert cw.thresholds() == (250_000, 300_000, 500_000)
     monkeypatch.setenv(cw.SOFT_ENV, "1000")
     monkeypatch.setenv(cw.HARD_ENV, "2_000")
     monkeypatch.setenv(cw.ALARM_ENV, "3000")
@@ -496,3 +497,70 @@ def test_first_ao_session_takes_the_title(world, monkeypatch):
     assert same.renamed == []
     monkeypatch.delenv("AO_SESSION_ID")
     assert session_start._ao_name_by_title(world["proj"], SID, adapter=fake) is None
+
+
+# --- порог передачи 250 по спокойному моменту, 300 — потолок (Гриша «Давай А», SOC-143) ---
+
+def _busy_payload(world, tokens, *, done=False):
+    """Транскрипт с фоновым сабагентом: запущен (и, если *done*, сдал итог)."""
+    t = _transcript(world["tmp"] / "tx" / "{0}.jsonl".format(SID), tokens)
+    rows = [
+        {"type": "assistant", "timestamp": "2026-10-09T09:00:00Z",
+         "message": {"content": [{"type": "tool_use", "id": "tu1", "name": "Agent",
+                                  "input": {"description": "прогон тестов"}}]}},
+        {"type": "user", "timestamp": "2026-10-09T09:00:01Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "tu1",
+                                  "content": "Async agent launched successfully. agentId: ag-1"}]}},
+    ]
+    if done:
+        rows.append({"type": "user", "timestamp": "2026-10-09T09:30:00Z", "message": {
+            "content": "<task-notification><task-id>ag-1</task-id><tool-use-id>tu1</tool-use-id>"
+                       "<status>completed</status>"
+                       "<summary>прогон зелёный</summary></task-notification>"}})
+    body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    t.write_text(body + t.read_text(encoding="utf-8"), encoding="utf-8")
+    return {"session_id": SID, "transcript_path": str(t), "stop_hook_active": False}
+
+
+def test_soft_defaults_250_300():
+    assert cw.SOFT_TOKENS == 250_000 and cw.HARD_TOKENS == 300_000
+    assert cw.thresholds()[:2] == (250_000, 300_000)
+
+
+def test_soft_busy_only_pings_then_hands_off_when_calm(world, monkeypatch):
+    sink = _alert_sink(world, monkeypatch)
+    pp = world["sess"] / "arc.md"
+    assert cw.busy_workers(_busy_payload(world, 260_000), SID) == ["«прогон тестов»"]
+    # неспокойно: только пинг «в первый спокойный момент», без шагов передачи
+    r = cw.watch_reason(world["proj"], _busy_payload(world, 260_000))
+    assert r and "в первый спокойный момент" in r and "воркеры сдали, правки закоммичены" in r
+    assert "«прогон тестов»" in r and "tide offload seam/s1" not in r
+    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("250w ")
+    assert [a["TIDE_ALERT_ROUTE"] for a in _alerts(sink)] == ["log"]
+    # всё ещё занята — повтор не чаще CALM_REMIND_MIN
+    assert cw.watch_reason(world["proj"], _busy_payload(world, 262_000)) is None
+    later = datetime.now() + timedelta(minutes=cw.CALM_REMIND_MIN + 1)
+    r = cw.watch_reason(world["proj"], _busy_payload(world, 264_000), now=later)
+    assert r and "в первый спокойный момент" in r
+    assert len(_alerts(sink)) == 1                   # в лог — один раз
+    # воркер сдал — спокойно: пинг передачи с шагами, ступень засчитана
+    r = cw.watch_reason(world["proj"], _busy_payload(world, 266_000, done=True))
+    assert r and "Передай работу сейчас" in r and cw.AUTO_CMD in r
+    assert "tide offload seam/s1" in r
+    assert fields.read_field(pp, cw.CTX_PING_FIELD).startswith("250 ")
+    assert cw.watch_reason(world["proj"], _busy_payload(world, 268_000, done=True)) is None
+
+
+def test_hard_ceiling_hands_off_even_when_busy(world):
+    assert "в первый спокойный момент" in cw.watch_reason(
+        world["proj"], _busy_payload(world, 255_000))
+    r = cw.watch_reason(world["proj"], _busy_payload(world, 301_000))
+    assert r and "жёсткий порог 300 тыс." in r and cw.AUTO_CMD in r
+    assert fields.read_field(world["sess"] / "arc.md", cw.CTX_PING_FIELD).startswith("300 ")
+
+
+def test_soft_env_override_still_works_with_calm(world, monkeypatch):
+    monkeypatch.setenv(cw.SOFT_ENV, "1000")
+    monkeypatch.setenv(cw.HARD_ENV, "300000")
+    r = cw.watch_reason(world["proj"], _payload(world, 5000))
+    assert r and "Передай работу сейчас" in r and "1 тыс." in r

@@ -1865,13 +1865,14 @@ def next_for_grisha(nxt_lines: Sequence[str]) -> List[str]:
 
 
 def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = "",
-         source: str = "", clip: int = 0) -> str:
+         source: str = "", clip: int = 0, journal_off: str = "") -> str:
     """Дописать вычисляемые блоки и отрендерить: сырой журнал и задачи Linear.
 
     Сырой журнал (хвост пульса в «где мы» + пульс старше него) — не больше
     :data:`JOURNAL_SHARE` тела: J ≤ (share·R − T) / (1 − share), R — тело без
-    журнала, T — хвост пульса в «где мы». Задачи Linear — каждая упомянутая в
-    сиде, со ссылкой."""
+    журнала, T — хвост пульса в «где мы». *journal_off* — строка-указатель вместо
+    журнала (сид менеджера, :func:`journal_pointer`): журнал остаётся на диске.
+    Задачи Linear — каждая упомянутая в сиде, со ссылкой."""
     out = dict(bodies)
     out[JOURNAL], out[LINEAR] = [], []
     plain = {k: list(out[k]) for k in MARK_CLOSED_IN if k in out}
@@ -1882,7 +1883,8 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     tail = raw_pulse_chars(context, clip=clip)
     budget = max(0, int((share * rest - tail) / (1 - share)))
     for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
-        out[JOURNAL] = block_journal(context, budget=budget, source=source)
+        out[JOURNAL] = ([journal_off] if journal_off else
+                        block_journal(context, budget=budget, source=source))
         # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
         seen = render_draft(out, header=header) + "\n" + "\n".join(context)
         sources = list(out.get(LINEAR_SOURCES) or [])
@@ -1915,8 +1917,24 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     return text
 
 
+def journal_pointer(root: Path, session_entry: Path) -> str:
+    """Сид менеджера без сырого журнала (Гриша «Давай А», SOC-143 10.10): для нити
+    менеджера (:func:`tide.whois.is_manager_thread`) — строка-указатель «сырой журнал —
+    на диске: <паспорт прошлой сессии>, ## context»; прочим нитям — ``""`` (журнал
+    по бюджету, как был). Никогда не падает."""
+    try:
+        from .. import whois
+        session_entry = Path(session_entry)
+        if not whois.is_manager_thread(Path(root), session_entry.parents[1]):
+            return ""
+        return "- сырой журнал — на диске: {0}, ## context".format(
+            session_entry.resolve() / "arc.md")
+    except Exception:  # noqa: BLE001 — сид важнее
+        return ""
+
+
 def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
-                  source: str = "") -> str:
+                  source: str = "", journal_off: str = "") -> str:
     """Сид с журналом по бюджету (SOC-101 F16/F24): сжатие — только по бюджету.
 
     *bodies_at(clip)* — тела блоков с хвостом пульса в «где мы», обрезанным до
@@ -1930,7 +1948,8 @@ def seal_budgeted(bodies_at, *, context: Sequence[str], header: str = "",
     text = ""
     for clip in (0, JOURNAL_CLIP, JOURNAL_GIST):
         bodies = bodies_at(clip)
-        text = seal(bodies, context=context, header=header, clip=clip, source=source)
+        text = seal(bodies, context=context, header=header, clip=clip, source=source,
+                    journal_off=journal_off)
         tail = raw_pulse_chars(context, clip=clip)
         if tail <= JOURNAL_SHARE * len(text) / 2:
             break
@@ -3461,7 +3480,8 @@ def build_draft(root: Path, session_entry: Path) -> str:
     context = section_body(sections(_read(session_entry / "arc.md")), "context")
     return seal_budgeted(bodies_at, context=context,
                          header=draft_header(session_entry.name, thread_entry.name),
-                         source="{0} (## context)".format(session_entry / "arc.md"))
+                         source="{0} (## context)".format(session_entry / "arc.md"),
+                         journal_off=journal_pointer(root, session_entry))
 
 
 # --- резолв сессии + запись -------------------------------------------------

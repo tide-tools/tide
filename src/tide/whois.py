@@ -151,6 +151,39 @@ def manager(*, home: Optional[Path] = None, path: Optional[Path] = None) -> Dict
     return thread(ref, home=home)
 
 
+# Нити проекта менеджера, которые ведёт сам менеджер (кроме нити из manager.json/env).
+MANAGER_THREAD_ALIASES = ("main", "ao-control")
+
+
+def manager_thread_ref(path: Optional[Path] = None) -> str:
+    """«<проект>/<нить>» менеджера: ``$TIDE_MANAGER_THREAD``, иначе ``thread`` из
+    manager.json (проект — из умолчания), иначе :data:`MANAGER_THREAD`."""
+    ref = (os.environ.get(MANAGER_THREAD_ENV) or "").strip() or MANAGER_THREAD
+    t = read_manager_file(path).get("thread", "")
+    if t:
+        ref = t if "/" in t else "{0}/{1}".format(_split(ref)[0] or "management", t)
+    return ref
+
+
+def is_manager_thread(root: Path, thread_dir: Path, *, home: Optional[Path] = None,
+                      path: Optional[Path] = None) -> bool:
+    """Нить *thread_dir* проекта *root* — нить менеджера (``tide whois manager``):
+    проект менеджера (по ростеру, без ростера — по имени папки) и нить его ref или
+    :data:`MANAGER_THREAD_ALIASES`. Никогда не падает."""
+    try:
+        from . import slug as _slug
+        project, name = _split(manager_thread_ref(path))
+        word = _slug.entry_slug(Path(thread_dir).name)
+        if word not in {name, *MANAGER_THREAD_ALIASES}:
+            return False
+        proot = _project_root(home or _home(), project)
+        if proot is not None:
+            return Path(proot).resolve() == Path(root).resolve()
+        return Path(root).resolve().name == project
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def address(rec: Dict[str, str]) -> str:
     """Человекочитаемо: «<title> (ao_session <id>)», или то, что есть."""
     ao, title = rec.get("ao_session", ""), rec.get("title", "")

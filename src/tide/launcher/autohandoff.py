@@ -318,8 +318,10 @@ def build_auto_seed(session_entry: Path) -> str:
     head = "\n".join(header)
     # хвост пульса в «где мы» — тоже сырой журнал (F5), но режется только по
     # бюджету (F16), а последний пульс и ПЕРЕДАЧА — никогда (F24)
+    # сид менеджера — без сырого журнала, строкой-указателем (Гриша «Давай А», SOC-143)
     return sd.seal_budgeted(bodies_at, context=context, header=head,
-                            source="{0} (## context)".format(session_entry / "arc.md"))
+                            source="{0} (## context)".format(session_entry / "arc.md"),
+                            journal_off=sd.journal_pointer(root, session_entry))
 
 
 # --- сигнал ------------------------------------------------------------------

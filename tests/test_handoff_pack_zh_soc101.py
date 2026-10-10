@@ -44,7 +44,7 @@ def test_pass_template_labels_all_parse_into_seed_blocks():
 
 
 def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
-    r = cw.watch_reason(world["proj"], _payload(world, 203_000))
+    r = cw.watch_reason(world["proj"], _payload(world, 253_000))
     assert r
     i_pass = r.index('tide offload seam/s1 --cursor "<где стоишь>" --next "<шаги через · >" '
                      '"ПЕРЕДАЧА. Где мы:')
