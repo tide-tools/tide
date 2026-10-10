@@ -458,6 +458,29 @@ def _caller_sid() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
 
 
+def _thread_session_by_sid(stream_mod, owner_root: Path, thread_slug: str,
+                           sid: str) -> Optional[Path]:
+    """Сессия-арка нити, чей ``claude-session`` (или имя арки) — *sid*; None — нет.
+
+    SOC-143: по ней штампуется ``from:`` преемника — передаёт ИМЕННО она, а не
+    новейшая арка нити (в нити бывают две живые параллельные сессии)."""
+    sid = (sid or "").strip()
+    if not sid:
+        return None
+    try:
+        from .. import fields
+        entries = stream_mod.session_entries(owner_root, thread_slug)
+        for entry in entries:
+            if (fields.read_field(entry / "arc.md", "claude-session") or "").strip() == sid:
+                return entry
+        for entry in entries:
+            if entry.name == sid or slug.entry_slug(entry.name) == slug.slugify(sid):
+                return entry
+    except Exception:  # noqa: BLE001  best-effort — never break a handoff over lineage
+        return None
+    return None
+
+
 def _thread_origin_session(stream_mod, owner_root: Path, thread_slug: str) -> Optional[str]:
     """The ``claude-session`` id of the thread's current holder (newest session), or None.
 
@@ -759,12 +782,23 @@ def run_handoff(
             if from_session:
                 from_session = _origin_sid(_stream, owner_root, tslug, from_session)
             else:
-                from_session = _thread_origin_session(_stream, owner_root, tslug)
+                # SOC-143: сначала сама передающая (её $CLAUDE_CODE_SESSION_ID), если
+                # она — сессия этой нити; новейшая — только когда своей не нашлось
+                caller = _caller_sid()
+                from_session = (caller if caller and _thread_session_by_sid(
+                    _stream, owner_root, tslug, caller) is not None
+                    else _thread_origin_session(_stream, owner_root, tslug))
+            # SOC-143: from: преемника — сессия, которая сама передаёт, а не новейшая
+            # арка нити: в нити с двумя живыми параллельными сессиями новейшая —
+            # чужая (techlead-14 подписан «from: techlead-13» вместо techlead-12)
+            origin_entry = _thread_session_by_sid(_stream, owner_root, tslug,
+                                                  from_session or "")
             # Name the pickup after the THREAD (03-debug-deck), not a generic 'pickup'
             # (cand 83): readable on the board, still unique via -N. The dir NN keeps
             # siblings apart; the slug now carries meaning instead of noise.
             session_born = _stream.new_session(
                 owner_root, tslug, _unique_pickup_slug(entry, base=tslug),
+                from_ref=origin_entry.name if origin_entry is not None else None,
                 goal=_pickup_goal(entry, text),
             )
             # «проект — нить · NN» from birth — the same name the spawn gives the AO

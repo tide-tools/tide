@@ -548,13 +548,73 @@ def _old_workers(transcript: Optional[Path]) -> List[str]:
     return background_workers(transcript)
 
 
+def _chain_end(home: Path, rec: Dict[str, object]) -> Dict[str, object]:
+    """Последний принятый оффер по цепочке ИМЕННО этой передачи (SOC-143).
+
+    От *rec* идём по офферам той же нити того же проекта: принявший *rec* сам
+    отдал нить (``from-session`` = его сид, ``mode: continue``, принят позже) —
+    шаг дальше. Параллельная сессия нити в эту цепочку не попадает: её оффер
+    отдан другим сидом. → запись последнего оффера (сам *rec*, если дальше
+    никто не передавал)."""
+    project = str(rec.get("project") or "")
+    thread = str(rec.get("arc") or "").split("/", 1)[0]
+    try:
+        taken = [r for r in hq.list_offers(home, status=hq.STATUS_TAKEN)
+                 if str(r.get("project") or "") == project
+                 and str(r.get("arc") or "").split("/", 1)[0] == thread
+                 and hq._transfers_thread(r)]
+    except Exception:  # noqa: BLE001 — очередь не читается: остаёмся на rec
+        return rec
+    cur, seen = rec, {str(rec.get("name") or "")}
+    for _ in range(len(taken)):
+        sid = str(cur.get("taken_by") or "").strip()
+        at = str(cur.get("taken_at") or "")
+        if not sid or sid == "-":
+            break
+        nxt = sorted((r for r in taken
+                      if str(r.get("from_session") or "").strip() == sid
+                      and str(r.get("taken_at") or "") >= at
+                      and str(r.get("name") or "") not in seen),
+                     key=lambda r: str(r.get("taken_at") or ""))
+        if not nxt:
+            break
+        cur = nxt[0]
+        seen.add(str(cur.get("name") or ""))
+    return cur
+
+
 def successor(home: Path, rec: Dict[str, object]) -> Dict[str, str]:
-    """Кто ведёт нить сейчас: ``{ao_session, title}`` — whois по цепочке, запасной —
-    тот, кто принял оффер *rec* (его AO-id и название по сиду)."""
+    """Кому теперь писать вместо отдавшей оффер *rec*: ``{ao_session, title}``.
+
+    SOC-143: преемник ИМЕННО этой передачи — по цепочке её офферов
+    (:func:`_chain_end`: принявший *rec*, а если он передал дальше — его
+    преемник), а не новейшая сессия нити: в нити бывают две живые параллельные
+    сессии, и письма одной не должны уходить преемнику другой. Адрес — AO-id
+    принявшего по реестру, иначе хвост названия его сессии; whois по нити —
+    только когда цепочка сессию не нашла (старые офферы без сида)."""
     out = {"ao_session": "", "title": ""}
+    try:
+        end = _chain_end(Path(home), rec)
+        entry = _session_of(end)
+        if entry is not None:
+            from ..arc import holder
+            sid = str(end.get("taken_by") or "").strip()
+            title = _title(entry, "")
+            ao = holder.ao_handle_for(Path(home), sid) if sid and sid != "-" else ""
+            if not ao:
+                pinned = (fields.read_field(entry / "arc.md", "claude-session") or "").strip()
+                ao = holder.ao_handle_for(Path(home), pinned) if pinned else ""
+            if not ao and title:
+                from .. import whois
+                m = whois._AO_TAIL.search(title)
+                ao = m.group(1) if m else ""
+            out = {"ao_session": ao, "title": title}
+    except Exception:  # noqa: BLE001 — цепочка не прочиталась: запасные пути ниже
+        out = {"ao_session": "", "title": ""}
     project = str(rec.get("project") or "").strip()
     thread = str(rec.get("arc") or "").split("/", 1)[0]
-    if project and project != "-" and thread and thread != "-":
+    if (not out["ao_session"] and not out["title"]
+            and project and project != "-" and thread and thread != "-"):
         try:
             from .. import whois
             w = whois.thread("{0}/{1}".format(project, _slug.entry_slug(thread)), home=home)
