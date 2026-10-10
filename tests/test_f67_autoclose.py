@@ -260,9 +260,11 @@ def test_sweep_offer_only_that_pair(pair, tmp_path, monkeypatch):
     assert ac.sweep(pair, offer="999", **kw) == []
 
 
-def test_cli_live_without_env_and_offer_closes_nothing(pair, monkeypatch, capsys):
+def test_cli_live_without_env_and_offer_closes_nothing(pair, tmp_control_home, monkeypatch, capsys):
     import argparse
     monkeypatch.delenv(ac.ENV, raising=False)
+    # герметично: control-home — tmp с roster.md, а не живой ростер машины (SOC-143)
+    monkeypatch.setenv(paths.TIDE_HOME_ENV, str(tmp_control_home))
     got = {}
     monkeypatch.setattr(ac, "sweep", lambda home, dry_run=False, offer=None: got.update(
         dry=dry_run, offer=offer) or [])
