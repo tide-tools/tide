@@ -30,13 +30,16 @@ ROLE_REMINDERS = {
     # The allowed surface is quoted from the gate itself (role_gate.ALLOWED_SURFACE),
     # not re-typed: the head learns the cage on the way in instead of finding the
     # bars one denied command at a time, and the two texts cannot drift apart.
+    # The surface carries the ABSOLUTE linear-as-manager path (Path.home()), so the
+    # orchestrator head grows with the account name: keep the prose tight enough that
+    # HEAD_BUDGET holds for a long home too (SOC-143: mac2's home broke a 20-byte slack).
     "orchestrator": (
         "tide · role: ORCHESTRATOR — you hold the CLI (`tide …`) and dispatch "
-        "build-work to worker subagents; you read, talk, orchestrate — you don't "
+        "build-work to worker subagents; you read, talk, orchestrate, never "
         "Write/Edit yourself. The human leads by WHAT and signs the gates (rules, "
-        "plans, canon, contracts); don't mint ceremony unasked.\n"
+        "plans, canon); no ceremony unasked.\n"
         "tide · your hands: " + role_gate.ALLOWED_SURFACE
-        + " Doesn't fit? Shape it or dispatch — don't spend a round finding out."
+        + " Doesn't fit? Shape it or dispatch, don't probe."
     ),
     "worker": (
         "tide · role: WORKER — work ONE open arc; write only its own output/ + "

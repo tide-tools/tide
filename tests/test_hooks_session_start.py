@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tide import cli, readme
@@ -571,7 +573,13 @@ def test_role_and_whoami_ride_in_the_first_2kb(tmp_project, role, marker):
     # the head proper (up to the role reminder's end) fits HEAD_BUDGET
     role_end = out.index(session_start._role_reminder(role)) + len(
         session_start._role_reminder(role))
-    assert len(out[:role_end].encode("utf-8")) <= session_start.HEAD_BUDGET
+    # The orchestrator's role text quotes the ABSOLUTE linear-as-manager path, built
+    # from Path.home(): the head must fit HEAD_BUDGET on ANY machine, not only here
+    # (mac2 failed by 16 bytes at a 41-char home). So measure it as if the home were
+    # at least WORST_HOME bytes long — deterministic across accounts.
+    worst_home = 60
+    home_pad = max(0, worst_home - len(str(Path.home()).encode("utf-8")))
+    assert len(out[:role_end].encode("utf-8")) + home_pad <= session_start.HEAD_BUDGET
     assert out.index("STREAM") > role_end
 
 
