@@ -15,6 +15,7 @@ mechanism, not something to hold back from; the gate points you straight at it.
 Окно ведущей бережём (срезы п.2–3):
 - итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу — так и пиши в поручении.
 - почта: ao send между сессиями — только сигнал: 1–2 строки + «письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>.
+- троттлинг: перед новым сабагентом или тяжёлым прогоном — tide throttle status; на паузе новые сабагенты не запускай, доведи шаг до коммита; потолок агентов достигнут — жди; окно ≥85% — только точечные тесты.
 
 ## The human leads on "what"; you don't mint ceremony
 The human steers by **what** they want and holds the **gates** — they sign the rules,

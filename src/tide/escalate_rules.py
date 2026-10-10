@@ -34,6 +34,13 @@ MAIL_RULE = ("почта: ao send между сессиями — только �
              "«письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>")
 
 
+# SOC-166: пауза до сброса и потолок агентов с доски. Хук role-gate режет ao spawn,
+# tide-ci и полный pytest, а инструмент Agent он не видит — сабагентов держит правило.
+THROTTLE_RULE = ("троттлинг: перед новым сабагентом или тяжёлым прогоном — tide throttle "
+                 "status; на паузе новые сабагенты не запускай, доведи шаг до коммита; "
+                 "потолок агентов достигнут — жди; окно ≥85% — только точечные тесты")
+
+
 def ao_send_hint(chars: int) -> str:
     """Подсказка role-gate на длинный ao send (не отказ — отправка идёт)."""
     return ("tide · подсказка: ao send {0} знаков (порог ~{1}) — отправка не "
@@ -41,8 +48,8 @@ def ao_send_hint(chars: int) -> str:
 
 
 def window_rules() -> str:
-    """Две строки правил окна для сида (итог сабагента + ao send — сигнал)."""
-    return "{0}\n{1}".format(SUBAGENT_RESULT_RULE, MAIL_RULE)
+    """Правила окна для сида: итог сабагента, ao send — сигнал, троттлинг (SOC-166)."""
+    return "{0}\n{1}\n{2}".format(SUBAGENT_RESULT_RULE, MAIL_RULE, THROTTLE_RULE)
 
 
 def seed_rules() -> str:

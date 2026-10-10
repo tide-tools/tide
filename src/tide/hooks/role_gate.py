@@ -646,6 +646,44 @@ def ao_send_hint(tool_name: str, tool_input: dict) -> Optional[str]:
     return escalate_rules.ao_send_hint(chars)
 
 
+# --- throttle: пауза, потолок агентов, правило 85 % (SOC-166) -------------------
+
+# Дешёвый предфильтр: без этих подстрок команда точно не порождает агента и не
+# гоняет тяжёлое — файл доски даже не читаем.
+_THROTTLE_MARKERS = ("ao", "tide-ci", "pytest", "py.test")
+
+
+def throttle_refusal(tool_name: str, tool_input: dict, *, session: str = "",
+                     cwd: Optional[str] = None) -> Optional[str]:
+    """Отказ троттлинга для Bash-команды (``ao spawn``, tide-ci, полный pytest) или None.
+
+    Для ВСЕХ ролей и сабагентов: пауза/потолок/окно касаются любой сессии. Правки,
+    git commit, tide offload/mail, ao send — никогда (их :func:`tide.throttle.kind_of`
+    не узнаёт). Любой сбой — None: троттлинг не ломает хук.
+    """
+    try:
+        if tool_name != "Bash" or not isinstance(tool_input, dict):
+            return None
+        command = tool_input.get("command", "")
+        if not isinstance(command, str) or not any(m in command for m in _THROTTLE_MARKERS):
+            return None
+        kinds = []
+        from .. import throttle
+        for seg in _split_segments(throttle.strip_heredocs(command).strip()) or []:
+            try:
+                parts = shlex.split(seg)
+            except ValueError:
+                continue
+            kind = throttle.kind_of(parts)
+            if kind:
+                kinds.append((kind, seg.strip()))
+        if not kinds:
+            return None
+        return throttle.gate(kinds, session=session, cwd=cwd)
+    except Exception:  # noqa: BLE001 — троттлинг никогда не валит хук
+        return None
+
+
 def _hint_json(text: str) -> str:
     """PreToolUse JSON that adds *text* to the model's context WITHOUT a decision —
     no ``permissionDecision``, so the normal permission flow stays as it was."""
@@ -713,6 +751,19 @@ def cmd_role_gate(args) -> int:
 
     if not allow:
         print(reason, file=sys.stderr)
+        return BLOCK_EXIT
+    # SOC-166: пауза до сброса, потолок агентов, правило 85 % — читает throttle.json доски.
+    try:
+        sid = payload.get("session_id", "") if payload else ""
+        cwd = payload.get("cwd") if payload else None
+        refusal = throttle_refusal(
+            tool_name, tool_input,
+            session=sid if isinstance(sid, str) else "",
+            cwd=cwd if isinstance(cwd, str) and cwd.strip() else None)
+    except Exception:  # noqa: BLE001 — троттлинг никогда не валит хук
+        refusal = None
+    if refusal:
+        print(refusal, file=sys.stderr)
         return BLOCK_EXIT
     # Window cut п.3 (tg 1223): a long ao send passes, but the agent hears the rule.
     try:

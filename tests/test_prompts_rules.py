@@ -49,3 +49,5 @@ def test_window_rules_ride_in_role_prompts_and_seed():
     s = seed.build_seed(project_name="proj", arc_ref="worker-1", thread_name="worker",
                         arc_text="x")
     assert e.SUBAGENT_RESULT_RULE in s and e.MAIL_RULE in s
+    # SOC-166: правило троттлинга — в сиде и у ведущей (Agent хук не видит)
+    assert e.THROTTLE_RULE in s and e.THROTTLE_RULE in orch

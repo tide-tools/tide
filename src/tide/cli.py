@@ -592,6 +592,10 @@ def _register_mail(sub) -> None:
     from .escalate import register as register_escalate
 
     register_escalate(sub)
+    # SOC-166: `tide throttle status|check` — пауза, потолок агентов, правило 85% (файл доски)
+    from .throttle import register as register_throttle
+
+    register_throttle(sub)
 
 
 def _register_lookback(sub) -> None:
