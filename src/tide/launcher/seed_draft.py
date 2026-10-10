@@ -2303,7 +2303,10 @@ def topic_digest(topic_file: Path) -> List[str]:
     return out
 
 
-_TOPIC_CHECKED = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[T ]+(\d{1,2}:\d{2}))?")
+# дата, затем (через пробелы, «T», запятую, «в») время: «2026-10-09 19:55», «…09, 19:55»
+_TOPIC_CHECKED = re.compile(
+    r"(\d{4}-\d{2}-\d{2})(?:[T\s,;]+(?:в\s+)?(\d{1,2}:\d{2}))?")
+TOPIC_UNREADABLE_TAIL = "сверено нечитаемо — проверь дату"
 TOPIC_STALE_TAIL = "освежи «где мы / в полёте / сверено»"
 
 
@@ -2333,11 +2336,13 @@ def topic_stale_line(topic_file: Path, last_pulse, *,
     Ничего не правит: только предупреждает новую сессию."""
     from datetime import timedelta
 
-    if last_pulse is None:
-        return ""
     f = Path(topic_file)
     checked = topic_checked_at(_read(f))
     if checked is False:
+        # не отстала и не свежа — судить нельзя; не молчим, но «отстала» не пишем
+        return "  - {0} {1} — страница топика: {2}".format(
+            TOPIC_MARK, f.parent.name, TOPIC_UNREADABLE_TAIL)
+    if last_pulse is None:
         return ""
     if checked is None:
         what = "отстала — не сверялась (поля «сверено» нет)"
@@ -2350,13 +2355,64 @@ def topic_stale_line(topic_file: Path, last_pulse, *,
         TOPIC_MARK, f.parent.name, what, TOPIC_STALE_TAIL)
 
 
+def topic_home_thread(root: Path, topic_file: Path) -> Optional[Path]:
+    """Нить-дом топика: открытая нить, названная в полях topic.md (``threads:``,
+    ``дом:`` первым, затем ``threads:``, ``нити и работы:`` …, тот же список ключей, что
+    у :func:`thread_topics`). Поле называет нить так же, как её ищет
+    :func:`thread_topics`: «нить main (31-@main)». Из нескольких названных в поле —
+    упомянутая раньше; дома нет — ``None``."""
+    text = _read(Path(topic_file))
+    threads = _stream.thread_entries(Path(root))
+    # дом: — главное поле; threads:/нити — все нити топика, дом среди них не отличить
+    for key in ("дом",) + tuple(k for k in _TOPIC_THREAD_KEYS if k != "дом"):
+        val = _topic_field(text, key)
+        if not val:
+            continue
+        hits = []
+        for t in threads:
+            m = re.search(r"(?<![\w@-]){0}(?![\w-])".format(re.escape(t.name)), val)
+            if m:
+                hits.append((m.start(), t))
+        if hits:
+            return min(hits, key=lambda h: h[0])[1]
+    return None
+
+
+def thread_last_pulse(root: Path, thread_entry: Path):
+    """Последний пульс нити: новейшая сессия (открытая или закрытая, по номеру) →
+    позже из последней пульс-строки её ``## context`` и штампа ``offloaded-at``.
+    Сессий нет или у новейшей нет ни одного штампа — ``None``."""
+    from datetime import datetime
+
+    sessions = (_stream.session_entries(Path(root), Path(thread_entry).name)
+                + _stream.session_entries(Path(root), Path(thread_entry).name, closed=True))
+    if not sessions:
+        return None
+    newest = max(sessions, key=lambda p: p.name.lstrip("_"))
+    arc = newest / "arc.md"
+    found = [_last_pulse_at(section_body(sections(_read(arc)), "context"))]
+    raw = (fields.read_field(arc, "offloaded-at") or "").strip()
+    try:
+        found.append(datetime.fromisoformat(raw) if raw else None)
+    except ValueError:
+        pass
+    found = [t for t in found if t is not None]
+    return max(found) if found else None
+
+
 def topic_block(root: Path, thread_entry: Path,
                 context: Optional[Sequence[str]] = None) -> List[str]:
     """Строка «топик:» + дословная выжимка каждой страницы топика (F55) + метка
-    «страница топика отстала» (SOC-105), если по *context* нити известен пульс."""
+    «страница топика отстала» (SOC-105). «Сверено» сравниваем с последним пульсом
+    нити-дома топика (не своей сессии: топик 02 может собирать сид в другой нити, чем
+    его дом 31-@main); дом не найден или без пульса — с пульсом своей сессии (*context*)."""
     lines = [topic_pointer(root, thread_entry)]
-    pulse = _last_pulse_at(context) if context else None
+    own = _last_pulse_at(context) if context else None
     for f in thread_topics(root, thread_entry):
+        home = topic_home_thread(root, f)
+        pulse = thread_last_pulse(root, home) if home is not None else None
+        if pulse is None or (home is not None and Path(home) == Path(thread_entry)):
+            pulse = max([t for t in (pulse, own) if t is not None], default=None)
         digest = topic_digest(f)
         stale = topic_stale_line(f, pulse)
         lines += digest[:1] + ([stale] if stale else []) + digest[1:]

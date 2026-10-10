@@ -176,12 +176,30 @@ def topic_stale_items(seed_text: str) -> List[str]:
     return out
 
 
-def _match_text(key: str, item: str) -> str:
-    """Чем пункт сверяется с пульсами: метка топика длинная («… освежи «где мы / в
-    полёте / сверено»»), а новая скажет коротко — сверяем по «страница топика <имя>»."""
-    if key != "topic":
-        return item
-    return "страница топика " + item.split(" — ", 1)[0].strip()
+def _topic_name(item: str) -> str:
+    """Имя страницы из пункта «топик»: «02-peredacha-raboty — страница топика отстала …»."""
+    return item.split(" — ", 1)[0].strip()
+
+
+def topic_named(item: str, text: str) -> "tuple[bool, str]":
+    """Назвала ли *text* именно эту страницу топика → ``(да/нет, чем)``. Общие слова
+    «страница топика» не считаются: «беру: освежаю 03-doska» не закрывает 02-… (SOC-105).
+    Годится: весь slug (``02-peredacha-raboty``), его имя без номера (``peredacha-raboty``)
+    или номер рядом со словом «топик»/«страница» («топик 02»)."""
+    name = _topic_name(item).lower()
+    low = (text or "").lower()
+    m = re.match(r"^(\d+)-(.+)$", name)
+    num, rest = (m.group(1), m.group(2)) if m else ("", name)
+    if not name:
+        return False, ""
+    for token in (name, rest):
+        if token and re.search(r"(?<![\w-]){0}(?![\w-])".format(re.escape(token)), low):
+            return True, token
+    if num:
+        rx = r"(?:топик\w*|страниц\w*|topic)\s*(?:№|#)?\s*0*{0}(?![\w:.-])".format(int(num))
+        if re.search(rx, low):
+            return True, "топик " + num
+    return False, ""
 
 
 def awaiting_items(seed_text: str, items: Optional[Dict[str, List[str]]] = None) -> List[str]:
@@ -448,7 +466,8 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
             seen.add(_norm(it))
             row = {"block": key, "label": label, "text": it, "status": "missing",
                    "by": "", "why": ""}
-            gone = _drop_for(_match_text(key, it), dropped)
+            gone = (next((d for d in dropped if topic_named(it, d[0])[0]), None)
+                    if key == "topic" else _drop_for(it, dropped))
             fs = work_f_ids(it)
             closed = order_closed(it, pulses)
             if gone is not None:
@@ -459,7 +478,7 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
             elif closed:
                 row.update(status="closed", by=closed)
             else:
-                ok, by = mentions(_match_text(key, it), said)
+                ok, by = topic_named(it, said) if key == "topic" else mentions(it, said)
                 if ok:
                     row.update(status="named", by=by)
             rows.append(row)
