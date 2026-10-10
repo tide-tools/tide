@@ -1217,6 +1217,148 @@ def dropped_decisions(prev_seed: str, new_seed: str) -> List[str]:
     return out
 
 
+# SOC-143 F77: «ждёт Гришу» копится, как опыт (F22) и решения (F63). Метка «Ждёт
+# Гришу:» — состояние из самого свежего пульса, и пункт входного сида, который
+# передающая не повторила (тап по tg-ссылке, tg 3409), пропадал молча. Теперь пункт
+# входного сида переходит с пометкой «(из прошлого сида)»; снятый пульсом сессии
+# («снимаю …», «заменяет 3399») — строкой «снято: … — причина: …»; закрытые и
+# чужие задачи Linear снимает :func:`drop_resolved` (F73/F85). Вычисляемое заново
+# — «(из следующего шага)», «SOC-N на проверке» из Linear — не наследуется.
+_AWAIT_DERIVED = re.compile(r"\(из следующего шага\)|^SOC-\d+ на проверке \(", re.IGNORECASE)
+_AWAIT_REVOKE = re.compile(r"сня[тл]|снима|отмен|больше не|не в силе|заменя|заменен|"
+                           r"заменён|закрыт|решён|решен|ответил|superseded|dropped",
+                           re.IGNORECASE)
+_TG_NUM = re.compile(r"(?:tg|❓)\s*~?(\d{3,6})(?!\d)", re.IGNORECASE)
+_NO_AWAIT = re.compile(r"^(?:нет|ничего|никого|ничто)(?!\w)", re.IGNORECASE)
+REVOKE_QUOTE = 90
+
+
+def _await_inheritable(line: str) -> str:
+    """Тело пункта «ждёт Гришу» входного сида, который наследуется; иначе ""."""
+    if "<!--" in line or is_hole(line):
+        return ""
+    body = _bare(line)
+    if not body or body.lower().startswith("снято:") or _NO_AWAIT.match(body) \
+            or _AWAIT_DERIVED.search(body):
+        return ""
+    return body
+
+
+def _revoke_clauses(context: Sequence[str]) -> List["tuple[str, str]"]:
+    """``[(ЧЧ:ММ, кусок)]`` — куски пульсов сессии со словом снятия (F77)."""
+    out = []
+    for stamp, note in pulse_notes(context):
+        for sent in _SENT_END.split(note):
+            for piece in _ITEM_SPLIT.split(sent):
+                piece = piece.strip().rstrip(".;").strip()
+                if piece and _AWAIT_REVOKE.search(piece):
+                    out.append((stamp, piece))
+    return out
+
+
+def _revoke_reason(stamp: str, piece: str, num: str = "") -> str:
+    piece = re.sub(r"[()]", "", piece)
+    at = piece.find(num) if num else -1
+    if at > REVOKE_QUOTE - 20:  # длинный кусок — окно вокруг снятого номера
+        start = piece.rfind(" ", 0, at - (REVOKE_QUOTE - 30)) + 1
+        piece = "…" + piece[start:]
+    quote = clip_words(piece, REVOKE_QUOTE)
+    return "«{0}»{1}".format(quote, " — пульс {0}".format(stamp) if stamp else "")
+
+
+def _await_nums(text: str) -> set:
+    return set(_TG_NUM.findall(text or ""))
+
+
+_INHERITED_TAIL = re.compile(r"\s*\(из прошлого сида([^()]*)\)\s*$")
+_GONE_NUM = re.compile(r"tg (\d+) — («[^«»]*(?:«[^«»]*»[^«»]*)*»(?: — пульс \d\d:\d\d)?)")
+
+
+def _await_covered(item: str, lines: Sequence[str]) -> bool:
+    """Пункт уже есть среди *lines*: тем же текстом или на :data:`SIMILAR_SHARE` его слов."""
+    w = _sig_words(item)
+    return any(norm_line(item) == norm_line(x) or (
+        len(w) >= SIMILAR_MIN_WORDS and len(w & _sig_words(x)) >= SIMILAR_SHARE * len(w))
+        for x in lines)
+
+
+def inherit_awaiting(inherited: Sequence[str], current: Sequence[str] = (),
+                     context: Sequence[str] = ()) -> List[str]:
+    """Пункты «ждёт Гришу» входного сида → строки этого сида (F77).
+
+    Пункт, который уже есть в *current* (тем же текстом, похожими словами или всеми
+    своими tg-номерами), не дублируется. Пункт с tg-номерами снят, если кусок пульса
+    *context* со словом снятия (:data:`_AWAIT_REVOKE`) называет его номер: все номера
+    сняты — ``- снято: … — причина: «…» — пульс ЧЧ:ММ``; часть — пункт переходит с
+    пометкой, какой номер снят и чем. Без номеров — как решения (:func:`_revokes`).
+    Остальное — с пометкой :data:`INHERITED_MARK`."""
+    cur_text = "\n".join(current)
+    cur_nums = _await_nums(cur_text)
+    clauses = _revoke_clauses(context)
+    out: List[str] = []
+    for ln in live_lines(inherited):
+        body = _await_inheritable(ln)
+        if not body:
+            continue
+        # уже переходившая строка: её пометка — без повтора, снятые номера помнятся
+        mark = _INHERITED_TAIL.search(body)
+        clean = body[:mark.start()] if mark else body
+        gone: Dict[str, str] = dict(_GONE_NUM.findall(mark.group(1))) if mark else {}
+        nums = _await_nums(clean)
+        if _await_covered(clean, current) or (nums and nums <= cur_nums):
+            continue  # пункт уже в этом сиде
+        why = ""
+        if nums:
+            for n in sorted(nums):
+                hit = next(((st, p) for st, p in clauses
+                            if re.search(r"(?<!\d){0}(?!\d)".format(n), p)
+                            and not (n in cur_nums)), None)
+                if hit:
+                    gone[n] = _revoke_reason(hit[0], hit[1], n)
+            if gone and not nums - set(gone) - cur_nums:  # все номера сняты или уже здесь
+                why = "; ".join(["tg {0} — {1}".format(n, r) for n, r in sorted(gone.items())]
+                                + ["tg {0} — уже в «ждёт Гришу» этого сида".format(n)
+                                   for n in sorted(nums & cur_nums - set(gone))])
+        else:
+            hit = next(((st, p) for st, p in clauses if _revokes(p, clean)), None)
+            if hit:
+                why = _revoke_reason(*hit)
+        if why:
+            out.append("- снято: {0} — причина: {1}".format(_LINE_SUFFIX.sub("", clean), why))
+        elif gone:
+            out.append("- {0} {1}; снято: {2})".format(
+                clean, INHERITED_MARK[:-1], "; ".join(
+                    "tg {0} — {1}".format(n, re.sub(r"[()]", "", r))
+                    for n, r in sorted(gone.items()))))
+        else:
+            out.append("- {0} {1}".format(clean, INHERITED_MARK))
+    return out
+
+
+def dropped_awaiting(prev_seed: str, new_seed: str) -> List[str]:
+    """Пункты «ждёт Гришу» прошлого сида, которых нет в новом ни строкой, ни
+    «снято: …», ни своими tg-номерами (F77) — для TG о приёме. Пункты только про
+    задачи Linear (без tg-номера) — не потеря: их снимает сверка с Linear (F85)."""
+    prev = [_await_inheritable(ln) for ln in live_lines(
+        contract.find_body(sections(prev_seed or ""), "awaiting"))]
+    new = [_bare(ln) for ln in live_lines(
+        contract.find_body(sections(new_seed or ""), "awaiting"))]
+    new_nums = _await_nums("\n".join(new))
+    out = []
+    for p in prev:
+        if not p:
+            continue
+        mark = _INHERITED_TAIL.search(p)
+        p = p[:mark.start()] if mark else p
+        nums = _await_nums(p)
+        if not nums and linear_keys(p):
+            continue
+        if (nums and nums <= new_nums) or _await_covered(p, new):
+            continue
+        out.append(p)
+    return out
+
+
 def _nums_phrase(nums: Sequence[str]) -> str:
     """``146–153`` для сплошного ряда, иначе перечисление ``146, 149, 153``.
 
@@ -3085,6 +3227,13 @@ def _thread_word(thread_entry: Path) -> str:
     return re.sub(r"^\d+-@?", "", Path(thread_entry).name)
 
 
+def _awaiting_with_inherited(current: List[str], inherited: Sequence[str],
+                             context: Sequence[str]) -> List[str]:
+    """F77: «ждёт Гришу» этой сессии + пункты входного сида (:func:`inherit_awaiting`)."""
+    return _merge_lines(current, mark_stale_manager(
+        inherit_awaiting(inherited, current, context)))
+
+
 def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                  ) -> Dict[str, List[str]]:
     """Тела блоков контракта для *session_entry* с диска — общее у черновика и
@@ -3155,11 +3304,13 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             inherit_decisions(contract.find_body(seed_in, "decisions"),
                               labels.get("decisions", []) + decisions,
                               _thread_decisions(root, thread_entry)))),
-        AWAITING: _merge_lines(
-            labels.get("awaiting", []),
-            mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
-            block_awaiting(_auto.open_questions(root, thread_entry), works),
-            next_for_grisha(block_next(section_body(passport, "next")))),
+        AWAITING: _awaiting_with_inherited(
+            _merge_lines(
+                labels.get("awaiting", []),
+                mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
+                block_awaiting(_auto.open_questions(root, thread_entry), works),
+                next_for_grisha(block_next(section_body(passport, "next")))),
+            contract.find_body(seed_in, "awaiting"), context),
         NEXT: block_next(section_body(passport, "next")),
         INFLIGHT: inflight,
         UNANSWERED: block_unanswered(thread_entry),

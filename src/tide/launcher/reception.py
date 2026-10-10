@@ -421,18 +421,23 @@ def _lost_decisions(home: Path, rec: Dict[str, object], seed_text: str) -> List[
     (не перенесены и не «снято: …»), — тоже потеря; сверка разделов её не видит."""
     try:
         from .handoff import _origin_entry
-        from .seed_draft import INPUT_SEED_NAME, dropped_decisions
+        from .seed_draft import INPUT_SEED_NAME, dropped_awaiting, dropped_decisions
         origin = _origin_entry(Path(home), rec)
         if origin is None:
             return []
         prev = (origin / "input" / INPUT_SEED_NAME).read_text(encoding="utf-8")
         gone = dropped_decisions(prev, seed_text)
+        waits = dropped_awaiting(prev, seed_text)  # SOC-143 F77
     except Exception:  # noqa: BLE001 — уведомление не падает
         return []
-    if not gone:
-        return []
-    return ["решения прошлого сида: выпало {0} ({1})".format(
-        len(gone), clip(gone[0], 60))]
+    out = []
+    if gone:
+        out.append("решения прошлого сида: выпало {0} ({1})".format(
+            len(gone), clip(gone[0], 60)))
+    if waits:
+        out.append("«ждёт Гришу» прошлого сида: выпало {0} ({1})".format(
+            len(waits), clip(waits[0], 60)))
+    return out
 
 
 def _log(home: Path, line: str) -> None:

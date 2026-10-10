@@ -93,3 +93,87 @@ def test_f74_all_closed_reads_none_and_reception_skips(tmp_path):
     # «в работе» (F56) не съедает снятую строку
     merged = seed_draft.merge_tails(out, ["- воркер «w» — жив"])
     assert merged[0].startswith("- снято:") and merged[1].startswith("- воркер «w»")
+
+
+# --- F77 --------------------------------------------------------------------
+
+PREV = [
+    "- да на безопасность пишущей ручки (tg 3399), тап по тестовой ссылке "
+    "tg://openmessage?user_id=1&message_id=3393 (tg 3409) — через management-18 (пульс 16:43)",
+    "- ручка ответа после да Гриши на tg 3399 (из следующего шага)",
+    "- SOC-127 на проверке (In Review) — предлагаю: посмотреть и сказать слово через "
+    "менеджера; Done ставит проверяющий",
+    "- нет (решения по SOC-143 — у менеджера management-19) (пульс 18:00)",
+    "- выбрать шрифт заголовков доски (пульс 16:43)",
+]
+P_CTX = [
+    "- 2026-10-09T17:55:01 — Грише ушли tg 3539 (канал один, окон два) и ❓ 3540 "
+    "«включаем ответы с доски?» — заменяет 3399; ответ перешлёт management-19",
+    "- 2026-10-09T19:12:51 — ПЕРЕДАЧА. Ждёт Гришу: ❓ 3540 включать ли ответы с доски",
+]
+CUR = ["- ❓ 3540 включать ли ответы с доски (пульс 19:12)"]
+
+
+def test_f77_item_carries_over_partially_revoked():
+    out = seed_draft.inherit_awaiting(PREV, CUR, P_CTX)
+    assert len(out) == 2  # производные, «на проверке» и «нет» не наследуются
+    first = out[0]
+    assert "(tg 3409)" in first and "(из прошлого сида; снято: tg 3399 — «" in first
+    assert "заменяет 3399» — пульс 17:55)" in first
+    assert out[1] == "- выбрать шрифт заголовков доски (пульс 16:43) (из прошлого сида)"
+    # переходит дальше без второй пометки, снятый номер помнится
+    again = seed_draft.inherit_awaiting(out, CUR, [])
+    assert again == out
+
+
+def test_f77_fully_revoked_goes_with_reason():
+    ctx = P_CTX + ["- 2026-10-09T19:00:00 — tg 3409 снимаю: ссылку Гриша открыл сам"]
+    out = seed_draft.inherit_awaiting(PREV[:1], CUR, ctx)
+    assert out[0].startswith("- снято: да на безопасность пишущей ручки")
+    assert "tg 3399 — «" in out[0] and "tg 3409 — «tg 3409 снимаю" in out[0]
+
+
+def test_f77_revoke_without_numbers_by_words():
+    ctx = ["- 2026-10-09T19:00:00 — шрифт заголовков доски снимаю — выбрал дизайнер"]
+    out = seed_draft.inherit_awaiting(PREV[4:], [], ctx)
+    assert out[0].startswith("- снято: выбрать шрифт заголовков доски")
+
+
+def test_f77_not_duplicated_when_current_has_it():
+    cur = CUR + ["- тап по tg-ссылке (tg 3409) (пульс 19:12)"]
+    assert seed_draft.inherit_awaiting(PREV[:1], cur + ["- да по tg 3399"], []) == []
+    # 3409 уже здесь, 3399 снят пульсом — строка уходит «снято» с обеими причинами
+    out = seed_draft.inherit_awaiting(PREV[:1], cur, P_CTX)
+    assert out[0].startswith("- снято: да на безопасность") and \
+        "tg 3409 — уже в «ждёт Гришу» этого сида" in out[0]
+    assert seed_draft.inherit_awaiting(
+        PREV[4:], ["- выбрать шрифт заголовков доски (пульс 19:12)"], []) == []
+
+
+def test_f77_done_in_linear_dropped_by_existing_logic():
+    line = seed_draft.inherit_awaiting(
+        ["- принять SOC-107 и поставить Done (пульс 16:43)"], [], [])
+    assert line and seed_draft.drop_resolved(
+        line, {"SOC-107": ("Done", "completed")}) == []
+
+
+def _seed(awaiting):
+    return "## главное\n\n- x\n\n## ждёт Гришу\n\n{0}\n\n## следующий шаг\n\n- y\n".format(
+        "\n".join(awaiting))
+
+
+def test_f77_reception_reports_dropped_awaiting(tmp_path, monkeypatch):
+    prev = _seed(PREV)
+    assert seed_draft.dropped_awaiting(prev, _seed(CUR)) == [
+        seed_draft._bare(PREV[0]), seed_draft._bare(PREV[4])]
+    kept = _seed(CUR + seed_draft.inherit_awaiting(PREV, CUR, P_CTX))
+    assert seed_draft.dropped_awaiting(prev, kept) == []
+
+    origin = tmp_path / "old"
+    (origin / "input").mkdir(parents=True)
+    (origin / "input" / "handoff-seed.md").write_text(prev, encoding="utf-8")
+    import tide.launcher.handoff as handoff
+    monkeypatch.setattr(handoff, "_origin_entry", lambda home, rec: origin)
+    got = reception._lost_decisions(tmp_path, {}, _seed(CUR))
+    assert got and got[0].startswith("«ждёт Гришу» прошлого сида: выпало 2")
+    assert reception._lost_decisions(tmp_path, {}, kept) == []
