@@ -67,9 +67,14 @@ ITEM_BLOCKS = (
     ("next", "следующий шаг", ("следующий шаг",)),
     ("inflight", "в работе", ("в работе прямо сейчас",)),
     ("tails", "хвост", ("открытые хвосты",)),
+    # SOC-105: метка «страница топика отстала» из карты входа — тоже пункт «дальше»
+    ("topic", "топик", ()),
 )
 AWAITING_HEADS = ("ждёт гришу", "ждет гришу")
 WHERE_HEADS = ("где мы",)
+
+# строка карты входа: «- топик: <имя> — страница топика отстала на N ч — освежи …»
+_TOPIC_STALE = re.compile(r"^[-*]\s+топик:\s*(.*страница топика отстала.*)$", re.I)
 
 _MECHANICAL = "шов приёма закрыт механикой"
 _PULSE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s*—\s*(.+?)\s*$")
@@ -144,10 +149,13 @@ def _is_item(item: str) -> bool:
 
 
 def seed_items(seed_text: str) -> Dict[str, List[str]]:
-    """``{next, inflight, tails, awaiting}`` — пункты сида для сверки. Хвост со
+    """``{next, inflight, tails, topic, awaiting}`` — пункты сида для сверки. Хвост со
     ссылкой «см. «в работе прямо сейчас»» — повтор строки «в работе», не считается."""
     out: Dict[str, List[str]] = {}
     for key, _label, heads in ITEM_BLOCKS:
+        if key == "topic":
+            out[key] = topic_stale_items(seed_text)
+            continue
         items = [_clean(i) for i in _block(seed_text, heads)]
         items = [i for i in items if _is_item(i)]
         if key == "tails":
@@ -155,6 +163,25 @@ def seed_items(seed_text: str) -> Dict[str, List[str]]:
         out[key] = items
     out["awaiting"] = awaiting_items(seed_text, out)
     return out
+
+
+def topic_stale_items(seed_text: str) -> List[str]:
+    """Метки «страница топика отстала» из карты входа сида (SOC-105) — новая сессия
+    называет их «беру» или «снимаю: … — почему», как остальные пункты «дальше»."""
+    out: List[str] = []
+    for line in (seed_text or "").splitlines():
+        m = _TOPIC_STALE.match(line.strip())
+        if m and m.group(1).strip() not in out:
+            out.append(m.group(1).strip())
+    return out
+
+
+def _match_text(key: str, item: str) -> str:
+    """Чем пункт сверяется с пульсами: метка топика длинная («… освежи «где мы / в
+    полёте / сверено»»), а новая скажет коротко — сверяем по «страница топика <имя>»."""
+    if key != "topic":
+        return item
+    return "страница топика " + item.split(" — ", 1)[0].strip()
 
 
 def awaiting_items(seed_text: str, items: Optional[Dict[str, List[str]]] = None) -> List[str]:
@@ -421,7 +448,7 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
             seen.add(_norm(it))
             row = {"block": key, "label": label, "text": it, "status": "missing",
                    "by": "", "why": ""}
-            gone = _drop_for(it, dropped)
+            gone = _drop_for(_match_text(key, it), dropped)
             fs = work_f_ids(it)
             closed = order_closed(it, pulses)
             if gone is not None:
@@ -432,7 +459,7 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
             elif closed:
                 row.update(status="closed", by=closed)
             else:
-                ok, by = mentions(it, said)
+                ok, by = mentions(_match_text(key, it), said)
                 if ok:
                     row.update(status="named", by=by)
             rows.append(row)

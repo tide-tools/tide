@@ -2220,6 +2220,9 @@ def topic_pointer(root: Path, thread_entry: Path) -> str:
 TOPIC_MARK = "топик:"
 TOPIC_DIGEST_LINES = 8   # строк на один топик, вместе со строкой даты
 TOPIC_CLIP = 220
+# SOC-105: страница топика «отстала», если её «сверено» старше последнего пульса нити
+# больше чем на столько часов. Только метка в сиде и в шов-синке — страницу не правим.
+TOPIC_STALE_HOURS = 2
 _TOPIC_WAIT_HEAD = re.compile(r"(?i)жд[её]т\s+гриша|гриша\s+жд[её]т")
 _TOPIC_WAIT_LINE = re.compile(r"(?i)^\s*[-*]?\s*гриша\s+жд[её]т\s*:\s*(.+)$")
 _TOPIC_NEXT_FIELD = re.compile(r"(?i)^(?:что\s+)?дальше\s*:\s*(.*)$")
@@ -2300,11 +2303,63 @@ def topic_digest(topic_file: Path) -> List[str]:
     return out
 
 
-def topic_block(root: Path, thread_entry: Path) -> List[str]:
-    """Строка «топик:» + дословная выжимка каждой страницы топика (F55)."""
+_TOPIC_CHECKED = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[T ]+(\d{1,2}:\d{2}))?")
+TOPIC_STALE_TAIL = "освежи «где мы / в полёте / сверено»"
+
+
+def topic_checked_at(text: str):
+    """Когда страницу сверяли — поле «сверено:» (дата или дата и время) → datetime;
+    поля нет — ``None``; поле есть, но не читается — ``False`` (судить нельзя).
+    Только дата — конец того дня: метка не должна ошибаться в сторону тревоги."""
+    from datetime import datetime
+
+    raw = _topic_field(text, "сверено")
+    if not raw:
+        return None
+    m = _TOPIC_CHECKED.search(raw)
+    if not m:
+        return False
+    try:
+        return datetime.fromisoformat("{0}T{1}".format(m.group(1), m.group(2) or "23:59"))
+    except ValueError:
+        return False
+
+
+def topic_stale_line(topic_file: Path, last_pulse, *,
+                     hours: float = TOPIC_STALE_HOURS) -> str:
+    """Метка «страница топика отстала» (SOC-105) или ``""``. *last_pulse* — время
+    последнего пульса нити (нет пульса — метки нет). «Сверено» старше пульса больше
+    чем на *hours* ч — «отстала на N ч»; поля «сверено» нет вовсе — «не сверялась».
+    Ничего не правит: только предупреждает новую сессию."""
+    from datetime import timedelta
+
+    if last_pulse is None:
+        return ""
+    f = Path(topic_file)
+    checked = topic_checked_at(_read(f))
+    if checked is False:
+        return ""
+    if checked is None:
+        what = "отстала — не сверялась (поля «сверено» нет)"
+    else:
+        gap = last_pulse - checked
+        if gap <= timedelta(hours=hours):
+            return ""
+        what = "отстала на {0} ч".format(max(int(round(gap.total_seconds() / 3600)), 1))
+    return "  - {0} {1} — страница топика {2} — {3}".format(
+        TOPIC_MARK, f.parent.name, what, TOPIC_STALE_TAIL)
+
+
+def topic_block(root: Path, thread_entry: Path,
+                context: Optional[Sequence[str]] = None) -> List[str]:
+    """Строка «топик:» + дословная выжимка каждой страницы топика (F55) + метка
+    «страница топика отстала» (SOC-105), если по *context* нити известен пульс."""
     lines = [topic_pointer(root, thread_entry)]
+    pulse = _last_pulse_at(context) if context else None
     for f in thread_topics(root, thread_entry):
-        lines += topic_digest(f)
+        digest = topic_digest(f)
+        stale = topic_stale_line(f, pulse)
+        lines += digest[:1] + ([stale] if stale else []) + digest[1:]
     return lines
 
 
@@ -3320,7 +3375,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  labels.get("experience", [])
                                                  + layer(lays, "experience")
                                                  + contract.find_body(seed_in, "experience")))
-        + topic_block(root, thread_entry),
+        + topic_block(root, thread_entry, context),
         ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
         THREAD_SELF: [_project_name(root), _thread_word(thread_entry)],
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
