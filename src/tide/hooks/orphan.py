@@ -748,6 +748,17 @@ def cmd_orphan_tick(args) -> int:
         sys.stdout.write(plist_xml(tick_plist(home)))
         return 0
     print(tick_line(on_tick()), flush=True)
+    # SOC-179: тот же тик сбрасывает созревшие пачки пингов почты (окно 25 мин)
+    try:
+        from .. import mail
+
+        res = mail.flush_pings()
+        if res:
+            print("{0} {1}".format(datetime.now().isoformat(timespec="seconds"),
+                                   mail.flush_line(res)), flush=True)
+    except Exception as exc:  # noqa: BLE001 — таймер не падает
+        print("{0} mail-batch: ошибка: {1}".format(
+            datetime.now().isoformat(timespec="seconds"), exc), flush=True)
     return 0
 
 

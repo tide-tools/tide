@@ -152,6 +152,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # produces in real life) — lift the spawn backpressure for the suite; the
     # gate's own tests in test_arc_gates.py set a low limit explicitly.
     monkeypatch.setenv("TIDE_SPAWN_LIMIT", "0")
+    # SOC-179: пинг почты пачкой — тесты почты ждут пинг сразу; тесты пачки
+    # (test_mail_batch.py) ставят окно сами.
+    monkeypatch.setenv("TIDE_MAIL_BATCH_SEC", "0")
 
 
 def fill_entry(entry: Path, goal: str = "a real goal for the picker") -> Path:

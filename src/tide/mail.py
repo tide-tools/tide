@@ -23,7 +23,13 @@
   умер ожидальщик (kill, перезагрузка) — любой хук почты и любой ``tide mail *``
   поднимают его заново (:func:`revive_project`), без launchd/cron;
 * хуки SessionStart и UserPromptSubmit сессии нити печатают
-  «почта: N непрочитанных — tide mail ls <нить>».
+  «почта: N непрочитанных — tide mail ls <нить>»;
+* пинг пачкой (SOC-179): пинг несрочного письма копится по адресату в
+  ``<control-home>/.tide/state/mail-ping-queue.json`` и уходит одним пингом
+  «почта: N новых — tide mail ls <нить>» не чаще раза в ``$TIDE_MAIL_BATCH_SEC``
+  (1500 с; 0 — по-старому сразу); сброс — на отправке и на тике
+  ``com.tide.orphan-watch``. Сразу, как раньше: письмо от менеджера
+  (``tide whois manager``), ``--urgent``, эскалация (``tide escalate``), шов-синк.
 
 Журнал — append-only JSONL, одна строка на жест: ``sent``, ``ping``, ``ack``,
 ``alert``. Сами письма после отправки не правятся.
@@ -56,6 +62,11 @@ WATCH_ENV = "TIDE_MAIL_WATCH"
 MAX_RETRIES = 2
 PING_MAX_BYTES = 499
 AO_SESSION_ENV = "AO_SESSION_ID"
+BATCH_ENV = "TIDE_MAIL_BATCH_SEC"     # SOC-179: пинг несрочного — пачкой не чаще раза в N с
+BATCH_DEFAULT_SEC = 1500
+QUEUE_NAME = "mail-ping-queue.json"
+SEAM_SENDER = "шов-синк"              # tide.seam_sync.SENDER — его пинги приёма срочные
+ESCALATION_KIND = "escalation"        # tide.escalate.KIND
 
 _LETTER = re.compile(r"^(\d{3,})-от-(.+)\.md$")
 
@@ -193,6 +204,7 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
             # SOC-157: своё окно до тревоги менеджеру (эскалация) — None у обычного письма
             "alert_after": _alert_after(sent.get("alert_after")),
             "kind": str(sent.get("kind") or ""),
+            "urgent": bool(sent.get("urgent")),   # SOC-179: --urgent — пинг сразу, не в пачку
             # SOC-157: эскалацию закрыли явно (``tide escalate --close``) — None, если нет
             "closed": next((e for e in mine if e.get("ev") == CLOSED_EV), None),
         })
@@ -431,8 +443,13 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
         else:
             holder_ao = _holder_ao(tdir)
             targets = [holder_ao] if holder_ao else []
-    text = ping_text(rec["num"], rec["sender"], rec["first"], address_of(tdir), note=note)
+    addr = address_of(tdir)
+    text = ping_text(rec["num"], rec["sender"], rec["first"], addr, note=note)
+    home = _batch_home() if targets else None
+    if home is not None and not is_urgent(rec):
+        return _queue_ping(home, tdir, rec, targets, addr, kind, text)
     codes: List[Optional[int]] = []
+    _mark_pinged(targets)
     for to in targets:
         try:
             codes.append(_ao_send(to, text))
@@ -451,14 +468,254 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
     return ev
 
 
+# --- пинг пачкой (SOC-179, токеномика правило 3) ----------------------------------
+#
+# Каждый пинг будит голову адресата. Несрочный пинг не шлётся сразу: он ложится в
+# очередь адресата (AO-id) в ``<control-home>/.tide/state/mail-ping-queue.json``, а
+# :func:`flush_pings` отдаёт её одним пингом, если адресату не пинговали
+# :func:`batch_gap_sec` с. Сброс — сразу после постановки (адресат давно не
+# слышал почту — пинг уходит, как раньше) и на тике ``com.tide.orphan-watch``.
+# Повтор ожидальщика несрочного письма — тоже в очередь (дубль не множится).
+# Отложенное голова увидит и сама: хук UserPromptSubmit печатает «почта: N
+# непрочитанных». Нет control-home или ``$TIDE_MAIL_BATCH_SEC=0`` — сразу.
+
+_MANAGER_AO: List[str] = []   # кэш на процесс: AO-id менеджера ("" — не нашёлся)
+
+
+def batch_gap_sec() -> int:
+    """Окно пачки, с; 0 — пачки нет (пинг сразу)."""
+    raw = (os.environ.get(BATCH_ENV) or "").strip().lower()
+    if raw in ("0", "off", "no", "false", "нет"):
+        return 0
+    try:
+        val = int(float(raw)) if raw else BATCH_DEFAULT_SEC
+    except ValueError:
+        val = BATCH_DEFAULT_SEC
+    return max(val, 0)
+
+
+def _manager_ao() -> str:
+    if not _MANAGER_AO:
+        try:
+            from . import whois
+
+            _MANAGER_AO.append(str(whois.manager().get("ao_session") or "").strip())
+        except Exception:  # noqa: BLE001 — менеджер не нашёлся: никто не «от менеджера»
+            _MANAGER_AO.append("")
+    return _MANAGER_AO[0]
+
+
+def from_manager(sender: str) -> bool:
+    """Отправитель — менеджер (``tide whois manager``): его AO-id, uds-имя
+    «ao-id-xx» или AO-id в скобках подписи («… (management-28)»)."""
+    ao = _manager_ao()
+    s = (sender or "").strip()
+    if not (ao and s):
+        return False
+    return s == ao or s.startswith(ao + "-") or "({0})".format(ao) in s
+
+
+def is_urgent(rec: Dict[str, object]) -> bool:
+    """Пинг письма — сразу: ``--urgent``, эскалация, шов-синк, письмо от менеджера."""
+    return (bool(rec.get("urgent")) or rec.get("kind") == ESCALATION_KIND
+            or str(rec.get("first") or "").startswith("эскалация:")
+            or str(rec.get("sender") or "") == SEAM_SENDER
+            or from_manager(str(rec.get("sender") or "")))
+
+
+def _batch_home() -> Optional[Path]:
+    if not batch_gap_sec():
+        return None
+    try:
+        home = paths.control_home()
+    except Exception:  # noqa: BLE001 — нет control-home: пачки нет, пинг сразу
+        return None
+    return home if paths.state_dir(home).parent.is_dir() else None
+
+
+def _queue_path(home: Path) -> Path:
+    return paths.state_dir(Path(home)) / QUEUE_NAME
+
+
+class _QueueLock:
+    """flock на ``mail-ping-queue.json.lock`` — короткий, только чтение-правка-запись."""
+
+    def __init__(self, home: Path):
+        self.path = _queue_path(home).with_suffix(".json.lock")
+        self.fh = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(str(self.path), "a+")
+        try:
+            import fcntl
+
+            fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):  # pragma: no cover — не POSIX
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            self.fh.close()
+
+
+def _load_queue(home: Path) -> Dict[str, Dict[str, object]]:
+    try:
+        data = json.loads(_queue_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    pend = data.get("pending") if isinstance(data.get("pending"), dict) else {}
+    last = data.get("last") if isinstance(data.get("last"), dict) else {}
+    return {"pending": pend, "last": last}
+
+
+def _save_queue(home: Path, data: Dict[str, Dict[str, object]]) -> None:
+    f = _queue_path(home)
+    tmp = f.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(str(tmp), str(f))
+
+
+def _mark_pinged(targets: List[str], when: Optional[datetime] = None) -> None:
+    """Прямой (срочный) пинг тоже будит голову — окно пачки адресата от него."""
+    home = _batch_home() if targets else None
+    if home is None:
+        return
+    try:
+        with _QueueLock(home):
+            data = _load_queue(home)
+            for to in targets:
+                data["last"][to] = _iso(when or _now())
+            _save_queue(home, data)
+    except Exception:  # noqa: BLE001 — витрина окна не смеет сломать пинг
+        pass
+
+
+def _queue_ping(home: Path, tdir: Path, rec: Dict[str, object], targets: List[str],
+                addr: str, kind: str, text: str) -> Dict[str, object]:
+    """Поставить пинг письма в очереди адресатов; жест ``ping`` с ``queued`` — в
+    журнал (часы повтора идут от постановки). Затем — сброс созревших адресатов."""
+    at = _iso(_now())
+    with _QueueLock(home):
+        data = _load_queue(home)
+        for to in targets:
+            row = data["pending"].setdefault(to, [])
+            if not isinstance(row, list):
+                row = data["pending"][to] = []
+            if any(e.get("tdir") == str(tdir) and e.get("num") == rec["num"]
+                   for e in row if isinstance(e, dict)):
+                continue   # повтор того же письма: пинг уже ждёт в пачке
+            row.append({"tdir": str(tdir), "addr": addr, "num": rec["num"],
+                        "sender": rec["sender"], "first": rec["first"], "at": at,
+                        "text": text})
+        _save_queue(home, data)
+    ev: Dict[str, object] = {"ev": "ping", "num": rec["num"], "at": at,
+                             "to": ", ".join(targets), "code": None, "kind": kind,
+                             "queued": True, "bytes": len(text.encode("utf-8"))}
+    if len(targets) > 1:
+        ev["to_all"] = targets
+    _append(tdir, ev)
+    try:
+        flushed = flush_pings(home, only=targets)
+    except Exception:  # noqa: BLE001 — сброс не смеет сломать отправку; добьёт тик
+        flushed = []
+    sent = [f for f in flushed if f.get("to") in targets and f.get("sent")]
+    if sent:
+        ev = dict(ev, queued=False, code=sent[0].get("code"), batch=True)
+    return ev
+
+
+def batch_text(rows: List[Dict[str, object]]) -> str:
+    """Один пинг на пачку: одно письмо — его обычный пинг; несколько —
+    «почта: N новых — tide mail ls <нить>[; tide mail ls <нить2>]» (< 500 байт)."""
+    if len(rows) == 1 and rows[0].get("text"):
+        return str(rows[0]["text"])
+    addrs = list(dict.fromkeys(str(r.get("addr") or "") for r in rows))
+    text = "почта: {0} новых — {1}".format(
+        len(rows), "; ".join("tide mail ls {0}".format(a) for a in addrs if a))
+    b = text.encode("utf-8")
+    if len(b) > PING_MAX_BYTES:
+        text = b[:PING_MAX_BYTES - 3].decode("utf-8", errors="ignore").rstrip() + "…"
+    return text
+
+
+def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None,
+                now: Optional[datetime] = None, force: bool = False) -> List[Dict[str, object]]:
+    """Отдать созревшие пачки: адресату не пинговали :func:`batch_gap_sec` с →
+    один пинг на все его непрочитанные письма из очереди (прочитанные — прочь без
+    пинга). → ``[{to, n, sent, code | why}]`` по каждому адресату с очередью.
+    Шлёт вне лока; жест ``ping`` с ``kind: batch`` — в журнал каждого письма."""
+    from .launcher.autohandoff import _ao_send
+
+    if home is None:
+        home = _batch_home()
+        if home is None:
+            return []
+    home = Path(home)
+    if not _queue_path(home).is_file():
+        return []
+    now = now or _now()
+    gap = batch_gap_sec()
+    due: Dict[str, List[Dict[str, object]]] = {}
+    report: List[Dict[str, object]] = []
+    with _QueueLock(home):
+        data = _load_queue(home)
+        for to in list(data["pending"]):
+            if only is not None and to not in only:
+                continue
+            rows = [r for r in data["pending"][to] if isinstance(r, dict)]
+            live: List[Dict[str, object]] = []
+            for r in rows:
+                try:
+                    if not letter(Path(str(r["tdir"])), r["num"])["acked"]:
+                        live.append(r)
+                except Exception:  # noqa: BLE001 — письмо/нить пропали: пинговать нечего
+                    continue
+            if not live:
+                del data["pending"][to]
+                report.append({"to": to, "n": 0, "sent": False, "why": "прочитано"})
+                continue
+            last = _parse_iso(str(data["last"].get(to) or ""))
+            wait = gap - (now - last).total_seconds() if last else 0
+            if wait > 0 and not force:
+                data["pending"][to] = live
+                report.append({"to": to, "n": len(live), "sent": False,
+                               "why": "окно ещё {0} с".format(int(wait))})
+                continue
+            due[to] = live
+            del data["pending"][to]
+            data["last"][to] = _iso(now)
+        _save_queue(home, data)
+    for to, rows in due.items():
+        text = batch_text(rows)
+        try:
+            code = _ao_send(to, text)
+        except Exception:  # noqa: BLE001
+            code = -1
+        report.append({"to": to, "n": len(rows), "sent": True, "code": code})
+        for r in rows:
+            try:
+                _append(Path(str(r["tdir"])), {
+                    "ev": "ping", "num": r["num"], "at": _iso(now), "to": to,
+                    "code": code, "kind": "batch", "batch": len(rows),
+                    "bytes": len(text.encode("utf-8"))})
+            except Exception:  # noqa: BLE001
+                pass
+    return report
+
+
 def send(ref: str, text: str, *, sender: Optional[str] = None,
          root: Optional[Path] = None, do_ping: bool = True,
          watch: Optional[bool] = None, alert_after_min: Optional[float] = None,
-         kind: str = "") -> Dict[str, object]:
+         kind: str = "", urgent: bool = False) -> Dict[str, object]:
     """Положить письмо в ящик нити, пингнуть ведущую сессию, завести ожидальщика.
 
     *alert_after_min* (SOC-157, ``tide escalate``): без квитанции столько минут от
-    отправки — ожидальщик сразу шлёт тревогу менеджеру, не дожидаясь повторов."""
+    отправки — ожидальщик сразу шлёт тревогу менеджеру, не дожидаясь повторов.
+    *urgent* (SOC-179): пинг сразу, мимо пачки (и повторы тоже)."""
     if not (text or "").strip():
         raise MailError("mail: пустое письмо")
     tdir, want = target(ref, root)
@@ -480,6 +737,8 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
                                   "first": _first_line(text)[:200]}
     if kind:
         sent_ev["kind"] = kind
+    if urgent:
+        sent_ev["urgent"] = True
     if to_row is not None:
         sent_ev["to_session"] = str(to_row["name"])
         if to_row["ao"]:
@@ -793,10 +1052,14 @@ def _cmd_send(args) -> int:
     else:
         text = args.text
     _revive_cli()
-    out = send(args.thread, text, sender=args.sender, do_ping=not args.no_ping)
+    out = send(args.thread, text, sender=args.sender, do_ping=not args.no_ping,
+               urgent=args.urgent)
     p = out["ping"] or {}
     if not args.no_ping:
-        if p.get("to"):
+        if p.get("queued"):
+            how = ("пинг {0} — в пачку: уйдёт одним пингом не позже чем через {1} мин "
+                   "(срочное — --urgent)").format(p["to"], max(1, batch_gap_sec() // 60))
+        elif p.get("to"):
             how = "пинг {0} → код {1}".format(p["to"], p.get("code"))
             if p.get("to_all"):
                 how += " ({0})".format(LIVE_NOTE.format(len(p["to_all"])))
@@ -847,6 +1110,22 @@ def _cmd_watch(args) -> int:
     return 0
 
 
+def flush_line(res: List[Dict[str, object]]) -> str:
+    """Строка в лог тика: «mail-batch: → X 3 письма (код 0); Y ждёт: окно ещё 600 с»."""
+    parts = []
+    for r in res:
+        if r.get("sent"):
+            parts.append("→ {0} {1} пис. (код {2})".format(r["to"], r["n"], r.get("code")))
+        else:
+            parts.append("{0} {1} пис.: {2}".format(r["to"], r["n"], r.get("why")))
+    return "mail-batch: " + ("; ".join(parts) if parts else "очередь пуста")
+
+
+def _cmd_flush(args) -> int:
+    print(flush_line(flush_pings(force=args.force)))
+    return 0
+
+
 def _cmd_retry(args) -> int:
     tdir = target(args.thread)[0]
     for r in unread(tdir):
@@ -859,7 +1138,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "mail", help="thread mail: letters as files in the thread's inbox, ack on read, "
                      "re-ping until read (SOC-143)")
-    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|watch>")
+    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|flush|watch>")
 
     s = sub.add_parser("send", help="drop a letter into <thread>/inbox and ping its holder")
     s.add_argument("thread", help="<нить> | <проект>/<нить>[@<ao-id | сессия>] — "
@@ -868,6 +1147,9 @@ def register(subparsers) -> None:
     s.add_argument("--file", help="read the letter from a file (no size limit)")
     s.add_argument("--from", dest="sender", help="who writes (default: $AO_SESSION_ID)")
     s.add_argument("--no-ping", action="store_true", help="only drop the file")
+    s.add_argument("--urgent", action="store_true",
+                   help="ping now, not in the batch (SOC-179: non-urgent pings go out "
+                        "together at most once per $TIDE_MAIL_BATCH_SEC, 1500 s)")
     s.set_defaults(func=_cmd_send, _cmd="mail send")
 
     r = sub.add_parser("read", help="print a letter and record the ack")
@@ -890,10 +1172,16 @@ def register(subparsers) -> None:
     w.add_argument("num", nargs="?", help="ignored: the watcher serves the whole inbox")
     w.set_defaults(func=_cmd_watch, _cmd="mail watch")
 
+    fl = sub.add_parser("flush", help="send due batched pings now (the orphan-watch tick "
+                                      "does it every 2 min); --force ignores the window")
+    fl.add_argument("--force", action="store_true")
+    fl.set_defaults(func=_cmd_flush, _cmd="mail flush")
+
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
-__all__ = ["CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
+__all__ = ["BATCH_ENV", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
+           "from_manager", "is_urgent", "CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
            "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
            "pending", "retry_minutes", "revive", "revive_project", "send", "session_line", "step", "thread_dir", "unread", "watch",
