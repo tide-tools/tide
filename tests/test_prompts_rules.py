@@ -51,6 +51,8 @@ def test_window_rules_ride_in_role_prompts_and_seed():
     assert e.SUBAGENT_RESULT_RULE in s and e.MAIL_RULE in s
     # SOC-166: правило троттлинга — в сиде и у ведущей (Agent хук не видит)
     assert e.THROTTLE_RULE in s and e.THROTTLE_RULE in orch
+    # SOC-179: правило моделей — в сиде
+    assert e.MODEL_RULE in s and "model: sonnet" in e.MODEL_RULE
 
 
 def test_test_wait_rule_rides_in_worker_template_and_seed():

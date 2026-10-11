@@ -47,6 +47,10 @@ THROTTLE_RULE = ("троттлинг: перед новым сабагентом
                  "status; на паузе новые сабагенты не запускай, доведи шаг до коммита; "
                  "потолок агентов достигнут — жди; окно ≥85% — только точечные тесты")
 
+# SOC-179 (токеномика): рутину помощников — на Sonnet, код и ревью — на Opus.
+MODEL_RULE = ("модели: рутина помощников — model: sonnet (поиск, чтение, Explore, прогоны, "
+              "смоук, сводки); код и ревью — Opus; долгие прогоны в фоне, проверка кусками ≤4 мин")
+
 
 def ao_send_hint(chars: int) -> str:
     """Подсказка role-gate на длинный ao send (не отказ — отправка идёт)."""
@@ -56,8 +60,9 @@ def ao_send_hint(chars: int) -> str:
 
 def window_rules() -> str:
     """Правила окна для сида: итог сабагента, тесты в фоне (management-25),
-    ao send — сигнал, троттлинг (SOC-166)."""
-    return "\n".join((SUBAGENT_RESULT_RULE, TEST_WAIT_RULE, MAIL_RULE, THROTTLE_RULE))
+    ao send — сигнал, троттлинг (SOC-166), модели (SOC-179)."""
+    return "\n".join((SUBAGENT_RESULT_RULE, TEST_WAIT_RULE, MAIL_RULE, THROTTLE_RULE,
+                      MODEL_RULE))
 
 
 def seed_rules() -> str:

@@ -74,7 +74,7 @@ def _esc_rules() -> str:
     return "**Правила.** " + ". ".join((
         escalate.EXP_RULE, escalate.ESCALATE_RULE,
         escalate.SUBAGENT_RESULT_RULE, escalate.TEST_WAIT_RULE, escalate.MAIL_RULE,
-        escalate.THROTTLE_RULE)) + "."
+        escalate.THROTTLE_RULE, escalate.MODEL_RULE)) + "."
 
 
 # --- prompt resolution -----------------------------------------------------
