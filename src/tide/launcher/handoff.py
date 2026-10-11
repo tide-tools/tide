@@ -264,6 +264,19 @@ def _manager_header_line() -> str:
     return "отчитываешься менеджеру: адрес — tide whois manager (сейчас не нашёлся)"
 
 
+def _grisha_decisions(thread_entry: Path) -> str:
+    """Строка договорённостей + решения Гриши по проекту нити за 3 суток (SOC-102).
+
+    Проект — имя в ростере для корня нити (<корень>/.tide/arcs/NN-@нить); ошибка — только строка."""
+    from .. import grisha_decisions as _gd
+    try:
+        from .. import roster as _roster
+        project = _roster.name_for_path(Path(thread_entry).parents[2])
+    except Exception:  # noqa: BLE001  no control-home — dir name
+        project = Path(thread_entry).parents[2].name if len(Path(thread_entry).parents) > 2 else ""
+    return _gd.seed_text(project)
+
+
 def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
     """Prepend the thread's THROUGHLINE to a seed so the idea survives the chain.
 
@@ -311,6 +324,8 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         lines.append(_esc.window_rules())
         # SOC-157: опыт пишется сразу, застрял — эскалируй (пороги — tide.escalate_rules)
         lines.append(_esc.seed_rules())
+        # SOC-102: договорённости ссылкой и решения Гриши по проекту за 3 суток
+        lines.append(_grisha_decisions(thread_entry))
         return "{0}\n---\n\n{1}".format("\n".join(lines), distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff
         return distil

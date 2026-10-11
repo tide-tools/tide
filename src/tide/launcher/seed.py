@@ -158,6 +158,7 @@ def build_seed(
     thread_name: Optional[str] = None,
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
+    decisions_text: Optional[str] = None,
 ) -> str:
     """Assemble the seed string from already-resolved pieces (pure, no I/O).
 
@@ -186,6 +187,10 @@ def build_seed(
         "## CANON.md — {0}".format(project_name),
         canon_text.strip() if canon_text.strip() else "(no canon yet — run 'tide canon init')",
     ]
+
+    if decisions_text and decisions_text.strip():
+        # SOC-102: договорённости ссылкой и решения Гриши по проекту за 3 суток
+        lines += ["", "## Договорённости и решения Гриши", decisions_text.strip()]
 
     if arc_ref:
         if thread_name:
@@ -289,6 +294,16 @@ def seed_for_project(
                 menu_mod.active_entries(roster_mod.read_roster(home))
             )
 
+    # SOC-102: договорённости ссылкой и решения Гриши по проекту (имя в ростере) за 3 суток
+    from .. import grisha_decisions as _gd
+    try:
+        from .. import roster as roster_name_mod
+        roster_name = roster_name_mod.name_for_path(
+            root, home=Path(control_home) if control_home is not None else None)
+    except Exception:  # noqa: BLE001  no control-home — dir name
+        roster_name = project_name
+    decisions_text = _gd.seed_text(roster_name)
+
     return build_seed(
         project_name=project_name,
         role=role,
@@ -299,4 +314,5 @@ def seed_for_project(
         thread_name=thread_name,
         prompt_text=prompt_text,
         launch_cmd=launch_command(project_name, arc_ref),
+        decisions_text=decisions_text,
     )

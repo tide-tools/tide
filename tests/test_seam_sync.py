@@ -268,27 +268,32 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     from tide.launcher import handoff
 
     monkeypatch.setattr(whois, "manager_address", lambda default="": "management-14")
+    # SOC-102: журнала решений нет — в хвосте одна строка договорённостей, без блока решений
+    monkeypatch.setenv("TIDE_AGREEMENTS_DIR", str(tmp_project / "no-agreements"))
+    monkeypatch.delenv("TIDE_DECISIONS_FILE", raising=False)
     thread = stream.new_thread(tmp_project, "main", goal="главная нить")
     stream.new_session(tmp_project, "main", "main-3", goal="шаг")
     new = stream.new_session(tmp_project, "main", "main-4", goal="шаг")
     fields.set_field(new / "arc.md", "from", "main-3")
     head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
-    assert head[-8].startswith("правила: работа → в workspace/ своей арки")
+    assert head[-9].startswith("правила: работа → в workspace/ своей арки")
     # срезы окна п.2–3 (tg 1223): итог сабагента короткий, ao send — только сигнал
     from tide import escalate_rules
-    assert head[-7] == escalate_rules.SUBAGENT_RESULT_RULE
+    assert head[-8] == escalate_rules.SUBAGENT_RESULT_RULE
     # management-25: тесты дольше ~4,5 мин — в фоне, из константы
-    assert head[-6] == escalate_rules.TEST_WAIT_RULE
-    assert head[-5] == escalate_rules.MAIL_RULE
-    assert "только сигнал" in head[-5] and "tide mail send <проект>/<нить>" in head[-5]
+    assert head[-7] == escalate_rules.TEST_WAIT_RULE
+    assert head[-6] == escalate_rules.MAIL_RULE
+    assert "только сигнал" in head[-6] and "tide mail send <проект>/<нить>" in head[-6]
     # SOC-166: сабагентов хук не видит — их держит правило троттлинга
-    assert head[-4] == escalate_rules.THROTTLE_RULE and "tide throttle status" in head[-4]
+    assert head[-5] == escalate_rules.THROTTLE_RULE and "tide throttle status" in head[-5]
     # SOC-179: рутина помощников — на Sonnet, код и ревью — на Opus
-    assert head[-3] == escalate_rules.MODEL_RULE and "model: sonnet" in head[-3]
+    assert head[-4] == escalate_rules.MODEL_RULE and "model: sonnet" in head[-4]
     assert sum("почта:" in ln for ln in head) == 1  # ужесточили, не продублировали
     # SOC-157: опыт сразу + «не справляешься — tide escalate»
     from tide import escalate
-    assert head[-2] == escalate.EXP_RULE and head[-1] == escalate.ESCALATE_RULE
+    assert head[-3] == escalate.EXP_RULE and head[-2] == escalate.ESCALATE_RULE
+    # SOC-102: договорённости ссылкой — последней строкой шапки
+    assert head[-1] == "договорённости: {0}/ (читать на старте)".format(tmp_project / "no-agreements")
 
 
 # --- поправки живой пары 04→05 ----------------------------------------------------
