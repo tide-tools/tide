@@ -44,6 +44,22 @@ JOURNAL_SHARE = 0.30
 # строкой, где лежит полное. Одно место: меняется только здесь.
 SEED_MAX_BYTES = 40_000
 
+# Бюджет сида в ЗНАКАХ (SOC-181 шаг б, аудит 060 п.1): весь ``handoff-seed.md`` кроме блока
+# личности — не больше стольких знаков (``len(str)``). Роли — 12 000, нить менеджера — 16 000
+# (признак — :func:`tide.launcher.seed_budget.is_manager_thread`; явно — поле ``seed-budget:``
+# goal-файла нити). Раскладывает :mod:`tide.launcher.seed_budget` по квотам блоков; что не
+# влезло — целиком в ``input/seed-archive.md`` новой сессии, в сиде строка-ссылка. Потолок
+# :data:`SEED_MAX_BYTES` остаётся страховкой только для свободного текста передачи (без
+# блоков контракта): у разложенного сида бюджет знаков строже.
+SEED_BUDGET_CHARS = 12_000
+SEED_BUDGET_MANAGER_CHARS = 16_000
+SEED_BUDGET_FIELD = "seed-budget"
+SEED_ARCHIVE_NAME = "seed-archive.md"
+# Слой «ожидание Гриши» в сиде (п.9) — не больше стольких знаков; «ждёт Гришу» (п.7) —
+# не больше стольких пунктов.
+SEED_EXPECTATION_CHARS = 2_000
+SEED_AWAITING_MAX = 7
+
 # Опыт в сиде (SOC-181): свежее за столько часов — всё; старше — не больше
 # EXPERIENCE_TOP самых частых уроков, остальное — ссылкой на слой нити.
 EXPERIENCE_FRESH_HOURS = 24
@@ -78,11 +94,11 @@ BLOCKS: Tuple[Block, ...] = (
           "«главное» в plan.md нити не записано — SOC-N, кому сдавать и с кем не "
           "дублировать неизвестны"),
     Block("expectation", "ожидание Гриши", PROSE,
-          ("ожидание", "финал", "от а к б", "что выкачено", "итог"),
+          ("ожидание", "финал", "от а к б", "что выкачено", "итог", "слова гриши"),
           "источник пуст: слой «ожидание Гриши» в goal-файле нити, метки «Ожидание:» / "
           "«Ожидание Гриши:» и цитаты Гриши «…» в пульсах сессии и журнале нити"),
     Block("where", "где мы", PROSE,
-          ("курсор", "состояние"),
+          ("курсор", "состояние", "сегодня"),
           "источник пуст: слой «где мы» нити, курсор и пульс сессии"),
     Block("experience", "опыт", LIST,
           ("отвергнуто", "петли", "грабли", "уроки"),
@@ -93,7 +109,7 @@ BLOCKS: Tuple[Block, ...] = (
           "источник пуст: метки «Решения:» в пульсах сессии, decisions.md нити, "
           "нить-предшественница, решения входного сида"),
     Block("linear", "задачи Linear", LIST,
-          ("linear",),
+          ("linear", "мои открытые soc"),
           "задач Linear в сиде не упомянуто"),
     Block("awaiting", "ждёт Гришу", LIST,
           ("ждет гришу",),
@@ -107,14 +123,15 @@ BLOCKS: Tuple[Block, ...] = (
           "источник пуст: метки «В полёте:» в пульсах сессии, входящие поручения в "
           "транскрипте за жизнь сессии (с её приёма), открытые пункты работ нити"),
     Block("unanswered", "неотвеченные реплики Гриши", LIST,
-          ("неотвеченн", "хвост диалога"),
+          ("неотвеченн", "хвост диалога", "почта"),
           "журнала диалога нет — реплик не видно"),
     Block("entry_map", "карта входа", LIST,
           ("карта", "reading-path", "что читать"),
           "карту входа не написали"),
     Block("environment", "окружение", PROSE,
           ("среда", "как работать", "как просил"),
-          "окружение не унаследовано (во входном сиде его нет или голый прочерк)"),
+          "окружение из сида в сид не переносится — сверь вживую: ao session ls, "
+          "git rev-parse HEAD, версия прода"),
     Block("journal", "сырой журнал", LIST,
           ("журнал сессии", "сырой"),
           "пульса старше курсора нет"),
@@ -222,6 +239,9 @@ TAILS_EMPTY = ("(хвостов в пульсах не названо: метк�
 # иначе «В полёте: ничего. Адресаты: …» унёс бы адресатов в «в работе».
 PULSE_STOP_LABELS: Tuple[str, ...] = (
     r"где\s+мы", r"адресаты", r"таблица", r"сделано", r"дальше", r"курсор",
+    # SOC-181: «Нельзя: …» — правила Гриши, не пункты «ждёт Гришу»; сид берёт их в
+    # «слова Гриши» (:func:`tide.launcher.seed_budget.pulse_words`)
+    r"нельзя",
 )
 
 
@@ -335,7 +355,9 @@ def missing(heads: Iterable[str]) -> Tuple[str, ...]:
     return tuple(out)
 
 
-__all__ = ["AUDIT_SECTIONS", "BLOCKS", "Block", "EMPTY", "HANDOFF_TOKENS",
+__all__ = ["AUDIT_SECTIONS", "BLOCKS", "Block", "EMPTY", "HANDOFF_TOKENS", "SEED_ARCHIVE_NAME",
+           "SEED_AWAITING_MAX", "SEED_BUDGET_CHARS", "SEED_BUDGET_FIELD",
+           "SEED_BUDGET_MANAGER_CHARS", "SEED_EXPECTATION_CHARS", "SEED_MAX_BYTES",
            "JOURNAL_SHARE", "LIST", "NAMES", "PROSE", "PULSE_LABELS", "PULSE_STOP_LABELS",
            "SEED_CONTRACT", "TAILS_EMPTY", "TAILS_NAME", "TAILS_NONE", "THREAD_LAYERS", "block", "empty_line", "find_body", "missing",
            "name", "names_of", "norm", "pulse_head", "pulse_labels"]

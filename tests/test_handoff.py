@@ -372,7 +372,9 @@ def test_throughline_omits_auto_goal_but_keeps_rules(tmp_project, monkeypatch, t
                         summary="# distil\n\nСледующий шаг: X\n", from_session="o1")
     seed = _latest_seed(tmp_project, "debug-deck")
     assert "идёт к:" not in seed                    # no lying auto-goal line
-    assert "правила: работа" in seed                # iron rules still delivered
+    # iron rules still delivered — одной ссылкой на файл правил нити (SOC-181 п.8)
+    from tide import escalate_rules
+    assert escalate_rules.rules_line() in seed
 
 
 def test_throughline_keeps_a_real_goal(tmp_project, monkeypatch, tmp_path):

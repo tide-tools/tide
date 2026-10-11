@@ -35,10 +35,12 @@ def test_where_replaces_and_journals(world):
     tl.write_layers(goal, {"where": "SOC-106 Done · счёт 3/5", "expectation": "«к пятнице»"},
                     now=datetime(2026, 10, 9, 17, 27))
     text = goal.read_text(encoding="utf-8")
-    where = text[text.index("## where we are"):text.index(tl.JOURNAL_HEAD)]
+    where = text[text.index("## where we are"):]
     assert "SOC-106 Done · счёт 3/5" in where
     assert "In Review" not in where  # противоречие не копится
-    journal = text[text.index(tl.JOURNAL_HEAD):]
+    # SOC-181 п.9: журнал слоёв — отдельным файлом рядом, не в goal-файле
+    assert tl.JOURNAL_HEAD not in text
+    journal = tl.goal_log_path(goal).read_text(encoding="utf-8")
     assert "### где мы — заменено 09.10 17:27" in journal
     assert "- 09.10 08:36 — SOC-106 In Review · счёт 0/1" in journal  # не потерялось
     assert tl.empty_layers(world["thread"]) == ["опыт"]
@@ -60,7 +62,7 @@ def test_journal_newest_on_top(world):
     goal = _goal(world)
     for h, w in ((8, "один"), (9, "два"), (10, "три")):
         tl.write_layers(goal, {"where": w}, now=datetime(2026, 10, 9, h, 0))
-    j = goal.read_text(encoding="utf-8").split(tl.JOURNAL_HEAD, 1)[1]
+    j = tl.goal_log_path(goal).read_text(encoding="utf-8")
     assert j.index("заменено 09.10 10:00") < j.index("заменено 09.10 09:00")
     assert "— два" in j and "— один" in j and "— три" not in j
 

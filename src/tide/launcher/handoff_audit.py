@@ -307,6 +307,11 @@ def audit(home: Path, key: str) -> Dict[str, object]:
         raise AuditError("handoffs audit: у оффера {0} нет сида на диске ({1})".format(
             rec["name"], rec.get("seed")))
     seed_text = seed_draft._read(seed_path)
+    # SOC-181: что не влезло в бюджет сида — в архиве рядом; сверяем сид вместе с ним
+    from .seed_budget import read_archive
+    archive = read_archive(seed_path)
+    if archive:
+        seed_text = seed_text.rstrip() + "\n\n" + archive
     session_dir = seed_path.parent.parent
     thread_dir = session_dir.parent.parent
     cutoff = _cutoff(rec)

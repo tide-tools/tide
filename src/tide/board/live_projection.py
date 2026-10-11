@@ -1041,19 +1041,33 @@ def _seed_norm(head):
 
 
 def _seed_sections(path):
-    """Секции `## …` сида → {нормализованное имя: строки тела}. None — не читается."""
+    """Секции `## …` сида → {нормализованное имя: строки тела}. None — не читается.
+    SOC-181: блоки, которые сид держит только в архиве (`input/seed-archive.md` рядом:
+    решения, окружение, сырой журнал, полное «главное»), досчитываются из архива."""
     try:
         text = Path(path).read_text(encoding="utf-8", errors="ignore")
     except (OSError, TypeError):
         return None
-    out, name = {}, None
-    for line in text.splitlines():
-        m = re.match(r"##\s+(.+?)\s*$", line)
-        if m:
-            name = _seed_norm(m.group(1))
-            out.setdefault(name, [])
-        elif name is not None:
-            out[name].append(line)
+
+    def parse(txt):
+        got, name = {}, None
+        for line in txt.splitlines():
+            m = re.match(r"##\s+(.+?)\s*$", line)
+            if m:
+                name = _seed_norm(m.group(1))
+                got.setdefault(name, [])
+            elif name is not None:
+                got[name].append(line)
+        return got
+
+    out = parse(text)
+    try:
+        arch = (Path(path).parent / "seed-archive.md").read_text(encoding="utf-8",
+                                                                  errors="ignore")
+    except (OSError, TypeError):
+        arch = ""
+    for name, lines in parse(arch).items():
+        out.setdefault(name, lines)
     return out
 
 

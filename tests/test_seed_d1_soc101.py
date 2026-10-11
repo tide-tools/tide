@@ -282,9 +282,10 @@ def test_seed_header_says_who_you_are_and_live_manager(tmp_project, monkeypatch)
     head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
     assert head[1] == ("идёт к: главная нить tide-stack: ведёт работу проекта и управляет "
                        "нитями handoffs и board")
-    assert head[2] == "ты — main · {0}, продолжаешь после main · {1}".format(
+    # SOC-181 п.8: кто ты и менеджер — одной строкой шапки
+    assert head[2] == ("ты — main · {0}, продолжаешь после main · {1}; менеджер: management-14 "
+                       "(tide whois manager на момент сборки)").format(
         new.name.split("-")[0], old.name.split("-")[0])
-    assert head[3] == "отчитываешься менеджеру: management-14 (tide whois manager на момент сборки)"
     assert "ao-control" not in "\n".join(head) and "продолжаешь сессию" not in "\n".join(head)
 
 

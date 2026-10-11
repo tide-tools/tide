@@ -195,7 +195,7 @@ def test_seal_marks_main_and_awaiting(monkeypatch):
 def test_environment_bare_dash_is_not_inherited():
     assert seed_draft.block_environment(["—", ""]) == []
     seed = seed_draft.render_draft({seed_draft.ENVIRONMENT: seed_draft.block_environment(["—"])})
-    assert _block(seed, "окружение").startswith("— окружение не унаследовано")
+    assert _block(seed, "окружение").startswith("— окружение из сида в сид не переносится")
     assert seed_draft.block_environment(["- ao: tide-stack-25"]) == ["- ao: tide-stack-25"]
 
 

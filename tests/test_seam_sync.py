@@ -276,27 +276,23 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     new = stream.new_session(tmp_project, "main", "main-4", goal="шаг")
     fields.set_field(new / "arc.md", "from", "main-3")
     head = handoff._with_throughline(thread, new, "# сид").split("\n---\n")[0].splitlines()
-    assert head[-10].startswith("правила: работа → в workspace/ своей арки")
-    # срезы окна п.2–3 (tg 1223): итог сабагента короткий, ao send — только сигнал
-    from tide import escalate_rules
-    assert head[-9] == escalate_rules.SUBAGENT_RESULT_RULE
-    # management-25: тесты дольше ~4,5 мин — в фоне, из константы
-    assert head[-8] == escalate_rules.TEST_WAIT_RULE
-    assert head[-7] == escalate_rules.MAIL_RULE
-    assert "только сигнал" in head[-7] and "tide mail send <проект>/<нить>" in head[-7]
-    # SOC-166: сабагентов хук не видит — их держит правило троттлинга
-    assert head[-6] == escalate_rules.THROTTLE_RULE and "tide throttle status" in head[-6]
-    # SOC-179: рутина помощников — на Sonnet, код и ревью — на Opus
-    assert head[-5] == escalate_rules.MODEL_RULE and "model: sonnet" in head[-5]
-    assert sum("почта:" in ln for ln in head) == 1  # ужесточили, не продублировали
-    # SOC-157: опыт сразу + «не справляешься — tide escalate»
-    from tide import escalate
-    assert head[-4] == escalate.EXP_RULE and head[-3] == escalate.ESCALATE_RULE
-    # SOC-102: договорённости ссылкой; SOC-181: рядом — грабли всех проектов, последней
-    assert head[-2] == "договорённости: {0}/ (читать на старте)".format(tmp_project / "no-agreements")
-    from tide import grisha_decisions
-    assert head[-1] == "грабли всех проектов: {0} (читать на старте)".format(
+    # SOC-181 п.8: шапка — до 6 строк; правила нити (почта, троттлинг, модели, тесты, итог
+    # сабагента, опыт, эскалация) — одной ссылкой на файл, текст правил в сиде не копируется
+    from tide import escalate, escalate_rules, grisha_decisions
+    assert head[0].startswith("## нить") and len(head) <= 6
+    links = head[-1].split(" · ")
+    assert links[0] == escalate_rules.rules_line()
+    assert links[1] == "договорённости: {0}/ (читать на старте)".format(tmp_project / "no-agreements")
+    assert links[2] == "грабли всех проектов: {0} (читать на старте)".format(
         grisha_decisions.gotchas_file())
+    text = "\n".join(head)
+    for rule in (escalate_rules.SUBAGENT_RESULT_RULE, escalate_rules.MAIL_RULE,
+                 escalate_rules.THROTTLE_RULE, escalate_rules.MODEL_RULE,
+                 escalate.EXP_RULE, escalate.ESCALATE_RULE):
+        assert rule not in text
+    rules = escalate_rules.rules_file().read_text(encoding="utf-8")
+    assert "только сигнал" in rules and "tide mail send <проект>/<нить>" in rules
+    assert sum("почта:" in ln for ln in rules.splitlines()) == 1
 
 
 # --- поправки живой пары 04→05 ----------------------------------------------------

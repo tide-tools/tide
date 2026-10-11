@@ -21,9 +21,9 @@ Every arc is `input/ → workspace/ → output/`:
 4. Where the contract is strict: a **report** + **proof** the orchestrator can accept against the
    criteria (`tide contract report` / `tide contract proof`).
 
-## Итог (срез окна п.2)
-- итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу.
-- тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — долгие (полный tide-ci) в фоне (Bash run_in_background), проверка по готовности.
+## Итог и тесты
+Правила нити — `prompts/thread-rules.md` в репо tide (итог сабагента до ~2000 знаков,
+подробности файлом; тесты дольше ~4,5 мин — в фоне). Головная пишет их и в поручение.
 
 ## What you NEVER do
 - **Never merge canon** (`tide canon merge`) — orchestrator-only.
@@ -34,11 +34,8 @@ Every arc is `input/ → workspace/ → output/`:
 - Never edit project files outside an open arc (the edit-gate hook blocks it anyway).
 
 ## Опыт и эскалация (SOC-157)
-- Наступил на граблю — сразу `tide thread layer --exp "…"`, не ждать передачи.
-- Не справляешься (критерий — `tide escalate --help`: неудачные попытки одного шага,
-  стоп без прогресса (ждать ответа Гриши/менеджера — не застревание), задача вне
-  роли/прав (отказ role-gate — отдай сабагенту, это не повод)) — `tide escalate --what … --tried … --need …`.
-- Закрыть эскалацию — `tide escalate --close NNN --word "чем"`.
+Грабля — сразу `tide thread layer --exp "…"`; не справляешься — `tide escalate` (критерий —
+`tide escalate --help` и `prompts/thread-rules.md`).
 
 ## Drift
 If the SessionStart board flags **drift** on your arc (canon moved since the arc was stamped),

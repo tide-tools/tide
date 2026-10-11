@@ -432,8 +432,11 @@ def _lost_decisions(home: Path, rec: Dict[str, object], seed_text: str) -> List[
         if origin is None:
             return []
         prev = (origin / "input" / INPUT_SEED_NAME).read_text(encoding="utf-8")
-        gone = dropped_decisions(prev, seed_text)
-        waits = dropped_awaiting(prev, seed_text)  # SOC-143 F77
+        # SOC-181: ушедшее в архив сида (input/seed-archive.md рядом с сидом) — не потеря
+        from .seed_budget import read_archive
+        archive = read_archive(Path(str(rec.get("seed") or "-")))
+        gone = dropped_decisions(prev, seed_text, archive=archive)
+        waits = dropped_awaiting(prev, seed_text, archive=archive)  # SOC-143 F77
     except Exception:  # noqa: BLE001 — уведомление не падает
         return []
     out = []

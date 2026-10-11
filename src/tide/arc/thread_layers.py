@@ -169,22 +169,111 @@ def write_main(thread_dir: Path, items: List[str], *, replace: bool = False) -> 
 # и Done, разные счёты в одном сиде). Ожидание и опыт — ленты, дописываются.
 REPLACE_KEYS = ("where",)
 JOURNAL_HEAD = "## журнал слоёв"
+# SOC-181 п.9: журнал слоёв — отдельным файлом рядом с goal-файлом (<нить>-goal-log.md),
+# не внутри него: goal читают на старте (контракт п.8), журнал там — шум.
+LOG_SUFFIX = "-log"
+PLACEHOLDER_HEAD = "<тред: the work-line this thread carries>"
 
 
-def _journal(lines: List[str], name: str, stamp: str, old: List[str]) -> List[str]:
-    """Прежние строки слоя → раздел ``## журнал слоёв`` goal-файла (вне ``## where
-    we are`` — сборщик сида его не читает). Свежая запись — сверху раздела."""
+def goal_log_path(goal_path: Path) -> Path:
+    """``main-goal.md`` → ``main-goal-log.md`` рядом."""
+    goal_path = Path(goal_path)
+    return goal_path.with_name(goal_path.stem + LOG_SUFFIX + goal_path.suffix)
+
+
+def _log_text(goal_path: Path, entries: List[str], old_text: str = "") -> str:
+    """Текст файла журнала: шапка + новые записи сверху + прежние записи."""
+    head = ["# журнал слоёв — {0}".format(Path(goal_path).name), "",
+            "Прежние строки слоёв goal-файла нити (заменённое «где мы» и перенесённое при "
+            "уборке). Сборщик сида его не читает; новые записи — сверху.", ""]
+    rest = old_text.splitlines()
+    while rest and not rest[0].startswith("### "):
+        rest = rest[1:]  # старая шапка
+    body = list(entries) + rest
+    while body and not body[-1].strip():
+        body.pop()
+    return "\n".join(head + body) + "\n"
+
+
+def _journal(goal_path: Path, name: str, stamp: str, old: List[str]) -> None:
+    """Прежние строки слоя → файл журнала слоёв рядом с goal-файлом (:func:`goal_log_path`).
+    Свежая запись — сверху."""
+    log = goal_log_path(goal_path)
     entry = ["### {0} — заменено {1}".format(name, stamp)] + old + [""]
-    at = next((i for i, ln in enumerate(lines)
-               if ln.strip().lower() == JOURNAL_HEAD), -1)
+    try:
+        prev = log.read_text(encoding="utf-8")
+    except OSError:
+        prev = ""
+    _io.atomic_write(log, _log_text(goal_path, entry, prev))
+
+
+def split_journal(text: str) -> "tuple[str, List[str]]":
+    """Goal-файл → (текст без раздела ``## журнал слоёв``, строки раздела без заголовка)."""
+    lines = text.splitlines()
+    at = next((i for i, ln in enumerate(lines) if ln.strip().lower() == JOURNAL_HEAD), -1)
     if at < 0:
-        while lines and not lines[-1].strip():
-            lines = lines[:-1]
-        return lines + ["", JOURNAL_HEAD] + entry
-    rest = lines[at + 1:]
-    while rest and not rest[0].strip():
-        rest = rest[1:]
-    return lines[:at + 1] + entry + rest
+        return text, []
+    stop = next((j for j in range(at + 1, len(lines))
+                 if lines[j].startswith("## ")), len(lines))
+    body = lines[at + 1:stop]
+    while body and not body[0].strip():
+        body = body[1:]
+    kept = lines[:at] + lines[stop:]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept) + "\n", body
+
+
+def tidy_goal(goal_path: Path, *, dry_run: bool = True) -> Dict[str, object]:
+    """Уборка goal-файла нити (SOC-181 п.9): раздел «журнал слоёв» — в файл журнала рядом;
+    заголовок-плейсхолдер ``<тред: …>`` — на ``goal:`` нити, если она настоящая.
+    *dry_run* — только отчёт. Перед записью — копия ``<goal>.bak-soc181`` рядом."""
+    goal_path = Path(goal_path)
+    text = goal_path.read_text(encoding="utf-8")
+    rest, journal = split_journal(text)
+    goal = (fields.read_field(goal_path, "goal") or "").strip()
+    real_goal = goal if goal and not goal.startswith("<") else ""
+    placeholder = PLACEHOLDER_HEAD in text
+    new = rest
+    if placeholder and real_goal:
+        new = new.replace(PLACEHOLDER_HEAD, real_goal, 1)
+    jchars = len("\n".join(journal))
+    rep: Dict[str, object] = {
+        "goal": str(goal_path), "chars": len(text), "journal_chars": jchars,
+        "journal_lines": len([ln for ln in journal if ln.strip()]),
+        "placeholder": placeholder, "placeholder_fix": bool(placeholder and real_goal),
+        "log": str(goal_log_path(goal_path)), "after_chars": len(new),
+        "changed": new != text, "applied": False}
+    if dry_run or new == text:
+        return rep
+    bak = goal_path.with_name(goal_path.name + ".bak-soc181")
+    if not bak.exists():
+        _io.atomic_write(bak, text)
+    if journal:
+        log = goal_log_path(goal_path)
+        try:
+            prev = log.read_text(encoding="utf-8")
+        except OSError:
+            prev = ""
+        _io.atomic_write(log, _log_text(goal_path, journal + [""], prev))
+    _io.atomic_write(goal_path, new)
+    rep["applied"] = True
+    rep["backup"] = str(bak)
+    return rep
+
+
+def goal_files(home: Path) -> List[Path]:
+    """Goal-файлы открытых нитей всех проектов ростера (``.tide/arcs/NN-@нить/*-goal.md``)."""
+    from .. import roster as _roster
+    out: List[Path] = []
+    for e in _roster.read_roster(Path(home)):
+        arcs = Path(e.get("path", "")).expanduser() / ".tide" / "arcs"
+        if not arcs.is_dir():
+            continue
+        for d in sorted(arcs.iterdir()):
+            if d.is_dir() and "-@" in d.name and not d.name.startswith("__"):
+                out += sorted(d.glob("*-goal.md"))
+    return out
 
 
 # SOC-143 F81: штамп слоя — время записи, а не время слов. Текст, что уже начат
@@ -274,7 +363,7 @@ def write_layers(goal_path: Path, values: Dict[str, str], *,
         tail = [""] if stop < len(lines) else []
         lines = lines[:head + 1] + body + tail + lines[stop:]
         if old:
-            lines = _journal(lines, contract.name(key), stamp, old)
+            _journal(goal_path, contract.name(key), stamp, old)
         done.append(contract.name(key))
     _io.atomic_write(goal_path, "\n".join(lines).rstrip("\n") + "\n")
     if "expectation" in values:
@@ -463,6 +552,40 @@ def thread_entry(root: Path, ref: str) -> Path:
     return entry
 
 
+def cmd_goal_tidy(args) -> int:
+    """``tide thread goal-tidy <нить | путь goal-файла> [--dry-run]`` и
+    ``tide thread goal-tidy --all --dry-run`` — отчёт по всем нитям ростера (SOC-181 п.9):
+    журнал слоёв — в ``<нить>-goal-log.md`` рядом, плейсхолдер заголовка — на ``goal:``."""
+    dry = bool(getattr(args, "goal_dry", False))
+    target = (getattr(args, "target", None) or "").strip()
+    if getattr(args, "every", False):
+        if not dry:
+            raise LayersError("thread goal-tidy --all — только с --dry-run: живьём — по одной "
+                              "нити (tide thread goal-tidy <нить>)")
+        goals = goal_files(paths.control_home())
+    elif target:
+        p = Path(target).expanduser()
+        goals = [p] if p.suffix == ".md" and p.is_file() else [
+            _stream.passport_path(thread_entry(paths.require_tide_root(), target))]
+    else:
+        raise LayersError("thread goal-tidy: назови нить или goal-файл (или --all --dry-run)")
+    reps = [tidy_goal(g, dry_run=dry) for g in goals]
+    if getattr(args, "as_json", False):
+        import json as _json
+        print(_json.dumps(reps, ensure_ascii=False, indent=1))
+        return 0
+    for r in reps:
+        print("{0} · {1} зн. · журнал слоёв: {2} строк, {3} зн.{4}{5}".format(
+            r["goal"], r["chars"], r["journal_lines"], r["journal_chars"],
+            " · плейсхолдер заголовка" + (" → goal" if r["placeholder_fix"] else " (goal пуст)")
+            if r["placeholder"] else "",
+            "" if dry else (" · применено, копия {0}".format(r.get("backup"))
+                            if r["applied"] else " · менять нечего")))
+    if dry:
+        print("tide: --dry-run — ничего не записано ({0} goal-файлов)".format(len(reps)))
+    return 0
+
+
 def cmd_layers(args) -> int:
     """``tide thread layers <нить> [--seed-skeleton]``."""
     target = (getattr(args, "target", None) or "").strip()
@@ -480,6 +603,8 @@ def cmd_layers(args) -> int:
     return 0
 
 
-__all__ = ["LAYER_FLAGS", "LayersError", "cmd_layer", "cmd_layers", "empty_layers",
+__all__ = ["JOURNAL_HEAD", "LAYER_FLAGS", "LayersError", "cmd_goal_tidy", "cmd_layer",
+           "cmd_layers", "empty_layers", "goal_files", "goal_log_path", "split_journal",
+           "tidy_goal",
            "exit_warning", "freshness", "layer_cmd", "main_cmd", "seed_skeleton", "split_main",
            "thread_entry", "write_layers", "write_main"]

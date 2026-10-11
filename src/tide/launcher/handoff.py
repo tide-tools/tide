@@ -277,67 +277,124 @@ def _grisha_decisions(thread_entry: Path) -> str:
     return _gd.seed_text(project)
 
 
-def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
-    """Prepend the thread's THROUGHLINE to a seed so the idea survives the chain.
+def _origin_session(thread_entry: Path, session_born: Path) -> Optional[Path]:
+    """Передающая сессия нити — по ``from:`` паспорта новой; нет — None."""
+    from .. import fields
+    from_slug = (fields.read_field(Path(session_born) / "arc.md", "from") or "").strip()
+    origin = None
+    arcs = Path(thread_entry) / "arcs"
+    for d in (sorted(arcs.iterdir()) if arcs.is_dir() and from_slug else []):
+        if d.is_dir() and d != Path(session_born) and (
+                slug.entry_slug(d.name) == from_slug or d.name == from_slug):
+            origin = d
+    return origin
 
-    A seed lands the ONE next step — deliberately, not a survey. But across a chain
-    of handoffs (A→B→C…) each session then sees only its local step, and the ORIGINAL
-    idea erodes: proved by a 2-hop probe where neither seed carried the thread goal,
-    while it sat intact on disk (the same agent-memory dependency we mechanized away
-    for the reception seam). The offering agent is *told* to write a "нить двумя шагами
-    вперёд" line — but told, not enforced. So we stamp it mechanically: every thread
-    seed opens with where the nit is HEADED (thread goal) and which session it
-    CONTINUES (lineage), above the agent's distil (which still leads with the step).
 
-    Best-effort: no goal / any read error ⇒ return the distil unchanged (the header is
-    a safety net, never a new way to break a handoff).
-    """
+def _seed_title(thread_entry: Path, session_born: Path, distil: str) -> str:
+    """Первая строка сида: «# <проект> — <нить> · NN · нить NN-@x» (+ откуда собран)."""
     try:
-        from .. import fields, placeholders as _ph
+        from .. import roster as _roster
+        project = _roster.name_for_path(Path(thread_entry).parents[2])
+    except Exception:  # noqa: BLE001
+        project = Path(thread_entry).parents[2].name if len(Path(thread_entry).parents) > 2 else ""
+    auto = "собран с диска арки, не из пересказа чата" if "# автохендофф" in (distil or "") \
+        else "передача"
+    return "# {0}{1} · нить {2} ({3})".format(
+        project + " — " if project else "", _seat(thread_entry, session_born),
+        Path(thread_entry).name, auto)
+
+
+def _seed_and_archive(thread_entry: Path, session_born: Path, distil: str,
+                      now=None) -> "tuple[str, str]":
+    """Сид новой сессии и его архив (SOC-181 шаг б).
+
+    Сид — в бюджете знаков (:func:`tide.launcher.seed_budget.budget_for`: 12 000 ролям,
+    16 000 нити менеджера) без блока личности: шапка «кто ты и цель нити» (цель нити,
+    кто ты и чей преемник, менеджер, правила нити ссылкой на файл, «главное»), личность,
+    дальше блоки по порядку чтения. Что не влезло — архив (``input/seed-archive.md``),
+    в сиде строка-ссылка. Свободный текст передачи (без блоков контракта) — с той же
+    шапкой, разделы сверх бюджета уходят в архив, сверху — потолок байт (страховка).
+
+    Thread THROUGHLINE (cand 84): across a chain of handoffs each session sees only its
+    local step and the original idea erodes — so every seed opens with where the thread
+    is HEADED and which session it CONTINUES, stamped mechanically, not told.
+
+    Best-effort: any error ⇒ the distil unchanged and no archive (a header must never
+    break a handoff)."""
+    try:
+        from .. import escalate_rules as _esc, fields, grisha_decisions as _gd, \
+            placeholders as _ph
         from ..arc import stream as _stream
-        # A REAL goal only. An auto goal (goal == the thread's own slug/tag, e.g.
-        # goal:=debug_deck on thread 01-@debug-deck) is not a goal — printing
-        # "идёт к: debug_deck" is noise that reads as a lie (cand 83). Same filter the
-        # board uses: empty / placeholder / equals-slug ⇒ no goal line.
+        from . import seed_budget as _sb, seed_compress as _sc
+
+        # A REAL goal only: empty / placeholder / equals-slug ⇒ no goal line (cand 83).
         raw = (fields.read_field(_stream.passport_path(thread_entry), "goal") or "").strip()
         tslug = slug.entry_slug(thread_entry.name)
         goal = "" if _ph.is_blind_goal(raw, tslug) else raw
-
+        # SOC-101 F32: адрес менеджера в goal: нити устаревает — живой даёт tide.whois.
+        goal = _MANAGER_CLAUSE.sub("", goal).strip()
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
-        # Three iron rules so a pickup needn't round-trip into the tide-flow skill —
-        # the seed already covers ~90% (cand 84).
-        rules = ("правила: работа → в workspace/ своей арки · "
-                 "пульс по ходу → tide offload · передать дальше → /handoff")
-        # SOC-143: гарантированный канал — почта нити, а не ao send (режет ~4 КБ);
-        # срезы окна п.2–3 (tg 1223): ao send — только сигнал, итог сабагента короткий;
-        # management-25: тесты дольше ~4,5 мин — в фоне (строка в window_rules)
-        from .. import escalate_rules as _esc
-        lines = ["## нить (throughline — держи за шагом)"]
-        # SOC-101 F32: адрес менеджера в goal: нити устаревает (ao-control при живом
-        # management-14) — вырезаем его из цели и даём живой через tide.whois.
-        goal = _MANAGER_CLAUSE.sub("", goal)
-        if goal:
-            lines.append("идёт к: {0}".format(goal.strip()))
-        lines.append(_who_line(thread_entry, session_born, from_slug))
-        lines.append(_manager_header_line())
-        lines.append(rules)
-        lines.append(_esc.window_rules())
-        # SOC-157: опыт пишется сразу, застрял — эскалируй (пороги — tide.escalate_rules)
-        lines.append(_esc.seed_rules())
-        # SOC-102: договорённости ссылкой и решения Гриши по проекту за 3 суток;
-        # SOC-181: рядом — строка-ссылка на общий файл граблей всех проектов
-        lines.append(_grisha_decisions(thread_entry))
-        head = "\n".join(lines)
-        # SOC-181 (поправка Гриши 054): личность нити — после правил, до оперативки;
-        # дополняет правила, ничего не заменяет; нет persona.md — блока нет
-        from . import seed_compress as _sc
+        who = _who_line(thread_entry, session_born, from_slug)
+        manager = _manager_header_line().replace("отчитываешься менеджеру: ", "менеджер: ")
+        links = " · ".join((_esc.rules_line(), _gd.agreements_line(), _gd.gotchas_line()))
+        dec = _grisha_decisions_block(thread_entry).splitlines()
         persona = _sc.persona_block(thread_entry)
+        title = _seed_title(thread_entry, session_born, distil)
+        budget = _sb.budget_for(thread_entry)
+        origin = _origin_session(thread_entry, session_born)
+        apath = str(_sb.archive_path(session_born))
+        if _sb.is_contract_seed(distil):
+            shaped = _sb.build(
+                distil, head=_sb.Head(title=title, goal=goal, who=who, manager=manager,
+                                      links=links, decisions_label=dec[0] if dec else "",
+                                      decisions=tuple(dec[1:])),
+                persona=persona, budget=budget, thread_entry=Path(thread_entry),
+                origin=origin, born=Path(session_born), archive_path=apath,
+                manager=_sb.is_manager_thread(thread_entry), now=now)
+            return shaped.text, shaped.archive
+        lines = ["## нить (throughline — держи за шагом)"]
+        if goal:
+            lines.append("идёт к: {0}".format(goal))
+        lines += [who + "; " + manager, links]
+        if dec:
+            lines += dec
+        head = "\n".join(lines)
         if persona:
             head = "{0}\n\n{1}\n".format(head, persona)
         text = "{0}\n---\n\n{1}".format(head, distil)
+        text, gone = _sb.fit_free(text, budget, persona)
+        if gone:
+            text = text.rstrip() + "\n\n- {0} {1} — разделы сверх бюджета {2} знаков\n".format(
+                _sb.ARCHIVE_LINE_HEAD, apath, budget)
+        return _capped_seed(thread_entry, session_born, text), gone
     except Exception:  # noqa: BLE001  the header must never break a handoff
-        text = distil
-    return _capped_seed(thread_entry, session_born, text)
+        return distil, ""
+
+
+def _grisha_decisions_block(thread_entry: Path) -> str:
+    """Решения Гриши по проекту нити за 3 суток (SOC-102) — подпись и строки, или ""."""
+    from .. import grisha_decisions as _gd
+    try:
+        from .. import roster as _roster
+        project = _roster.name_for_path(Path(thread_entry).parents[2])
+    except Exception:  # noqa: BLE001  no control-home — dir name
+        project = Path(thread_entry).parents[2].name if len(Path(thread_entry).parents) > 2 else ""
+    return _gd.seed_block(project)
+
+
+def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> str:
+    """Сид новой сессии (:func:`_seed_and_archive`); архив — рядом, в
+    ``<новая сессия>/input/seed-archive.md`` (если что-то в него ушло)."""
+    text, archive = _seed_and_archive(thread_entry, session_born, distil)
+    if archive:
+        try:
+            from . import seed_budget as _sb
+            p = _sb.archive_path(session_born)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _io.atomic_write(p, archive)
+        except Exception:  # noqa: BLE001  архив не смеет сорвать передачу
+            pass
+    return text
 
 
 def _capped_seed(thread_entry: Path, session_born: Path, text: str) -> str:

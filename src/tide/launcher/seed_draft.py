@@ -812,14 +812,15 @@ CLOSED_TYPES = ("completed", "canceled")
 # задачу); отдельного похода в сеть нет.
 _LINEAR_QUERY = ("query($team:String!,$nums:[Float!]){issues(filter:{team:{key:{eq:$team}},"
                  "number:{in:$nums}},first:250){nodes{identifier state{name type} "
-                 "comments(filter:{body:{startsWith:\"Взял\"}},last:10){nodes{body}}}}}")
-# «Взял: tide-stack — handoffs · 06 (…)» → (проект, нить)
-_TAKER_RE = re.compile(r"^\s*Взял:\s*(\S.*?)\s+[—–]\s+([^\s·(,.;:]+)")
+                 "comments(filter:{or:[{body:{startsWith:\"Взял\"}},"
+                 "{body:{startsWith:\"Назначено\"}}]},last:10){nodes{body}}}}}")
+# «Взял: tide-stack — handoffs · 06 (…)», «Назначено: tide-stack — board» → (проект, нить)
+_TAKER_RE = re.compile(r"^\s*(?:Взял|Назначено):\s*(\S.*?)\s+[—–]\s+([^\s·(,.;:]+)")
 
 
 def parse_taker(body: str) -> "Optional[tuple[str, str]]":
-    """Кто взял задачу по комментарию «Взял: <проект> — <нить> · NN …» (контракт
-    v1 §3) → ``(проект, нить)``; не такой комментарий — None."""
+    """Кто ведёт задачу по комментарию «Взял: <проект> — <нить> · NN …» или «Назначено:
+    <проект> — <нить>» (контракт v1 §3) → ``(проект, нить)``; не такой комментарий — None."""
     m = _TAKER_RE.match(body or "")
     return (m.group(1).strip(), m.group(2).strip()) if m else None
 
@@ -927,10 +928,25 @@ class _States(dict):
     takers: Dict[str, List["tuple[str, str]"]] = {}
 
 
+MINE_MARK = " · эта нить"
+
+
+def mine_issues(keys: Sequence[str], live, me: Sequence[str] = ()) -> List[str]:
+    """Задачи, которые в Linear ведёт ЭТА нить: комментарий «Взял:» или «Назначено:»
+    с её проектом и нитью (SOC-181: «мои открытые SOC» сида)."""
+    takers = getattr(live, "takers", None) or {}
+    proj, thread = (list(me) + ["", ""])[:2]
+    if not thread:
+        return []
+    return [k for k in keys if any(t == thread and (not proj or not p or p == proj)
+                                   for p, t in takers.get(k) or [])]
+
+
 def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
                 status_text: str = "", live=None,
                 foreign: Optional[Dict[str, str]] = None,
-                only: Optional[Sequence[str]] = None) -> List[str]:
+                only: Optional[Sequence[str]] = None,
+                mine: Sequence[str] = ()) -> List[str]:
     """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
 
     Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
@@ -962,8 +978,9 @@ def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
                 others.append("  - {0} — {1} — {2} ({3})".format(
                     k, tmpl.format(key=k), name or "в Linear не найдена", foreign[k]))
             else:
-                opened.append("- {0} — {1} — {2}".format(
-                    k, tmpl.format(key=k), name or "в Linear не найдена"))
+                opened.append("- {0} — {1} — {2}{3}".format(
+                    k, tmpl.format(key=k), name or "в Linear не найдена",
+                    MINE_MARK if k in mine else ""))
         if not seen:
             return []
         out = ["- (статусы — из Linear на момент сборки)"] + opened
@@ -1203,13 +1220,15 @@ def inherit_decisions(inherited: Sequence[str], current: Sequence[str] = (),
     return out
 
 
-def dropped_decisions(prev_seed: str, new_seed: str) -> List[str]:
+def dropped_decisions(prev_seed: str, new_seed: str, archive: str = "") -> List[str]:
     """Решения прошлого сида, которых нет в новом ни строкой, ни «снято: …» (F63) —
-    для TG о приёме: «Потеряно: ничего» при выпавшем решении — неправда."""
+    для TG о приёме: «Потеряно: ничего» при выпавшем решении — неправда. SOC-181: решения
+    в теле сида больше не печатаются — их блок в архиве сида (*archive*), это не потеря."""
     prev = [_bare(ln) for ln in live_lines(contract.find_body(sections(prev_seed or ""),
                                                               "decisions"))
             if "<!--" not in ln and not is_hole(ln)]
-    new_body = contract.find_body(sections(new_seed or ""), "decisions")
+    new_body = contract.find_body(sections(new_seed or ""), "decisions") + \
+        contract.find_body(sections(archive or ""), "decisions")
     new = [_bare(ln) for ln in live_lines(new_body)]
     # SOC-181: закрытое в Linear снято сводной строкой с номерами, сжатое потолком —
     # строкой «где полное»: это не потеря
@@ -1352,14 +1371,18 @@ def inherit_awaiting(inherited: Sequence[str], current: Sequence[str] = (),
     return out
 
 
-def dropped_awaiting(prev_seed: str, new_seed: str) -> List[str]:
+def dropped_awaiting(prev_seed: str, new_seed: str, archive: str = "") -> List[str]:
     """Пункты «ждёт Гришу» прошлого сида, которых нет в новом ни строкой, ни
     «снято: …», ни своими tg-номерами (F77) — для TG о приёме. Пункты только про
-    задачи Linear (без tg-номера) — не потеря: их снимает сверка с Linear (F85)."""
+    задачи Linear (без tg-номера) — не потеря: их снимает сверка с Linear (F85).
+    SOC-181: пункт, ушедший в архив сида (*archive*: сверх 7, срок наследования,
+    приёмка у проверяющего), — не потеря."""
     prev = [_await_inheritable(ln) for ln in live_lines(
         contract.find_body(sections(prev_seed or ""), "awaiting"))]
-    new_body = contract.find_body(sections(new_seed or ""), "awaiting")
-    new = [_bare(ln) for ln in live_lines(new_body)]
+    new_body = contract.find_body(sections(new_seed or ""), "awaiting") + \
+        contract.find_body(sections(archive or ""), "awaiting")
+    from .seed_budget import strip_await_tag  # lazy: seed_budget зовёт этот модуль
+    new = [_bare(strip_await_tag(ln)) for ln in live_lines(new_body)]
     new_nums = _await_nums("\n".join(new))
     # SOC-181: отвеченное и закрытое снято сводной строкой с номерами — не потеря
     gone_keys, gone_nums, capped = _sc.dropped_refs(new_body)
@@ -2010,7 +2033,8 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
                                        for k in keys if k not in only})
         out[LINEAR] = mark_linear_source(
             block_links(hay, status_text="\n".join(reversed(list(context))), live=live,
-                        foreign=foreign, only=only),
+                        foreign=foreign, only=only,
+                        mine=mine_issues(keys, live, out.get(THREAD_SELF) or ())),
             seen, sources)
         where = "".join(out.get(SEED_IN_PATH) or [])
         if AWAITING in out:  # F48: задачи на проверке ждут Гришу (F85: свои, не Done)
@@ -3597,9 +3621,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  + layer(lays, "experience")
                                                  + contract.find_body(seed_in, "experience")))
         + topic_block(root, thread_entry, context),
-        # SOC-181: окружение старше суток не переносится
-        ENVIRONMENT: _sc.fresh_environment(
-            block_environment(contract.find_body(seed_in, "environment")), history),
+        # SOC-181 п.6: окружение из сида в сид не переносится вовсе — только живые
+        # источники (ao session ls, git rev-parse, версия прода) сверяет сама сессия
+        ENVIRONMENT: [],
         THREAD_SELF: [_project_name(root), _thread_word(thread_entry)],
         CUSTOMER_TRACKER: ["1"] if customer_tracker(root) else [],
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),

@@ -1,71 +1,98 @@
-"""tide.escalate_rules — пороги «не справляюсь» и текст правил для сида (SOC-157).
+"""tide.escalate_rules — пороги «не справляюсь» и правила нити (SOC-157, SOC-181).
 
-Чистые данные, ничего не импортирует: сид (launcher), глагол ``tide escalate`` и
-тесты берут их отсюда. Пороги — одно место; уточнит continuity-audit · 04 по цифрам.
+Пороги — данные кода (их читает глагол ``tide escalate``). Текст правил нити живёт
+ОДНИМ файлом — ``prompts/thread-rules.md`` в репо tide (:func:`rules_file`): сид
+передачи и сид запуска ``tide go`` несут на него строку-ссылку (:func:`rules_line`),
+``prompts/orchestrator.md``, ``prompts/worker.md`` и ``rules/subagents.md`` ссылаются
+туда же. Константы ``*_RULE`` ниже — строки, прочитанные из файла (для подсказки
+role-gate и тестов), а не вторая копия текста. Тест сверяет пороги с файлом.
 
-Здесь же — правила окна (срезы п.2–3 по continuity-audit · 04, tg 1223): итоги
-сабагентов съедали 13% окна ведущей, переписка ao send — 20%. Те же строки
-кладутся в сид нити, в prompts/orchestrator.md и prompts/worker.md, а порог
-ao send читает подсказка role-gate.
+Модуль ничего не импортирует из tide: файл ищется рядом с пакетом (как
+:func:`tide.paths.install_root`). Нет файла — правила пустые, ссылка остаётся.
 """
+
+from pathlib import Path
+from typing import Dict
 
 FAILED_ATTEMPTS = 2       # неудачных попыток одного шага → эскалируй
 STALL_MIN = 30            # минут стопа без прогресса → эскалируй
 ACK_TIMEOUT_MIN = 30      # минут без квитанции main → тревога менеджеру
 
-EXP_RULE = ('опыт: наступил на граблю — сразу tide thread layer --exp "…", '
-            "не ждать передачи")
-ESCALATE_RULE = (
-    "не справляешься — tide escalate --what … --tried … --need …: "
-    "{0} неудачные попытки одного шага, или стоп дольше {1} мин без прогресса "
-    "(ждать ответа Гриши/менеджера — не застревание), "
-    "или задача вне твоей роли/прав (отказ role-gate — отдай сабагенту, это не повод); "
-    "письмо уйдёт main проекта, "
-    "без квитанции {2} мин — менеджеру; "
-    'закрыть — tide escalate --close NNN --word "чем"').format(FAILED_ATTEMPTS, STALL_MIN, ACK_TIMEOUT_MIN)
-
-
-# Срезы окна (continuity-audit · 04, рек. 2–3; tg 1223).
 SUBAGENT_RESULT_CHARS = 2000   # ~600 токенов — потолок итога сабагента
 AO_SEND_SIGNAL_CHARS = 400     # длиннее — ao send уже не сигнал, а письмо
-
-SUBAGENT_RESULT_RULE = ("итог сабагента — не длиннее ~600 токенов (~2000 знаков); "
-                        "подробности — файлом в workspace/ своей арки, в итоге — путь к файлу")
 # Проба менеджера (management-25, обратимо): пауза >5 мин перезаписывает кэш
 # (404 $, 16% дня) — сабагент не висит на тестах дольше ~4,5 мин в одном вызове.
 TEST_WAIT_SEC = 270
-TEST_WAIT_RULE = ("тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — "
-                  "долгие (полный tide-ci) в фоне (Bash run_in_background), "
-                  "проверка по готовности")
-MAIL_RULE = ("почта: ao send между сессиями — только сигнал: 1–2 строки + "
-             "«письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>; "
-             "несрочное — пингом пачкой до 25 мин, срочное — --urgent")
+
+RULES_FILE_NAME = "thread-rules.md"
 
 
-# SOC-166: пауза до сброса и потолок агентов с доски. Хук role-gate режет ao spawn,
-# tide-ci и полный pytest, а инструмент Agent он не видит — сабагентов держит правило.
-THROTTLE_RULE = ("троттлинг: перед новым сабагентом или тяжёлым прогоном — tide throttle "
-                 "status; на паузе новые сабагенты не запускай, доведи шаг до коммита; "
-                 "потолок агентов достигнут — жди; окно ≥85% — только точечные тесты")
+def rules_file() -> Path:
+    """Абсолютный путь файла правил нити: ``<репо tide>/prompts/thread-rules.md``."""
+    return Path(__file__).resolve().parents[2] / "prompts" / RULES_FILE_NAME
 
-# SOC-179 (токеномика): рутину помощников — на Sonnet, код и ревью — на Opus.
-MODEL_RULE = ("модели: рутина помощников — model: sonnet (поиск, чтение, Explore, прогоны, "
-              "смоук, сводки); код и ревью — Opus; долгие прогоны в фоне, проверка кусками ≤4 мин")
+
+def rules_line() -> str:
+    """Одна строка для сида: где правила нити."""
+    return "правила нити: {0} (читать на старте)".format(rules_file())
+
+
+# Ключ правила → начало его строки в файле («- <начало>…»).
+_PREFIXES = (
+    ("work", "работа:"),
+    ("subagent", "итог сабагента"),
+    ("tests", "тесты:"),
+    ("mail", "почта:"),
+    ("throttle", "троттлинг:"),
+    ("models", "модели:"),
+    ("experience", "опыт:"),
+    ("escalate", "не справляешься"),
+)
+
+
+def read_rules(path: Path = None) -> Dict[str, str]:
+    """``{ключ: строка правила}`` из файла правил нити; нет файла — ``{}``."""
+    try:
+        text = Path(path or rules_file()).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    out: Dict[str, str] = {}
+    for ln in text.splitlines():
+        if not ln.startswith("- "):
+            continue
+        body = ln[2:].strip()
+        for key, head in _PREFIXES:
+            if key not in out and body.startswith(head):
+                out[key] = body
+    return out
+
+
+_RULES = read_rules()
+
+WORK_RULE = _RULES.get("work", "")
+SUBAGENT_RESULT_RULE = _RULES.get("subagent", "")
+TEST_WAIT_RULE = _RULES.get("tests", "")
+MAIL_RULE = _RULES.get("mail", "")
+THROTTLE_RULE = _RULES.get("throttle", "")
+MODEL_RULE = _RULES.get("models", "")
+EXP_RULE = _RULES.get("experience", "")
+ESCALATE_RULE = _RULES.get("escalate", "")
 
 
 def ao_send_hint(chars: int) -> str:
     """Подсказка role-gate на длинный ao send (не отказ — отправка идёт)."""
     return ("tide · подсказка: ao send {0} знаков (порог ~{1}) — отправка не "
-            "остановлена. {2}").format(chars, AO_SEND_SIGNAL_CHARS, MAIL_RULE)
+            "остановлена. {2}").format(chars, AO_SEND_SIGNAL_CHARS,
+                                       MAIL_RULE or "правила почты — " + str(rules_file()))
 
 
 def window_rules() -> str:
-    """Правила окна для сида: итог сабагента, тесты в фоне (management-25),
-    ao send — сигнал, троттлинг (SOC-166), модели (SOC-179)."""
-    return "\n".join((SUBAGENT_RESULT_RULE, TEST_WAIT_RULE, MAIL_RULE, THROTTLE_RULE,
-                      MODEL_RULE))
+    """Правила окна полным текстом (итог сабагента, тесты, почта, троттлинг, модели) —
+    для тех, кому нужен текст; сид несёт только :func:`rules_line`."""
+    return "\n".join(r for r in (SUBAGENT_RESULT_RULE, TEST_WAIT_RULE, MAIL_RULE,
+                                 THROTTLE_RULE, MODEL_RULE) if r)
 
 
 def seed_rules() -> str:
-    """Две строки правил для сида (опыт + эскалация)."""
-    return "{0}\n{1}".format(EXP_RULE, ESCALATE_RULE)
+    """Опыт + эскалация полным текстом (``tide escalate --help`` и тесты)."""
+    return "\n".join(r for r in (EXP_RULE, ESCALATE_RULE) if r)

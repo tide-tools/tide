@@ -46,6 +46,7 @@ PERSONA = ("правлено: 2026-10-11, main · 19\n\n# Кто я — мене
 
 
 def test_persona_block_goes_after_rules_before_the_distil(tmp_project, monkeypatch):
+    from tide import escalate_rules
     from tide.launcher import handoff
 
     thread, new = _thread(tmp_project, monkeypatch)
@@ -62,7 +63,7 @@ def test_persona_block_goes_after_rules_before_the_distil(tmp_project, monkeypat
         assert line in body                            # целиком, заголовки опущены
     # ни один заголовок личности не читается блоком сида
     assert [h for h in sd.sections(seed) if not h.startswith(("нить", "личность", "главное"))] == []
-    assert "правила: работа → в workspace/ своей арки" in head  # правила не заменены
+    assert escalate_rules.rules_line() in head  # правила не заменены (SOC-181 п.8: ссылкой)
 
 
 def test_no_persona_file_no_block(tmp_project, monkeypatch):
@@ -317,15 +318,17 @@ def test_ceiling_key_lives_in_the_contract():
 
 
 def test_capped_seed_through_the_throughline(tmp_project, monkeypatch):
-    from tide.launcher import handoff
+    """SOC-181 шаг б: сид из блоков контракта — в бюджете знаков (12 000 ролям) без личности,
+    что не влезло — в архиве рядом, ссылки — на прошлую сессию нити."""
+    from tide.launcher import handoff, seed_budget as sb
 
     thread, new = _thread(tmp_project, monkeypatch)
     (thread / sc.PERSONA_FILE).write_text(PERSONA, encoding="utf-8")
-    monkeypatch.setattr(sc, "SEED_MAX_BYTES", 12_000)
     distil = _big_seed().partition("\n---\n")[2]
-    real = sc.cap_seed
-    monkeypatch.setattr(sc, "cap_seed", lambda text, **kw: real(text, limit=12_000, **kw))
     seed = handoff._with_throughline(thread, new, distil)
-    assert len(seed.encode()) <= 12_000
+    persona = sc.persona_block(thread)
+    assert len(seed) - len(persona) - 2 <= sb.ROLE_BUDGET
     assert sc.PERSONA_HEAD in seed and "- «простота и красота»" in seed
-    assert "main-3" in seed  # ссылки среза — на прошлую сессию нити
+    assert "main-3" in seed  # ссылки — на прошлую сессию нити
+    arch = sb.archive_path(new)
+    assert arch.is_file() and str(arch) in seed

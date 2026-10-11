@@ -30,7 +30,7 @@ single-threaded — so no file-lock is needed; **serialization is the merge gate
 1. Arc selected/created and its contract drafted (goal + criteria; see `contract.md`).
 2. Strictness gate satisfied (strict ⇒ human signed in the live session).
 3. Worker handed `worker.md` + the arc passport (`arc.md` / goal doc).
-   В поручении — строка: «итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу».
-   И строка: «тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — долгие (полный tide-ci) в фоне (Bash run_in_background), проверка по готовности».
+   В поручении — строки «итог сабагента …» и «тесты: …» из правил нити
+   (`prompts/thread-rules.md` — один источник, тут не копируются).
 4. On return: accept output against criteria, **merge the delta before the next arc**, triage
    surfaced candidates.

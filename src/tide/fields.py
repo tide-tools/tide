@@ -85,6 +85,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "handed-told",    # context-watch told the handed-over session once: finish, forward (SOC-101 F21)
         "progress-mark",  # checked work items + acts of the thread when this session was born
         "expect-written",  # when `thread layer --expect` last wrote the layer (SOC-143 F81)
+        "seed-budget",     # thread: бюджет сида в знаках, явно (SOC-181; иначе 12 000 / 16 000)
         # Contract deliverable fields.
         "accepted",
         # Worktree adapter fields.

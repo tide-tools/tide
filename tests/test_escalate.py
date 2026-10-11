@@ -130,7 +130,11 @@ def test_rules_carry_thresholds_and_land_in_seed():
     assert "{0} мин без прогресса".format(escalate.STALL_MIN) in r
     s = seed.build_seed(project_name="proj", arc_ref="worker-1", thread_name="worker",
                         arc_text="x")
-    assert escalate.ESCALATE_RULE in s and escalate.EXP_RULE in s
+    # SOC-181 п.8: сид несёт ссылку на файл правил нити, текст — в файле
+    from tide import escalate_rules
+    assert escalate_rules.rules_line() in s
+    text = escalate_rules.rules_file().read_text(encoding="utf-8")
+    assert escalate.ESCALATE_RULE in text and escalate.EXP_RULE in text
 
 
 # --- закрытие: tide escalate --close NNN (SOC-157, просьба доски) ------------------

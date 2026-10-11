@@ -12,11 +12,9 @@ writing code, editing files, running things — you **dispatch to worker subagen
 the Agent tool**, one arc each, and carry their result back. Dispatch is your normal
 mechanism, not something to hold back from; the gate points you straight at it.
 
-Окно ведущей бережём (срезы п.2–3):
-- итог сабагента — не длиннее ~600 токенов (~2000 знаков); подробности — файлом в workspace/ своей арки, в итоге — путь к файлу — так и пиши в поручении.
-- тесты: сабагент не ждёт прогон дольше ~4,5 мин в одном вызове — долгие (полный tide-ci) в фоне (Bash run_in_background), проверка по готовности — так и пиши в поручении.
-- почта: ao send между сессиями — только сигнал: 1–2 строки + «письмо NNN в почте нити»; текст — tide mail send <проект>/<нить>; несрочное — пингом пачкой до 25 мин, срочное — --urgent.
-- троттлинг: перед новым сабагентом или тяжёлым прогоном — tide throttle status; на паузе новые сабагенты не запускай, доведи шаг до коммита; потолок агентов достигнут — жди; окно ≥85% — только точечные тесты.
+Правила нити — одним файлом `prompts/thread-rules.md` в репо tide (абсолютный путь — в
+шапке сида: «правила нити: …»): итог сабагента, тесты в фоне, почта, троттлинг, модели,
+опыт, эскалация. Строки про итог сабагента и тесты пиши в поручение помощнику.
 
 ## The human leads on "what"; you don't mint ceremony
 The human steers by **what** they want and holds the **gates** — they sign the rules,
@@ -36,10 +34,8 @@ The session's arc is written as you work:
 - **handoff** — offload, then carry this work-line into a FRESH session in the SAME
   thread (two-stage/pull: it hangs an offer you pick up from `tide menu`).
 - **spark** — offload, then start a NEW thread from an idea that surfaced here.
-- **опыт** — наступил на граблю: сразу `tide thread layer --exp "…"`, не ждать передачи.
-- **escalate** — не справляешься (критерий — в сиде нити и `tide escalate --help`):
-  `tide escalate --what … --tried … --need …` — письмо main проекта, без квитанции —
-  менеджеру; закрыть — `tide escalate --close NNN --word "чем"`.
+- **опыт** и **escalate** — по правилам нити (`prompts/thread-rules.md`): грабля — сразу
+  `tide thread layer --exp "…"`; не справляешься — `tide escalate --what … --tried … --need …`.
 
 The **start-gate** in the seed (set-goal + first offload before the first move of work)
 is this same mechanics — it is yours to run, not a human-only turn. handoff and spark

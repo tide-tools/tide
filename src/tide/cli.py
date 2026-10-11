@@ -472,16 +472,23 @@ def _register_thread_layers(sub) -> None:
                         "split on « · »); appends unless --replace")
     p.add_argument("--replace", dest="layer_replace", action="store_true",
                    help="with `layer --main`: replace the «главное» section wholesale")
+    # SOC-181 п.9: `tide thread goal-tidy <нить|goal-файл> [--dry-run]` — журнал слоёв
+    # goal-файла в <нить>-goal-log.md рядом, плейсхолдер заголовка — на goal:;
+    # `--all --dry-run` — отчёт по всем нитям ростера.
+    p.add_argument("--dry-run", dest="goal_dry", action="store_true",
+                   help="with `goal-tidy`: report only, write nothing")
     prev = p.get_default("func")
 
     def _dispatch(args) -> int:
         ref = getattr(args, "ref", None)
-        if ref not in ("layers", "layer"):
+        if ref not in ("layers", "layer", "goal-tidy"):
             return prev(args)
         from .arc import thread_layers
 
         if ref == "layer":
             return thread_layers.cmd_layer(args)
+        if ref == "goal-tidy":
+            return thread_layers.cmd_goal_tidy(args)
         return thread_layers.cmd_layers(args)
 
     p.set_defaults(func=_dispatch)

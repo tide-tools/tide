@@ -240,7 +240,9 @@ def test_build_draft_maps_every_source_to_its_block(tmp_project, session):
     assert "- 02 — воркеры видны только через работу (not done)" in out
     assert "- 01 — контракт сида: семь блоков (done)" in out
     assert "- кандидат 01 — " in out                         # суть, не голый номер (SOC-74)
-    assert "- доска = launchd-служба на :8452" in out          # окружение как есть
+    # SOC-181 п.6: окружение из сида в сид не переносится — сверяется вживую
+    assert "- доска = launchd-служба на :8452" not in out
+    assert "окружение из сида в сид не переносится" in out
     # решения: open идёт ПЕРЕД settled
     assert out.index("- 02 — воркеры") < out.index("- 01 — контракт")
 

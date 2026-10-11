@@ -67,14 +67,11 @@ LAW_47_PLAN = (
 
 
 def _esc_rules() -> str:
-    """SOC-157: опыт сразу + «не справляешься — tide escalate» (пороги — tide.escalate_rules);
-    срезы окна п.2–3 (tg 1223): итог сабагента короткий, ao send — только сигнал;
-    management-25: тесты дольше ~4,5 мин — в фоне."""
+    """SOC-157/SOC-181: правила нити (итог сабагента, тесты в фоне, почта, троттлинг, модели,
+    опыт, эскалация) — одной строкой-ссылкой на файл :func:`tide.escalate_rules.rules_file`,
+    не копией текста."""
     from .. import escalate_rules as escalate
-    return "**Правила.** " + ". ".join((
-        escalate.EXP_RULE, escalate.ESCALATE_RULE,
-        escalate.SUBAGENT_RESULT_RULE, escalate.TEST_WAIT_RULE, escalate.MAIL_RULE,
-        escalate.THROTTLE_RULE, escalate.MODEL_RULE)) + "."
+    return "**Правила.** " + escalate.rules_line() + "."
 
 
 # --- prompt resolution -----------------------------------------------------
