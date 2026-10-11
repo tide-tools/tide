@@ -140,6 +140,21 @@ def test_translate_fresh_carries_seed_sid_role_and_notes_mcp():
     assert "/main" in spec.prompt and spec.prompt.rstrip().endswith("go now")
 
 
+def test_launch_turn_is_calm_and_switches_off_the_ao_template():
+    """SOC-181 п.10: no «прочитай целиком… главнее AO», no «НЕ отчитывайся» — the seed
+    is the start, begin with its first step; the AO-template parts that do not apply
+    here are named once."""
+    spec = translate(_fresh(), "/p", main_tree="/main")
+    text = spec.prompt
+    assert "Твой старт — сид {0} (роль: orchestrator):".format(SEED) in text
+    assert "начни с первого шага" in text
+    for part in ("implementation worker", "сабагентов", "~/.ao/data/artifacts", "ao report"):
+        assert part in text
+    for noise in ("целиком", "системный промпт", "главнее", "НЕ "):
+        assert noise not in text
+    assert len(text.replace("go now", "").encode("utf-8")) < 1400
+
+
 def test_translate_model_passes_through():
     spec = translate(_fresh(extra=("--model", "sonnet")), "/p")
     assert spec.model == "sonnet"

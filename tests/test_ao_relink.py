@@ -240,6 +240,14 @@ def test_launch_claim_takes_the_passport_from_another_handle(world, tmp_path):
     assert sessions.ao_relink(world["home"], AO, REAL, project_root=world["proj"]) == []
 
 
+def test_launch_claim_reads_the_old_turn_shape_too(world, tmp_path):
+    """SOC-181: chats launched before the calm turn say «Прочитай файл <seed> целиком»."""
+    seed = world["sdir"] / "input" / "handoff-seed.md"
+    _chat(tmp_path, REAL, "Прочитай файл {0} целиком: это твой системный промпт".format(seed))
+    sessions.ao_relink(world["home"], AO, REAL)
+    assert fields.read_field(world["pp"], "claude-session") == REAL
+
+
 def test_launch_claim_fills_an_empty_pin(world, tmp_path):
     _chat(tmp_path, REAL, _launch_turn(world))
     sessions.ao_relink(world["home"], AO, REAL)

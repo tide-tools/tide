@@ -42,6 +42,12 @@ A single segment is allowed when:
   NOT: ``git commit``, ``git push``, ``git merge``, ``git branch -D``,
   ``git worktree add/remove``.
 * Its first token is a read-only builtin — see ``_READONLY_BUILTINS``.
+* Text filters that only read (SOC-181): ``date`` (not ``-s``/setting the
+  clock), ``cut``, ``tr``, ``jq``; ``sed -n`` with a plain script (no ``-i``,
+  no ``-f``, no ``w``/``W``/``e`` commands or ``s///w|e`` flags — checked by a
+  small whitelist parser, anything it does not know is denied); ``awk`` whose
+  program has no output redirect (``print … >``), no pipe (``|``, ``|&``), no
+  ``system()``, no ``@load``/``@include`` and no ``-f`` program file.
 * AO, read-only: ``ao session ls …`` and ``ao session show …`` — any other
   ``ao`` subcommand is denied (Grisha's decision № 26) — plus ``ao send …``,
   so the head can message its sessions (confirmed by Grisha in the session
@@ -108,20 +114,36 @@ _LINEAR_AS_MANAGER = str(
 # WAY IN and meets the very same wording on the way out — one list, one place,
 # no drift between the promise and the refusal.
 ALLOWED_SURFACE = (
-    "Read/Grep/Glob, any `tide …`, read-only git (status/log/diff/show/rev-parse, "
-    "branch/remote listing, worktree list), and ls/cat/pwd/cd/find/grep/head/tail/"
-    "wc/sort/uniq/echo, `ao send`, `ao session ls|show`, `" + _LINEAR_AS_MANAGER + "` "
-    "— including `|` pipes, `&&` / `||` chains built only from "
-    "those, and `2>&1` / `2>/dev/null`. Denied: file redirects (`>`), command "
-    "substitution, and anything not on this list."
+    "Read/Grep/Glob, `tide …`, git status/log/diff/show/rev-parse/branch/remote/"
+    "worktree list, ls cat pwd cd find grep rg head tail wc sort uniq echo diff tree stat "
+    "file which date cut tr jq, `sed -n` (без -i и w/W/e), awk (без >, |, system), "
+    "`ao send`, `ao session ls|show`, `" + _LINEAR_AS_MANAGER + "`; пайпы и цепочки "
+    "`&&`/`||` из них, `2>&1`, `2>/dev/null`. Нельзя: `>` в файл, `$(…)`, всё вне списка."
+)
+
+# The refusal is two lines (SOC-181): what was refused, and the way out. The first
+# line names the exact link and rule for Bash (see :func:`deny_message`).
+_DENY_HOW = (
+    "Это работа для помощника — отдай её через Agent (у помощника руки свободны, "
+    "гард его не держит). Тебе доступно: " + ALLOWED_SURFACE
 )
 
 DENY_MESSAGE = (
-    "tide: you are the HEAD (orchestrator) — this is worker-work. "
-    "Dispatch it via the Agent tool; the head only reads, talks, and runs the tide CLI. "
-    "Subagents you dispatch have full hands — they are not gated.\n"
-    "Allowed for you here: " + ALLOWED_SURFACE
+    "tide · голове (orchestrator) это нельзя: правка файлов (Write/Edit/NotebookEdit).\n"
+    + _DENY_HOW
 )
+
+
+def deny_message(refusal: Optional["Refusal"] = None) -> str:
+    """The two-line refusal: line 1 — what is refused, line 2 — «отдай помощнику»."""
+    if refusal is None:
+        return DENY_MESSAGE
+    seg = " ".join((refusal.segment or "").split())
+    if len(seg) > 80:
+        seg = seg[:79].rstrip() + "…"
+    what = "`{0}` — {1}".format(seg, refusal.rule) if seg else refusal.rule
+    return "tide · голове (orchestrator) это нельзя: {0}.\n{1}".format(what, _DENY_HOW)
+
 
 # Tools unconditionally blocked for the orchestrator role.
 _BLOCKED_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
@@ -136,6 +158,8 @@ _READONLY_BUILTINS = frozenset({
     "ls", "cat", "pwd", "find", "grep", "echo",
     "cd", "head", "tail", "wc", "sort", "uniq", "rg", "which", "file", "stat",
     "diff", "tree",
+    # SOC-181: pure filters — they read stdin/files and print, they write nothing.
+    "cut", "tr", "jq",
 })
 
 # AO: the head may look at sessions, nothing more. Keyed by ``ao`` subcommand →
@@ -188,16 +212,17 @@ _PROCESS_SUBSTITUTION_MARKERS = ("<(",)
 # Why a command was refused, in the gate's own words. These strings ARE the
 # explainer's output (:func:`explain`), so a probe can never name a rule the
 # gate does not apply — there is one implementation and two views of it.
-_RULE_SUBSTITUTION = "command substitution — a subshell hides its command from the allowlist"
-_RULE_PROCESS_SUBSTITUTION = "process substitution — a subshell hides its command from the allowlist"
-_RULE_REDIRECT = "file redirect (`>`) — that writes"
-_RULE_UNPARSEABLE = "unparseable quoting inside the link"
-_RULE_GIT_NOT_READONLY = "git subcommand is not read-only"
-_RULE_NOT_ALLOWED = "not on the read-only allowlist"
-_RULE_AO_NOT_ALLOWED = "ao subcommand is not allowed for the head (only `ao send`, `ao session ls|show`)"
-_RULE_UNBALANCED_QUOTES = (
-    "unbalanced quotes — a command the gate cannot parse is one it cannot vouch for"
-)
+_RULE_SUBSTITUTION = "подстановка команды `$(…)` / `…` — подоболочка прячет команду от списка"
+_RULE_PROCESS_SUBSTITUTION = "подстановка процесса `<(…)` — подоболочка прячет команду от списка"
+_RULE_REDIRECT = "перенаправление в файл (`>`) — это запись"
+_RULE_UNPARSEABLE = "кавычки внутри звена не разобрать"
+_RULE_GIT_NOT_READONLY = "git не на чтение"
+_RULE_NOT_ALLOWED = "нет в списке чтения"
+_RULE_AO_NOT_ALLOWED = "из ao голове можно только `ao send`, `ao session ls|show`"
+_RULE_UNBALANCED_QUOTES = "незакрытые кавычки — что не разобрать, то гард не пропускает"
+_RULE_SED = "sed голове — только `sed -n`: без -i/-I, -f и команд или флагов w, W, e"
+_RULE_AWK = "awk голове — без записи: ни `print … >`, ни `|`/`|&`, ни system(), ни -f, ни @load"
+_RULE_DATE = "date — только читать часы: без -s и установки времени"
 
 
 class Refusal(NamedTuple):
@@ -269,6 +294,312 @@ def _is_ao_allowed(args: List[str]) -> bool:
     if not verbs:
         return True  # the whole subcommand is allowed (``ao send …``)
     return len(args) >= 2 and args[1] in verbs
+
+
+# --- read-only text tools: date, sed -n, awk (SOC-181) ------------------------
+#
+# The head needs the clock and a quick slice of a file without paying a helper
+# for it. Each tool is judged by what it can WRITE, read from its own argv after
+# shell unquoting; anything the checker does not recognise is denied (fail safe).
+
+# ``date`` flags whose value is the next token (GNU + BSD). The value may look
+# like anything (``-d "-2 days"``), so it is stepped over, not inspected.
+_DATE_FLAGS_WITH_VALUE = frozenset({
+    "-d", "--date", "-r", "--reference", "-f", "--file", "-v", "-z",
+})
+# BSD ``date [[[mm]dd]HH]MM[[cc]yy][.ss]`` sets the clock from a bare operand.
+_DATE_SET_OPERAND_RE = re.compile(r"^\d{4,12}(?:\.\d{2})?$")
+
+
+def _is_date_allowed(args: List[str]) -> bool:
+    """``date`` that only reads the clock: no ``-s``/``--set``, no bare time operand
+    (BSD sets the clock with it) unless ``-j`` says «do not set»."""
+    no_set = "-j" in args
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _DATE_FLAGS_WITH_VALUE:
+            i += 2
+            continue
+        if a == "--set" or a.startswith("--set="):
+            return False
+        if a.startswith("-") and not a.startswith("--") and "s" in a[1:]:
+            return False  # -s, -us …: set the clock
+        if not a.startswith(("-", "+")) and _DATE_SET_OPERAND_RE.match(a) and not no_set:
+            return False
+        i += 1
+    return True
+
+
+# sed commands that only print or move text in memory; ``s``/``y``/labels are
+# parsed separately. Everything else — ``w W e r R a i c F v`` … — is denied.
+_SED_SIMPLE_COMMANDS = frozenset("pPlL=dDgGhHxnNqQz{}")
+# ``s///`` flags that write nothing (``w file`` and ``e`` are the writers).
+_SED_S_FLAGS = frozenset("gpiImM0123456789")
+# Long options of sed that neither write nor bring a script from a file.
+_SED_LONG_OK = frozenset({
+    "--quiet", "--silent", "--regexp-extended", "--separate", "--unbuffered",
+    "--null-data", "--zero-terminated", "--posix", "--debug", "--sandbox",
+    "--line-length",
+})
+
+
+def _sed_skip_part(script: str, i: int, delim: str) -> int:
+    """Index just past the closing *delim* of a regex/replacement part, or -1."""
+    n = len(script)
+    while i < n:
+        c = script[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == delim:
+            return i + 1
+        i += 1
+    return -1
+
+
+def _sed_address(script: str, i: int) -> int:
+    """Index past one sed address at *i* (``i`` itself when there is none), -1 when
+    it is malformed: ``N``, ``first~step``, ``$``, ``/re/`` or ``\\cREc`` (+ I/M)."""
+    n = len(script)
+    if i >= n:
+        return i
+    if script[i] == "$":
+        return i + 1
+    if script[i].isdigit():
+        while i < n and (script[i].isdigit() or script[i] == "~"):
+            i += 1
+        return i
+    if script[i] in "/\\":
+        if script[i] == "\\":
+            if i + 1 >= n:
+                return -1
+            delim, i = script[i + 1], i + 2
+        else:
+            delim, i = "/", i + 1
+        i = _sed_skip_part(script, i, delim)
+        if i < 0:
+            return -1
+        while i < n and script[i] in "IM":
+            i += 1
+    return i
+
+
+def _sed_script_ok(script: str) -> bool:
+    """True when every command of a sed *script* only prints (whitelist parser)."""
+    n = len(script)
+    i = 0
+    while i < n:
+        if script[i] in " \t\n;":
+            i += 1
+            continue
+        j = _sed_address(script, i)
+        if j < 0:
+            return False
+        if j != i:
+            i = j
+            if i < n and script[i] == ",":
+                i += 1
+                if i < n and script[i] in "+~":  # GNU ``addr,+N`` / ``addr,~N``
+                    i += 1
+                    while i < n and script[i].isdigit():
+                        i += 1
+                else:
+                    j = _sed_address(script, i)
+                    if j <= i:
+                        return False
+                    i = j
+        while i < n and script[i] in " \t":
+            i += 1
+        if i < n and script[i] == "!":
+            i += 1
+            while i < n and script[i] in " \t":
+                i += 1
+        if i >= n:
+            return False  # an address with no command
+        cmd = script[i]
+        i += 1
+        if cmd in _SED_SIMPLE_COMMANDS:
+            if cmd in "qQlL":
+                while i < n and script[i].isdigit():
+                    i += 1
+            continue
+        if cmd in "sy":
+            if i >= n or script[i] in "\\\n ":
+                return False
+            delim = script[i]
+            i += 1
+            for _part in range(2):
+                i = _sed_skip_part(script, i, delim)
+                if i < 0:
+                    return False
+            if cmd == "s":
+                while i < n and script[i] not in ";\n} \t":
+                    if script[i] not in _SED_S_FLAGS:
+                        return False  # w file / e — the flags that write or run
+                    i += 1
+            continue
+        if cmd in "btT:":
+            while i < n and script[i] not in ";\n":
+                i += 1
+            continue
+        return False
+    return True
+
+
+def _is_sed_allowed(args: List[str]) -> bool:
+    """``sed -n`` with scripts that only print: no ``-i``/``-I``/``--in-place``, no
+    ``-f`` (a script file the gate cannot read), no writing commands or flags."""
+    quiet = False
+    scripts: List[str] = []
+    operands: List[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            operands += args[i + 1:]
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in ("--quiet", "--silent"):
+                quiet = True
+            elif name == "--expression":
+                if not eq:
+                    if i + 1 >= len(args):
+                        return False
+                    val = args[i + 1]
+                    i += 1
+                scripts.append(val)
+            elif name in _SED_LONG_OK:
+                if name == "--line-length" and not eq:
+                    i += 1
+            else:
+                return False  # --in-place, --file, anything unknown
+            i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            j = 1
+            while j < len(a):
+                c = a[j]
+                if c == "n":
+                    quiet = True
+                elif c in "Ersuz":
+                    pass
+                elif c == "l":
+                    if j + 1 == len(a):
+                        i += 1  # the value is the next token
+                    break
+                elif c == "e":
+                    rest = a[j + 1:]
+                    if not rest:
+                        if i + 1 >= len(args):
+                            return False
+                        rest = args[i + 1]
+                        i += 1
+                    scripts.append(rest)
+                    break
+                else:
+                    return False  # -i, -I, -f, anything unknown
+                j += 1
+            i += 1
+            continue
+        operands.append(a)
+        i += 1
+    if not scripts:
+        if not operands:
+            return False
+        scripts.append(operands[0])
+    return quiet and all(_sed_script_ok(sc) for sc in scripts)
+
+
+# After these characters a ``/`` in awk opens a regex, elsewhere it divides.
+_AWK_REGEX_AFTER = frozenset("(,!~{};&|\n:?=")
+_AWK_PRINT_RE = re.compile(r"\bprintf?\b")
+
+
+def _awk_strip_literals(prog: str) -> Optional[str]:
+    """*prog* with string/regex literals and comments blanked (their ``>`` and
+    ``|`` are text, not syntax); None when a literal never closes."""
+    out: List[str] = []
+    last = ""
+    i = 0
+    n = len(prog)
+    while i < n:
+        c = prog[i]
+        if c == '"':
+            i += 1
+            while i < n and prog[i] != '"':
+                i += 2 if prog[i] == "\\" else 1
+            if i >= n:
+                return None
+            i += 1
+            out.append('""')
+            last = '"'
+            continue
+        if c == "/" and (last == "" or last in _AWK_REGEX_AFTER):
+            i += 1
+            while i < n and prog[i] != "/":
+                if prog[i] == "\n":
+                    return None
+                i += 2 if prog[i] == "\\" else 1
+            if i >= n:
+                return None
+            i += 1
+            out.append("//")
+            last = "/"
+            continue
+        if c == "#":
+            while i < n and prog[i] != "\n":
+                i += 1
+            continue
+        out.append(c)
+        if not c.isspace():
+            last = c
+        i += 1
+    return "".join(out)
+
+
+def _awk_program_ok(prog: str) -> bool:
+    """True when an awk program cannot write or run anything: no ``system``, no
+    pipe (``|``, ``|&`` — ``||`` is logic), no ``@load``/``@include``, and no ``>``
+    after ``print``/``printf`` in the same statement (that is the file redirect;
+    a ``>`` before it, as in ``if ($3 > 9) print``, is a comparison)."""
+    code = _awk_strip_literals(prog)
+    if code is None:
+        return False
+    if re.search(r"\bsystem\b", code) or "@" in code:
+        return False
+    if "|" in code.replace("||", ""):
+        return False
+    for stmt in re.split(r"[;{}\n]", code):
+        m = _AWK_PRINT_RE.search(stmt)
+        if m and ">" in stmt[m.end():]:
+            return False
+    return True
+
+
+def _is_awk_allowed(args: List[str]) -> bool:
+    """``awk [-F sep] [-v k=v] 'program' [files]`` with a program that only reads.
+    ``-f progfile`` and every other option (gawk ``-e``/``-i``/``-l`` …) are denied:
+    the gate cannot read what they bring in."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-F", "-v"):
+            i += 2
+            continue
+        if a.startswith(("-F", "-v")):
+            i += 1
+            continue
+        if a.startswith("-") and a != "-":
+            return False
+        break
+    if i >= len(args):
+        return False
+    return _awk_program_ok(args[i])
 
 
 def _split_segments(command: str) -> Optional[List[str]]:
@@ -434,6 +765,12 @@ def _segment_refusal(segment: str) -> Optional[str]:
 
     if parts and parts[0] in _READONLY_BUILTINS:
         return None
+    if parts and parts[0] == "date":
+        return None if _is_date_allowed(parts[1:]) else _RULE_DATE
+    if parts and parts[0] == "sed":
+        return None if _is_sed_allowed(parts[1:]) else _RULE_SED
+    if parts and parts[0] == "awk":
+        return None if _is_awk_allowed(parts[1:]) else _RULE_AWK
     if parts and parts[0] == _LINEAR_AS_MANAGER:
         return None
     if parts and parts[0] == "ao":
@@ -516,9 +853,10 @@ def decide(
             raw = tool_input.get("command", "")
             if isinstance(raw, str):
                 command = raw
-        if _is_bash_allowed(command):
+        refusal = _bash_refusal(command)
+        if refusal is None:
             return True, ""
-        return False, DENY_MESSAGE
+        return False, deny_message(refusal)
 
     # Read, Grep, Glob, Agent, Task and anything else → always allow.
     return True, ""

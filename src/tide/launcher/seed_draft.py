@@ -929,7 +929,8 @@ class _States(dict):
 
 def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
                 status_text: str = "", live=None,
-                foreign: Optional[Dict[str, str]] = None) -> List[str]:
+                foreign: Optional[Dict[str, str]] = None,
+                only: Optional[Sequence[str]] = None) -> List[str]:
     """Каждая задача Linear, упомянутая в сиде, — один раз со ссылкой.
 
     Голый «SOC-62» новой сессии ничего не говорит, пока она не сходит в Linear
@@ -940,12 +941,14 @@ def block_links(text: str, prefixes: Sequence[str] = ("SOC",),
     Linear; закрытые (Done/Canceled) уходят вниз отдельной группой «закрыты в
     Linear». :class:`LinearUnavailable` — статус из *status_text*/*text*
     (:func:`issue_statuses`) с пометкой «статус не сверен». None — как до F30:
-    только текст, без пометок."""
+    только текст, без пометок. *only* — печатать только эти номера (SOC-181 п.13:
+    проект с трекером заказчика, :func:`own_issues`)."""
     tmpl = (os.environ.get(LINEAR_URL_ENV) or "").strip() or LINEAR_URL_DEFAULT
     text = expand_issue_runs(text)
     seen: List[str] = []
     for key in _ISSUE_RE.findall(text or ""):
-        if key.split("-", 1)[0] in prefixes and key not in seen:
+        if key.split("-", 1)[0] in prefixes and key not in seen and (
+                only is None or key in only):
             seen.append(key)
     seen.sort(key=lambda k: int(k.rsplit("-", 1)[1]))
     foreign = foreign or {}
@@ -1864,6 +1867,45 @@ def foreign_issues(keys: Sequence[str], live, me: Sequence[str] = (),
     return out
 
 
+# SOC-181 п.13: проект, где свой трекер — у заказчика (mitehq: MIT, его правила).
+# SOC-строки шаблона сборщика туда не подмешиваются: в «задачи Linear» и «ждёт Гришу»
+# едут только задачи SOC самой нити (:func:`own_issues`); номер, попавший в текст
+# почтой или поручением («доска SOC-112 читает механически»), — не её задача.
+# Явно: ``tracker=customer`` / ``tracker=own`` в ``.tide/canon/config`` проекта.
+CUSTOMER_TRACKER = "_customer_tracker"
+CUSTOMER_TRACKER_PROJECTS = frozenset({"mitehq"})
+
+
+def customer_tracker(root: Path) -> bool:
+    """Свой трекер проекта — у заказчика (SOC-181 п.13)? Никогда не падает."""
+    try:
+        from ..canon import store as _store
+
+        val = (_store.config_value(Path(root), "tracker") or "").strip().lower()
+    except Exception:  # noqa: BLE001 — сид важнее
+        val = ""
+    if val:
+        return val == "customer"
+    return _project_name(root) in CUSTOMER_TRACKER_PROJECTS
+
+
+def own_issues(keys: Sequence[str], live, me: Sequence[str] = (),
+               named_text: str = "") -> List[str]:
+    """Задачи SOC самой нити: названы в её цели/«главном» (*named_text*) или взяты
+    ею в Linear («Взял: <проект> — <нить> · NN», *live*.takers). Остальные номера
+    текста — чужие (SOC-181 п.13, проект с трекером заказчика)."""
+    named = set(linear_keys(named_text or ""))
+    takers = getattr(live, "takers", None) or {}
+    proj, thread = (list(me) + ["", ""])[:2]
+    out: List[str] = []
+    for k in keys:
+        mine = bool(thread) and any(
+            t == thread and (not proj or not p or p == proj) for p, t in takers.get(k) or [])
+        if k in named or mine:
+            out.append(k)
+    return out
+
+
 # F85: пункт «ждёт Гришу» про приёмку/Done задачи, которая уже закрыта в Linear, — снят.
 _REVIEW_ASK = re.compile(r"\bDone\b|In Review|на проверк|приёмк|приемк|приня|закрыт|"
                          r"посмотреть", re.IGNORECASE)
@@ -1959,9 +2001,16 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
         foreign = foreign_issues(  # F85/F71: чужие задачи — не задачи нити
             keys, live, out.get(THREAD_SELF) or (),
             dont_dup_keys([ln for k in (MAIN, AWAITING, NEXT) for ln in out.get(k) or []]))
+        only = None
+        if out.get(CUSTOMER_TRACKER):  # SOC-181 п.13: трекер заказчика — только свои SOC
+            named = "\n".join([text for name, text in sources if name == "цели нити"]
+                              + list(out.get(MAIN) or []))
+            only = own_issues(keys, live, out.get(THREAD_SELF) or (), named)
+            foreign = dict(foreign, **{k: "трекер заказчика — не задача нити"
+                                       for k in keys if k not in only})
         out[LINEAR] = mark_linear_source(
             block_links(hay, status_text="\n".join(reversed(list(context))), live=live,
-                        foreign=foreign),
+                        foreign=foreign, only=only),
             seen, sources)
         where = "".join(out.get(SEED_IN_PATH) or [])
         if AWAITING in out:  # F48: задачи на проверке ждут Гришу (F85: свои, не Done)
@@ -3552,6 +3601,7 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
         ENVIRONMENT: _sc.fresh_environment(
             block_environment(contract.find_body(seed_in, "environment")), history),
         THREAD_SELF: [_project_name(root), _thread_word(thread_entry)],
+        CUSTOMER_TRACKER: ["1"] if customer_tracker(root) else [],
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
                          ("прошлого сида", "\n".join(prev_linear))],
         SEED_IN_PATH: [str(seed_in_path)],

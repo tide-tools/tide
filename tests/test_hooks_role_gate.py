@@ -68,14 +68,14 @@ def test_arbitrary_role_allows_write():
 def test_orchestrator_denies_write():
     allow, reason = role_gate.decide("Write", {"file_path": "/tmp/x.py"}, "orchestrator")
     assert allow is False
-    assert "HEAD (orchestrator)" in reason
-    assert "worker-work" in reason
+    assert "голове (orchestrator)" in reason
+    assert "работа для помощника" in reason
 
 
 def test_orchestrator_denies_edit():
     allow, reason = role_gate.decide("Edit", {"file_path": "/tmp/x.py"}, "orchestrator")
     assert allow is False
-    assert "Dispatch it via the Agent tool" in reason
+    assert "отдай её через Agent" in reason
 
 
 def test_orchestrator_denies_notebook_edit():
@@ -83,7 +83,7 @@ def test_orchestrator_denies_notebook_edit():
         "NotebookEdit", {"notebook_path": "/tmp/x.ipynb"}, "orchestrator"
     )
     assert allow is False
-    assert "tide CLI" in reason
+    assert "Write/Edit/NotebookEdit" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ def test_orchestrator_denies_pipe():
 def test_orchestrator_denies_rm():
     allow, reason = role_gate.decide("Bash", {"command": "rm -rf ."}, "orchestrator")
     assert allow is False
-    assert "HEAD (orchestrator)" in reason
+    assert "голове (orchestrator)" in reason
 
 
 def test_orchestrator_denies_mv():
@@ -431,7 +431,7 @@ def test_orchestrator_allows_readonly_pipeline(command):
 def test_orchestrator_denies_pipeline_with_mutating_link(command):
     allow, reason = role_gate.decide("Bash", {"command": command}, "orchestrator")
     assert allow is False
-    assert "HEAD (orchestrator)" in reason
+    assert "голове (orchestrator)" in reason
 
 
 @pytest.mark.parametrize("command", [
@@ -547,7 +547,7 @@ def test_orchestrator_denies_mutating_link_on_a_second_line(command):
     """
     allow, reason = role_gate.decide("Bash", {"command": command}, "orchestrator")
     assert allow is False
-    assert "HEAD (orchestrator)" in reason
+    assert "голове (orchestrator)" in reason
 
 
 @pytest.mark.parametrize("command", [
@@ -563,9 +563,9 @@ def test_orchestrator_allows_multi_line_readonly_command(command):
 def test_deny_message_names_what_is_allowed():
     """The refusal has to teach the way out, not just close the door."""
     _, reason = role_gate.decide("Bash", {"command": "rm -rf ."}, "orchestrator")
-    assert "Allowed for you here" in reason
-    assert "Agent tool" in reason
-    assert "not gated" in reason
+    assert "Тебе доступно" in reason
+    assert "через Agent" in reason
+    assert "гард его не держит" in reason
     # The list has to name what the gate actually lets through, or the head
     # keeps rediscovering `||` and `2>/dev/null` by getting refused.
     assert role_gate.ALLOWED_SURFACE in reason
@@ -628,7 +628,7 @@ def test_head_still_denied_when_not_a_subagent():
         "Write", {"file_path": "/tmp/x.py", "content": "x"}, "orchestrator",
     )
     assert allow is False
-    assert "HEAD (orchestrator)" in reason
+    assert "голове (orchestrator)" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +646,7 @@ def test_cli_denies_write_for_orchestrator(monkeypatch, capsys):
     rc = _run_role_gate(monkeypatch, payload)
     assert rc == role_gate.BLOCK_EXIT
     err = capsys.readouterr().err
-    assert "HEAD (orchestrator)" in err
+    assert "голове (orchestrator)" in err
 
 
 def test_cli_denies_edit_for_orchestrator(monkeypatch, capsys):
@@ -665,7 +665,7 @@ def test_cli_denies_mutating_bash_for_orchestrator(monkeypatch, capsys):
     payload = '{"tool_name":"Bash","tool_input":{"command":"rm -rf ."}}'
     rc = _run_role_gate(monkeypatch, payload)
     assert rc == role_gate.BLOCK_EXIT
-    assert "HEAD (orchestrator)" in capsys.readouterr().err
+    assert "голове (orchestrator)" in capsys.readouterr().err
 
 
 def test_cli_allows_tide_bash_for_orchestrator(monkeypatch, capsys):
@@ -707,7 +707,7 @@ def test_cli_denies_write_when_agent_id_is_blank(monkeypatch, capsys):
     )
     rc = _run_role_gate(monkeypatch, payload)
     assert rc == role_gate.BLOCK_EXIT
-    assert "HEAD (orchestrator)" in capsys.readouterr().err
+    assert "голове (orchestrator)" in capsys.readouterr().err
 
 
 def test_cli_denies_write_when_agent_id_is_not_a_string(monkeypatch, capsys):
@@ -773,17 +773,17 @@ def test_explain_names_the_refusing_link_and_the_rule():
     text = role_gate.explain("ls | rm -rf x")
     assert "link 2 of 2" in text
     assert "`rm -rf x`" in text
-    assert "not on the read-only allowlist" in text
+    assert "нет в списке чтения" in text
     assert role_gate.ALLOWED_SURFACE in text
 
 
 @pytest.mark.parametrize("command,rule_fragment", [
-    ('echo "$(rm -rf x)"', "command substitution"),
-    ("cat <(rm -rf x)", "process substitution"),
-    ("echo hi > out.txt", "file redirect"),
-    ("git commit -m x", "git subcommand is not read-only"),
-    ("pip install requests", "not on the read-only allowlist"),
-    ('grep "a | b', "unbalanced quotes"),
+    ('echo "$(rm -rf x)"', "подстановка команды"),
+    ("cat <(rm -rf x)", "подстановка процесса"),
+    ("echo hi > out.txt", "перенаправление в файл"),
+    ("git commit -m x", "git не на чтение"),
+    ("pip install requests", "нет в списке чтения"),
+    ('grep "a | b', "незакрытые кавычки"),
 ])
 def test_explain_names_the_rule_that_refused(command, rule_fragment):
     assert rule_fragment in role_gate.explain(command)
@@ -1054,3 +1054,83 @@ def test_hint_only_for_ao_send():
     assert role_gate.ao_send_chars("ao send --session s --message=" + long) == 1000
     assert role_gate.ao_send_chars("tide status && ao send --session s --message '"
                                    + long + "'") == 1000
+
+
+# ---------------------------------------------------------------------------
+# SOC-181 п.12: the head reads the clock and slices text itself — date, cut, tr,
+# jq, sed -n, awk — while anything that writes or hides a command stays denied.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    "date",
+    "date +%H:%M",
+    "date -u '+%Y-%m-%d %H:%M'",
+    'date -d "-2 days" +%F',
+    "date -j -f %Y 2026 +%s",
+    "cut -d, -f1 a.csv",
+    "echo abc | tr a-z A-Z",
+    "jq . x.json",
+    "jq -r '.a[] | .b' x.json",
+    "sed -n '1,5p' f.txt",
+    "sed -n '/start/,/end/p' f.txt",
+    "sed -n 's/a/b/p' f.txt",
+    "sed -n -e '1p' -e '$p' f.txt",
+    "sed -nE '/x|y/p' f.txt",
+    "sed -n ':a;N;$!ba;s/\\n/ /gp' f.txt",
+    "awk '{print $1}' f.txt",
+    "awk -F: '$3 > 100 {print $1}' /etc/passwd",
+    "awk 'NR==1 || /x|y/ {print}' f.txt",
+    "awk -v n=3 'NR<=n' f.txt",
+    "git log --oneline | head -5 | awk '{print $1}'",
+    "cat f.txt | sed -n '2p' | cut -c1-10",
+])
+def test_orchestrator_allows_readonly_text_tools(command):
+    allow, reason = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is True, reason
+
+
+@pytest.mark.parametrize("command,rule", [
+    ("sed -i 's/a/b/' f.txt", "sed голове"),
+    ("sed -n -i 's/a/b/' f.txt", "sed голове"),
+    ("sed -ni '1p' f.txt", "sed голове"),
+    ("sed -n --in-place '1p' f.txt", "sed голове"),
+    ("sed 's/a/b/' f.txt", "sed голове"),               # without -n
+    ("sed -n 'w out' f.txt", "sed голове"),
+    ("sed -n '1w out' f.txt", "sed голове"),
+    ("sed -n 's/a/b/w out' f.txt", "sed голове"),
+    ("sed -n 'W out' f.txt", "sed голове"),
+    ("sed -n 'e ls' f.txt", "sed голове"),
+    ("sed -n 's/a/b/e' f.txt", "sed голове"),
+    ("sed -n -f script.sed f.txt", "sed голове"),
+    ("awk '{print $1 > \"out\"}' f.txt", "awk голове"),
+    ("awk '{print > \"/tmp/x\"}' f.txt", "awk голове"),
+    ("awk '{printf \"%s\", $1 >> \"o\"}' f.txt", "awk голове"),
+    ("awk 'BEGIN{system(\"rm -rf x\")}'", "awk голове"),
+    ("awk '{print | \"sh\"}' f.txt", "awk голове"),
+    ("awk 'BEGIN{\"date\" | getline d; print d}'", "awk голове"),
+    ("awk -f prog.awk f.txt", "awk голове"),
+    ("awk '@load \"filefuncs\"; BEGIN{}'", "awk голове"),
+    ("date -s 12:00", "date —"),
+    ("date 1011120026", "date —"),
+    ("date --set=now", "date —"),
+    ("echo $(date)", "подстановка команды"),
+    ("ls `date`", "подстановка команды"),
+    ("date > now.txt", "перенаправление в файл"),
+    ("sed -n '1p' f.txt > out.txt", "перенаправление в файл"),
+])
+def test_orchestrator_denies_writing_text_tools(command, rule):
+    allow, reason = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is False
+    assert rule in reason
+
+
+def test_refusal_is_two_lines_what_and_how():
+    """SOC-181: line 1 — what was refused (the link and the rule), line 2 — the way
+    out: hand it to a helper, plus the list of what the head may do."""
+    _, reason = role_gate.decide("Bash", {"command": "sed -i 's/a/b/' f.txt"}, "orchestrator")
+    lines = reason.split("\n")
+    assert len(lines) == 2
+    assert "это нельзя" in lines[0] and "`sed -i 's/a/b/' f.txt`" in lines[0]
+    assert "отдай её через Agent" in lines[1] and role_gate.ALLOWED_SURFACE in lines[1]
+    _, reason = role_gate.decide("Write", {"file_path": "/tmp/x"}, "orchestrator")
+    assert len(reason.split("\n")) == 2

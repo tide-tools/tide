@@ -249,7 +249,10 @@ def _unproven_newcomer(control_home: Path, ao_id: str, sid: str,
 
 # The AO launch turn (:func:`tide.adapters.ao.build_prompt`) names the arc's seed and
 # the pre-pick it was launched under — the chat's own proof of which passport it owns.
-_LAUNCH_SEED_RE = re.compile(r"Прочитай файл (\S+) целиком")
+# SOC-181: the turn now says «Твой старт — сид <path> (роль: …): …»; chats launched
+# before it carry «Прочитай файл <path> целиком» — both are read back.
+_LAUNCH_SEED_RE = re.compile(
+    r"(?:Прочитай файл|Твой старт — сид) (\S+?)(?= целиком|:?\s|:$|$)")
 _LAUNCH_PIN_RE = re.compile(r'"session_id":\s*"([0-9A-Fa-f-]{36})"')
 
 

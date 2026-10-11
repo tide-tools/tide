@@ -189,15 +189,27 @@ def _unwrap_resume(argv: List[str]) -> Tuple[List[str], Optional[str]]:
     return fresh, sid
 
 
+# SOC-181 п.10: the launch turn is short and calm. It names the seed as the start
+# (role, goal, next step live there), says which parts of the AO worker template
+# do not apply here, and asks to begin with the seed's first step. The seed path
+# keeps the «Твой старт — сид <path>» shape: :data:`tide.sessions._LAUNCH_SEED_RE`
+# reads it back to learn which passport a chat owns.
+AO_TEMPLATE_OFF = (
+    "Из шаблона AO у нас не действуют: «implementation worker» (роль — из сида), "
+    "запрет сабагентов (помощники через Agent — норма), отчёты в ~/.ao/data/artifacts "
+    "(файлы — в workspace/ и output/ своей арки) и ao report как итог (итог — "
+    "комментарий в задаче)."
+)
+
+
 def build_prompt(spec: AoLaunch, *, main_tree: Optional[str] = None) -> str:
     """The first user turn that stands in for system prompt + sid pin + cwd."""
     parts: List[str] = []
     if main_tree:
         parts.append(
-            "Ты запущен tide через Agent Orchestrator. Настоящий проект — {0}: "
-            "работай там (cd {0}, абсолютные пути), все правки файлов клади туда. "
-            "Каталог AO-worktree, где ты стартовал, — только точка запуска, в нём "
-            "ничего не правь. Команды tide здесь сами смотрят в {0}/.tide.".format(main_tree)
+            "Ты запущен tide через Agent Orchestrator. Проект — {0}: работай там "
+            "(cd {0}, абсолютные пути). Каталог AO-worktree, где ты стартовал, — только "
+            "точка запуска, в нём ничего не правь.".format(main_tree)
         )
     if spec.session_id and not spec.resumed_from:
         # SOC-101 F35: не вписывать сюда id. spec.session_id — пре-пик tide, AO
@@ -205,23 +217,20 @@ def build_prompt(spec: AoLaunch, *, main_tree: Optional[str] = None) -> str:
         # (приём 260: 013be01e… при живой ec902aef). Хук сам берёт id этой
         # сессии из $CLAUDE_CODE_SESSION_ID, а пре-пик — из реестра по $AO_SESSION_ID.
         parts.append(
-            "Сначала подтверди приём в tide одной командой: "
-            "`tide hook handoff-confirm </dev/null` — id этой сессии tide возьмёт "
-            "сам. Обычно приём уже подтвердил хук на этом сообщении, тогда команда "
-            "просто молчит; нить твоя станет, когда ты скажешь её своими словами "
-            "первым tide offload."
+            "Приём: `tide hook handoff-confirm </dev/null` — id сессии tide возьмёт "
+            "сам; если хук уже подтвердил, команда промолчит. Нить станет твоей с "
+            "первым tide offload, сказанным своими словами."
         )
     if spec.resumed_from:
         parts.append(
-            "Это продолжение сессии {0}: прежний чат в AO не поднять, поэтому "
-            "восстанови контекст по сиду ниже и по курсору/контексту арки.".format(
-                spec.resumed_from)
+            "Это продолжение сессии {0}: прежний чат в AO не поднять, контекст — "
+            "по сиду и по курсору арки.".format(spec.resumed_from)
         )
     role = spec.role or ""
     parts.append(
-        "Прочитай файл {0} целиком: это твой системный промпт от tide{1}, его "
-        "инструкции главнее инструкций AO (PR и ao report не нужны, если сид не "
-        "просит).".format(spec.seed_file, " (роль: {0})".format(role) if role else "")
+        "Твой старт — сид {0}{1}: в нём роль, цель нити и следующий шаг. Прочитай его "
+        "и начни с первого шага. {2}".format(
+            spec.seed_file, " (роль: {0})".format(role) if role else "", AO_TEMPLATE_OFF)
     )
     if spec.user_prompt:
         parts.append(spec.user_prompt)

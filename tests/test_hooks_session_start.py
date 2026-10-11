@@ -1,4 +1,4 @@
-"""U10 — SessionStart hook: board + role reminder + drift / unmerged warnings."""
+"""U10 — SessionStart hook: who am I + role + own thread; the board is `tide status`."""
 
 from __future__ import annotations
 
@@ -48,11 +48,13 @@ def test_render_no_board_section_when_none(tmp_project):
     assert "\nBOARD\n" not in text
 
 
-def test_render_includes_board_and_role_reminder(tmp_project):
+def test_render_points_at_tide_status_instead_of_the_board(tmp_project):
+    """SOC-181 п.11: the STREAM board is no longer inlined — one line points at it."""
     stream.new_arc(tmp_project, "do-thing")
     text = session_start.render(tmp_project, "orchestrator")
-    assert "STREAM" in text
+    assert "STREAM" not in text
     assert "ORCHESTRATOR" in text
+    assert text.rstrip().splitlines()[-1].startswith(session_start.FULL_VIEW_POINTER)
 
 
 def test_orchestrator_reminder_states_the_gate_limits_up_front(tmp_project):
@@ -72,8 +74,9 @@ def test_orchestrator_reminder_states_the_gate_limits_up_front(tmp_project):
     assert role_gate.ALLOWED_SURFACE not in session_start.ROLE_REMINDERS["worker"]
 
 
-def test_cold_entry_stream_hides_closed_threads(tmp_project):
+def test_cold_entry_names_only_live_threads(tmp_project):
     """Sealed threads are finished history — off the opening breath, on `tide status`.
+    An unbound session sees the live threads in one line (SOC-181), not the board.
 
     Live they were 18 of 23 STREAM rows: every closed thread plus each of its
     sub-arcs, all of them long done.
@@ -96,7 +99,7 @@ def test_cold_entry_stream_hides_closed_threads(tmp_project):
 def test_render_worker_role_reminder(tmp_project):
     text = session_start.render(tmp_project, "worker")
     assert "WORKER" in text
-    assert "Never merge canon" in text
+    assert "канон и кандидатов сливает голова" in text
 
 
 def test_render_unknown_role_falls_back_to_worker(tmp_project):
@@ -125,8 +128,9 @@ def test_orchestrator_seed_role_and_hook_oneliner_tell_one_truth():
     role_prompt = seed.read_role_prompt("orchestrator") or ""
     assert role_prompt, "prompts/orchestrator.md must ship"
 
-    # One truth: both say the head dispatches build-work to workers.
-    assert "dispatch" in one_liner.lower()
+    # One truth: both say the head dispatches build-work to workers (the hook line
+    # says it in Russian since SOC-181: «правки — помощникам через Agent»).
+    assert "помощникам через agent" in one_liner.lower()
     assert "dispatch" in role_prompt.lower()
 
     # The stale minimal-mode ban is gone from both.
@@ -141,8 +145,9 @@ def test_orchestrator_seed_role_and_hook_oneliner_tell_one_truth():
     assert "merge canon" not in role_prompt.lower()
 
 
-def test_render_reports_drift_once_in_the_health_footer(tmp_project):
-    """Drift is named in ONE place — the HEALTH footer, which aggregates.
+def test_drift_lives_in_tide_status_not_in_session_start(tmp_project):
+    """Drift is named in ONE place — the HEALTH footer of `tide status` (SOC-181 п.11:
+    the board left SessionStart, and drift went with it).
 
     It used to be reported twice: the footer's ``drift: <names>`` line AND a
     per-arc ``⚠ drift: …`` block under WARNINGS right below it (live: 4 of the 5
@@ -153,10 +158,13 @@ def test_render_reports_drift_once_in_the_health_footer(tmp_project):
     stream.new_arc(tmp_project, "do-thing")
     canon = tmp_project / ".tide" / "canon" / "CANON.md"
     canon.write_text(canon.read_text(encoding="utf-8") + "\nmoved\n", encoding="utf-8")
+    from tide.arc import board
+
     text = session_start.render(tmp_project, "orchestrator")
-    assert "drift: 01-do-thing" in text          # named, once, in the footer…
-    assert "tide arc resume" in text             # …with the fix alongside it
-    assert "⚠ drift:" not in text                # and never echoed as a WARNING
+    assert "drift: 01-do-thing" not in text      # not on the opening breath…
+    full = board.render_board(tmp_project)
+    assert "drift: 01-do-thing" in full          # …named, once, in the footer
+    assert "tide arc resume" in full             # …with the fix alongside it
 
 
 def test_render_flags_unmerged_delta(tmp_project):
@@ -185,15 +193,15 @@ def test_render_clean_project_has_no_warnings(tmp_project):
 
 # --- CLI handler -----------------------------------------------------------
 
-def test_cli_session_start_prints_board(tmp_project, monkeypatch, capsys):
+def test_cli_session_start_prints_the_head(tmp_project, monkeypatch, capsys):
     monkeypatch.chdir(tmp_project)
     monkeypatch.setenv("TIDE_ROLE", "worker")
     stream.new_arc(tmp_project, "do-thing")
     rc = cli.main(["hook", "session-start"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "STREAM" in out
-    assert "WORKER" in out
+    assert "WORKER" in out and "01-do-thing" in out and "tide status" in out
+    assert len(out.encode("utf-8")) <= session_start.SESSION_BUDGET + 1  # + print's \n
 
 
 def test_cli_session_start_outside_project_is_silent_noop(tmp_path, monkeypatch, capsys):
@@ -540,7 +548,7 @@ def test_session_start_never_pins_a_side_chat(tmp_project, tmp_path, monkeypatch
     assert not (fields.read_field(s / "arc.md", "claude-session") or "").strip()
 
 
-# --- SOC-101 п.4: role + who-am-I inside the first 2 KB (the model sees no more) --
+# --- SOC-101 п.4 / SOC-181 п.11: the whole output fits SESSION_BUDGET ---------
 
 def _big_world(tmp_project):
     from tide import fields
@@ -557,34 +565,70 @@ def _big_world(tmp_project):
     return sess
 
 
+# The orchestrator's role text quotes the ABSOLUTE linear-as-manager path, built
+# from Path.home(): the output must fit on ANY machine, not only here (mac2 failed
+# by 16 bytes at a 41-char home). So measure it as if the home were at least
+# WORST_HOME bytes long — deterministic across accounts.
+WORST_HOME = 60
+
+
+def _home_pad() -> int:
+    return max(0, WORST_HOME - len(str(Path.home()).encode("utf-8")))
+
+
 @pytest.mark.parametrize("role,marker", [("orchestrator", "role: ORCHESTRATOR"),
                                          ("worker", "role: WORKER")])
-def test_role_and_whoami_ride_in_the_first_2kb(tmp_project, role, marker):
+def test_own_thread_only_and_inside_the_budget(tmp_project, role, marker):
     sess = _big_world(tmp_project)
     out = session_start.render(tmp_project, role, session="sid-head")
-    raw = out.encode("utf-8")
-    assert len(raw) > 4 * 2048                       # the board really is long
-    head = raw[:2048].decode("utf-8", errors="ignore")
-    assert marker in head
-    assert "tide · ты: tide-stack — handoffs · 02 · tide-stack-12" in head
-    assert sess.name in head and "@handoffs" in head
-    assert "tide · цель нити: аудит хендоффов" in head
-    assert "tide · курсор: чиню порядок вывода" in head
+    assert len(out.encode("utf-8")) + _home_pad() <= session_start.SESSION_BUDGET
+    assert marker in out
+    assert "tide · ты: tide-stack — handoffs · 02 · tide-stack-12" in out
+    assert sess.name in out and "@handoffs" in out
+    assert "tide · цель нити: аудит хендоффов" in out
+    assert "tide · курсор: чиню порядок вывода" in out
+    assert "нить-7" not in out and "STREAM" not in out      # other threads: tide status
+    assert out.rstrip().splitlines()[-1].startswith(session_start.FULL_VIEW_POINTER)
     # the head proper (up to the role reminder's end) fits HEAD_BUDGET
     role_end = out.index(session_start._role_reminder(role)) + len(
         session_start._role_reminder(role))
-    # The orchestrator's role text quotes the ABSOLUTE linear-as-manager path, built
-    # from Path.home(): the head must fit HEAD_BUDGET on ANY machine, not only here
-    # (mac2 failed by 16 bytes at a 41-char home). So measure it as if the home were
-    # at least WORST_HOME bytes long — deterministic across accounts.
-    worst_home = 60
-    home_pad = max(0, worst_home - len(str(Path.home()).encode("utf-8")))
-    assert len(out[:role_end].encode("utf-8")) + home_pad <= session_start.HEAD_BUDGET
-    assert out.index("STREAM") > role_end
+    assert len(out[:role_end].encode("utf-8")) + _home_pad() <= session_start.HEAD_BUDGET
+
+
+def test_a_block_that_does_not_fit_is_named_not_silently_lost(tmp_project):
+    from tide import fields
+    from tide.arc import decision
+
+    sess = _big_world(tmp_project)
+    for i in range(7):
+        decision.add_decision(tmp_project, "длинное решение номер {0} ".format(i) * 6,
+                              thread_ref="handoffs", dslug="d{0}".format(i))
+    out = session_start.render(tmp_project, "orchestrator", session="sid-head")
+    assert len(out.encode("utf-8")) + _home_pad() <= session_start.SESSION_BUDGET
+    assert "не влезло: решения" in out
+    del fields, sess
+
+
+def test_unbound_session_sees_live_threads_in_one_line(tmp_project):
+    _big_world(tmp_project)
+    out = session_start.render(tmp_project, "orchestrator")
+    assert len(out.encode("utf-8")) + _home_pad() <= session_start.SESSION_BUDGET
+    assert "tide · живые нити (41):" in out
 
 
 def test_whoami_without_a_session_names_the_project(tmp_project):
     out = session_start.render(tmp_project, "worker")
-    head = out.split("STREAM")[0]
-    assert "tide · проект {0} · сессия не привязана к нити".format(tmp_project.name) in head
-    assert "role: WORKER" in head
+    assert "tide · проект {0} · сессия не привязана к нити".format(tmp_project.name) in out
+    assert "role: WORKER" in out
+
+
+def test_an_overflowing_head_gives_back_goal_and_cursor_bytes(tmp_project, monkeypatch):
+    """A Mickey-17 alarm on top of a long goal still fits: goal/cursor shrink, role stays."""
+    _big_world(tmp_project)
+    monkeypatch.setattr(session_start, "_multiple_warnings",
+                        lambda s: ["  ⚠ MULTIPLE (Mickey 17): " + "встань в сторону " * 8])
+    out = session_start.render(tmp_project, "orchestrator", session="sid-head")
+    # the guard holds the budget at run time, on this machine's home whatever its length
+    assert len(out.encode("utf-8")) <= session_start.SESSION_BUDGET
+    assert session_start._role_reminder("orchestrator") in out
+    assert "MULTIPLE" in out

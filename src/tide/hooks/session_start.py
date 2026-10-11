@@ -1,15 +1,11 @@
-"""tide.hooks.session_start — the SessionStart board + role reminder + warnings.
+"""tide.hooks.session_start — the SessionStart head: who am I, role, own thread.
 
-Ported from the arcs ``arcs-hook`` SessionStart banner, trimmed per
-build-blueprint ``sync_hook_wiring`` SESSIONSTART: print the ``tide arc status``
-board inline (no plugin system), a one-line orchestrator/worker **role
-reminder**, and the net-new **canon-drift / unmerged-delta warnings**. The arcs
-update-nudge and plugin-block emission are DROPPED (the package manager owns
-versions; there is no plugin system).
-
-It runs at the top of every Claude session in an opted-in project, so the agent
-opens already oriented: what is on the stream, which role it holds, and whether
-the canon moved under an open arc (drift) or a closed arc still owes a merge.
+Ported from the arcs ``arcs-hook`` SessionStart banner. SOC-181 п.11: the hook
+prints only what THIS session needs on waking — the health line, who it is
+(project · thread · session · goal · cursor), its role, its thread's open
+decisions and the project's warnings — inside :data:`SESSION_BUDGET` bytes. The
+full STREAM board (every thread, candidates, health footer) is no longer inlined:
+it is one command away, ``tide status``, named in the closing line.
 
 :func:`render` is pure (snapshot-testable); :func:`cmd_session_start` is the thin
 handler. Both are defensive: outside a tide project they emit nothing and exit 0
@@ -23,7 +19,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import fields, paths, slug, sync
-from ..arc import board
 from . import edit_gate, role_gate
 
 ROLE_REMINDERS = {
@@ -34,16 +29,12 @@ ROLE_REMINDERS = {
     # orchestrator head grows with the account name: keep the prose tight enough that
     # HEAD_BUDGET holds for a long home too (SOC-143: mac2's home broke a 20-byte slack).
     "orchestrator": (
-        "tide · role: ORCHESTRATOR — you hold the CLI (`tide …`) and dispatch "
-        "build-work to worker subagents; you read, talk, orchestrate, never "
-        "Write/Edit yourself. The human leads by WHAT and signs the gates (rules, "
-        "plans, canon); no ceremony unasked.\n"
-        "tide · your hands: " + role_gate.ALLOWED_SURFACE
-        + " Doesn't fit? Shape it or dispatch, don't probe."
+        "tide · role: ORCHESTRATOR — голова: решаешь и ведёшь `tide …`, правки — "
+        "помощникам через Agent. Руки: " + role_gate.ALLOWED_SURFACE
     ),
     "worker": (
-        "tide · role: WORKER — work ONE open arc; write only its own output/ + "
-        "delta.md. Never merge canon / promote candidates (orchestrator-only)."
+        "tide · role: WORKER — ведёшь одну открытую арку: пишешь только в её output/ "
+        "и delta.md; канон и кандидатов сливает голова."
     ),
 }
 
@@ -328,11 +319,7 @@ def _session_decisions(root: Path, session: Optional[str]) -> List[str]:
         return []
 
 
-THREAD_SCREEN_POINTER = (
-    "tide · to see the whole thread — goal, current step, decisions by state, "
-    "what's moving, what waits for the human: `tide thread` (hygiene: "
-    "`tide thread --check`). Ask the machine before asking the human to retell it."
-)
+THREAD_SCREEN_POINTER = "tide · нить целиком: `tide thread`"
 
 
 def _thread_screen_pointer(root: Path, session: Optional[str]) -> List[str]:
@@ -359,11 +346,14 @@ def _thread_screen_pointer(root: Path, session: Optional[str]) -> List[str]:
 
 
 # SOC-101 п.4: the model sees only the first ~2 KB of a SessionStart hook's
-# output (live tide-stack: 14.8k chars, the role ~16 KB down — never seen). So the
-# HEAD — health line, who-am-I (session · thread · goal · cursor), role — comes
-# first and stays inside HEAD_BUDGET bytes; the long STREAM board goes below.
+# output. SOC-181 п.11: the WHOLE output now fits SESSION_BUDGET — own thread and
+# own project only; the full board (every thread, candidates, health) is one
+# pointer away, ``tide status``. The HEAD (health line, who-am-I, role) comes first
+# and stays inside HEAD_BUDGET; optional blocks ride in only while they fit.
 HEAD_BUDGET = 1536
-WHOAMI_CLIP = 120
+SESSION_BUDGET = 1536
+FULL_VIEW_POINTER = "tide · остальное: `tide status`"
+WHOAMI_CLIP = 80
 
 
 def _clip(text: str, limit: int = WHOAMI_CLIP) -> str:
@@ -394,8 +384,11 @@ def _whoami(root: Path, session: Optional[str]) -> List[str]:
         passport = entry / "arc.md"
         thread = entry.parents[1]
         title = (fields.read_field(passport, "title") or "").strip()
-        lines.append("tide · ты: {0} (проект {1} · нить {2} · сессия {3})".format(
-            _clip(title or entry.name, 80), Path(root).name, thread.name, entry.name))
+        project = Path(root).name
+        lines.append("tide · ты: {0} ({1}нить {2} · сессия {3})".format(
+            _clip(title or entry.name, 80),
+            "" if project in title else "проект {0} · ".format(project),
+            thread.name, entry.name))
         goal = (fields.read_field(_stream.passport_path(thread), "goal") or "").strip()
         if not placeholders.is_blind_goal(goal, slug.entry_slug(thread.name)):
             lines.append("tide · цель нити: {0}".format(_clip(goal)))
@@ -419,37 +412,48 @@ def _mail_line(root: Path, session: Optional[str]) -> List[str]:
     return [line] if line else []
 
 
+def _live_threads_line(root: Path) -> List[str]:
+    """One line naming the project's live threads — for a session not yet bound to
+    one (it has no «own thread» to show). Closed threads are history: `tide status`."""
+    try:
+        from ..arc import board as _board  # lazy: keep SessionStart import-light
+
+        names = [e.name for e in _board._stream_entries(paths.arcs_dir(Path(root)))
+                 if not slug.is_closed_entry(e.name)]
+    except Exception:  # noqa: BLE001 — a hook must never break a session
+        return []
+    if not names:
+        return []
+    return [_clip("tide · живые нити ({0}): {1}".format(len(names), ", ".join(names)), 400)]
+
+
+def _section(title: str, lines: List[str]) -> List[str]:
+    return ([""] + ([title] if title else []) + lines) if lines else []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None,
            session: Optional[str] = None) -> str:
-    """Render the SessionStart text: health line + board + role reminder + warnings.
+    """Render the SessionStart text — own thread and own project only (SOC-181 п.11).
+
+    HEAD first (health line, who-am-I, mail, role, Mickey-17 alarm, `tide thread`
+    pointer); then, while the total stays inside :data:`SESSION_BUDGET` bytes, the
+    optional blocks by priority: this nit's open decisions, warnings, update note,
+    focus boards, note index, onboarding nudge. A block that does not fit is named
+    in one line; the closing line always points at `tide status` for the rest.
 
     *update_note*, when present, is a non-blocking "tide update available" line
-    SURFACED (never auto-applied) below the warnings. It is a parameter — not
-    computed here — so :func:`render` stays pure/snapshot-testable; the live note
-    is resolved by :func:`cmd_session_start`.
+    SURFACED (never auto-applied). It is a parameter — not computed here — so
+    :func:`render` stays pure/snapshot-testable; the live note is resolved by
+    :func:`cmd_session_start`.
     """
     root = Path(root)
-    # HEAD (SOC-101 п.4) — inside HEAD_BUDGET bytes: the Светофор (tier-0 health),
-    # who this session is, its role; then the Mickey-17 alarm and the thread-screen
-    # pointer. Everything long (STREAM, decisions, warnings) goes below.
     lines: List[str] = _svetofor_line(root)
     lines += _whoami(root, session)
     lines += _mail_line(root, session)
     lines.append(_role_reminder(role))
     lines += _multiple_warnings(session)
-    lines += _thread_screen_pointer(root, session)
-    lines.append("")
-    # Cold entry shows LIVE work only: closed threads are finished history (live:
-    # 18 of 23 STREAM rows) and belong to `tide status`, not to the opening breath.
-    lines.append(board.render_board(root, include_closed=False))
-
-    # cand 128-A: the current nit's OPEN decisions ride in right below the board, so
-    # an in-place/resume session sees what's already concluded and doesn't re-decide
-    # it. Silent when there are none (best-effort, never breaks the session).
-    decisions = _session_decisions(root, session)
-    if decisions:
-        lines.append("")
-        lines.extend(decisions)
+    pointer = _thread_screen_pointer(root, session)
+    lines += pointer
 
     warnings = (
         _unmerged_warnings(root)
@@ -457,40 +461,45 @@ def render(root: Path, role: str, update_note: Optional[str] = None,
         + _readme_drift_warnings(root)
         + _arc_first_warnings(root, role)
     )
-    if warnings:
-        lines.append("")
-        lines.append("WARNINGS")
-        lines.extend(warnings)
+    optional = [
+        # no own thread → the project's live threads, one line (not the board)
+        ("нити", _section("", [] if pointer else _live_threads_line(root))),
+        # cand 128-A: the current nit's OPEN decisions — no re-deciding on resume
+        ("решения", _section("", _session_decisions(root, session))),
+        ("предупреждения", _section("WARNINGS", warnings)),
+        ("обновление", _section("UPDATE", [update_note] if update_note else [])),
+        ("доски", _section("BOARD", _open_board_notes(root))),
+        ("заметки", _section("NOTES", _project_notes_index(root))),
+        ("онбординг", _section("", _onboarding_nudge(root))),
+    ]
 
-    if update_note:
-        lines.append("")
-        lines.append("UPDATE")
-        lines.append(update_note)
+    def size(ls: List[str]) -> int:
+        return len("\n".join(ls).encode("utf-8"))
 
-    # Peripheral board add-on (deletable with _open_board_notes above): surface any
-    # open focus board + its phone URL on entry (silent when there is none).
-    board_notes = _open_board_notes(root)
-    if board_notes:
-        lines.append("")
-        lines.append("BOARD")
-        lines.extend(board_notes)
-
-    # Peripheral notes add-on (deletable with _project_notes_index above): the
-    # project's note cards as a light index — titles+tags only, bodies on demand.
-    note_lines = _project_notes_index(root)
-    if note_lines:
-        lines.append("")
-        lines.append("NOTES")
-        lines.extend(note_lines)
-
-    # Peripheral onboarding add-on (deletable with _onboarding_nudge above): one
-    # first-run advisory line, silent once onboarding is passed.
-    nudge_lines = _onboarding_nudge(root)
-    if nudge_lines:
-        lines.append("")
-        lines.extend(nudge_lines)
-
-    return "\n".join(lines)
+    footer = ["", FULL_VIEW_POINTER]
+    dropped: List[str] = []
+    for name, block in optional:
+        if not block:
+            continue
+        reserve = len(" · не влезло: , …".encode("utf-8")) + 40
+        if size(lines + block + footer) + reserve <= SESSION_BUDGET:
+            lines += block
+        else:
+            dropped.append(name)
+    if dropped:
+        footer[-1] += " · не влезло: {0}".format(", ".join(dropped))
+    # Last guard: a head that alone overflows (very long goal/cursor, a Mickey-17
+    # alarm) gives back bytes from the goal and cursor lines, never from the role.
+    over = size(lines + footer) - SESSION_BUDGET
+    for idx, line in enumerate(lines):
+        if over <= 0:
+            break
+        if line.startswith(("tide · цель нити:", "tide · курсор:")):
+            raw = line.encode("utf-8")
+            keep = max(40, len(raw) - over - 3)
+            lines[idx] = raw[:keep].decode("utf-8", errors="ignore").rstrip() + "…"
+            over -= len(raw) - len(lines[idx].encode("utf-8"))
+    return "\n".join(lines + footer)
 
 
 # --- CLI handler -----------------------------------------------------------
