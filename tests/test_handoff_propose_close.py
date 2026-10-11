@@ -30,8 +30,13 @@ class _Ao:
 
 @pytest.fixture
 def ao(monkeypatch):
+    """Канал до менеджера — прямой ``ao send`` (ветка без пульта). Путь через пульт
+    пачкой (SOC-179) — :func:`test_close_goes_to_the_pult_batch_not_ao_send`."""
     fake = _Ao()
     monkeypatch.setattr(reception, "_ao_adapter", lambda: fake)
+    monkeypatch.setattr(reception, "_close_to_manager",
+                        lambda to, text, source: "sent" if fake.say(to, text)
+                        else "not-delivered")
     return fake
 
 
@@ -86,3 +91,41 @@ def test_close_proposal_ignores_the_notify_switch(seam, sent, ao, manager, monke
     assert _pulse() == 0
     assert sent == []                      # Грише — ничего
     assert len(ao.said) == 1               # менеджеру — всё равно
+
+
+# --- SOC-179: «закрыть?» — несрочное, пачкой через пульт, а не ao send на каждый приём ---
+
+def test_close_goes_to_the_pult_batch_not_ao_send(monkeypatch):
+    from tide.launcher import autohandoff
+
+    fake, calls = _Ao(), []
+    monkeypatch.setattr(reception, "_ao_adapter", lambda: fake)
+    monkeypatch.setattr(autohandoff, "send_alert",
+                        lambda text, **kw: calls.append((text, kw)) or 0)
+    assert reception._close_to_manager("management-14", "закрыть x?", "proj/a/close") == "batched"
+    assert fake.said == []                                  # менеджера не будим
+    assert calls == [("закрыть x?", {"route": "manager", "source": "proj/a/close"})]
+    assert "urgent" not in calls[0][1]                      # несрочно — ждёт пачки
+
+
+@pytest.mark.parametrize("rc", [None, 1, -1])
+def test_close_without_pult_falls_back_to_ao_send(monkeypatch, rc):
+    from tide.launcher import autohandoff
+
+    fake = _Ao()
+    monkeypatch.setattr(reception, "_ao_adapter", lambda: fake)
+    monkeypatch.setattr(autohandoff, "send_alert", lambda text, **kw: rc)
+    assert reception._close_to_manager("management-14", "закрыть x?", "s") == "sent"
+    assert fake.said == [("management-14", "закрыть x?")]
+
+
+def test_reception_close_lands_in_the_batch(seam, sent, manager, monkeypatch):
+    fake = _Ao()
+    monkeypatch.setattr(reception, "_ao_adapter", lambda: fake)
+    assert _pulse() == 0
+    assert fake.said == []
+    mgr = [c for c in sent if c["route"] == "manager"]
+    assert len(mgr) == 1 and mgr[0]["text"].endswith("закрыть proj — seam · 01?")
+    rec = hq.list_offers(seam["home"])[0]
+    assert hq._get(rec["path"].read_text(encoding="utf-8"),
+                   reception.CLOSE_PROPOSED).endswith("· management-14 · batched")

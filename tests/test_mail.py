@@ -119,6 +119,7 @@ def test_retry_twice_then_one_alert_to_manager(world):
     assert mail.step(tdir, 1, now=t + timedelta(minutes=16), minutes=15) == "alert"
     (text, kw), = world["alerts"]
     assert kw["route"] == "manager" and "почта 001" in text and "без квитанции" in text
+    assert not kw.get("urgent")          # SOC-179: почта без квитанции — пачкой
     assert mail.step(tdir, 1, now=t + timedelta(minutes=60), minutes=15) == "done"
     assert len(world["alerts"]) == 1
     mail.read("handoffs", 1, by="x")

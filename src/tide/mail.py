@@ -556,7 +556,8 @@ def step(tdir: Path, num: object, *, now: Optional[datetime] = None,
     if deadline and sent_at and (now - sent_at).total_seconds() >= float(deadline) * 60:
         # SOC-157: своё окно письма вышло — тревога менеджеру сразу, без повторов
         text = escalation_alert_text(tdir, rec, float(deadline))
-        code = send_alert(text, route="manager", source=address_of(tdir))
+        code = send_alert(text, route="manager", source=address_of(tdir),
+                          urgent=True)   # SOC-179: эскалация — сразу, не в пачку
         _append(tdir, {"ev": "alert", "num": rec["num"], "at": _iso(now),
                        "route": "manager", "code": code, "why": "alert_after"})
         return "alert"

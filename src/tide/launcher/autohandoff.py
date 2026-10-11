@@ -66,6 +66,9 @@ PROGRESS_MARK_FIELD = "progress-mark"  # пункты+пульсы нити на
 HANDED_OFF_FIELD = "handed-off"        # эта сессия уже передала нить (хук молчит)
 
 ALERT_CMD_ENV = "TIDE_ALERT_CMD"
+# SOC-179: явный признак срочности для пульта. route=manager копится в пачку раз в 25 мин;
+# urgent=1 — пачка уходит сразу (эскалация, шов-синк). Сирота, «закрыть?» — несрочно.
+ALERT_URGENT_ENV = "TIDE_ALERT_URGENT"
 AUTORAISE_ENV = "TIDE_AUTORAISE_AFTER"  # сек до автоподъёма вставшей нити; 0/off — нет
 AUTORAISE_DEFAULT = 1800
 AUTORAISE_POLL = 30  # как часто автоподъём смотрит, не взяли ли оффер
@@ -415,12 +418,15 @@ def tell_manager(text: str) -> Dict[str, object]:
 
 
 def send_alert(text: str, *, route: str, source: str = "",
-               extra_env: Optional[Dict[str, str]] = None) -> Optional[int]:
+               extra_env: Optional[Dict[str, str]] = None,
+               urgent: bool = False) -> Optional[int]:
     """Вызвать ``$TIDE_ALERT_CMD`` с *text* последним аргументом.
 
     Env команды: ``TIDE_ALERT_TEXT`` (тот же текст), ``TIDE_ALERT_ROUTE`` (кому:
     ``log`` — только в лог пульта, ``manager`` — менеджеру, ``human`` — Грише),
-    ``TIDE_ALERT_SOURCE`` (``<проект>/<нить>/<сессия>``). Нет команды — None, молча.
+    ``TIDE_ALERT_SOURCE`` (``<проект>/<нить>/<сессия>``), ``TIDE_ALERT_URGENT=1`` —
+    только при *urgent* (SOC-179: пульт не ждёт пачки, будит сразу; без признака
+    ``route=manager`` ждёт пачки до 25 мин). Нет команды — None, молча.
     Никогда не падает: код возврата, -1 — команда не запустилась.
     """
     cmd = (os.environ.get(ALERT_CMD_ENV) or "").strip()
@@ -428,6 +434,9 @@ def send_alert(text: str, *, route: str, source: str = "",
         return None
     env = dict(os.environ, TIDE_ALERT_TEXT=text, TIDE_ALERT_ROUTE=route,
                TIDE_ALERT_SOURCE=source, **(extra_env or {}))
+    env.pop(ALERT_URGENT_ENV, None)       # не наследовать срочность из окружения
+    if urgent:
+        env[ALERT_URGENT_ENV] = "1"
     try:
         proc = subprocess.run(shlex.split(cmd) + [text], env=env, timeout=30,
                               capture_output=True, text=True)

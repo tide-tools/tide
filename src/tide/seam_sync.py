@@ -1216,7 +1216,9 @@ def remind(home: Path, *, now: Optional[datetime] = None,
             _set(passport, SYNC_REMINDED, _now())  # метка ДО отправки — одна на пару
             if alert is None:
                 from .launcher.autohandoff import send_alert as alert
-            alert(text, route="manager", source="{0}/sync".format(rec.get("name")))
+            # SOC-179: пинг приёма хендоффа — срочный, пульт не держит его в пачке
+            alert(text, route="manager", source="{0}/sync".format(rec.get("name")),
+                  urgent=True)
             out.append(text)
         except Exception:  # noqa: BLE001 — напоминание не смеет уронить хук
             continue

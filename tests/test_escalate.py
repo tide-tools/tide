@@ -81,6 +81,7 @@ def test_no_ack_after_threshold_alerts_manager(world):
     assert mail.step(world["main"], "1", now=after) == "alert"
     (text, kw), = world["alerts"]
     assert kw["route"] == "manager"
+    assert kw.get("urgent") is True     # SOC-179: эскалация — сразу, не в пачку пульта
     assert "эскалация 001" in text and "тест падает на CI" in text
     assert mail.step(world["main"], "1", now=after) == "done"   # один раз
     assert len(world["alerts"]) == 1

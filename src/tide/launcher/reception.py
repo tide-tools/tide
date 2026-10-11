@@ -688,8 +688,25 @@ def close_blockers(home: Path, rec: Dict[str, object]) -> List[str]:
     return out
 
 
+def _close_to_manager(to: str, text: str, source: str) -> str:
+    """SOC-179 (правило 3 токеномики — несрочное пачкой): «закрыть?» не срочно — в пульт
+    ``route=manager``, он кладёт строку в пачку менеджеру (раз в 25 мин), а не будит
+    его ``ao send`` на каждый приём. Нет ``$TIDE_ALERT_CMD`` или пульт не принял —
+    как раньше, ``ao send`` на *to*. → ``batched`` / ``sent`` / ``not-delivered``."""
+    from .autohandoff import send_alert
+
+    try:
+        rc = send_alert(text, route="manager", source=source)
+    except Exception:  # noqa: BLE001
+        rc = -1
+    if rc == 0:
+        return "batched"
+    return "sent" if _ao_adapter().say(to, text) else "not-delivered"
+
+
 def propose_close(home: Path, key: str) -> Optional[str]:
-    """После приёма — ``ao send`` менеджеру (адрес — :func:`tide.whois.manager`):
+    """После приёма — менеджеру (адрес — :func:`tide.whois.manager`), пачкой через пульт
+    (:func:`_close_to_manager`; без пульта — ``ao send``):
     «<старая> передала нить <новой>, приём подтверждён; закрыть <старую>?». Не
     старой сессии самой (она не закрывается сама) — тому, кто закрывает. Один раз:
     метка ``close-proposed:`` в оффере. → итог или None (уже предложено/не принят).
@@ -727,7 +744,7 @@ def propose_close(home: Path, key: str) -> Optional[str]:
         if not to:
             outcome = "no-manager"
         else:
-            outcome = "sent" if _ao_adapter().say(to, text) else "not-delivered"
+            outcome = _close_to_manager(to, text, _source(rec) + "/close")
         _log(home, "предложение закрыть → {0} ({1}): {2}".format(to or "?", outcome, text))
         hq._set_field(path, CLOSE_PROPOSED, "{0} · {1} · {2}".format(stamp, to or "-", outcome))
         return outcome

@@ -447,7 +447,8 @@ def manager_text(v: Dict[str, object], *, raising: bool) -> str:
 
 def _alert_manager(text: str, source: str, thread: str) -> None:
     """Тот же путь, что у тревог автозакрытия: пульт ``route=manager``; нет команды —
-    ``ao send`` менеджеру по whois. Грише — ничего (tg 3733)."""
+    ``ao send`` менеджеру по whois. Грише — ничего (tg 3733). Несрочно (SOC-179):
+    без ``urgent`` пульт кладёт строку в пачку менеджеру раз в 25 мин, не будит."""
     from ..launcher import autohandoff as _ah
     if _ah.send_alert(text, route=ROUTE_MANAGER, source=source,
                       extra_env={"TIDE_ALERT_THREAD": thread}) is None:

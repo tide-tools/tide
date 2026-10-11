@@ -462,6 +462,7 @@ def test_remind_manager_once_after_30_min(world):
     ss._set(passport, ss.SYNC_AT, (now - timedelta(minutes=ss.NO_ANSWER_MIN + 5)).isoformat())
     (text,) = ss.remind(world["home"], alert=alert)
     assert got[0][1]["route"] == "manager"
+    assert got[0][1].get("urgent") is True   # SOC-179: пинг приёма — сразу, не в пачку
     assert "нет ответа 35 мин от старая proj-41" in text and "\n" not in text
     assert ss.remind(world["home"], alert=alert) == []           # одна на пару
     assert len(got) == 1 and ss._get(passport, ss.SYNC_REMINDED)
