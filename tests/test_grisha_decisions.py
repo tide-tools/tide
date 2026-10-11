@@ -85,7 +85,9 @@ def test_no_file_or_no_records_no_block(tmp_path, monkeypatch):
     assert gd.seed_block("", now=NOW, path=_journal(tmp_path)) == ""
     monkeypatch.setenv(gd.AGREEMENTS_ENV, str(tmp_path / "agr"))
     monkeypatch.delenv(gd.DECISIONS_ENV, raising=False)
-    assert gd.seed_text("tide-stack") == "договорённости: {0}/ (читать на старте)".format(tmp_path / "agr")
+    assert gd.seed_text("tide-stack") == (
+        "договорённости: {0}/ (читать на старте)\n"
+        "грабли всех проектов: {1} (читать на старте)").format(tmp_path / "agr", gd.gotchas_file())
 
 
 def test_default_agreements_line_points_to_management():

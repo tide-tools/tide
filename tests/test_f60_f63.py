@@ -171,8 +171,8 @@ def test_revoked_decision_goes_with_reason():
     assert out[0].startswith("- снято: TG Грише о каждом приёме по умолчанию")
     assert "— причина: TG о каждом приёме по умолчанию больше не шлём" in out[0]
     assert out[1].endswith(seed_draft.INHERITED_MARK)
-    # снятое переходит дальше как история, без новой пометки
-    assert seed_draft.inherit_decisions(out)[0] == out[0]
+    # SOC-181: снятое показал один сид — дальше не едет (полное на диске)
+    assert all("снято:" not in ln for ln in seed_draft.inherit_decisions(out))
 
 
 def test_revoked_by_thread_record():

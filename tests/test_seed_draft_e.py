@@ -184,7 +184,9 @@ def test_seal_marks_main_and_awaiting(monkeypatch):
     text = seed_draft.seal({seed_draft.MAIN: ["- рядом SOC-57 (стоимость)"],
                             seed_draft.AWAITING: ["- SOC-57 шаг 5"]}, context=[])
     assert "- рядом SOC-57 (стоимость) (SOC-57 — Done в Linear)" in text
-    assert "- SOC-57 шаг 5 (SOC-57 — Done в Linear)" in text
+    # SOC-181: «ждёт Гришу» про закрытую задачу — вон из сида, одной строкой с номером
+    assert "- SOC-57 шаг 5" not in text
+    assert "- снято из сида (отвечено или закрыто в Linear): 1 — SOC-57" in text
     seed_draft._LINEAR_CACHE.clear()
 
 

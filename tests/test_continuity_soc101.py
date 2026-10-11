@@ -134,11 +134,11 @@ def test_f5_older_pulse_survives_within_the_share(scene):
         offload.write_pulse(scene["sess"], note="шаг {0:02d}: ".format(i) + "детали " * 30)
     seed = ah.build_auto_seed(scene["sess"])
     assert _raw_share(seed) <= 0.30
-    journal = _block(seed, "сырой журнал")
-    assert "шаг 30" in journal                       # самое свежее из старого — дошло сжатым
-    reached = sum(1 for i in range(36) if "шаг {0:02d}".format(i) in seed)
-    assert reached > 5
-    assert "не вошло:" in journal and "arc.md (## context)" in journal  # остальное не молча
+    # SOC-181: в автосиде журнал — ссылкой на паспорт (у всех нитей): старый пульс не
+    # тонет, он на диске; хвост курсора — в «где мы»; бюджет журнала — block_journal
+    assert _block(seed, "сырой журнал") == "- сырой журнал — на диске: {0}, ## context".format(
+        scene["sess"].resolve() / "arc.md")
+    assert "шаг 35" in seed and "шаг 00" not in seed
 
 
 def test_f5_journal_keeps_everything_when_it_fits():
@@ -355,7 +355,8 @@ def test_manager_seed_has_journal_pointer_not_raw_journal(scene, monkeypatch, tm
     monkeypatch.setenv("TIDE_MANAGER_FILE", str(tmp_path / "нет-manager.json"))
     monkeypatch.setenv("TIDE_MANAGER_THREAD", "чужой/main")
     seed = ah.build_auto_seed(scene["sess"])
-    assert "шаг 00" in _block(seed, "сырой журнал")     # обычная нить — журнал как был
+    # SOC-181: и у обычной нити журнал — ссылкой, не строками
+    assert _block(seed, "сырой журнал").startswith("- сырой журнал — на диске:")
     monkeypatch.setenv("TIDE_MANAGER_THREAD", "{0}/shov".format(scene["root"].name))
     seed = ah.build_auto_seed(scene["sess"])
     journal = _block(seed, "сырой журнал")

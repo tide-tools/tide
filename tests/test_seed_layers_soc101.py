@@ -144,7 +144,8 @@ def test_pulses_not_clipped_while_the_journal_fits(live):
     pulses = _pulse_lines(live["sess"])
     assert sum(len(p) > 160 for p in pulses) >= 5
     have = seed.splitlines()
-    for ln in pulses:  # курсор старше ПЕРЕДАЧИ помечен (F34), но не срезан
+    # SOC-181: сырой журнал — ссылкой на паспорт; хвост курсора — целиком, не срезан
+    for ln in pulses[-seed_draft.PULSE_TAIL:]:  # старше ПЕРЕДАЧИ помечен (F34)
         assert ln in have or "{0} {1}".format(ln, seed_draft.BEFORE_PASS) in have, ln[:60]
     assert "сжато строк" not in seed
 
@@ -154,8 +155,12 @@ def test_live_journal_is_compressed_only_by_budget(live, monkeypatch):
     monkeypatch.setattr(seed_draft, "collected_map", lambda *a: [])
     seed = ah.build_auto_seed(live["sess"])
     journal = _block(seed, "сырой журнал")
-    # бюджет мал (тело короткое) — старшее сжато, но с честным счётом и путём
-    assert "сжато строк" in journal and "arc.md (## context)" in journal
+    # SOC-181: журнал не строками, а ссылкой на паспорт прошлой сессии (у всех нитей)
+    assert journal == "- сырой журнал — на диске: {0}, ## context".format(
+        live["sess"].resolve() / "arc.md")
+    # бюджетное сжатие журнала живёт для seal без указателя (черновик курации)
+    text = seed_draft.seal({}, context=_pulse_lines(live["sess"]), source="arc.md (## context)")
+    assert "сжато строк" in _block(text, "сырой журнал")
 
 
 def test_pass_pulse_is_kept_whole_even_when_older_and_over_budget():
@@ -332,8 +337,8 @@ def test_linear_numbers_from_compressed_pulses_still_listed(live):
         offload.write_pulse(live["sess"], note="шаг {0}: ".format(i) + "детали " * 40
                             + "SOC-{0}".format(200 + i))
     seed = ah.build_auto_seed(live["sess"])
-    assert "сжато строк" in seed
-    assert "- SOC-200 — " in _block(seed, "задачи Linear")  # номер из сжатого пульса
+    assert "сырой журнал — на диске:" in seed  # SOC-181: журнал ссылкой
+    assert "- SOC-200 — " in _block(seed, "задачи Linear")  # номер из пульса вне сида
 
 
 # --- п.8 · адрес менеджера — резолвером, не константой ----------------------------

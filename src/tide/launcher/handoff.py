@@ -324,11 +324,55 @@ def _with_throughline(thread_entry: Path, session_born: Path, distil: str) -> st
         lines.append(_esc.window_rules())
         # SOC-157: опыт пишется сразу, застрял — эскалируй (пороги — tide.escalate_rules)
         lines.append(_esc.seed_rules())
-        # SOC-102: договорённости ссылкой и решения Гриши по проекту за 3 суток
+        # SOC-102: договорённости ссылкой и решения Гриши по проекту за 3 суток;
+        # SOC-181: рядом — строка-ссылка на общий файл граблей всех проектов
         lines.append(_grisha_decisions(thread_entry))
-        return "{0}\n---\n\n{1}".format("\n".join(lines), distil)
+        head = "\n".join(lines)
+        # SOC-181 (поправка Гриши 054): личность нити — после правил, до оперативки;
+        # дополняет правила, ничего не заменяет; нет persona.md — блока нет
+        from . import seed_compress as _sc
+        persona = _sc.persona_block(thread_entry)
+        if persona:
+            head = "{0}\n\n{1}\n".format(head, persona)
+        text = "{0}\n---\n\n{1}".format(head, distil)
     except Exception:  # noqa: BLE001  the header must never break a handoff
-        return distil
+        text = distil
+    return _capped_seed(thread_entry, session_born, text)
+
+
+def _capped_seed(thread_entry: Path, session_born: Path, text: str) -> str:
+    """Готовый сид не больше потолка :data:`tide.handoff_contract.SEED_MAX_BYTES`
+    (SOC-181): режет :func:`tide.launcher.seed_compress.cap_seed`, каждый срез — со
+    ссылкой на полное (паспорт и входной сид передающей сессии, слой нити, диалог).
+    Любая ошибка — сид как есть: потолок не смеет сорвать передачу."""
+    try:
+        from .. import fields, grisha_decisions as _gd
+        from ..arc import dialog as _dialog, stream as _stream
+        from . import seed_compress as _sc
+
+        from_slug = (fields.read_field(Path(session_born) / "arc.md", "from") or "").strip()
+        origin = None
+        arcs = Path(thread_entry) / "arcs"
+        for d in (sorted(arcs.iterdir()) if arcs.is_dir() and from_slug else []):
+            if d.is_dir() and d != Path(session_born) and (
+                    slug.entry_slug(d.name) == from_slug or d.name == from_slug):
+                origin = d
+        steps: List[str] = []
+        out = _sc.cap_seed(
+            text, report=steps,
+            passport=str(origin / "arc.md") if origin is not None else "",
+            prev_seed=str(origin / "input" / "handoff-seed.md") if origin is not None else "",
+            goal_file=str(_stream.passport_path(Path(thread_entry))),
+            dialog=str(_dialog.dialog_path(Path(thread_entry))),
+            decisions_file=str(_gd.decisions_file()))
+        size = len(out.encode("utf-8"))
+        if size > _sc.SEED_MAX_BYTES:  # неприкосновенные блоки сами больше потолка
+            print("tide: сид {0} Б больше потолка {1} Б — срезано всё, что можно ({2}); "
+                  "остальное — неприкосновенные блоки".format(
+                      size, _sc.SEED_MAX_BYTES, "; ".join(steps)), file=sys.stderr)
+        return out
+    except Exception:  # noqa: BLE001
+        return text
 
 
 def _unique_pickup_slug(thread_entry: Path, base: str = "pickup") -> str:

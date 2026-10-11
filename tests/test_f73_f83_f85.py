@@ -159,7 +159,9 @@ def test_f85_foreign_and_done_not_awaiting(monkeypatch):
     aw = text.split("## " + seed_draft.AWAITING, 1)[1].split("\n## ", 1)[0]
     assert "SOC-105 на проверке" in aw          # своя (Взял: … context-keeper)
     assert "SOC-102" not in aw                  # чужая (board)
-    assert "SOC-130" not in aw                  # уже Done
+    # уже Done — не пункт; SOC-181: только номером в сводной строке «снято из сида»
+    assert [ln for ln in aw.splitlines() if "SOC-130" in ln] == [
+        "- снято из сида (отвечено или закрыто в Linear): 1 — SOC-130"]
     assert "❓ 3423" in aw
     lin = text.split("## " + seed_draft.LINEAR, 1)[1].split("\n## ", 1)[0]
     others = lin.split("ведут другие нити", 1)[1]

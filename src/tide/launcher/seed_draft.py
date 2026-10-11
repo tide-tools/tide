@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Sequence
 from .. import fields, handoff_contract as contract, io as _io, offload, paths, \
     placeholders, resolve, slug
 from ..arc import dialog as _dialog, stream as _stream, work as _work
+from . import seed_compress as _sc
 from ..arc.stream import StreamError
 
 DRAFT_FILENAME = "seed-draft.md"
@@ -1092,6 +1093,8 @@ def mark_decision_linear(lines: Sequence[str], live) -> List[str]:
         return list(lines)
     out: List[str] = []
     for ln in lines:
+        # SOC-181: статус заменяется, а не дописывается — хвост прошлой сборки снят
+        ln = _sc.strip_linear_tails(ln)
         keys = linear_keys(ln)
         got = [(k, live[k]) for k in keys if k in live]
         if not got:
@@ -1165,7 +1168,8 @@ def inherit_decisions(inherited: Sequence[str], current: Sequence[str] = (),
     (*current*: метки «Решения:», решения нити) со словом отмены
     (:data:`_REVOKE_RE`), делящая с решением большую часть слов, или решение нити
     (*records*) в статусе superseded/dropped о том же. Уже снятое прошлым сидом
-    («снято: …») переходит как есть: история снятия не теряется."""
+    («снято: …») дальше не едет: его показал один сид, полное — на диске (SOC-181);
+    хвосты статуса и пометка — по одному на строку, не стопкой."""
     from ..arc import decision  # lazy: decision reaches up into cli (known debt)
 
     revokers = [_bare(c) for c in current if _REVOKE_RE.search(c or "")]
@@ -1178,21 +1182,19 @@ def inherit_decisions(inherited: Sequence[str], current: Sequence[str] = (),
                 gone.append(("решение {0} нити — {1}".format(rec.get("num"), st), what))
     out: List[str] = []
     for ln in live_lines(inherited):
-        if "<!--" in ln or is_hole(ln):
+        if "<!--" in ln or is_hole(ln) or _sc._DROPPED_RE.match(ln.strip()) \
+                or _sc.CAPPED_MARK in ln:
             continue
-        body = _bare(ln)
+        # SOC-181: хвосты статуса и «(из прошлого сида)» — по одному, не стопкой
+        body = _sc.strip_status_tails(_bare(ln))
         if not body or body.lower().startswith("снято:"):
-            if body:
-                out.append("- " + body)
-            continue
+            continue  # снятое показано одним сидом — дальше не едет (SOC-181)
         why = next((r for r in revokers if _revokes(r, body)), "")
         if not why:
             why = next((reason for reason, what in gone if _revokes(what, body)), "")
         if why:
             out.append("- снято: {0} — причина: {1}".format(
                 _LINE_SUFFIX.sub("", body), why))
-        elif INHERITED_MARK in body:
-            out.append("- " + body)
         else:
             out.append("- {0} {1}".format(body, INHERITED_MARK))
     return out
@@ -1204,11 +1206,20 @@ def dropped_decisions(prev_seed: str, new_seed: str) -> List[str]:
     prev = [_bare(ln) for ln in live_lines(contract.find_body(sections(prev_seed or ""),
                                                               "decisions"))
             if "<!--" not in ln and not is_hole(ln)]
-    new = [_bare(ln) for ln in live_lines(contract.find_body(sections(new_seed or ""),
-                                                             "decisions"))]
+    new_body = contract.find_body(sections(new_seed or ""), "decisions")
+    new = [_bare(ln) for ln in live_lines(new_body)]
+    # SOC-181: закрытое в Linear снято сводной строкой с номерами, сжатое потолком —
+    # строкой «где полное»: это не потеря
+    gone_keys, _nums, capped = _sc.dropped_refs(new_body)
+    if capped:
+        return []
     out = []
     for d in prev:
-        if not d or d.lower().startswith("снято:"):
+        if not d or d.lower().startswith("снято:") or _sc._DROPPED_RE.match(d) \
+                or _sc.CAPPED_MARK in d:
+            continue
+        keys = set(linear_keys(d))
+        if keys and keys <= gone_keys:
             continue
         dw = _sig_words(d)
         if not any(norm_line(d) == norm_line(n) or (
@@ -1237,9 +1248,12 @@ def _await_inheritable(line: str) -> str:
     """Тело пункта «ждёт Гришу» входного сида, который наследуется; иначе ""."""
     if "<!--" in line or is_hole(line):
         return ""
-    body = _bare(line)
+    # SOC-181: статус Linear прошлой сборки снят — пометка «(из прошлого сида)» снова
+    # в конце строки и не множится; сводные строки «снято из сида» не наследуются
+    body = _sc.strip_linear_tails(_bare(line))
     if not body or body.lower().startswith("снято:") or _NO_AWAIT.match(body) \
-            or _AWAIT_DERIVED.search(body):
+            or _AWAIT_DERIVED.search(body) or _sc._DROPPED_RE.match(body) \
+            or _sc.CAPPED_MARK in body:
         return ""
     return body
 
@@ -1341,12 +1355,20 @@ def dropped_awaiting(prev_seed: str, new_seed: str) -> List[str]:
     задачи Linear (без tg-номера) — не потеря: их снимает сверка с Linear (F85)."""
     prev = [_await_inheritable(ln) for ln in live_lines(
         contract.find_body(sections(prev_seed or ""), "awaiting"))]
-    new = [_bare(ln) for ln in live_lines(
-        contract.find_body(sections(new_seed or ""), "awaiting"))]
+    new_body = contract.find_body(sections(new_seed or ""), "awaiting")
+    new = [_bare(ln) for ln in live_lines(new_body)]
     new_nums = _await_nums("\n".join(new))
+    # SOC-181: отвеченное и закрытое снято сводной строкой с номерами — не потеря
+    gone_keys, gone_nums, capped = _sc.dropped_refs(new_body)
+    if capped:
+        return []
     out = []
     for p in prev:
-        if not p:
+        if not p or _sc._DROPPED_RE.match(p) or _sc.CAPPED_MARK in p:
+            continue
+        keys, nums_p = _sc.refs_of(p)
+        if (keys and keys <= gone_keys) or (nums_p and nums_p <= gone_nums) \
+                or _sc._ANSWERED.search(p):
             continue
         mark = _INHERITED_TAIL.search(p)
         p = p[:mark.start()] if mark else p
@@ -1373,7 +1395,8 @@ def _nums_phrase(nums: Sequence[str]) -> str:
 
 def block_experience(candidate_nums: Sequence[str],
                      inherited: Sequence[str] = (),
-                     candidate_gists: Optional[Dict[str, str]] = None) -> List[str]:
+                     candidate_gists: Optional[Dict[str, str]] = None,
+                     folded: bool = False) -> List[str]:
     """Опыт: унаследованный из входного сида + кандидаты сессии + каркас для агента.
 
     Опыт копится от сессии к сессии (SOC-101 F3): строки «опыта» входного сида
@@ -1381,9 +1404,10 @@ def block_experience(candidate_nums: Sequence[str],
     сутью, а не голым номером: сид читают без контекста (SOC-74). Грабли, петли и
     «отвергнуто» этой сессии пишет курирующий — подсказка, а не выдуманный текст.
     """
-    # F39: метка ПЕРЕДАЧИ, слой нити и прошлый сид пишут один урок разными знаками
-    out: List[str] = fold_similar(
-        [ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)])
+    # F39: метка ПЕРЕДАЧИ, слой нити и прошлый сид пишут один урок разными знаками;
+    # *folded* — уже склеено (SOC-181, seed_compress.fold_experience)
+    kept = [ln for ln in live_lines(inherited) if "<!--" not in ln and not is_hole(ln)]
+    out: List[str] = kept if folded else fold_similar(kept)
     gists = candidate_gists or {}
     if candidate_nums and gists:
         for num in sorted(set(candidate_nums), key=lambda n: (int(n), n)):
@@ -1750,6 +1774,10 @@ def mark_closed(lines: Sequence[str], live) -> List[str]:
         return list(lines)
     out: List[str] = []
     for ln in lines:
+        if _sc._DROPPED_RE.match(ln.strip()):
+            out.append(ln)  # сводная строка снятого — номера там уже закрытые
+            continue
+        ln = _sc._CLOSED_TAIL.sub("", ln).rstrip()  # SOC-181: статус заменяется
         closed = []
         for key in linear_keys(ln):
             name, kind = live.get(key, ("", ""))
@@ -1843,18 +1871,52 @@ _REVIEW_ASK = re.compile(r"\bDone\b|In Review|на проверк|приёмк|�
 
 def drop_resolved(lines: Sequence[str], live, foreign: Sequence[str] = ()) -> List[str]:
     """«Ждёт Гришу» без пунктов, которые решены (F85): все номера строки закрыты в
-    Linear и строка просит приёмку/Done; или номер — чужая задача на проверке
-    («SOC-102 на проверке» ведёт board). *live* не словарь — как есть."""
+    Linear (SOC-181: закрытое выкидывается, о чём бы ни был пункт); или строка просит
+    приёмку/Done, а номера закрыты или чужие («SOC-102 на проверке» ведёт board).
+    *live* не словарь — как есть."""
     if not isinstance(live, dict):
         return list(lines)
     out = []
     for ln in lines:
         keys = linear_keys(ln)
-        if keys and _REVIEW_ASK.search(ln) and all(
-                (live.get(k) or ("", ""))[1] in CLOSED_TYPES or k in foreign for k in keys):
+        closed = [k for k in keys if (live.get(k) or ("", ""))[1] in CLOSED_TYPES]
+        if keys and len(closed) == len(keys) and not _sc._DROPPED_RE.match(ln.strip()):
+            continue
+        if keys and _REVIEW_ASK.search(ln) and all(k in closed or k in foreign for k in keys):
             continue
         out.append(ln)
     return out
+
+
+def drop_closed_decisions(lines: Sequence[str], live) -> "tuple[List[str], List[str]]":
+    """Решения без закрытых (SOC-181): строка, все задачи Linear которой закрыты, — вон
+    из сида (на диске она остаётся); правило нити «в силе» не закрывается задачей.
+    ``(оставшиеся, снятые)``; *live* не словарь — всё остаётся."""
+    if not isinstance(live, dict):
+        return list(lines), []
+    keep, gone = [], []
+    for ln in lines:
+        keys = linear_keys(_sc.strip_linear_tails(ln))
+        if keys and "правило, в силе" not in ln and not ln.startswith(" ") and all(
+                (live.get(k) or ("", ""))[1] in CLOSED_TYPES for k in keys):
+            gone.append(ln)
+        else:
+            keep.append(ln)
+    return keep, gone
+
+
+# Скрытые ключи тел блоков (render_draft их не печатает), SOC-181: входной сид (куда
+# смотреть полное) и пункты «ждёт Гришу», снятые как отвеченные при сборке тел.
+SEED_IN_PATH = "_seed_in_path"
+AWAITING_DROPPED = "_awaiting_dropped"
+
+
+def _drop_refs(lines: Sequence[str]) -> List[str]:
+    refs: List[str] = []
+    for ln in lines:
+        refs += ["tg {0}".format(n) for n in sorted(_sc.await_nums(ln))]
+        refs += linear_keys(_sc.strip_linear_tails(ln))
+    return refs
 
 
 def next_for_grisha(nxt_lines: Sequence[str]) -> List[str]:
@@ -1883,7 +1945,10 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
     tail = raw_pulse_chars(context, clip=clip)
     budget = max(0, int((share * rest - tail) / (1 - share)))
     for _ in range(8):  # формула — оценка; доля проверяется по готовому тексту
-        out[JOURNAL] = ([journal_off] if journal_off else
+        # SOC-181: указатель — когда журнал есть (пульс старше хвоста курсора); нет —
+        # блок пуст по правде («пульса старше курсора нет»)
+        has_old = len(live_lines(context)) > PULSE_TAIL
+        out[JOURNAL] = (([journal_off] if has_old else []) if journal_off else
                         block_journal(context, budget=budget, source=source))
         # номера — и из пульсов, обрезанных журналом (acceptance-02 §9 п.9)
         seen = render_draft(out, header=header) + "\n" + "\n".join(context)
@@ -1898,16 +1963,27 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
             block_links(hay, status_text="\n".join(reversed(list(context))), live=live,
                         foreign=foreign),
             seen, sources)
+        where = "".join(out.get(SEED_IN_PATH) or [])
         if AWAITING in out:  # F48: задачи на проверке ждут Гришу (F85: свои, не Done)
-            out[AWAITING] = drop_resolved(
-                _merge_lines(awaiting, review_awaiting(live, foreign)), live, foreign)
+            merged = _merge_lines(awaiting, review_awaiting(live, foreign))
+            out[AWAITING] = drop_resolved(merged, live, foreign)
+            # SOC-181: отвеченное и закрытое — одной строкой с номерами, полное на диске
+            gone = list(out.get(AWAITING_DROPPED) or []) + [
+                ln for ln in merged if ln not in out[AWAITING]]
+            if gone:
+                out[AWAITING] = out[AWAITING] + [_sc.dropped_line(
+                    len(gone), _drop_refs(gone), "отвечено или закрыто в Linear", where)]
             if AWAITING in plain:
                 plain[AWAITING] = list(out[AWAITING])
         for k, body in plain.items():  # F43: закрытые в Linear — помечены на месте
             if k in out:
                 out[k] = mark_closed(body, live)
         if DECISIONS in out:  # F69: статус решения с задачей — из Linear
-            out[DECISIONS] = mark_decision_linear(decisions, live)
+            out[DECISIONS], gone = drop_closed_decisions(
+                mark_decision_linear(decisions, live), live)
+            if gone:  # SOC-181: закрытое в Linear — вон из сида, одной строкой
+                out[DECISIONS] = out[DECISIONS] + [_sc.dropped_line(
+                    len(gone), _drop_refs(gone), "закрыто в Linear", where)]
         text = render_draft(out, header=header)
         over = tail + sum(len(ln) + 1 for ln in out[JOURNAL]
                           if not _PASS_RE.match(ln.strip())) - share * len(text)
@@ -1918,15 +1994,12 @@ def seal(bodies: Dict[str, List[str]], *, context: Sequence[str], header: str = 
 
 
 def journal_pointer(root: Path, session_entry: Path) -> str:
-    """Сид менеджера без сырого журнала (Гриша «Давай А», SOC-143 10.10): для нити
-    менеджера (:func:`tide.whois.is_manager_thread`) — строка-указатель «сырой журнал —
-    на диске: <паспорт прошлой сессии>, ## context»; прочим нитям — ``""`` (журнал
-    по бюджету, как был). Никогда не падает."""
+    """Сид без сырого журнала (Гриша «Давай А», SOC-143 10.10 — сначала для нити
+    менеджера; SOC-181 — для всех нитей): строка-указатель «сырой журнал — на диске:
+    <паспорт прошлой сессии>, ## context». Журнал лежит в паспорте, сид несёт ссылку.
+    Никогда не падает (ошибка — ``""``, журнал по бюджету, как был)."""
     try:
-        from .. import whois
         session_entry = Path(session_entry)
-        if not whois.is_manager_thread(Path(root), session_entry.parents[1]):
-            return ""
         return "- сырой журнал — на диске: {0}, ## context".format(
             session_entry.resolve() / "arc.md")
     except Exception:  # noqa: BLE001 — сид важнее
@@ -3357,6 +3430,9 @@ def _thread_word(thread_entry: Path) -> str:
     return re.sub(r"^\d+-@?", "", Path(thread_entry).name)
 
 
+_OPEN_LINEAR = re.compile(r"— (?:Backlog|Todo|In Progress|In Review|Triage)\b")
+
+
 def _awaiting_with_inherited(current: List[str], inherited: Sequence[str],
                              context: Sequence[str]) -> List[str]:
     """F77: «ждёт Гришу» этой сессии + пункты входного сида (:func:`inherit_awaiting`)."""
@@ -3373,7 +3449,9 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
     session_entry = Path(session_entry)
     thread_entry = session_entry.parents[1]  # …/NN-@thread/arcs/NN-session
     passport = sections(_read(session_entry / "arc.md"))
-    seed_in = sections(_read(session_entry / "input" / INPUT_SEED_NAME))
+    seed_in_path = session_entry / "input" / INPUT_SEED_NAME
+    seed_in = sections(_read(seed_in_path))
+    history = _sc.SeedHistory(thread_entry)  # SOC-181: возраст строки — первый сид с ней
     lays = layers(_read(_stream.passport_path(thread_entry)))
     works = _thread_works(root, thread_entry)
 
@@ -3406,6 +3484,30 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                              root=root),
                             _auto.open_items(root, thread_entry),
                             thread_mail(thread_entry))
+    goal_file = _stream.passport_path(thread_entry)
+    # SOC-181: опыт — один урок одной строкой, свежее за сутки + самые частые старые,
+    # без граблей из общего файла; остальное — ссылкой на слой нити
+    experience = _sc.fold_experience(
+        [("pulse", labels.get("experience", [])), ("layer", layer(lays, "experience")),
+         ("seed", contract.find_body(seed_in, "experience"))],
+        history=history, gotchas=_sc.gotcha_lines(),
+        full="слой нити {0}, ### опыт; прошлый сид {1}".format(goal_file, seed_in_path))
+    # SOC-181: «ждёт Гришу» — отвеченное (вопрос в журнале решений Гриши) вон из сида
+    awaiting_all = _awaiting_with_inherited(
+        _merge_lines(
+            labels.get("awaiting", []),
+            mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
+            block_awaiting(_auto.open_questions(root, thread_entry), works),
+            next_for_grisha(block_next(section_body(passport, "next")))),
+        contract.find_body(seed_in, "awaiting"), context)
+    answered_nums = _sc.journal_question_nums() | set(
+        _TG_NUM.findall(_read(Path(thread_entry) / "decisions.md")))
+    awaiting = [ln for ln in awaiting_all if not _sc.is_answered(ln, answered_nums)]
+    awaiting_dropped = [ln for ln in awaiting_all if ln not in awaiting]
+    # F51 + SOC-181: из прошлого сида — только открытые задачи; закрытые, чужие и не
+    # найденные прошлых сидов дальше не едут
+    prev_linear = [ln for ln in contract.find_body(seed_in, "linear")
+                   if ln.startswith("- ") and _OPEN_LINEAR.search(ln)]
     return {
         # F57: «главное» — тоже слой нити (plan.md): «Кому сдавать: … management-12»
         MAIN: (mark_stale_manager(block_main(
@@ -3423,10 +3525,8 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                              thread_entry, context), inflight),
         # Источники по порядку (SOC-101 F22): метки пульсов передающей сессии →
         # слои нити → входной сид (опыт наследуется) → вычисляемое с доски.
-        EXPERIENCE: block_experience(
-            nums, labels.get("experience", []) + layer(lays, "experience")
-            + contract.find_body(seed_in, "experience"),
-            _candidate_gists(root, nums)),
+        EXPERIENCE: block_experience(nums, experience, _candidate_gists(root, nums),
+                                     folded=True),
         # F63: решения копятся, как опыт (F22): метки пульсов → решения нити →
         # решения входного сида (снятые — с причиной)
         DECISIONS: fold_decisions(_merge_lines(
@@ -3434,16 +3534,13 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
             inherit_decisions(contract.find_body(seed_in, "decisions"),
                               labels.get("decisions", []) + decisions,
                               _thread_decisions(root, thread_entry)))),
-        AWAITING: _awaiting_with_inherited(
-            _merge_lines(
-                labels.get("awaiting", []),
-                mark_stale_manager(layer_named(lays, "ждёт гришу", "ждет гришу")),
-                block_awaiting(_auto.open_questions(root, thread_entry), works),
-                next_for_grisha(block_next(section_body(passport, "next")))),
-            contract.find_body(seed_in, "awaiting"), context),
+        AWAITING: awaiting,
         NEXT: block_next(section_body(passport, "next")),
         INFLIGHT: inflight,
-        UNANSWERED: block_unanswered(thread_entry),
+        # SOC-181: только реплики Гриши без ответа; отвеченное — строкой со ссылкой
+        UNANSWERED: _sc.only_unanswered(block_unanswered(thread_entry),
+                                        dialog=str(_dialog.dialog_path(thread_entry)),
+                                        human=_dialog.HUMAN),
         ENTRY_MAP: block_entry_map(contract.find_body(seed_in, "entry_map"),
                                    labels.get("entry_map", []),
                                    collected_map(root, session_entry, thread_entry,
@@ -3451,10 +3548,14 @@ def draft_bodies(root: Path, session_entry: Path, *, pulse_clip: int = 0
                                                  + layer(lays, "experience")
                                                  + contract.find_body(seed_in, "experience")))
         + topic_block(root, thread_entry, context),
-        ENVIRONMENT: block_environment(contract.find_body(seed_in, "environment")),
+        # SOC-181: окружение старше суток не переносится
+        ENVIRONMENT: _sc.fresh_environment(
+            block_environment(contract.find_body(seed_in, "environment")), history),
         THREAD_SELF: [_project_name(root), _thread_word(thread_entry)],
         LINEAR_SOURCES: [("цели нити", _goal_of(thread_entry)),
-                         ("прошлого сида", "\n".join(contract.find_body(seed_in, "linear")))],
+                         ("прошлого сида", "\n".join(prev_linear))],
+        SEED_IN_PATH: [str(seed_in_path)],
+        AWAITING_DROPPED: awaiting_dropped,
     }
 
 

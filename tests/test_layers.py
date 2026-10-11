@@ -25,7 +25,10 @@ STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
          # (imports nothing): the seed and `thread layer --main` cut lines through it
          "name_dots",
          # SOC-157: pure data (imports nothing) — escalation thresholds + seed rule text
-         "escalate_rules"}
+         "escalate_rules",
+         # SOC-102/181: stdlib-only reader of Grisha's decisions journal + the agreements
+         # and gotchas lines of the seed (imports nothing from tide)
+         "grisha_decisions"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",

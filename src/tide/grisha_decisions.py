@@ -25,6 +25,9 @@ from typing import Dict, List, Optional
 AGREEMENTS_ENV = "TIDE_AGREEMENTS_DIR"
 DECISIONS_ENV = "TIDE_DECISIONS_FILE"
 DEFAULT_AGREEMENTS = Path.home() / "Documents" / "management" / "docs" / "agreements"
+# Общий файл граблей всех проектов (SOC-181): в сид — одной строкой-ссылкой, не копией.
+GOTCHAS_ENV = "TIDE_GOTCHAS_FILE"
+DEFAULT_GOTCHAS = Path.home() / "Documents" / "management" / "docs" / "gotchas.md"
 
 DAYS = 3
 LIMIT = 10
@@ -45,6 +48,14 @@ def decisions_file() -> Path:
 
 def agreements_line() -> str:
     return "договорённости: {0}/ (читать на старте)".format(str(agreements_dir()).rstrip("/"))
+
+
+def gotchas_file() -> Path:
+    return Path(os.environ.get(GOTCHAS_ENV) or DEFAULT_GOTCHAS)
+
+
+def gotchas_line() -> str:
+    return "грабли всех проектов: {0} (читать на старте)".format(gotchas_file())
 
 
 def parse(text: str) -> List[Dict[str, str]]:
@@ -144,10 +155,12 @@ def seed_block(project: str, *, now: Optional[datetime] = None, limit: int = LIM
 
 
 def seed_text(project: str, *, now: Optional[datetime] = None) -> str:
-    """Строка договорённостей + блок решений (если есть) — для сида."""
+    """Строка договорённостей, строка граблей всех проектов (SOC-181) и блок решений
+    (если есть) — для сида."""
     block = seed_block(project, now=now)
-    return agreements_line() + ("\n" + block if block else "")
+    return agreements_line() + "\n" + gotchas_line() + ("\n" + block if block else "")
 
 
-__all__ = ["AGREEMENTS_ENV", "DAYS", "DECISIONS_ENV", "LIMIT", "agreements_dir", "agreements_line",
-           "decisions_file", "line", "parse", "recent", "seed_block", "seed_text"]
+__all__ = ["AGREEMENTS_ENV", "DAYS", "DECISIONS_ENV", "GOTCHAS_ENV", "LIMIT", "agreements_dir",
+           "agreements_line", "decisions_file", "gotchas_file", "gotchas_line", "line", "parse",
+           "recent", "seed_block", "seed_text"]

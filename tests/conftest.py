@@ -155,6 +155,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     # SOC-179: пинг почты пачкой — тесты почты ждут пинг сразу; тесты пачки
     # (test_mail_batch.py) ставят окно сами.
     monkeypatch.setenv("TIDE_MAIL_BATCH_SEC", "0")
+    # SOC-181: общий файл граблей всех проектов (management/docs/gotchas.md) склеивает
+    # опыт сида — тест читает только свой (по умолчанию его нет).
+    monkeypatch.setenv("TIDE_GOTCHAS_FILE", str(tmp_path / "no-gotchas.md"))
 
 
 def fill_entry(entry: Path, goal: str = "a real goal for the picker") -> Path:
