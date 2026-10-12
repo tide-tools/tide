@@ -707,6 +707,9 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
     cur = live_lines(cursor)
     if cur:
         lines.append(cur[0])
+        flag = _ball_flag(cur[0])
+        if flag:
+            lines.append(flag)
     for rec in sorted(works, key=_work_order, reverse=True):
         lines.append(work_line(rec))
     pulse = live_lines(context)
@@ -721,6 +724,16 @@ def block_cursor(cursor: Sequence[str], context: Sequence[str],
             ln += " " + BEFORE_PASS  # F34: старше ПЕРЕДАЧИ — не спорит с ней молча
         lines.append(ln)
     return lines
+
+
+def _ball_flag(cursor_line: str) -> str:
+    """SOC-242: курсор «жду» без открытого вопроса — строка-пометка для принявшей
+    (первым пульсом выставить мяч), иначе ""."""
+    from .. import ball
+    if not ball.violation(cursor_line):
+        return ""
+    return "- {0}: курсор ждёт без открытого вопроса — первым пульсом выставь мяч ({1})".format(
+        ball.SEED_FLAG, ball.BALL_LINE)
 
 
 # Пометка пульса «где мы», записанного раньше ПЕРЕДАЧИ (SOC-101 F34): «остаток F23,

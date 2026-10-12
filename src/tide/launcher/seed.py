@@ -71,7 +71,8 @@ def _esc_rules() -> str:
     опыт, эскалация) — одной строкой-ссылкой на файл :func:`tide.escalate_rules.rules_file`,
     не копией текста."""
     from .. import escalate_rules as escalate
-    return "**Правила.** " + escalate.rules_line() + "."
+    from .. import ball
+    return "**Правила.** " + escalate.rules_line() + "; " + ball.BALL_LINE + "."
 
 
 # --- prompt resolution -----------------------------------------------------

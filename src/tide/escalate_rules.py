@@ -47,6 +47,12 @@ _PREFIXES = (
     ("models", "модели:"),
     ("experience", "опыт:"),
     ("escalate", "не справляешься"),
+    # SOC-242: правила ночи 12.10
+    ("questions", "вопрос пользователю:"),
+    ("ball", "мяч:"),
+    ("limit", "лимит:"),
+    ("user_tasks", "дела пользователя:"),
+    ("reply", "ответ пользователю:"),
 )
 
 
@@ -77,6 +83,11 @@ THROTTLE_RULE = _RULES.get("throttle", "")
 MODEL_RULE = _RULES.get("models", "")
 EXP_RULE = _RULES.get("experience", "")
 ESCALATE_RULE = _RULES.get("escalate", "")
+QUESTION_RULE = _RULES.get("questions", "")
+BALL_RULE = _RULES.get("ball", "")
+LIMIT_RULE = _RULES.get("limit", "")
+USER_TASKS_RULE = _RULES.get("user_tasks", "")
+REPLY_RULE = _RULES.get("reply", "")
 
 
 def ao_send_hint(chars: int) -> str:

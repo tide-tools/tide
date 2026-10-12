@@ -336,7 +336,9 @@ def _seed_and_archive(thread_entry: Path, session_born: Path, distil: str,
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
         who = _who_line(thread_entry, session_born, from_slug)
         manager = _manager_header_line().replace("отчитываешься менеджеру: ", "менеджер: ")
-        links = " · ".join((_esc.rules_line(), _gd.agreements_line(), _gd.gotchas_line()))
+        from .. import ball as _ball
+        links = " · ".join((_esc.rules_line(), _ball.BALL_LINE, _gd.agreements_line(),
+                            _gd.gotchas_line()))
         dec = _grisha_decisions_block(thread_entry).splitlines()
         persona = _sc.persona_block(thread_entry)
         title = _seed_title(thread_entry, session_born, distil)

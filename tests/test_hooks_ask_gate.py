@@ -74,7 +74,7 @@ def test_deny_in_ao_without_live_human(ao, proj, tmp_path):
     reason = _deny(_payload(proj, _transcript(tmp_path, SPAWN)))
     assert reason is not None
     assert reason.startswith(
-        "Это не поломка: вопрос по правилу идёт менеджеру текстом. "
+        "Это не поломка: вопрос по правилу идёт на доску. "
         "Вопрос не диалогом: это сессия под AO")
     assert "за последние 10 мин" in reason
     assert ask_gate.MANAGER_FALLBACK in reason
@@ -176,7 +176,7 @@ def test_manager_address_from_file(ao, monkeypatch, proj, tmp_path):
                               "updated_at": "2026-10-09T08:00:00Z"}), encoding="utf-8")
     monkeypatch.setenv("TIDE_MANAGER_FILE", str(mf))
     reason = _deny(_payload(proj, _transcript(tmp_path, SPAWN)))
-    assert "SendMessage: management-9-b5 (ao_session ao-control-7)." in reason
+    assert "письмом менеджеру (management-9-b5 (ao_session ao-control-7))." in reason
 
 
 @pytest.fixture
@@ -227,7 +227,7 @@ def test_cli_deny_prints_pretooluse_json(ao, monkeypatch, capsys, proj, tmp_path
     assert spec["hookEventName"] == "PreToolUse"
     assert spec["permissionDecision"] == "deny"
     assert spec["permissionDecisionReason"].startswith(
-        "Это не поломка: вопрос по правилу идёт менеджеру текстом.")
+        "Это не поломка: вопрос по правилу идёт на доску.")
 
 
 @pytest.mark.parametrize("stdin", ["", "{ not json", "[1, 2]", '"str"'])

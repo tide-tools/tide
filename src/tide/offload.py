@@ -11,6 +11,8 @@
   workspace арки двигался, а паспорт не трогали дольше окна, ход НЕ завершается
   (``decision: block``) и агенту выдаётся точная команда с правилом «одна строка:
   где стою / что решил / что дальше». Анти-зацикливание — ``stop_hook_active``.
+  Тот же хук держит правило мяча (SOC-242, :mod:`tide.ball`): курсор «жду» без
+  открытого вопроса блокирует ход с требованием выставить вопрос или взять работу.
 
 Сессия находится по slug (вложенный резолв по всем тредам) или по пину
 ``claude-session`` в паспорте (путь хука). Хук полностью defensive: любая ошибка
@@ -569,6 +571,7 @@ def _cmd_offload(args) -> int:
         print(warn, file=sys.stderr)
     _pass_map_warning(note)
     _pass_labels_warning(passport, note)
+    _ball_warning(passport, cursor)
     return 0
 
 
@@ -598,7 +601,13 @@ def cmd_offload_nudge(args) -> int:
                 activity_m = Path(tp).stat().st_mtime
             except OSError:
                 activity_m = 0.0
-        reason = nudge_reason(paths.require_tide_root(), str(session), activity_m=activity_m)
+        root = paths.require_tide_root()
+        # SOC-242: правило мяча — «жду» без открытого вопроса блокирует ход сразу,
+        # без окна выгрузки (простой виден и в свежем паспорте).
+        reason = "\n\n".join(r for r in (
+            ball_reason(root, str(session)),
+            nudge_reason(root, str(session), activity_m=activity_m),
+        ) if r)
         if reason:
             # A DISSOLVED head (handed this thread off, offer taken) must STAND DOWN,
             # not be pushed to pulse: an offload would re-surface it on the board as
@@ -613,6 +622,42 @@ def cmd_offload_nudge(args) -> int:
     except Exception as exc:  # noqa: BLE001  a hook must never raise
         print("tide: [offload-nudge] skipped: {0}".format(exc), file=sys.stderr)
     return 0
+
+
+def _session_ref(entry: Path) -> str:
+    """``<нить>/<сессия>`` — ссылка, которая всегда резолвится (cand 85)."""
+    return "{0}/{1}".format(slug.entry_slug(entry.parent.parent.name), slug.entry_slug(entry.name))
+
+
+def ball_reason(root: Path, session_id: str) -> Optional[str]:
+    """SOC-242: требование правила мяча, если курсор сессии *session_id* — «жду» без
+    открытого вопроса (:func:`tide.ball.violation`); иначе None. Ошибка — None."""
+    try:
+        from . import ball
+        entry = find_session_by_claude_id(Path(root), session_id)
+        if entry is None:
+            return None
+        passport = entry / "arc.md"
+        cursor = ball.cursor_of(passport)
+        kind = ball.violation(cursor, eta=fields.read_field(passport, ETA_FIELD) or "")
+        return ball.reason(kind, cursor, _session_ref(entry)) if kind else None
+    except Exception:  # noqa: BLE001 — хук не смеет падать
+        return None
+
+
+def _ball_warning(passport: Path, cursor: str) -> None:
+    """``tide offload --cursor «жду…»`` без открытого вопроса — предупреждение сразу
+    (SOC-242), в stderr; пульс уже записан, rc не меняется."""
+    if not (cursor or "").strip():
+        return
+    try:
+        from . import ball
+        kind = ball.violation(cursor, eta=fields.read_field(passport, ETA_FIELD) or "")
+        if kind:
+            print("tide: внимание — " + ball.reason(kind, cursor, _session_ref(Path(passport).parent)),
+                  file=sys.stderr)
+    except Exception:  # noqa: BLE001 — предупреждение не смеет уронить пульс
+        return
 
 
 def _dissolved_stand_down(session: str) -> Optional[str]:
