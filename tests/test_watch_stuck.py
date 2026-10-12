@@ -725,3 +725,33 @@ def test_p7_no_nudge_into_dialog(world, set_tz):
     write_rows(world["transcript"], ended_rows(T_END), world["proj"])
     run(world, f, AFTER, [session(activity="waiting_input")])
     assert f.said == []
+
+
+# --- покрытие из ревью: запасной путь locate, менеджер по whois ---------------------
+
+def test_locate_chat_session_without_agent_session_id_uses_worktree_folder(
+        tmp_path, monkeypatch):
+    import tide.adapters.ao as ao_mod
+
+    cfg = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(ao_mod, "_db_agent_session_id", lambda handle: "")
+    wt = tmp_path / "home" / ".ao" / "data" / "worktrees" / "proj" / "proj-9"
+    d = cfg / "projects" / ws._mangle(str(wt))
+    d.mkdir(parents=True)
+    old, new = d / "aaa.jsonl", d / "bbb.jsonl"
+    old.write_text("{}\n", encoding="utf-8")
+    new.write_text("{}\n", encoding="utf-8")
+    import os
+    os.utime(old, (1, 1))
+    loc = ws.locate({"id": "proj-9", "projectId": "proj"})
+    assert loc["transcript"] == new and loc["sid"] == "bbb"
+
+
+def test_is_manager_by_whois_on_rotation(monkeypatch):
+    from tide import manager_guard
+    monkeypatch.setattr(manager_guard, "_manager_ao", lambda: "ctrl-44")
+    assert ws.is_manager("ctrl-44") is True
+    assert ws.is_manager("ctrl-44-b") is True
+    assert ws.is_manager("proj-7") is False
