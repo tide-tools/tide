@@ -433,3 +433,24 @@ def test_p1_no_nudge_when_ao_waiting_or_blocked(world, act):
     write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
     run(world, f, T0 + timedelta(minutes=21), [session(activity=act)])
     assert f.said == [] and len(f.mailed) == 1
+
+
+def test_p2_api_error_nudged_once_and_mailed_despite_error_after_nudge(world):
+    f = Fakes()
+    rows = [user_text(T0), api_error(T0 + timedelta(seconds=3)),
+            turn_duration(T0 + timedelta(seconds=3))]
+    write_rows(world["transcript"], rows, world["proj"])
+    s = [session(activity="idle")]
+    said_before = 0
+    for m in range(1, 181):
+        now = T0 + timedelta(minutes=m)
+        run(world, f, now, s)
+        if len(f.said) > said_before:  # толчок будит сессию — она снова получает ошибку API
+            said_before = len(f.said)
+            rows = rows + [user_text(now), api_error(now + timedelta(seconds=2)),
+                           turn_duration(now + timedelta(seconds=2))]
+            write_rows(world["transcript"], rows, world["proj"])
+    assert len(f.said) == 1
+    assert len(f.mailed) == 1 and "ошибка API" in f.mailed[0]
+    snap = json.loads((world["state"] / ws.STATE_FILE).read_text(encoding="utf-8"))
+    assert snap["sessions"]["proj-7"]["state"] == "stuck"

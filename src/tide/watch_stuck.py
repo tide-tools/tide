@@ -429,12 +429,22 @@ def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
                  "quiet_min": int(v.get("quiet_sec", 0) // 60),
                  "last_tool": v.get("last_tool", ""), "wait_h": v.get("wait_h", 0)}
     acts: List[str] = []
-    same = prev.get("last_at") == rec["last_at"] and prev.get("state") in (
-        STATE_NUDGED, STATE_STUCK)
-    if v["state"] == STATE_QUIET:
+    open_ep = prev.get("state") in (STATE_NUDGED, STATE_STUCK)
+    # Лимит API: толчок будит сессию, она сразу отвечает новой ошибкой и сдвигает last_at.
+    # Эпизод api_error держим по причине, а не по last_at: один толчок, потом письмо.
+    api_cont = (open_ep and v.get("reason") == "api_error"
+                and prev.get("reason") == "api_error"
+                and v["state"] in (STATE_QUIET, STATE_OK))
+    same = (prev.get("last_at") == rec["last_at"] and open_ep) or api_cont
+    if v["state"] == STATE_QUIET or api_cont:
         if same:
             rec["nudged_at"] = prev.get("nudged_at", "")
             rec["episode_at"] = prev.get("episode_at", "")
+            rec["episode_last_at"] = prev.get("episode_last_at") or prev.get("last_at", "")
+            if api_cont:
+                t0 = _when(rec["episode_last_at"])
+                if t0 is not None:
+                    rec["quiet_min"] = int((now - t0).total_seconds() // 60)
             if prev.get("state") == STATE_STUCK:
                 rec["state"] = STATE_STUCK
                 rec["mailed_at"] = prev.get("mailed_at", "")
@@ -450,12 +460,14 @@ def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
             # диалог в окне: толчка нет (его бы приняли за ответ), письмо менеджеру сразу
             rec["state"] = STATE_STUCK
             rec["episode_at"] = _iso(now)
+            rec["episode_last_at"] = rec["last_at"]
             rec["nudged_at"] = ""
             rec["mailed_at"] = _iso(now)
             acts.append("mail_stuck")
         else:
             rec["state"] = STATE_NUDGED
             rec["episode_at"] = _iso(now)
+            rec["episode_last_at"] = rec["last_at"]
             rec["nudged_at"] = "" if manager else _iso(now)
             if not manager:
                 acts.append("nudge")
