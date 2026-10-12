@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SOC-247: сторож «агент молчит» — `tide watch-stuck` раз в минуту.
+  Шаблон: __HOME__ и __TIDE_HOME__ — домашняя папка и control-home. Готовый файл
+  для своей машины проще получить так (подставит пути сам):
+    tide watch-stuck --print-plist > ~/Library/LaunchAgents/com.tide.watch-stuck.plist
+  Загрузка:  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tide.watch-stuck.plist
+  Откат:     launchctl bootout gui/$(id -u)/com.tide.watch-stuck
+  Пауза без выгрузки: TIDE_WATCH_STUCK=off в EnvironmentVariables.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tide.watch-stuck</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/tide</string>
+    <string>watch-stuck</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__TIDE_HOME__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:__HOME__/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>LANG</key>
+    <string>en_US.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>TIDE_HOME</key>
+    <string>__TIDE_HOME__</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__TIDE_HOME__/.tide/state/watch-stuck.log</string>
+  <key>StandardErrorPath</key>
+  <string>__TIDE_HOME__/.tide/state/watch-stuck.log</string>
+</dict>
+</plist>
