@@ -24,23 +24,36 @@
 пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 150|200|300``):
 повторно не пингуем, скачок через несколько порогов — один пинг старшего.
 
+Два класса сессий (слово пользователя 12.10, SOC-237). Всё выше — ИСПОЛНИТЕЛЬ (воркер,
+автономный цикл). МЕНЕДЖЕР (оркестратор: менеджер, лиды, main проектов; за размером следит
+человек) живёт по другой лестнице (:data:`tide.handoff_contract.HANDOFF_TOKENS_MANAGER_SUGGEST`
+/ ``_STEP`` / ``_FORCE``): с 200 тыс. — ПРЕДЛОЖИТЬ хендофф пользователю, Stop НЕ блокируется:
+хук кладёт в паспорт подсказку ``ctx-suggest`` и показывает её пользователю строкой
+(``systemMessage``), а агент получает строку «предложи пользователю хендофф: контекст N тыс.»
+с ближайшим сообщением (UserPromptSubmit, :func:`prompt_hint`); повтор каждые +50 тыс.; с
+350 тыс. — принудительный хендофф (блок Stop, как «обязательно» у исполнителя; повтор тоже
+каждые +50 тыс.). Класс — :func:`session_class`: поле паспорта ``session-class``, иначе
+``auto-handoff: off`` (теперь это «менеджер», а не «выключено»), иначе слаг нити из
+:data:`tide.handoff_contract.MANAGER_THREADS`, иначе исполнитель. Пройденная ступень
+менеджера — тот же штамп ``ctx-ping: <тыс.>``.
+
 Холодное пробуждение (SOC-237): если перед текущим ходом сессия простояла больше
 ``$TIDE_CTX_COLD_MIN`` минут (60), а контекст больше ``$TIDE_CTX_COLD_TOKENS`` (60 000),
 кэш промпта уже остыл — на первом ходе после простоя хук требует ту же передачу, что на
-пороге (:func:`cold_text`). Простой — по транскрипту (:func:`idle_before_turn`): самый
-длинный разрыв между записями текущего хода, считая от конца прошлого (строка
-``stop_hook_summary``). Одно пробуждение — один пинг: штамп ``cold-ping: <время
-пробуждения> <мин> <токены>``.
+пороге (:func:`cold_text`); менеджеру — только предложение (:func:`cold_suggest_text`).
+Простой — по транскрипту (:func:`idle_before_turn`): самый длинный разрыв между записями
+текущего хода, считая от конца прошлого (строка ``stop_hook_summary``). Одно пробуждение —
+один пинг: штамп ``cold-ping: <время пробуждения> <мин> <токены>``.
 
 Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
 здесь, env: ``$TIDE_CTX_SOFT`` / ``$TIDE_CTX_HARD`` / ``$TIDE_CTX_ALARM``
-(``$TIDE_CTX_NUDGE`` — старый синоним мягкого). Субагенты хендофф не делают (у них
-SubagentStop). Молчит: вне tide-проекта, без арки-сессии, на продолжении после
-блока (``stop_hook_active``), с ``auto-handoff: off`` в паспорте (разговор, SOC-230) —
-и пороги, и холодное пробуждение. Растворённая или уже передавшая сессия хендофф не
-получает, но контекст её считается (SOC-98): на потолке — пинг «доведи воркера,
-перешли итог, замолчи», на тревоге — ещё и сигнал менеджеру «закрой её». Любая
-ошибка — молчаливый exit 0.
+(``$TIDE_CTX_NUDGE`` — старый синоним мягкого); менеджеру ``$TIDE_CTX_MGR_SUGGEST`` /
+``$TIDE_CTX_MGR_FORCE``. Субагенты хендофф не делают (у них SubagentStop). Молчит: вне
+tide-проекта, без арки-сессии, на продолжении после блока (``stop_hook_active``).
+Растворённая или уже передавшая сессия хендофф не получает, но контекст её считается
+(SOC-98): исполнителю на потолке — пинг «доведи воркера, перешли итог, замолчи», на тревоге —
+ещё и сигнал менеджеру «закрой её»; менеджеру — то же, но только с принудительного порога.
+Любая ошибка — молчаливый exit 0.
 """
 
 from __future__ import annotations
@@ -80,6 +93,11 @@ AUTO_CMD = "tide handoff continue --auto"
 CTX_PING_FIELD = "ctx-ping"
 HANDED_OFF_FIELD = "handed-off"  # same key launcher.autohandoff stamps
 
+# Менеджер (SOC-237): пороги — в контракте сида, рядом с HANDOFF_TOKENS; env переопределяет.
+MGR_SUGGEST_ENV = "TIDE_CTX_MGR_SUGGEST"
+MGR_FORCE_ENV = "TIDE_CTX_MGR_FORCE"
+SUGGEST_FIELD = "ctx-suggest"  # подсказка менеджеру, ждёт ближайшего сообщения пользователя
+
 LEVELS = ("soft", "hard", "alarm")
 ROUTE_LOG = "log"
 ROUTE_MANAGER = "manager"
@@ -100,6 +118,14 @@ def thresholds() -> Tuple[int, int, int]:
     hard = max(_env_int(HARD_ENV, HARD_TOKENS), soft)
     alarm = max(_env_int(ALARM_ENV, ALARM_TOKENS), hard)
     return soft, hard, alarm
+
+
+def manager_thresholds() -> Tuple[int, int, int]:
+    """``(suggest, step, force)`` менеджера в токенах; env — порог предложения и принуждения."""
+    suggest = _env_int(MGR_SUGGEST_ENV, handoff_contract.HANDOFF_TOKENS_MANAGER_SUGGEST)
+    force = max(_env_int(MGR_FORCE_ENV, handoff_contract.HANDOFF_TOKENS_MANAGER_FORCE),
+                suggest)
+    return suggest, handoff_contract.HANDOFF_TOKENS_MANAGER_STEP, force
 
 
 def _k(tokens: int) -> str:
@@ -276,9 +302,30 @@ AUTO_HANDOFF_FIELD = "auto-handoff"
 
 
 def _auto_handoff_off(entry: Path) -> bool:
-    """``auto-handoff: off`` в паспорте — сторож молчит на любом пороге (SOC-230)."""
+    """``auto-handoff: off`` в паспорте — сессия-менеджер (SOC-230 → SOC-237)."""
     raw = (fields.read_field(entry / "arc.md", AUTO_HANDOFF_FIELD) or "").strip().lower()
     return raw in ("off", "no", "false", "0")
+
+
+def session_class(entry: Path) -> str:
+    """Класс сессии: :data:`tide.handoff_contract.CLASS_MANAGER` или ``CLASS_WORKER``.
+
+    Порядок (по убыванию надёжности): явное поле паспорта ``session-class``; поле
+    ``auto-handoff: off`` (теперь «менеджер»); слаг нити сессии (``04-@main`` → ``main``)
+    из :data:`tide.handoff_contract.MANAGER_THREADS`; иначе исполнитель. ``$TIDE_ROLE``
+    не смотрим: в AO он общий на проект и по умолчанию ``orchestrator`` у всех."""
+    hc = handoff_contract
+    explicit = (fields.read_field(entry / "arc.md", hc.SESSION_CLASS_FIELD) or "").strip().lower()
+    if explicit in (hc.CLASS_MANAGER, hc.CLASS_WORKER):
+        return explicit
+    if _auto_handoff_off(entry):
+        return hc.CLASS_MANAGER
+    try:
+        if slug.entry_slug(entry.parent.parent.name) in hc.MANAGER_THREADS:
+            return hc.CLASS_MANAGER
+    except Exception:  # noqa: BLE001
+        pass
+    return hc.CLASS_WORKER
 
 
 def _stood_down(entry: Path, session: str) -> bool:
@@ -462,15 +509,20 @@ def _alert_manager(root: Path, entry: Path, text: str) -> None:
 
 
 def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
-                 now: Optional[datetime]) -> Optional[str]:
+                 now: Optional[datetime], manager: bool = False) -> Optional[str]:
     """SOC-98: сессия, отдавшая нить, растёт дальше — на потолке (200 тыс.) пинг ей, на
     тревоге (300) — ещё и тревога менеджеру. Мягкая ступень (150) ей не нужна.
     Холодное пробуждение ей тоже не нужно (передача уже сделана).
-    Один пинг на ступень — тот же штамп ``ctx-ping``."""
+    Один пинг на ступень — тот же штамп ``ctx-ping``. Менеджеру — только с принудительного
+    порога и без тревоги (``manager``)."""
     tokens = fill_tokens(payload, session)
     if tokens is None:
         return None
-    ladder = list(thresholds())
+    if manager:
+        force = manager_thresholds()[2]
+        ladder = [force, force, max(tokens, force) + 1]
+    else:
+        ladder = list(thresholds())
     reached = sum(1 for t in ladder if tokens >= t)
     if reached < 2:
         return None
@@ -481,7 +533,7 @@ def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
     fields.set_field(pp, CTX_PING_FIELD, "{0} {1} {2}".format(
         _kn(step), (now or datetime.now()).isoformat(timespec="seconds"), tokens))
     try:
-        if reached >= 3:
+        if reached >= 3 and not manager:
             _alert_manager(root, entry, handed_alarm_text(entry, session, tokens))
         else:
             _send("hard", root, entry, "сессия {0} передала нить, а контекст {1} тыс. "
@@ -614,10 +666,77 @@ def cold_text(entry: Path, tokens: int, idle_min: float) -> str:
     ).format(idle, _k(tokens), handoff_steps(entry))
 
 
+def cold_suggest_text(tokens: int, idle_min: float) -> str:
+    """Подсказка менеджеру после холодного пробуждения: только предложение."""
+    hours, mins = divmod(int(idle_min), 60)
+    idle = "{0} ч {1} мин".format(hours, mins) if hours else "{0} мин".format(mins)
+    return ("tide: предложи пользователю хендофф: контекст {0}, сессия проснулась после "
+            "простоя {1} — кэш остыл, ходы дорогие".format(_k(tokens), idle))
+
+
+def suggest_text(tokens: int) -> str:
+    """Строка-подсказка агенту-менеджеру: предложить хендофф пользователю."""
+    return "tide: предложи пользователю хендофф: контекст {0}".format(_k(tokens))
+
+
+def manager_force_text(entry: Path, tokens: int, force: int) -> str:
+    return (
+        "tide: контекст {0} токенов — принудительный порог менеджера {1}. Доведи текущий "
+        "шаг, новую работу не бери, хендофф сейчас:\n"
+        "{2}"
+    ).format(_k(tokens), _k(force), handoff_steps(entry))
+
+
+def _stamp_rank(passport: Path) -> int:
+    """Тыс. токенов последней пропингованной ступени (``ctx-ping: <тыс.>…``), 0 — нет."""
+    raw = (fields.read_field(passport, CTX_PING_FIELD) or "").strip().split(" ", 1)[0]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def _queue_suggest(pp: Path, kind: str, tokens: int, now: Optional[datetime],
+                   idle_min: int = 0) -> None:
+    """Подсказка менеджеру ждёт ближайшего сообщения: ``ctx-suggest: ctx|cold …``."""
+    at = (now or datetime.now()).isoformat(timespec="seconds")
+    fields.set_field(pp, SUGGEST_FIELD, "{0} {1} {2} {3}".format(kind, at, tokens, idle_min))
+
+
+def _manager_ladder(root: Path, entry: Path, tokens: int,
+                    now: Optional[datetime]) -> Tuple[Optional[str], Optional[str]]:
+    """Лестница менеджера → ``(блок Stop, подсказка)``. Ниже ``suggest`` — ничего; от
+    ``suggest`` каждые ``step`` — одна подсказка (Stop не блокируется); от ``force`` —
+    принудительный хендофф (блок), тоже раз на ступень. Ступень — ``ctx-ping: <тыс.>``."""
+    suggest, step, force = manager_thresholds()
+    if tokens < suggest:
+        return None, None
+    # сетка +step от suggest; выше force — своя сетка от force (env-пороги не по сетке)
+    base = force if tokens >= force else suggest
+    stage = base + ((tokens - base) // step) * step
+    pp = entry / "arc.md"
+    if _stamp_rank(pp) >= _kn(stage):
+        return None, None
+    fields.set_field(pp, CTX_PING_FIELD, "{0} {1} {2}".format(
+        _kn(stage), (now or datetime.now()).isoformat(timespec="seconds"), tokens))
+    forced = tokens >= force
+    try:
+        _send("hard" if forced else "soft", root, entry,
+              "сессия {0} (менеджер) на {1} тыс. токенов — {2}".format(
+                  slug.entry_slug(entry.name), _kn(tokens),
+                  "принудительный хендофф" if forced else "предложи пользователю хендофф"))
+    except Exception:  # noqa: BLE001 — a signal must never break the ping
+        pass
+    if forced:
+        fields.remove_field(pp, SUGGEST_FIELD)
+        return manager_force_text(entry, tokens, force), None
+    _queue_suggest(pp, "ctx", tokens, now)
+    return None, suggest_text(tokens)
+
+
 def _cold_reason(root: Path, entry: Path, payload: dict, session: str, tokens: int,
-                 now: Optional[datetime]) -> Optional[str]:
+                 now: Optional[datetime], manager: bool = False) -> Optional[str]:
     """Холодное пробуждение (SOC-237): простой > ``COLD_MIN`` минут перед этим ходом и
-    контекст > ``COLD_TOKENS`` — пинг передачи, один на пробуждение (``cold-ping``)."""
+    контекст > ``COLD_TOKENS`` — пинг передачи, один на пробуждение (``cold-ping``).
+    Менеджеру (``manager``) — только подсказка-предложение, Stop не блокируется."""
     if tokens <= _env_int(COLD_TOKENS_ENV, COLD_TOKENS):
         return None
     try:
@@ -644,35 +763,75 @@ def _cold_reason(root: Path, entry: Path, payload: dict, session: str, tokens: i
                   slug.entry_slug(entry.name), int(idle_min), _kn(tokens)))
     except Exception:  # noqa: BLE001 — a signal must never break the ping
         pass
+    if manager:
+        _queue_suggest(pp, "cold", tokens, now, int(idle_min))
+        return cold_suggest_text(tokens, idle_min)
     return cold_text(entry, tokens, idle_min)
 
 
-def watch_reason(root: Path, payload: dict, *,
-                 now: Optional[datetime] = None) -> Optional[str]:
-    """Причина блока остановки — или None. Один пинг на ступень, штамп ``ctx-ping``;
-    ступени молчат — холодное пробуждение (:func:`_cold_reason`, штамп ``cold-ping``)."""
+def watch(root: Path, payload: dict, *,
+          now: Optional[datetime] = None) -> Tuple[Optional[str], Optional[str]]:
+    """``(блок Stop, подсказка)``. Блок — причина остановки (исполнитель на порогах,
+    менеджер с принудительного); подсказка — строка без блока (менеджер: предложить
+    хендофф). Один пинг на ступень, штамп ``ctx-ping``; холодное пробуждение —
+    штамп ``cold-ping``."""
     session = str(payload.get("session_id") or payload.get("session") or "")
     entry = _session_entry(root, session)
     if entry is None:
-        return None
-    if _auto_handoff_off(entry):
-        return None
+        return None, None
     if payload.get("stop_hook_active"):
-        return None
+        return None, None
+    manager = session_class(entry) == handoff_contract.CLASS_MANAGER
     told = handed_over_reason(entry, session, now=now)
     if told is not None or _stood_down(entry, session):
         # отдала нить: хендофф не требуем, но контекст считаем (SOC-98) —
         # напоминание о передаче и пинг ступени — одним блоком
-        ping = _handed_ping(root, entry, session, payload, now)
+        ping = _handed_ping(root, entry, session, payload, now, manager=manager)
         parts = [t for t in (told, ping) if t]
-        return "\n".join(parts) or None
+        return ("\n".join(parts) or None), None
     tokens = fill_tokens(payload, session)
     if tokens is None:
-        return None
+        return None, None
+    if manager:
+        block, hint = _manager_ladder(root, entry, tokens, now)
+        if block or hint:
+            return block, hint
+        hint = _cold_reason(root, entry, payload, session, tokens, now, manager=True)
+        return None, hint
     reason = _ladder_reason(root, entry, payload, session, tokens, now)
     if reason:
-        return reason
-    return _cold_reason(root, entry, payload, session, tokens, now)
+        return reason, None
+    return _cold_reason(root, entry, payload, session, tokens, now), None
+
+
+def watch_reason(root: Path, payload: dict, *,
+                 now: Optional[datetime] = None) -> Optional[str]:
+    """Причина блока остановки — или None (подсказки менеджеру — :func:`watch`)."""
+    return watch(root, payload, now=now)[0]
+
+
+def prompt_hint(root: Path, session: str) -> Optional[str]:
+    """UserPromptSubmit: подсказка менеджеру, оставленная Stop-хуком (``ctx-suggest``), —
+    строка для агента; поле снимается (показана один раз). Нет подсказки / сессия уже
+    передала нить / ошибка — None."""
+    try:
+        entry = _session_entry(root, session)
+        if entry is None:
+            return None
+        pp = entry / "arc.md"
+        raw = (fields.read_field(pp, SUGGEST_FIELD) or "").strip().split()
+        if not raw:
+            return None
+        fields.remove_field(pp, SUGGEST_FIELD)
+        if _stood_down(entry, session):
+            return None
+        kind = raw[0]
+        tokens = int(raw[2]) if len(raw) > 2 else 0
+        if kind == "cold":
+            return cold_suggest_text(tokens, float(raw[3]) if len(raw) > 3 else 0)
+        return suggest_text(tokens)
+    except Exception:  # noqa: BLE001 — a hook must never raise
+        return None
 
 
 def _ladder_reason(root: Path, entry: Path, payload: dict, session: str, tokens: int,
@@ -722,9 +881,13 @@ def cmd_context_watch(args) -> int:
             return 0
         if not isinstance(payload, dict):
             return 0
-        reason = watch_reason(root, payload)
+        reason, hint = watch(root, payload)
         if reason:
             print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        elif hint:
+            # менеджеру Stop не блокируем: пользователь видит строку, агент получит её
+            # с ближайшим сообщением (prompt_hint)
+            print(json.dumps({"systemMessage": hint}, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001 — a hook must never raise
         print("tide: [context-watch] skipped: {0}".format(exc), file=sys.stderr)
     return 0

@@ -539,6 +539,13 @@ def cmd_prompt(args) -> int:
             note = redirect(payload)
             if note:
                 print(note)
+            # SOC-237: менеджеру Stop-хук context-watch не блокирует — подсказку «предложи
+            # хендофф» агент получает здесь, с ближайшим сообщением пользователя
+            from . import context_watch
+            hint = context_watch.prompt_hint(paths.find_tide_root(),
+                                             str(payload.get("session_id") or payload.get("session") or ""))
+            if hint:
+                print(hint)
             # старая без воркеров закрывается сама — по умолчанию в проектах с autoclose-old=on (tide-stack)
             from . import autoclose
             autoclose.on_prompt(payload)

@@ -67,12 +67,33 @@ EXPERIENCE_TOP = 12
 # Окружение, впервые попавшее в сид нити раньше стольких часов назад, не переносится.
 ENVIRONMENT_MAX_HOURS = 24
 
-# Порог передачи в токенах контекста: с него сессия передаёт работу в первый спокойный
-# момент (воркеры сдали, правки закоммичены); 200 тыс. — потолок, передача обязательна,
-# 300 тыс. — тревога менеджеру (слово Гриши 12.10, SOC-237: передавать раньше, со 150;
-# было 250/300/500 по «Давай А», SOC-143). Только автономные сессии: ``auto-handoff: off``
-# в паспорте глушит сторож целиком (SOC-230).
+# Два класса сессий (слово пользователя 12.10, SOC-237): ИСПОЛНИТЕЛЬ (воркер, автономный
+# цикл) и МЕНЕДЖЕР (оркестратор: менеджер, лиды, main проектов; за размером следит человек).
+#
+# Исполнитель. Порог передачи в токенах контекста: с него сессия передаёт работу в первый
+# спокойный момент (воркеры сдали, правки закоммичены); 200 тыс. — потолок, передача
+# обязательна, 300 тыс. — тревога менеджеру (передавать раньше, со 150; было 250/300/500
+# по «Давай А», SOC-143). Потолок и тревога живут в :mod:`tide.hooks.context_watch`.
 HANDOFF_TOKENS = 150_000
+
+# Менеджер. С HANDOFF_TOKENS_MANAGER_SUGGEST — ПРЕДЛОЖИТЬ хендофф пользователю (Stop не
+# блокируется; агент получает строку-подсказку), повтор каждые HANDOFF_TOKENS_MANAGER_STEP;
+# с HANDOFF_TOKENS_MANAGER_FORCE — принудительный хендофф («обязательно», блок Stop).
+# Холодное пробуждение менеджеру — тоже только предложение.
+HANDOFF_TOKENS_MANAGER_SUGGEST = 200_000
+HANDOFF_TOKENS_MANAGER_FORCE = 350_000
+HANDOFF_TOKENS_MANAGER_STEP = 50_000
+
+# Как узнать класс сессии (по убыванию надёжности; ``TIDE_ROLE`` не годится: в AO он общий
+# на проект, а по умолчанию у всех ``orchestrator``):
+#   1. поле паспорта ``session-class: manager|worker`` — явное слово, главнее всего;
+#   2. поле паспорта ``auto-handoff: off`` — теперь значит «менеджер» (SOC-230 → SOC-237);
+#   3. нить сессии — по слагу папки нити (``04-@main`` → ``main``) из MANAGER_THREADS;
+#   иначе — исполнитель.
+CLASS_WORKER = "worker"
+CLASS_MANAGER = "manager"
+SESSION_CLASS_FIELD = "session-class"
+MANAGER_THREADS = ("main", "ao-control", "manager", "lead")
 
 
 class Block(NamedTuple):
@@ -357,7 +378,10 @@ def missing(heads: Iterable[str]) -> Tuple[str, ...]:
     return tuple(out)
 
 
-__all__ = ["AUDIT_SECTIONS", "BLOCKS", "Block", "EMPTY", "HANDOFF_TOKENS", "SEED_ARCHIVE_NAME",
+__all__ = ["AUDIT_SECTIONS", "BLOCKS", "Block", "CLASS_MANAGER", "CLASS_WORKER", "EMPTY",
+           "HANDOFF_TOKENS", "HANDOFF_TOKENS_MANAGER_FORCE", "HANDOFF_TOKENS_MANAGER_STEP",
+           "HANDOFF_TOKENS_MANAGER_SUGGEST", "MANAGER_THREADS", "SESSION_CLASS_FIELD",
+           "SEED_ARCHIVE_NAME",
            "SEED_AWAITING_MAX", "SEED_BUDGET_CHARS", "SEED_BUDGET_FIELD",
            "SEED_BUDGET_MANAGER_CHARS", "SEED_EXPECTATION_CHARS", "SEED_MAX_BYTES",
            "JOURNAL_SHARE", "LIST", "NAMES", "PROSE", "PULSE_LABELS", "PULSE_STOP_LABELS",

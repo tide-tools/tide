@@ -3,7 +3,8 @@
 * порог передачи автономной сессии — 150 тыс. (потолок 200, тревога 300);
 * простой перед ходом > 60 мин при контексте > 60 тыс. — на первом ходе после
   простоя та же передача, что на пороге; одно пробуждение — один пинг (``cold-ping``);
-* ``auto-handoff: off`` (разговор, SOC-230) глушит и порог, и холодное пробуждение.
+* менеджеру (``auto-handoff: off`` и др.) всё это — только предложение: см.
+  ``test_context_watch_manager.py``.
 """
 
 from __future__ import annotations
@@ -157,16 +158,3 @@ def test_cold_wake_thresholds_from_env(world, sent, monkeypatch):
 def test_handed_off_session_gets_no_cold_wake(world, sent):
     fields.set_field(world["sess"] / "arc.md", ah.HANDED_OFF_FIELD, "2026-10-12 → 01-x")
     assert cw.watch_reason(world["proj"], _wake_payload(world, 80_000)) is None
-
-
-# --- auto-handoff: off глушит оба условия -----------------------------------------
-
-@pytest.mark.parametrize("tokens", [80_000, 160_000, 210_000, 320_000])
-def test_off_silences_threshold_and_cold_wake(world, sent, tokens):
-    pp = world["sess"] / "arc.md"
-    fields.set_field(pp, "auto-handoff", "off")
-    assert cw.watch_reason(world["proj"], _wake_payload(world, tokens)) is None
-    assert cw.watch_reason(world["proj"], _payload(world, tokens)) is None
-    assert sent == []
-    assert not (fields.read_field(pp, cw.CTX_PING_FIELD) or "").strip()
-    assert not (fields.read_field(pp, cw.COLD_PING_FIELD) or "").strip()
