@@ -7,7 +7,8 @@
     tide watch-stuck --print-plist > ~/Library/LaunchAgents/com.tide.watch-stuck.plist
   Загрузка:  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tide.watch-stuck.plist
   Откат:     launchctl bootout gui/$(id -u)/com.tide.watch-stuck
-  Пауза без выгрузки: TIDE_WATCH_STUCK=off в EnvironmentVariables.
+  Пауза без выгрузки: touch <control-home>/.tide/state/watch-stuck.off (снять: rm).
+  Переменные plist launchd не перечитывает без bootout/bootstrap — паузой они не служат.
 -->
 <plist version="1.0">
 <dict>

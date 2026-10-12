@@ -563,3 +563,68 @@ def test_p5_event_write_failure_still_saves_state(world, monkeypatch):
     for m in (21, 22, 23):
         run(world, f, T0 + timedelta(minutes=m), s)
     assert len(f.said) == 1
+
+
+def test_p6_first_run_without_state_seeds_silently(world):
+    import shutil
+    shutil.rmtree(world["state"])  # первого state нет: свежая установка / потерян файл
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    s = [session()]
+    recs = run(world, f, T0 + timedelta(minutes=40), s)
+    assert f.said == [] and f.mailed == []
+    assert recs[0]["actions"] == [] and recs[0]["state"] == "stuck"
+    run(world, f, T0 + timedelta(minutes=70), s)
+    assert f.said == [] and f.mailed == []  # засеянный эпизод молчит
+    t1 = T0 + timedelta(minutes=80)
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0), tool_result(t1),
+                                     tool_use(t1, tid="toolu_2")], world["proj"])
+    run(world, f, t1 + timedelta(minutes=21), s)
+    assert len(f.said) == 1  # новый эпизод после засева — работает как обычно
+
+
+def test_p6_first_run_seed_covers_waiting_mail(world):
+    import shutil
+    shutil.rmtree(world["state"])
+    passport = world["entry"] / "arc.md"
+    passport.write_text(passport.read_text(encoding="utf-8").replace(
+        "делаю макет", "жду ответ пользователя"), encoding="utf-8")
+    f = Fakes()
+    write_rows(world["transcript"], ended_rows(T0), world["proj"])
+    run(world, f, T0 + timedelta(hours=5), [session()])
+    assert f.mailed == []
+
+
+def test_p6_corrupt_state_file_reseeds(world):
+    (world["state"] / ws.STATE_FILE).write_text("{oops", encoding="utf-8")
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    run(world, f, T0 + timedelta(minutes=40), [session()])
+    assert f.said == [] and f.mailed == []
+
+
+def test_p8_off_flag_file_pauses_without_restart(world):
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    flag = world["state"] / ws.OFF_FILE
+    flag.write_text("", encoding="utf-8")
+    assert run(world, f, T0 + timedelta(minutes=40), [session()]) == []
+    assert f.said == [] and f.mailed == []
+    flag.unlink()
+    run(world, f, T0 + timedelta(minutes=41), [session()])
+    assert len(f.said) == 1
+
+
+@pytest.mark.parametrize("val", ["off", "0", "false", "OFF", "no"])
+def test_p8_off_env_values(world, monkeypatch, val):
+    monkeypatch.setenv("TIDE_WATCH_STUCK", val)
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    assert run(world, f, T0 + timedelta(minutes=40), [session()]) == []
+
+
+def test_p8_plist_template_mentions_flag_file_not_env():
+    text = (Path(__file__).resolve().parent.parent / "packaging" / "launchd"
+            / "com.tide.watch-stuck.plist").read_text(encoding="utf-8")
+    assert "watch-stuck.off" in text
+    assert "TIDE_WATCH_STUCK=off в EnvironmentVariables" not in text

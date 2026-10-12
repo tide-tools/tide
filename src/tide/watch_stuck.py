@@ -56,6 +56,7 @@ SENDER = "tide-watch"
 STATE_FILE = "watch-stuck.json"
 EVENTS_FILE = "watch-stuck.jsonl"
 LOCK_FILE = "watch-stuck.lock"
+OFF_FILE = "watch-stuck.off"   # файл-флаг паузы: launchd env не перечитывает
 PERMS_FILE = "blocked-perms.jsonl"
 TAIL_BYTES = 2 * 1024 * 1024
 
@@ -633,12 +634,15 @@ def default_state_dir(env: Optional[Dict[str, str]] = None) -> Path:
     return paths.state_dir(paths.control_home())
 
 
-def _load(sdir: Path) -> Dict:
+def _load(sdir: Path) -> Optional[Dict]:
+    """Сессии из state; ``None`` — файла нет или он битый (первый запуск / потеря)."""
     try:
         data = json.loads((sdir / STATE_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
-    return data.get("sessions") or {} if isinstance(data, dict) else {}
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), dict):
+        return None
+    return data["sessions"]
 
 
 def _save(sdir: Path, sessions: Dict, now: datetime) -> None:
@@ -671,11 +675,13 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
     """Один проход по живым AO-сессиям → записи (с ``actions``). Идемпотентен:
     повторный проход без новых событий ничего не шлёт."""
     e = os.environ if env is None else env
-    if (e.get(OFF_ENV) or "").strip().lower() == "off":
+    if (e.get(OFF_ENV) or "").strip().lower() in ("off", "0", "false", "no"):
         return []
     lim = Limits.from_env(e)
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     sdir = Path(state_dir) if state_dir is not None else default_state_dir(e)
+    if (sdir / OFF_FILE).exists():
+        return []  # пауза файлом: ``touch <state>/watch-stuck.off`` / ``rm`` — без перезагрузки агента
     say = say or default_say
     mail = mail or default_mail
     locator = locator or locate
@@ -693,7 +699,9 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
         prev_all: Dict[str, Dict] = {}
         new_all: Dict[str, Dict] = {}
         rows_in = list(ao_sessions() if sessions is None else sessions)
-        prev_all = _load(sdir)
+        loaded = _load(sdir)
+        seeding = loaded is None  # нет истории — не слать накопленное разом (RunAtLoad)
+        prev_all = loaded or {}
         out: List[Dict] = []
         for s in rows_in:
             if s.get("isTerminated") or _activity(s) == "exited":
@@ -718,6 +726,17 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                                      ao=handle, sid=loc.get("sid", ""))
                 mgr = is_manager(handle)
                 rec, acts = decide(prev_all.get(handle), v, now=now, limits=lim, manager=mgr)
+                if seeding:
+                    # засев: фиксируем текущие эпизоды без толчков и писем
+                    if acts or rec["state"] == STATE_NUDGED:
+                        if rec["state"] in (STATE_NUDGED, STATE_STUCK):
+                            rec["state"] = STATE_STUCK
+                            rec["mailed_at"] = _iso(now)
+                        rec["nudged_at"] = ""
+                        if rec["state"] == STATE_WAITING:
+                            rec["wait_mailed_at"] = _iso(now)
+                    acts = []
+                    rec["seeded"] = True
                 root = loc.get("root")
                 rec.update({
                     "ao_session": handle,
