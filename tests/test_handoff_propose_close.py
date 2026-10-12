@@ -109,14 +109,20 @@ def test_close_goes_to_the_pult_batch_not_ao_send(monkeypatch):
 
 
 @pytest.mark.parametrize("rc", [None, 1, -1])
-def test_close_without_pult_falls_back_to_ao_send(monkeypatch, rc):
+def test_close_without_pult_never_says_to_manager(monkeypatch, rc):
+    """SOC-232: пульт не принял — только журнал, в окно менеджера say не уходит."""
+    from tide import manager_guard
     from tide.launcher import autohandoff
 
     fake = _Ao()
+    logged = []
     monkeypatch.setattr(reception, "_ao_adapter", lambda: fake)
     monkeypatch.setattr(autohandoff, "send_alert", lambda text, **kw: rc)
-    assert reception._close_to_manager("management-14", "закрыть x?", "s") == "sent"
-    assert fake.said == [("management-14", "закрыть x?")]
+    monkeypatch.setattr(manager_guard, "log_suppressed",
+                        lambda h, t, source="": logged.append((h, t, source)))
+    assert reception._close_to_manager("management-14", "закрыть x?", "s") == "not-delivered"
+    assert fake.said == []
+    assert logged == [("management-14", "закрыть x?", "s")]
 
 
 def test_reception_close_lands_in_the_batch(seam, sent, manager, monkeypatch):

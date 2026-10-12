@@ -18,7 +18,11 @@ from tests.test_context_watch_handed import _hand_over
 
 @pytest.fixture
 def sent(monkeypatch):
-    calls = {"alert": [], "manager": []}
+    from tide import manager_guard
+
+    calls = {"alert": [], "manager": [], "suppressed": []}
+    monkeypatch.setattr(manager_guard, "log_suppressed",
+                        lambda h, t, source="": calls["suppressed"].append(t))
 
     def fake_alert(text, *, route, source="", extra_env=None):
         calls["alert"].append((route, text))
@@ -42,7 +46,7 @@ def _handed_off(world):
 def test_handed_off_pings_only_on_300_and_500(world, sent):
     _handed_off(world)
     assert cw.watch_reason(world["proj"], _payload(world, 250_000)) is None
-    assert sent == {"alert": [], "manager": []}
+    assert sent == {"alert": [], "manager": [], "suppressed": []}
 
     r300 = cw.watch_reason(world["proj"], _payload(world, 320_000))
     assert r300 == ("tide: ты передала нить, контекст 320 тыс.: доведи воркера, "
@@ -56,10 +60,12 @@ def test_handed_off_pings_only_on_300_and_500(world, sent):
     r500 = cw.watch_reason(world["proj"], _payload(world, 520_000))
     assert "контекст 520 тыс." in r500
     assert sent["alert"][-1][0] == cw.ROUTE_MANAGER
-    assert sent["manager"] == ["сессия designer · 03 · proj-10 передала нить в 06:35, "
-                               "контекст 520 тыс. — закрой её"]
+    # SOC-232: без пульта в окно менеджера не пишем — строка уходит в журнал
+    assert sent["manager"] == []
+    assert sent["suppressed"] == ["сессия designer · 03 · proj-10 передала нить в 06:35, "
+                                  "контекст 520 тыс. — закрой её"]
     assert cw.watch_reason(world["proj"], _payload(world, 600_000)) is None
-    assert len(sent["manager"]) == 1
+    assert len(sent["suppressed"]) == 1
     assert (fields.read_field(world["sess"] / "arc.md", cw.CTX_PING_FIELD) or "")\
         .startswith("500 ")
 

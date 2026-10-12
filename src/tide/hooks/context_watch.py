@@ -425,11 +425,13 @@ def handed_alarm_text(entry: Path, session: str, tokens: int) -> str:
 
 def _alert_manager(root: Path, entry: Path, text: str) -> None:
     """Тревога менеджеру тем же путём, что тревожная ступень лестницы (``route=manager``);
-    нет ``$TIDE_ALERT_CMD`` — напрямую ``ao send`` менеджеру (как signal_stall)."""
+    нет ``$TIDE_ALERT_CMD`` — только журнал (SOC-232: в окно менеджера не пишем)."""
     from ..launcher import autohandoff as _ah
 
     if _ah.send_alert(text, route=ROUTE_MANAGER, source=alert_source(root, entry)) is None:
-        _ah.tell_manager(text)
+        from ..manager_guard import log_suppressed
+
+        log_suppressed("", text, source=alert_source(root, entry))
 
 
 def _handed_ping(root: Path, entry: Path, session: str, payload: dict,

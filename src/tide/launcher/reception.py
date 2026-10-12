@@ -695,7 +695,8 @@ def _close_to_manager(to: str, text: str, source: str) -> str:
     """SOC-179 (правило 3 токеномики — несрочное пачкой): «закрыть?» не срочно — в пульт
     ``route=manager``, он кладёт строку в пачку менеджеру (раз в 25 мин), а не будит
     его ``ao send`` на каждый приём. Нет ``$TIDE_ALERT_CMD`` или пульт не принял —
-    как раньше, ``ao send`` на *to*. → ``batched`` / ``sent`` / ``not-delivered``."""
+    SOC-232: в окно менеджера не пишем, строка в журнал (``suppressed-to-manager``).
+    → ``batched`` / ``not-delivered``."""
     from .autohandoff import send_alert
 
     try:
@@ -704,12 +705,15 @@ def _close_to_manager(to: str, text: str, source: str) -> str:
         rc = -1
     if rc == 0:
         return "batched"
-    return "sent" if _ao_adapter().say(to, text) else "not-delivered"
+    from ..manager_guard import log_suppressed
+
+    log_suppressed(to, text, source=source)
+    return "not-delivered"
 
 
 def propose_close(home: Path, key: str) -> Optional[str]:
     """После приёма — менеджеру (адрес — :func:`tide.whois.manager`), пачкой через пульт
-    (:func:`_close_to_manager`; без пульта — ``ao send``):
+    (:func:`_close_to_manager`; без пульта — только журнал, SOC-232):
     «<старая> передала нить <новой>, приём подтверждён; закрыть <старую>?». Не
     старой сессии самой (она не закрывается сама) — тому, кто закрывает. Один раз:
     метка ``close-proposed:`` в оффере. → итог или None (уже предложено/не принят).
