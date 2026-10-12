@@ -28,7 +28,10 @@ STORE = {"fields", "io", "paths", "slug", "numbering", "placeholders",
          "escalate_rules",
          # SOC-102/181: stdlib-only reader of Grisha's decisions journal + the agreements
          # and gotchas lines of the seed (imports nothing from tide)
-         "grisha_decisions"}
+         "grisha_decisions",
+         # SOC-242: stdlib-only разбор курсора по правилу мяча (imports nothing from
+         # tide): Stop-хук offload-nudge, tide offload и сборщики сида читают его
+         "ball"}
 DOMAIN = {
     "acts", "arc", "handoff_queue", "offload", "registry", "resolve", "sessions", "sync",
     "health", "harness", "lookback", "ledger", "roster",
