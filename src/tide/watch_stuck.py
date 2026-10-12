@@ -649,6 +649,13 @@ def _save(sdir: Path, sessions: Dict, now: datetime) -> None:
     os.replace(tmp, sdir / STATE_FILE)
 
 
+def _event_safe(sdir: Path, ev: Dict) -> None:
+    try:
+        _event(sdir, ev)
+    except OSError:
+        pass  # журнал не должен ронять проход и терять состояние
+
+
 def _event(sdir: Path, ev: Dict) -> None:
     sdir.mkdir(parents=True, exist_ok=True)
     with open(sdir / EVENTS_FILE, "a", encoding="utf-8") as fh:
@@ -682,74 +689,89 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
             lock.close()
             return []  # другой проход ещё идёт
     try:
+        saved = False
+        prev_all: Dict[str, Dict] = {}
+        new_all: Dict[str, Dict] = {}
         rows_in = list(ao_sessions() if sessions is None else sessions)
         prev_all = _load(sdir)
-        new_all: Dict[str, Dict] = {}
         out: List[Dict] = []
         for s in rows_in:
             if s.get("isTerminated") or _activity(s) == "exited":
                 continue
-            handle = str(s["id"])
-            loc = locator(s)
-            tp = loc.get("transcript")
-            if tp is None:
-                continue
-            rows = read_rows(Path(tp))
-            act = _activity(s)
-            v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
-                         perms=_perms(loc.get("root")), limits=lim, ao=handle,
-                         sid=loc.get("sid", ""))
-            if v["state"] in (STATE_QUIET, STATE_IDLE):
-                # помощников ищем только когда это что-то меняет (полный транскрипт)
-                live = live_workers(tp) if v["state"] != STATE_OK else []
-                if live:
-                    v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
-                                 perms=_perms(loc.get("root")), workers=live, limits=lim,
-                                 ao=handle, sid=loc.get("sid", ""))
-            mgr = is_manager(handle)
-            rec, acts = decide(prev_all.get(handle), v, now=now, limits=lim, manager=mgr)
-            root = loc.get("root")
-            rec.update({
-                "ao_session": handle,
-                "project": Path(root).name if root else str(s.get("projectId") or ""),
-                "thread": loc.get("thread", ""),
-                "session": loc.get("session", ""),
-                "claude_session": loc.get("sid", ""),
-                "transcript": str(tp),
-                "ao_activity": act,
-                "cursor": _clip(loc.get("cursor", ""), 200),
-                "manager": mgr,
-                "updated": _iso(now),
-            })
-            sent: List[str] = []
-            for a in acts:
-                if dry_run:
-                    sent.append(a)
+            handle = str(s.get("id") or "")
+            try:
+                loc = locator(s)
+                tp = loc.get("transcript")
+                if tp is None:
                     continue
-                ok = False
-                try:
-                    if a == "nudge":
-                        ok = bool(say(handle, nudge_text(v)))
-                    elif a == "mail_stuck":
-                        ok = bool(mail(stuck_letter(rec)))
-                    elif a == "mail_wait":
-                        ok = bool(mail(waiting_letter(rec)))
-                except Exception:  # noqa: BLE001 — доставка не роняет проход
+                rows = read_rows(Path(tp))
+                act = _activity(s)
+                v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
+                             perms=_perms(loc.get("root")), limits=lim, ao=handle,
+                             sid=loc.get("sid", ""))
+                if v["state"] in (STATE_QUIET, STATE_IDLE):
+                    # помощников ищем только когда это что-то меняет (полный транскрипт)
+                    live = live_workers(tp) if v["state"] != STATE_OK else []
+                    if live:
+                        v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
+                                     perms=_perms(loc.get("root")), workers=live, limits=lim,
+                                     ao=handle, sid=loc.get("sid", ""))
+                mgr = is_manager(handle)
+                rec, acts = decide(prev_all.get(handle), v, now=now, limits=lim, manager=mgr)
+                root = loc.get("root")
+                rec.update({
+                    "ao_session": handle,
+                    "project": Path(root).name if root else str(s.get("projectId") or ""),
+                    "thread": loc.get("thread", ""),
+                    "session": loc.get("session", ""),
+                    "claude_session": loc.get("sid", ""),
+                    "transcript": str(tp),
+                    "ao_activity": act,
+                    "cursor": _clip(loc.get("cursor", ""), 200),
+                    "manager": mgr,
+                    "updated": _iso(now),
+                })
+                sent: List[str] = []
+                for a in acts:
+                    if dry_run:
+                        sent.append(a)
+                        continue
                     ok = False
-                sent.append(a)
-                _event(sdir, {"ev": {"nudge": "nudge", "mail_stuck": "stuck",
-                                     "mail_wait": "waiting"}[a],
-                              "at": _iso(now), "ok": ok, "ao_session": handle,
-                              "project": rec["project"], "thread": rec["thread"],
-                              "reason": rec["reason"], "reason_text": rec["reason_text"],
-                              "quiet_min": rec["quiet_min"], "transcript": rec["transcript"]})
-            rec["actions"] = sent
-            new_all[handle] = {k: x for k, x in rec.items() if k != "actions"}
-            out.append(rec)
+                    try:
+                        if a == "nudge":
+                            ok = bool(say(handle, nudge_text(v)))
+                        elif a == "mail_stuck":
+                            ok = bool(mail(stuck_letter(rec)))
+                        elif a == "mail_wait":
+                            ok = bool(mail(waiting_letter(rec)))
+                    except Exception:  # noqa: BLE001 — доставка не роняет проход
+                        ok = False
+                    sent.append(a)
+                    _event_safe(sdir, {"ev": {"nudge": "nudge", "mail_stuck": "stuck",
+                                         "mail_wait": "waiting"}[a],
+                                  "at": _iso(now), "ok": ok, "ao_session": handle,
+                                  "project": rec["project"], "thread": rec["thread"],
+                                  "reason": rec["reason"], "reason_text": rec["reason_text"],
+                                  "quiet_min": rec["quiet_min"], "transcript": rec["transcript"]})
+                rec["actions"] = sent
+                new_all[handle] = {k: x for k, x in rec.items() if k != "actions"}
+                out.append(rec)
+            except Exception:  # noqa: BLE001 — одна сессия не роняет проход
+                if handle in prev_all:
+                    new_all[handle] = prev_all[handle]  # состояние как было
+                continue
+            if not dry_run and rec.get("actions"):
+                _save(sdir, {**prev_all, **new_all}, now)  # действие сделано — запомнить сразу
         if not dry_run:
             _save(sdir, new_all, now)
+            saved = True
         return out
     finally:
+        if not dry_run and not saved:
+            try:
+                _save(sdir, {**prev_all, **new_all}, now)
+            except OSError:
+                pass
         if lock is not None:
             lock.close()
 

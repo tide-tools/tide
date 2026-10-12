@@ -529,3 +529,37 @@ def test_p4_old_worker_expired_in_any_timezone(tmp_path, set_tz, tz):
     live = ws.live_workers(p)
     assert ws._worker_expired(live[0], T0 + timedelta(hours=3, minutes=5), LIMITS) is True
     assert ws._worker_expired(live[0], T0 + timedelta(hours=2, minutes=55), LIMITS) is False
+
+
+def _boom_locator(bad):
+    def loc(s):
+        if s["id"] == bad:
+            raise FileNotFoundError("гонка: jsonl удалён между glob и stat")
+        return ws.locate(s)
+    return loc
+
+
+def test_p5_exception_on_second_session_does_not_repeat_first(world):
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    s = [session(), session(sid="proj-8", sessid="other")]
+    loc = _boom_locator("proj-8")
+    for m in (21, 22, 23, 33, 34):
+        ws.run_once(sessions=s, now=T0 + timedelta(minutes=m), say=f.say, mail=f.mail,
+                    state_dir=world["state"], locator=loc)
+    assert len(f.said) == 1
+    assert len(f.mailed) == 1
+
+
+def test_p5_event_write_failure_still_saves_state(world, monkeypatch):
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+
+    def bad_event(sdir, ev):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ws, "_event", bad_event)
+    s = [session()]
+    for m in (21, 22, 23):
+        run(world, f, T0 + timedelta(minutes=m), s)
+    assert len(f.said) == 1
