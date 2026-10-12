@@ -64,6 +64,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "kind",         # arc kind marker — "thread" tags a session-memory arc
         "merged",
         "mode",
+        "notify",       # SOC-238: уровень Telegram нити — all | questions | quiet (наследуется, тише побеждает)
         "plan-main",    # thread: «главное» в plan.md обязательно (решение Гриши № 24)
         "offloaded-at",  # session offload marker — transcript size at last флот (offload)
         "orca-base-branch",

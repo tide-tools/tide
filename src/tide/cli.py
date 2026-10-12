@@ -712,6 +712,9 @@ def build_parser() -> argparse.ArgumentParser:
     from . import cycle as _cycle
 
     _cycle.register(subparsers)  # SOC-234: tide cycle
+    from . import notify as _notify
+
+    _notify.register(subparsers)  # SOC-238: tide notify — уровень Telegram нити
 
     _register_version(subparsers)
     _register_help(subparsers)
