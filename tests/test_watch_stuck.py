@@ -248,6 +248,7 @@ def world(tmp_path, monkeypatch):
     tdir.mkdir(parents=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
     state = tmp_path / "state"
+    ws._save(state, {}, T0 - timedelta(days=1))  # state уже есть: не первый запуск (п.7)
     for k in list(ws.ENV_KEYS):
         monkeypatch.delenv(k, raising=False)
     return {"proj": proj, "entry": entry, "transcript": tdir / "{0}.jsonl".format(SID),
@@ -361,11 +362,12 @@ def test_waiting_mail_once_per_4h(world):
 def test_dry_run_sends_nothing_and_writes_nothing(world):
     f = Fakes()
     write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    before = (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8")
     recs = ws.run_once(sessions=[session()], now=T0 + timedelta(minutes=40), say=f.say,
                        mail=f.mail, state_dir=world["state"], dry_run=True)
     assert recs[0]["actions"] == ["nudge"]
     assert f.said == [] and f.mailed == []
-    assert not (world["state"] / ws.STATE_FILE).exists()
+    assert (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8") == before
 
 
 def test_terminated_sessions_dropped(world):
@@ -391,3 +393,43 @@ def test_plist_is_minutely_and_not_loaded(tmp_path):
     assert "<string>com.tide.watch-stuck</string>" in xml
     assert "<integer>60</integer>" in xml
     assert "<string>watch-stuck</string>" in xml
+
+
+# --- SOC-247 правки по ревью -------------------------------------------------------
+
+def _perm_row(world, at):
+    d = ws.paths.state_dir(world["proj"])
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ws.PERMS_FILE).write_text(json.dumps(
+        {"ts": _ts(at), "ao_session": "proj-7", "claude_session": SID, "tool": "Bash",
+         "input": "rm -rf build"}) + "\n", encoding="utf-8")
+
+
+def test_p1_no_nudge_into_permission_dialog_mail_at_once(world):
+    f = Fakes()
+    at = T0 + timedelta(seconds=5)
+    write_rows(world["transcript"], [user_text(T0), tool_use(at, inp={"command": "rm -rf build"})],
+               world["proj"])
+    _perm_row(world, at + timedelta(seconds=1))
+    recs = run(world, f, T0 + timedelta(minutes=21), [session()])
+    assert recs[0]["reason"] == "permission"
+    assert f.said == []
+    assert len(f.mailed) == 1 and "не слали" in f.mailed[0]
+    run(world, f, T0 + timedelta(minutes=40), [session()])
+    assert f.said == [] and len(f.mailed) == 1
+
+
+def test_p1_no_nudge_on_ask_user_question(world):
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(
+        T0, name="AskUserQuestion", inp={"questions": []})], world["proj"])
+    run(world, f, T0 + timedelta(minutes=21), [session()])
+    assert f.said == [] and len(f.mailed) == 1
+
+
+@pytest.mark.parametrize("act", ["waiting_input", "blocked"])
+def test_p1_no_nudge_when_ao_waiting_or_blocked(world, act):
+    f = Fakes()
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    run(world, f, T0 + timedelta(minutes=21), [session(activity=act)])
+    assert f.said == [] and len(f.mailed) == 1

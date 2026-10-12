@@ -236,7 +236,7 @@ def classify(rows: Sequence[dict], *, now: datetime, activity: str = "",
             last_at = at if last_at is None or at > last_at else last_at
     out: Dict = {"kind": "empty", "state": STATE_OK, "reason": "", "reason_text": "",
                  "quiet_sec": 0.0, "last_at": _iso(last_at) if last_at else "",
-                 "last_tool": "", "wait_h": 0}
+                 "last_tool": "", "wait_h": 0, "activity": str(activity or "")}
     sig = [r for r in rows if _ends_turn(r) is not None]
     if not sig:
         return out
@@ -390,7 +390,7 @@ def stuck_letter(rec: Dict) -> str:
         "Причина: {0}.".format(rec.get("reason_text") or "?"),
         "Последний инструмент: {0}.".format(rec.get("last_tool") or "—"),
         "Толчок: {0}.".format(rec["nudged_at"] + ", ответа нет" if rec.get("nudged_at")
-                              else "не слали (сессия менеджера — только письмо)"),
+                              else "не слали (сессия менеджера или открытый диалог в окне — только письмо)"),
         "Сессия: {0}; транскрипт: {1}".format(rec.get("session") or "?",
                                               rec.get("transcript") or "?"),
         "Что сделать: перезапустить роль свежей сессией по хендоффу или прервать инструмент.",
@@ -404,6 +404,18 @@ def waiting_letter(rec: Dict) -> str:
             "Если ответ за менеджером или пользователем — ответь письмом; иначе разбуди роль."
             ).format(where, rec["ao_session"], rec.get("reason_text") or "ждёт",
                      rec.get("session") or "?", rec.get("transcript") or "?")
+
+
+# причины, где ответить может только человек в окне: толчок туда печатается в диалог
+DIALOG_REASONS = ("permission", "input")
+DIALOG_ACTIVITY = ("waiting_input", "blocked")
+
+
+def in_dialog(v: Dict) -> bool:
+    """Сессия стоит на диалоге (разрешение / AskUserQuestion / AO waiting_input|blocked):
+    ``ao send`` напечатал бы текст и Enter прямо в селектор — толкать нельзя."""
+    return (v.get("reason") in DIALOG_REASONS
+            or str(v.get("activity") or "") in DIALOG_ACTIVITY)
 
 
 def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
@@ -434,6 +446,13 @@ def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
                     acts.append("mail_stuck")
                 else:
                     rec["state"] = STATE_NUDGED
+        elif in_dialog(v):
+            # диалог в окне: толчка нет (его бы приняли за ответ), письмо менеджеру сразу
+            rec["state"] = STATE_STUCK
+            rec["episode_at"] = _iso(now)
+            rec["nudged_at"] = ""
+            rec["mailed_at"] = _iso(now)
+            acts.append("mail_stuck")
         else:
             rec["state"] = STATE_NUDGED
             rec["episode_at"] = _iso(now)
