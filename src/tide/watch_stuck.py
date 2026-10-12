@@ -72,6 +72,7 @@ _LIMIT_ENV = {
     "wait_repeat": "TIDE_WATCH_WAIT_REPEAT_SEC",
     "workers_max": "TIDE_WATCH_WORKERS_MAX_SEC",
     "overdue": "TIDE_WATCH_OVERDUE_SEC",
+    "keep_missing": "TIDE_WATCH_KEEP_SEC",
 }
 ENV_KEYS = tuple(_LIMIT_ENV.values()) + (OFF_ENV, STATE_DIR_ENV, MAIL_CMD_ENV)
 
@@ -106,6 +107,9 @@ class Limits:
     wait_repeat: int = 4 * 3600
     workers_max: int = 3 * 3600
     overdue: int = 5 * 60      # запас после срока курсора / eta до толчка
+    # сессия выпала из выдачи ``ao session ls`` (сбой/усечённый ответ): запись живёт в state
+    # столько секунд, чтобы эпизод не стал «новым» и не дал шквал толчков
+    keep_missing: int = 3600
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "Limits":
@@ -245,6 +249,8 @@ def _perm_after(perms: Sequence[dict], since: Optional[datetime], ao: str, sid: 
     return None
 
 
+_OTHER_BALL_RE = re.compile(r"мяч\s+у\s+(?:менеджер\w*|main\b|helper\w*|помощник\w*)",
+                           re.IGNORECASE)
 _CURSOR_DUE_RE = re.compile(r"(?<!\w)к\s*(\d{1,2}):(\d{2})(?![\d:])", re.IGNORECASE)
 
 
@@ -256,7 +262,10 @@ def cursor_deadline(cursor: str, anchor: Optional[datetime],
     from . import ball
 
     text = " ".join(ball._unquoted(cursor or "").split())
-    if ball._USER_BALL_RE.search(text) or ball._REST_RE.search(text):
+    # срок — только обещание самой сессии; если курсор про чужой ход (жду…, мяч у
+    # пользователя/менеджера), просрочка не её сдача — и eta тут срок ожидания, не сдачи
+    if (ball._USER_BALL_RE.search(text) or ball._REST_RE.search(text)
+            or ball._WAIT_RE.search(text) or _OTHER_BALL_RE.search(text)):
         return None
     marks = _CURSOR_DUE_RE.findall(text)
     if marks and anchor is not None:
@@ -722,14 +731,32 @@ def _event(sdir: Path, ev: Dict) -> None:
         fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
 
+def _carry_missing(prev_all: Dict, new_all: Dict, rows_in: Sequence[dict], now: datetime,
+                   lim: Limits) -> None:
+    """Сессии из прошлого state, которых нет в текущей выдаче AO, держим в state
+    :attr:`Limits.keep_missing` с.: сбой/усечённый ``ao session ls`` не должен стирать
+    эпизод (иначе следующий проход пошлёт всё заново). Сессии с ``isTerminated`` в
+    выдаче — не пропавшие, их записи уходят сразу."""
+    present = {str(r.get("id")) for r in rows_in if isinstance(r, dict)}
+    for h, rec in prev_all.items():
+        if h in present or h in new_all or not isinstance(rec, dict):
+            continue
+        seen = _when(rec.get("updated"))
+        if seen is not None and (now - seen).total_seconds() <= lim.keep_missing:
+            new_all[h] = rec
+
+
 def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetime] = None,
              say: Optional[Callable[[str, str], bool]] = None,
              mail: Optional[Callable[[str], bool]] = None,
              state_dir: Optional[Path] = None, dry_run: bool = False,
              env: Optional[Dict[str, str]] = None,
-             locator: Callable[[dict], Dict] = None) -> List[Dict]:
+             locator: Callable[[dict], Dict] = None,
+             assume_state: bool = False) -> List[Dict]:
     """Один проход по живым AO-сессиям → записи (с ``actions``). Идемпотентен:
-    повторный проход без новых событий ничего не шлёт."""
+    повторный проход без новых событий ничего не шлёт. Пустая выдача AO / сбой ``ao`` —
+    проход ничего не делает и state не трогает. *assume_state* (только с *dry_run*) —
+    решения так, как будто state уже есть, а не засев."""
     e = os.environ if env is None else env
     if (e.get(OFF_ENV) or "").strip().lower() in ("off", "0", "false", "no"):
         return []
@@ -752,11 +779,15 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
             return []  # другой проход ещё идёт
     try:
         saved = False
+        armed = False  # state пишем только после того, как список сессий получен и непуст
         prev_all: Dict[str, Dict] = {}
         new_all: Dict[str, Dict] = {}
         rows_in = list(ao_sessions() if sessions is None else sessions)
+        if not rows_in:
+            return []  # AO вернул пусто или недоступен: ничего не решаем, state не трогаем
+        armed = True
         loaded = _load(sdir)
-        seeding = loaded is None  # нет истории — не слать накопленное разом (RunAtLoad)
+        seeding = loaded is None and not (assume_state and dry_run)  # нет истории — не слать накопленное разом
         prev_all = loaded or {}
         out: List[Dict] = []
         for s in rows_in:
@@ -837,12 +868,13 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                 continue
             if not dry_run and rec.get("actions"):
                 _save(sdir, {**prev_all, **new_all}, now)  # действие сделано — запомнить сразу
+        _carry_missing(prev_all, new_all, rows_in, now, lim)
         if not dry_run:
             _save(sdir, new_all, now)
             saved = True
         return out
     finally:
-        if not dry_run and not saved:
+        if armed and not dry_run and not saved:
             try:
                 _save(sdir, {**prev_all, **new_all}, now)
             except OSError:
@@ -908,15 +940,25 @@ def cmd_watch_stuck(args) -> int:
         sys.stdout.write(plist_text(home))
         return 0
     try:
-        recs = run_once(dry_run=bool(getattr(args, "dry_run", False)))
+        assume = bool(getattr(args, "assume_state", False))
+        dry = bool(getattr(args, "dry_run", False)) or assume
+        recs = run_once(dry_run=dry, assume_state=assume, now=getattr(args, "now", None))
     except Exception as exc:  # noqa: BLE001 — таймер не падает
         print("{0} watch-stuck: ошибка: {1}".format(
             datetime.now().isoformat(timespec="seconds"), exc), flush=True)
         return 0
+    seeded = dry and any(r.get("seeded") for r in recs)
+    note = ("засев: state ещё нет, это первый запуск — реальный проход ничего не пошлёт, "
+            "решений не будет; покажи решения как при существующем state: "
+            "tide watch-stuck --dry-run --assume-state")
     if getattr(args, "json", False):
         print(json.dumps(recs, ensure_ascii=False, indent=1))
+        if seeded:
+            print(note, file=sys.stderr)
     else:
         print(line(recs), flush=True)
+        if seeded:
+            print(note, flush=True)
     return 0
 
 
@@ -926,6 +968,8 @@ def register(subparsers) -> None:
         help="one pass of the stuck-agent watch over live AO sessions (SOC-247)")
     p.add_argument("--dry-run", action="store_true",
                    help="classify and print, send nothing, write no state")
+    p.add_argument("--assume-state", action="store_true",
+                   help="dry run showing decisions as if the state file existed (no seeding)")
     p.add_argument("--json", action="store_true", help="print records as JSON")
     p.add_argument("--print-plist", action="store_true",
                    help="print the launchd agent (com.tide.watch-stuck) — not loaded")

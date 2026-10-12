@@ -755,3 +755,122 @@ def test_is_manager_by_whois_on_rotation(monkeypatch):
     assert ws.is_manager("ctrl-44") is True
     assert ws.is_manager("ctrl-44-b") is True
     assert ws.is_manager("proj-7") is False
+
+
+# --- п.8–10 (проверка verify.md) -----------------------------------------------------
+
+def _stuck_world(world):
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0)], world["proj"])
+    return [session()]
+
+
+def test_p8_empty_session_list_leaves_state_untouched(world):
+    f = Fakes()
+    s = _stuck_world(world)
+    run(world, f, T0 + timedelta(minutes=21), s)
+    run(world, f, T0 + timedelta(minutes=32), s)
+    assert (len(f.said), len(f.mailed)) == (1, 1)
+    before = (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8")
+    assert run(world, f, T0 + timedelta(minutes=40), []) == []
+    assert (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8") == before
+    run(world, f, T0 + timedelta(minutes=41), s)
+    assert (len(f.said), len(f.mailed)) == (1, 1)  # нет шквала
+
+
+def test_p8_ao_failure_leaves_state_untouched(world, monkeypatch):
+    f = Fakes()
+    s = _stuck_world(world)
+    run(world, f, T0 + timedelta(minutes=21), s)
+    before = (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8")
+
+    def boom():
+        raise TimeoutError("ao session ls: timeout")
+
+    monkeypatch.setattr(ws, "ao_sessions", boom)
+    with pytest.raises(TimeoutError):
+        ws.run_once(now=T0 + timedelta(minutes=30), say=f.say, mail=f.mail,
+                    state_dir=world["state"])
+    assert (world["state"] / ws.STATE_FILE).read_text(encoding="utf-8") == before
+
+
+def test_p8_session_missing_one_pass_is_kept_then_expires(world):
+    f = Fakes()
+    s = _stuck_world(world)
+    other = session(sid="proj-8", sessid="zzz")
+    write_rows(world["transcript"].with_name("zzz.jsonl"), ended_rows(T0), world["proj"])
+    run(world, f, T0 + timedelta(minutes=21), s + [other])
+    run(world, f, T0 + timedelta(minutes=22), s)  # proj-8 выпал из выдачи
+    snap = json.loads((world["state"] / ws.STATE_FILE).read_text(encoding="utf-8"))
+    assert "proj-8" in snap["sessions"]
+    run(world, f, T0 + timedelta(minutes=22 + 61), s)
+    snap = json.loads((world["state"] / ws.STATE_FILE).read_text(encoding="utf-8"))
+    assert "proj-8" not in snap["sessions"]
+
+
+def test_p8_flaky_list_missing_session_does_not_restart_episode(world):
+    f = Fakes()
+    s = _stuck_world(world)
+    run(world, f, T0 + timedelta(minutes=21), s)
+    other = session(sid="proj-8", sessid="zzz")
+    write_rows(world["transcript"].with_name("zzz.jsonl"), ended_rows(T0), world["proj"])
+    run(world, f, T0 + timedelta(minutes=22), [other])  # proj-7 пропал из выдачи
+    run(world, f, T0 + timedelta(minutes=23), s)
+    assert len(f.said) == 1
+
+
+NOW2 = T_END + timedelta(hours=2)  # < 4 ч: окно «ждёт» ещё не включилось
+
+
+@pytest.mark.parametrize("cur", [
+    "жду ответ менеджера к 09:20",
+    "мяч у меня: SOC-247, жду итога дел Гриши к 09:20",
+    "мяч у менеджера: письмо 183 к 09:20",
+    "мяч у пользователя: вопрос TG 4600 к 09:20",
+    "ждёт ответ к 09:20",
+])
+def test_p9_waiting_cursor_with_deadline_is_not_overdue(set_tz, cur):
+    set_tz("America/Sao_Paulo")
+    v = ws.classify(ended_rows(T_END), now=NOW2, activity="idle", limits=LIMITS, cursor=cur)
+    assert v["state"] != "overdue"
+    eta = datetime(2026, 10, 12, 12, 20, tzinfo=timezone.utc)
+    v = ws.classify(ended_rows(T_END), now=NOW2, activity="idle", limits=LIMITS, cursor=cur,
+                    eta=eta)
+    assert v["state"] != "overdue"
+
+
+@pytest.mark.parametrize("cur", ["мяч у меня: SOC-247, сдам обход к 09:20",
+                                 "выкачу релиз к 09:20", "обход к 09:20"])
+def test_p9_own_promise_still_overdue(set_tz, cur):
+    set_tz("America/Sao_Paulo")
+    v = ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS, cursor=cur)
+    assert v["state"] == "overdue"
+
+
+def test_p10_dry_run_without_state_says_seeding(world, monkeypatch, capsys):
+    import argparse, shutil
+    shutil.rmtree(world["state"])
+    s = _stuck_world(world)
+    monkeypatch.setenv("TIDE_WATCH_STATE_DIR", str(world["state"]))
+    monkeypatch.setattr(ws, "ao_sessions", lambda: s)
+    monkeypatch.setattr(ws, "_now", lambda: T0 + timedelta(minutes=40), raising=False)
+    ns = argparse.Namespace(dry_run=True, json=False, print_plist=False, assume_state=False,
+                            now=T0 + timedelta(minutes=40))
+    ws.cmd_watch_stuck(ns)
+    out = capsys.readouterr().out
+    assert "засев" in out and "решений не будет" in out and "--assume-state" in out
+    assert not (world["state"] / ws.STATE_FILE).exists()
+
+
+def test_p10_assume_state_shows_decisions_as_if_state_exists(world, monkeypatch, capsys):
+    import argparse, shutil
+    shutil.rmtree(world["state"])
+    s = _stuck_world(world)
+    monkeypatch.setenv("TIDE_WATCH_STATE_DIR", str(world["state"]))
+    monkeypatch.setattr(ws, "ao_sessions", lambda: s)
+    ns = argparse.Namespace(dry_run=True, json=True, print_plist=False, assume_state=True,
+                            now=T0 + timedelta(minutes=40))
+    ws.cmd_watch_stuck(ns)
+    cap = capsys.readouterr()
+    recs = json.loads(cap.out)
+    assert recs[0]["actions"] == ["nudge"] and not recs[0].get("seeded")
+    assert not (world["state"] / ws.STATE_FILE).exists()
