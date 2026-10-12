@@ -169,6 +169,14 @@ def register_hook_group(subparsers) -> None:
     from .ask_gate import cmd_ask_gate  # lazy: keep hook wiring import-light
     ag.set_defaults(func=cmd_ask_gate, _cmd="hook ask-gate")
 
+    sb = hsub.add_parser(
+        "subagent-budget",
+        help="PreToolUse(Agent): soft warning when subagent spawns exceed the ceilings "
+             "(never blocks; SOC-237)",
+    )
+    from .subagent_budget import cmd_subagent_budget  # lazy: keep hook wiring import-light
+    sb.set_defaults(func=cmd_subagent_budget, _cmd="hook subagent-budget")
+
     tg = hsub.add_parser(
         "truth-gate",
         help="PreToolUse/PostToolUse: decisions-tg.jsonl / facts.md / decisions-skip.jsonl "
