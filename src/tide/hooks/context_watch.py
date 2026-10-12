@@ -155,7 +155,8 @@ def handoff_steps(entry: Path) -> str:
     готовый, а не «<что сделал>»."""
     from ..launcher import autohandoff
 
-    return ("  1. пульс ПЕРЕДАЧА — заполни каждую метку (нечего — «нет»):\n"
+    return (autohandoff.report_step(entry) +
+            "  1. пульс ПЕРЕДАЧА — заполни каждую метку (нечего — «нет»):\n"
             "     {0}\n"
             "{1}\n"
             "  3. {2}").format(autohandoff.pass_template(entry), layers_step(entry),

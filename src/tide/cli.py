@@ -547,6 +547,9 @@ def _register_handoffs(sub) -> None:
     register_draft(hsub)
     register_audit(hsub)  # SOC-101 п.3: what a seed lacks, section by section
     register_offer_spawn(hsub)
+    from .launcher.handoff_report import register_report
+
+    register_report(hsub)  # SOC-233: отчёт лида в Telegram
     register_autoraise(hsub)  # скрытая: автоподъём вставшей нити (signal_stall)
     from .launcher.reception_watch import register as register_reception_watch
 

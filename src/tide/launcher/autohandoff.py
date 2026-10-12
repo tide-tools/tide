@@ -628,6 +628,18 @@ def pass_template(entry: Path) -> str:
             .format(session_ref(entry), PASS_TEMPLATE_NOTE))
 
 
+def report_step(entry: Path) -> str:
+    """SOC-233: шаг 0 для лида — отчёт в Telegram; не лиду — пустая строка."""
+    from . import handoff_report
+
+    if not handoff_report.is_lead(entry):
+        return ""
+    return ("  0. отчёт Грише в Telegram — первым шагом, без него передача не закроется "
+            "(3–8 строк по-русски, без id сессий: сделано с пруфом · в работе и у кого · "
+            "ждёт решения Гриши · SOC-N):\n"
+            "     {0}\n").format(handoff_report.REPORT_FORMAT)
+
+
 def pass_fresh_minutes() -> int:
     raw = (os.environ.get(PASS_FRESH_ENV) or "").strip()
     try:
@@ -731,6 +743,10 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
                 "handoff --auto --strict: нет пульса ПЕРЕДАЧА за последние {0} мин — "
                 "передача отменена, сначала пульс по шаблону выше".format(
                     pass_fresh_minutes()))
+    if not dry_run:
+        from . import handoff_report
+
+        handoff_report.require_report(entry)  # SOC-233: лид без отчёта в TG не передаёт
     thread = thread_of(entry)
     decision = decide_for(entry)
     seed = build_auto_seed(entry)

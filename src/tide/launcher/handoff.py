@@ -1089,6 +1089,11 @@ def cmd_handoff(args) -> int:
     if getattr(args, "auto", False):
         return cmd_handoff_auto(args)
     root = paths.require_tide_root()
+    if (not getattr(args, "dry_run", False)
+            and (getattr(args, "mode", None) or FORK_CONTINUE) != FORK_CLOSE):
+        from . import handoff_report
+
+        handoff_report.require_report(handoff_report.current_entry(root))  # SOC-233
     warning = layers_warning(root, args.arc)
     if warning:
         print(warning, file=sys.stderr)  # предупреждение, не блок (SOC-101)
@@ -1133,6 +1138,12 @@ def cmd_handoffs_offer(args) -> int:
     """
     from .. import handoff_queue
 
+    if (getattr(args, "mode", None) or "") != FORK_CLOSE:
+        from . import handoff_report
+
+        root = paths.find_tide_root()
+        if root is not None:
+            handoff_report.require_report(handoff_report.current_entry(root))  # SOC-233
     path = handoff_queue.offer_from_args(args)
     if (getattr(args, "mode", None) or "") == FORK_CLOSE or not _spawn_wanted(args):
         return 0
