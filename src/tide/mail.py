@@ -12,7 +12,9 @@
   terminated) — пинг всем, в пинге строка «в нити N живых сессий — письмо
   общее»; адрес можно уточнить сессией: ``<проект>/<нить>@<ao-id | techlead-13>``
   — письмо в тот же ящик с ``to-session:`` в шапке, пинг только ей, квитанция
-  и повторы — от неё (SOC-143);
+  и повторы — от неё (SOC-143); сессия уже отдала нить и приём подтверждён —
+  письмо, пинг и квитанция преемника по цепочке хендоффов (:func:`succession`,
+  SOC-245), в шапке ``redirected-from:``;
 * квитанция: ``tide mail read <нить> NNN`` печатает письмо и пишет ``ack``
   (кто, когда) в журнал ``inbox/log.jsonl``; ``tide mail ls <нить>`` —
   непрочитанное / прочитанное;
@@ -179,6 +181,7 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
     if not box.is_dir():
         return []
     evs = events(tdir)
+    succ: Dict[str, List[Dict[str, str]]] = {}
     out: List[Dict[str, object]] = []
     for p in sorted(box.iterdir()):
         m = _LETTER.match(p.name)
@@ -190,14 +193,23 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
         acks = [e for e in mine if e.get("ev") == "ack"]
         to_session = str(sent.get("to_session") or "")
         to_ao = str(sent.get("to_ao") or "")
+        acked = bool(acks)
+        if to_session:
+            # SOC-143: письмо сессии — прочитано, когда квитанцию дал адресат;
+            # SOC-245: или его преемник по принятому хендоффу
+            acked = any(_ack_by_addressee(str(a.get("by") or ""), to_session, to_ao)
+                        for a in acks)
+            if not acked and acks:
+                if to_session not in succ:
+                    succ[to_session] = succession(tdir, to_session)
+                acked = any(_ack_by_addressee(str(a.get("by") or ""), s["name"], s["ao"])
+                            for s in succ[to_session] for a in acks)
         out.append({
             "num": num, "path": p, "sender": str(sent.get("from") or m.group(2)),
             "sent": str(sent.get("at") or ""), "bytes": int(sent.get("bytes") or 0),
             "first": str(sent.get("first") or ""),
             "acks": acks,
-            # SOC-143: письмо сессии — прочитано, когда квитанцию дал адресат
-            "acked": any(_ack_by_addressee(str(a.get("by") or ""), to_session, to_ao)
-                         for a in acks) if to_session else bool(acks),
+            "acked": acked,
             "to_session": to_session, "to_ao": to_ao,
             "pings": [e for e in mine if e.get("ev") == "ping"],
             "alerted": any(e.get("ev") == "alert" for e in mine),
@@ -336,11 +348,23 @@ def _ao_terminated() -> set:
         return set()
 
 
+def _ao_of(home: Optional[Path], passport: Path, sid: str) -> str:
+    """AO-id сессии: по реестру claude-id, иначе хвост её названия («… · proj-36»)."""
+    from . import fields
+    from .arc import holder
+
+    ao = holder.ao_handle_for(home, sid) if sid else ""
+    if not ao:
+        title = (fields.read_field(passport, "title") or "").strip()
+        m = re.search(r" · (\S+-\d+)$", title)
+        ao = m.group(1) if m else ""
+    return ao
+
+
 def thread_sessions(tdir: Path) -> List[Dict[str, object]]:
     """Открытые, не отпущенные рукой сессии нити →
     ``{entry, name, sid, ao, handed}`` (``handed`` — уже передала/закончила)."""
     from . import fields
-    from .arc import holder
 
     sub = Path(tdir) / paths.ARCS_DIRNAME
     if not sub.is_dir():
@@ -354,11 +378,7 @@ def thread_sessions(tdir: Path) -> List[Dict[str, object]]:
         if slug.is_closed_entry(entry.name) or (fields.read_field(pp, "dismissed") or "").strip():
             continue
         sid = (fields.read_field(pp, "claude-session") or "").strip()
-        ao = holder.ao_handle_for(home, sid) if sid else ""
-        if not ao:
-            title = (fields.read_field(pp, "title") or "").strip()
-            m = re.search(r" · (\S+-\d+)$", title)
-            ao = m.group(1) if m else ""
+        ao = _ao_of(home, pp, sid)
         handed = any((fields.read_field(pp, f) or "").strip()
                      for f in ("handed-off", "ended"))
         if not handed and sid and home is not None:
@@ -400,6 +420,49 @@ def resolve_session(tdir: Path, want: str) -> Dict[str, object]:
         slug.entry_slug(Path(tdir).name), want))
 
 
+# --- преемник отдавшей сессии (SOC-245) ------------------------------------------
+#
+# После ПРИНЯТОГО хендоффа (оффер ``continue`` взят — :func:`tide.handoff_queue.is_dissolved`)
+# нить ведёт преемник. Письмо старой по ``@сессия`` уходит ему, повтор пингует его,
+# его квитанция — квитанция адресата: иначе пинги бьют в мёртвую AO-сессию, письмо
+# висит «НЕ ПРОЧИТАНО адресатом» и тревожит менеджера (живой случай 12.10, письма
+# 126 и 135 нити techlead). Оффер повешен, но не принят — старая ещё голова, ей.
+
+SUCCESSION_MAX = 50
+
+
+def succession(tdir: Path, name: str) -> List[Dict[str, str]]:
+    """Преемники сессии *name* (имя арки) нити по цепочке принятых хендоффов — от
+    ближнего к нынешнему: ``[{name, ao}]``. [] — не передавала или приём не
+    подтверждён. Цепочка только внутри нити: преемник в другой нити её обрывает."""
+    from . import fields
+    from . import handoff_queue as hq
+
+    home = _home()
+    if home is None or not name:
+        return []
+    sub = (Path(tdir) / paths.ARCS_DIRNAME).resolve()
+    sid = (fields.read_field(sub / name / "arc.md", "claude-session") or "").strip()
+    out: List[Dict[str, str]] = []
+    seen = set()
+    while sid and sid not in seen and len(out) < SUCCESSION_MAX:
+        seen.add(sid)
+        try:
+            rec = hq.is_dissolved(home, sid)
+        except Exception:  # noqa: BLE001 — очередь не читается: адресат как есть
+            rec = None
+        seed = str((rec or {}).get("seed") or "-")
+        new_sid = str((rec or {}).get("taken_by") or "").strip()
+        if rec is None or seed == "-" or not new_sid or new_sid == "-":
+            break
+        nxt = Path(seed).parent.parent
+        if nxt.parent.resolve() != sub or not (nxt / "arc.md").is_file():
+            break
+        out.append({"name": nxt.name, "ao": _ao_of(home, nxt / "arc.md", new_sid)})
+        sid = new_sid
+    return out
+
+
 def target(ref: str, root: Optional[Path] = None) -> Tuple[Path, str]:
     """``<нить>`` | ``<проект>/<нить>`` [``@<сессия>``] → (каталог нити, сессия или "").
 
@@ -424,9 +487,15 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
 
     rec = letter(tdir, num)
     note = ""
+    moved = ""
     if rec.get("to_session"):
         to_ao = str(rec.get("to_ao") or "")
-        if not to_ao:
+        chain = succession(tdir, str(rec["to_session"]))
+        if chain:
+            # SOC-245: адресат отдал нить — пинг преемнику, не мёртвой старой
+            moved = str(rec["to_session"])
+            to_ao = chain[-1]["ao"] or _holder_ao(tdir)
+        elif not to_ao:
             try:
                 to_ao = str(resolve_session(tdir, str(rec["to_session"]))["ao"] or "")
             except MailError:
@@ -464,6 +533,8 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
     if len(targets) > 1:
         ev["to_all"] = targets
         ev["codes"] = codes
+    if moved:
+        ev["redirected_from"] = moved
     _append(tdir, ev)
     return ev
 
@@ -720,6 +791,12 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
         raise MailError("mail: пустое письмо")
     tdir, want = target(ref, root)
     to_row = resolve_session(tdir, want) if want else None
+    moved: Optional[Dict[str, object]] = None
+    if to_row is not None:
+        chain = succession(tdir, str(to_row["name"]))
+        if chain:
+            # SOC-245: адресат уже отдал нить (приём подтверждён) — письмо преемнику
+            moved, to_row = to_row, dict(chain[-1])
     who = (sender or "").strip() or _who_am_i()
     body = text if text.endswith("\n") else text + "\n"
     raw = body.encode("utf-8")
@@ -728,6 +805,9 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
     if to_row is not None:
         to_line = "to-session: {0}{1}\n".format(
             to_row["name"], " ({0})".format(to_row["ao"]) if to_row["ao"] else "")
+    if moved is not None:
+        to_line += "redirected-from: {0}{1} — передала нить\n".format(
+            moved["name"], " ({0})".format(moved["ao"]) if moved["ao"] else "")
     head = ("---\nfrom: {0}\nto: {1}\n{5}sent: {2}\nbytes: {3}\nsha256: {4}\n---\n\n"
             ).format(who, address_of(tdir), at, len(raw), hashlib.sha256(raw).hexdigest(),
                      to_line)
@@ -743,11 +823,16 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
         sent_ev["to_session"] = str(to_row["name"])
         if to_row["ao"]:
             sent_ev["to_ao"] = str(to_row["ao"])
+    if moved is not None:
+        sent_ev["redirected_from"] = str(moved["name"])
     if _alert_after(alert_after_min):
         sent_ev["alert_after"] = float(alert_after_min)  # type: ignore[arg-type]
     _append(tdir, sent_ev)
     out: Dict[str, object] = {"num": num, "path": str(path), "bytes": len(raw), "ping": None,
                               "watcher": None}
+    if moved is not None:
+        out["redirected_from"] = str(moved["name"])
+        out["to_session"] = str(to_row["name"])  # type: ignore[index]
     if do_ping:
         out["ping"] = ping(tdir, num)
     if watch is None:
@@ -1067,6 +1152,9 @@ def _cmd_send(args) -> int:
             how = "пинг не ушёл: у нити нет ведущей AO-сессии (ожидальщик повторит)"
     else:
         how = "без пинга"
+    if out.get("redirected_from"):
+        how += " · {0} передала нить — письмо преемнику {1}".format(
+            out["redirected_from"], out["to_session"])
     print("почта {0} → {1} ({2} Б) · {3}".format(out["num"], out["path"], out["bytes"], how))
     return 0
 
@@ -1091,9 +1179,12 @@ def _cmd_ls(args) -> int:
             last = r["acks"][-1]
             state = "прочитано {0} {1}".format(last.get("by"), last.get("at"))
         else:
+            who = str(r["to_session"] or "")
+            chain = succession(tdir, who) if who else []
+            if chain:  # SOC-245: адресат отдал нить — ждём квитанции преемника
+                who = "{0} (нить от {1})".format(chain[-1]["name"], who)
             state = "НЕ ПРОЧИТАНО{0} · пингов {1}".format(
-                " адресатом {0}".format(r["to_session"]) if r["to_session"] else "",
-                len(r["pings"]))
+                " адресатом {0}".format(who) if who else "", len(r["pings"]))
             if r["alerted"]:
                 state += " · тревога менеджеру"
         if r.get("closed"):
