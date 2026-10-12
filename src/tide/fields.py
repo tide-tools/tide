@@ -84,6 +84,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "ctx-suggest",    # SOC-237: manager hint waiting for the next prompt ("<k> <ISO> <tokens>")
         "ctx-ping",       # highest context threshold (150|200|300 k) already pinged; 150w — soft, waiting for a calm moment
         "cold-ping",      # SOC-237: wake after idle already pinged ("<wake ISO> <idle min> <tokens>")
+        "cold-wait",      # SOC-245: wake after idle skipped — open ball wait ("<wake ISO> <idle min> <tokens> жду до HH:MM")
         "dialog-log",     # thread: path to the external dialog log the auto-seed tails
         "handed-off",     # this session already handed its thread over (the watch stands down)
         "cycle",          # SOC-234: id активного автономного цикла (c-…), переходит при continue

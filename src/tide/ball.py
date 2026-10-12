@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Одна строка правила — в сиды (сид запуска и шапка хендоффа). Полный текст — в
 # prompts/thread-rules.md, строка «мяч:».
@@ -77,6 +77,21 @@ def violation(cursor: str, *, eta: str = "") -> Optional[str]:
         has_deadline = bool(_DEADLINE_RE.search(text) or (eta or "").strip())
         return None if (has_task and has_deadline) else MINE_INCOMPLETE
     return WAIT
+
+
+def wait_deadlines(cursor: str, *, eta: str = "") -> List[str]:
+    """Сроки законного ожидания «мяч у меня: SOC-N, жду … к HH:MM» (SOC-245): все HH:MM
+    курсора, а без них — поле *eta* (ISO). [] — курсор не ожидание мяча у меня или
+    нарушает правило. Время не разбираем: что значит HH:MM, решает вызывающий."""
+    if violation(cursor, eta=eta) is not None:
+        return []
+    text = " ".join(_unquoted(cursor or "").split())
+    if not (_MINE_RE.search(text) and _WAIT_RE.search(text)):
+        return []
+    marks = _DEADLINE_RE.findall(text)
+    if marks:
+        return marks
+    return [eta.strip()] if (eta or "").strip() else []
 
 
 _WHY = {

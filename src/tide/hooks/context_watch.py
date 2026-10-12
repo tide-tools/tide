@@ -43,7 +43,11 @@
 пороге (:func:`cold_text`); менеджеру — только предложение (:func:`cold_suggest_text`).
 Простой — по транскрипту (:func:`idle_before_turn`): самый длинный разрыв между записями
 текущего хода, считая от конца прошлого (строка ``stop_hook_summary``). Одно пробуждение —
-один пинг: штамп ``cold-ping: <время пробуждения> <мин> <токены>``.
+один пинг: штамп ``cold-ping: <время пробуждения> <мин> <токены>``. Сессия, которая
+законно ждала по правилу мяча («мяч у меня: SOC-N, жду … к HH:MM», :func:`wait_until`),
+просыпается по плану: пока срок не прошёл или прошёл меньше
+``$TIDE_CTX_COLD_WAIT_GRACE_MIN`` минут (30), передачу не требуем — штамп
+``cold-wait: <время пробуждения> <мин> <токены> жду до HH:MM`` (SOC-245).
 
 Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
 здесь, env: ``$TIDE_CTX_SOFT`` / ``$TIDE_CTX_HARD`` / ``$TIDE_CTX_ALARM``
@@ -61,11 +65,11 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .. import fields, handoff_contract, offload, paths, slug
+from .. import ball, fields, handoff_contract, offload, paths, slug
 
 # Мягкий порог = порог передачи контракта сида: с него — передача в первый спокойный
 # момент; жёсткий — потолок, передача обязательна (слово Гриши 12.10, SOC-237).
@@ -88,6 +92,11 @@ COLD_TOKENS_ENV = "TIDE_CTX_COLD_TOKENS"
 COLD_TOKENS = 60_000
 COLD_PING_FIELD = "cold-ping"
 COLD_TAIL_BYTES = 16 * 1024 * 1024  # хвост транскрипта, где ищем текущий ход
+# SOC-245: законное ожидание по правилу мяча («мяч у меня: SOC-N, жду … к HH:MM») —
+# пробуждение плановое, если срок не прошёл или прошёл меньше чем на столько минут
+COLD_WAIT_GRACE_ENV = "TIDE_CTX_COLD_WAIT_GRACE_MIN"
+COLD_WAIT_GRACE_MIN = 30
+COLD_WAIT_FIELD = "cold-wait"
 
 AUTO_CMD = "tide handoff continue --auto"
 CTX_PING_FIELD = "ctx-ping"
@@ -654,6 +663,46 @@ def idle_before_turn(path: Path) -> Optional[Tuple[float, datetime]]:
     return best
 
 
+def _local(at_utc: datetime) -> datetime:
+    """Наивное UTC (время транскрипта) → наивное местное (часы курсора)."""
+    return at_utc.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+
+
+def resolve_hhmm(mark: str, asleep: datetime) -> Optional[datetime]:
+    """«HH:MM» курсора → момент (местное, наивное), ближайший к *asleep* — когда сессия
+    уснула, курсор уже стоял: «к 00:10» в 23:50 — завтра, «к 07:00» в 07:30 — сегодня
+    (просрочен)."""
+    try:
+        hh, mm = (int(x) for x in mark.split(":", 1))
+        base = asleep.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except ValueError:
+        return None
+    return min((base + timedelta(days=d) for d in (-1, 0, 1)),
+               key=lambda at: abs((at - asleep).total_seconds()))
+
+
+def wait_until(entry: Path, asleep: datetime) -> Optional[datetime]:
+    """Срок открытого ожидания по правилу мяча (местное, наивное) — самый поздний из
+    курсора (:func:`tide.ball.wait_deadlines`); None — сессия не ждёт законно."""
+    pp = entry / "arc.md"
+    marks = ball.wait_deadlines(ball.cursor_of(pp),
+                                eta=(fields.read_field(pp, "eta") or "").strip())
+    out = []
+    for mark in marks:
+        if len(mark) <= 5:
+            at = resolve_hhmm(mark, asleep)
+        else:
+            try:
+                at = datetime.fromisoformat(mark.replace("Z", "+00:00"))
+            except ValueError:
+                at = None
+            if at is not None and at.tzinfo is not None:
+                at = at.astimezone().replace(tzinfo=None)
+        if at is not None:
+            out.append(at)
+    return max(out) if out else None
+
+
 def cold_text(entry: Path, tokens: int, idle_min: float) -> str:
     hours, mins = divmod(int(idle_min), 60)
     idle = "{0} ч {1} мин".format(hours, mins) if hours else "{0} мин".format(mins)
@@ -754,6 +803,17 @@ def _cold_reason(root: Path, entry: Path, payload: dict, session: str, tokens: i
     pp = entry / "arc.md"
     woke_iso = woke.isoformat(timespec="seconds")
     if (fields.read_field(pp, COLD_PING_FIELD) or "").strip().split(" ", 1)[0] == woke_iso:
+        return None
+    try:
+        until = wait_until(entry, _local(woke - timedelta(minutes=idle_min)))
+    except Exception:  # noqa: BLE001 — курсор не прочитан: как раньше
+        until = None
+    if until is not None and _local(woke) <= until + timedelta(
+            minutes=_env_int(COLD_WAIT_GRACE_ENV, COLD_WAIT_GRACE_MIN)):
+        # SOC-245: сессия законно ждала к сроку — пробуждение плановое, не передаём;
+        # след решения — штамп в паспорте
+        fields.set_field(pp, COLD_WAIT_FIELD, "{0} {1} {2} жду до {3}".format(
+            woke_iso, int(idle_min), tokens, until.strftime("%H:%M")))
         return None
     fields.set_field(pp, COLD_PING_FIELD, "{0} {1} {2}".format(
         woke_iso, int(idle_min), tokens))
