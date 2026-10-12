@@ -68,7 +68,7 @@ def test_hook_commands_pass_the_role_gate(world):
     r = cw.watch_reason(world["proj"], _payload(world, 300_000))
     cmds = [ln.strip().lstrip("0123456789. ") for ln in r.splitlines()
             if ln.strip().lstrip("0123456789. ").startswith("tide ")]
-    assert len(cmds) == 3
+    assert len(cmds) == 4  # + tide work-report (SOC-233)
     for c in cmds:
         assert role_gate._bash_refusal(c) is None, c
 
