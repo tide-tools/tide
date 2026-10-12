@@ -984,6 +984,61 @@ def ao_send_hint(tool_name: str, tool_input: dict) -> Optional[str]:
     return escalate_rules.ao_send_hint(chars)
 
 
+# --- SOC-232: менеджеру в окно не пишем ------------------------------------------
+
+MANAGER_WINDOW_REFUSAL = (
+    "tide · менеджеру в окно не пишем (SOC-232): tide mail send management/main "
+    "\"…\" или комментарий в SOC-N через linear-as-manager")
+
+
+def ao_send_targets(command: str) -> list:
+    """Адресаты всех ``ao send`` в *command*: ``--session X`` / ``--session=X``
+    (у ``ao send`` позиционных адресатов нет — только флаги). Только читаем."""
+    out = []
+    for seg in _split_segments((command or "").strip()) or []:
+        try:
+            parts = shlex.split(seg)
+        except ValueError:
+            continue
+        if len(parts) < 2 or parts[0] != "ao" or parts[1] != "send":
+            continue
+        rest = parts[2:]
+        for idx, tok in enumerate(rest):
+            if tok == "--session" and idx + 1 < len(rest):
+                out.append(rest[idx + 1])
+            elif tok.startswith("--session="):
+                out.append(tok.split("=", 1)[1])
+    return out
+
+
+def manager_window_refusal(tool_name: str, tool_input: dict) -> Optional[str]:
+    """Отказ для ``ao send --session <менеджер>`` (Bash) и SendMessage менеджеру, или None.
+
+    Для ВСЕХ ролей и сабагентов. Любой сбой — None: гейт не ломается."""
+    try:
+        if not isinstance(tool_input, dict):
+            return None
+        from ..manager_guard import is_manager_self, is_manager_session
+
+        if is_manager_self():
+            return None
+        if tool_name == "SendMessage":
+            to = tool_input.get("to", "")
+            if isinstance(to, str) and is_manager_session(to):
+                return MANAGER_WINDOW_REFUSAL
+            return None
+        if tool_name != "Bash":
+            return None
+        command = tool_input.get("command", "")
+        if not isinstance(command, str) or "send" not in command:
+            return None
+        if any(is_manager_session(t) for t in ao_send_targets(command)):
+            return MANAGER_WINDOW_REFUSAL
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 # --- throttle: пауза, потолок агентов, правило 85 % (SOC-166) -------------------
 
 # Дешёвый предфильтр: без этих подстрок команда точно не порождает агента и не
@@ -1083,6 +1138,12 @@ def cmd_role_gate(args) -> int:
     # inherits it.
     agent_id = payload.get("agent_id", "") if payload else ""
     is_subagent = bool(isinstance(agent_id, str) and agent_id.strip())
+
+    # SOC-232: до decide() и ранних выходов — для всех ролей и сабагентов.
+    window = manager_window_refusal(tool_name, tool_input)
+    if window:
+        print(window, file=sys.stderr)
+        return BLOCK_EXIT
 
     role = current_role()
     allow, reason = decide(tool_name, tool_input, role, is_subagent=is_subagent)

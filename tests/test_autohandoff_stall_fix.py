@@ -131,9 +131,9 @@ def test_ao_send_form_on_fake_binary(tmp_path, monkeypatch):
                     .format(sys.executable, str(sink)), encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("TIDE_AO_BIN", str(fake))
-    assert REAL_AO_SEND("management-15", "нить встала") == 0
+    assert REAL_AO_SEND("music-32", "нить встала") == 0
     assert sink.read_text(encoding="utf-8").splitlines() == [
-        "send", "--session", "management-15", "--message", "нить встала"]
+        "send", "--session", "music-32", "--message", "нить встала"]
     monkeypatch.setenv("TIDE_AO_BIN", str(tmp_path / "nope"))
     assert REAL_AO_SEND("m", "t") is None
 

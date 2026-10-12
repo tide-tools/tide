@@ -383,9 +383,13 @@ def _ao_send(handle: str, text: str) -> Optional[int]:
 
     Бинарь — тот же, что у адаптера AO (:func:`tide.adapters.ao.ao_bin`,
     ``$TIDE_AO_BIN``). None — ao не установлен; -1 — не запустилась.
+    SOC-232: в сессию менеджера не шлём — строка уходит в журнал, код 0.
     Никогда не падает."""
     from ..adapters import ao as _ao
+    from ..manager_guard import suppress_if_manager
 
+    if suppress_if_manager(handle, text, source="_ao_send"):
+        return 0
     if not _ao.ao_available():
         return None
     exe = _ao.ao_bin()

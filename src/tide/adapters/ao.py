@@ -743,6 +743,10 @@ class AoAdapter(TerminalAdapter):
         t = (text or "").strip()
         if not h or not t or not ao_available():
             return False
+        from ..manager_guard import suppress_if_manager
+
+        if suppress_if_manager(h, t, source="ao.say"):  # SOC-232
+            return False
         try:
             _call(["send", "--session", h, "--message", t], timeout=60)
         except (AoError, subprocess.SubprocessError, OSError):
