@@ -41,7 +41,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -71,6 +71,7 @@ _LIMIT_ENV = {
     "wait": "TIDE_WATCH_WAIT_SEC",
     "wait_repeat": "TIDE_WATCH_WAIT_REPEAT_SEC",
     "workers_max": "TIDE_WATCH_WORKERS_MAX_SEC",
+    "overdue": "TIDE_WATCH_OVERDUE_SEC",
 }
 ENV_KEYS = tuple(_LIMIT_ENV.values()) + (OFF_ENV, STATE_DIR_ENV, MAIL_CMD_ENV)
 
@@ -82,6 +83,7 @@ _META_TYPES = {"last-prompt", "ai-title", "atis-latch", "queue-operation", "summ
 
 STATE_OK, STATE_QUIET, STATE_NUDGED, STATE_STUCK = "ok", "quiet", "nudged", "stuck"
 STATE_IDLE, STATE_WAITING, STATE_WORKERS = "idle", "waiting", "workers"
+STATE_OVERDUE = "overdue"  # срок курсора (к HH:MM) / eta прошёл, а сессия idle (SOC-247 п.7)
 
 REASONS = {
     "tool": "висит инструмент без результата",
@@ -89,6 +91,7 @@ REASONS = {
     "api_error": "ошибка API",
     "input": "ждёт ввода в окне",
     "no_reply": "модель не отвечает после результата инструмента",
+    "overdue": "срок из курсора прошёл, сессия простаивает",
 }
 
 
@@ -102,6 +105,7 @@ class Limits:
     wait: int = 4 * 3600
     wait_repeat: int = 4 * 3600
     workers_max: int = 3 * 3600
+    overdue: int = 5 * 60      # запас после срока курсора / eta до толчка
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "Limits":
@@ -241,9 +245,37 @@ def _perm_after(perms: Sequence[dict], since: Optional[datetime], ao: str, sid: 
     return None
 
 
+_CURSOR_DUE_RE = re.compile(r"(?<!\w)к\s*(\d{1,2}):(\d{2})(?![\d:])", re.IGNORECASE)
+
+
+def cursor_deadline(cursor: str, anchor: Optional[datetime],
+                    eta: Optional[datetime] = None) -> Optional[datetime]:
+    """Срок из курсора («… к HH:MM», местное время машины; день — день последней записи
+    сессии *anchor*, а если HH:MM раньше неё — следующий) или поле паспорта *eta*
+    (ISO со смещением). «Мяч у пользователя» и «отдых» срока не дают. None — срока нет."""
+    from . import ball
+
+    text = " ".join(ball._unquoted(cursor or "").split())
+    if ball._USER_BALL_RE.search(text) or ball._REST_RE.search(text):
+        return None
+    marks = _CURSOR_DUE_RE.findall(text)
+    if marks and anchor is not None:
+        hh, mm = int(marks[-1][0]), int(marks[-1][1])
+        if hh < 24 and mm < 60:
+            base = anchor.astimezone()
+            due = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if due < base:
+                due += timedelta(days=1)
+            return due.astimezone(timezone.utc)
+    if isinstance(eta, datetime):
+        return (eta if eta.tzinfo else eta.astimezone()).astimezone(timezone.utc)
+    return None
+
+
 def classify(rows: Sequence[dict], *, now: datetime, activity: str = "",
              perms: Sequence[dict] = (), cursor: str = "", workers: Sequence = (),
-             limits: Optional[Limits] = None, ao: str = "", sid: str = "") -> Dict:
+             limits: Optional[Limits] = None, ao: str = "", sid: str = "",
+             eta: Optional[datetime] = None) -> Dict:
     """Транскрипт + метка AO + курсор → вердикт ``{kind, state, reason, reason_text,
     quiet_sec, last_at, last_tool, wait_h}``.
 
@@ -313,6 +345,16 @@ def classify(rows: Sequence[dict], *, now: datetime, activity: str = "",
             out["wait_h"] = int(idle_for // 3600)
             out["reason_text"] = "ждёт {0} ч: курсор «{1}»".format(
                 out["wait_h"], _clip(cursor, 160))
+            return out
+        due = cursor_deadline(cursor, last_at, eta) if str(activity or "") == "idle" else None
+        if due is not None and (now - due).total_seconds() >= lim.overdue:
+            out["state"] = STATE_OVERDUE
+            out["reason"] = "overdue"
+            out["deadline"] = _iso(due)
+            out["reason_text"] = ("срок «{0}» прошёл {1} мин назад, а сессия простаивает "
+                                  "(курсор: «{2}»)").format(
+                due.astimezone().strftime("%H:%M"),
+                int((now - due).total_seconds() // 60), _clip(cursor, 120))
             return out
         if str(activity or "") == "active" and quiet >= lim.idle:
             out["state"] = STATE_IDLE
@@ -406,6 +448,9 @@ def is_manager(handle: str) -> bool:
 
 
 def nudge_text(v: Dict) -> str:
+    if v.get("reason") == "overdue":
+        return ("сторож: {0}; закончи и отчитайся письмом или обнови курсор и срок "
+                "(tide offload --cursor … --eta …)").format(v.get("reason_text"))
     return ("сторож: ты молчишь {0} мин в ходе — {1}; если ждёшь — скажи tide offload, "
             "если завис — прерви инструмент").format(int(v["quiet_sec"] // 60),
                                                      v.get("reason_text") or "причина неясна")
@@ -413,9 +458,11 @@ def nudge_text(v: Dict) -> str:
 
 def stuck_letter(rec: Dict) -> str:
     where = "{0} · {1}".format(rec.get("project") or "?", rec.get("thread") or "нить ?")
+    head = ("сторож (SOC-247): {0} ({1}) проспала срок — idle, а срок курсора прошёл."
+            if rec.get("reason") == "overdue"
+            else "сторож (SOC-247): застряла {0} ({1}) — молчит {2} мин в ходе.")
     lines = [
-        "сторож (SOC-247): застряла {0} ({1}) — молчит {2} мин в ходе.".format(
-            where, rec["ao_session"], rec.get("quiet_min", 0)),
+        head.format(where, rec["ao_session"], rec.get("quiet_min", 0)),
         "Причина: {0}.".format(rec.get("reason_text") or "?"),
         "Последний инструмент: {0}.".format(rec.get("last_tool") or "—"),
         "Толчок: {0}.".format(rec["nudged_at"] + ", ответа нет" if rec.get("nudged_at")
@@ -456,7 +503,8 @@ def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
     rec: Dict = {"state": v["state"], "kind": v["kind"], "reason": v.get("reason", ""),
                  "reason_text": v.get("reason_text", ""), "last_at": v.get("last_at", ""),
                  "quiet_min": int(v.get("quiet_sec", 0) // 60),
-                 "last_tool": v.get("last_tool", ""), "wait_h": v.get("wait_h", 0)}
+                 "last_tool": v.get("last_tool", ""), "wait_h": v.get("wait_h", 0),
+           "deadline": v.get("deadline", "")}
     acts: List[str] = []
     open_ep = prev.get("state") in (STATE_NUDGED, STATE_STUCK)
     # Лимит API: толчок будит сессию, она сразу отвечает новой ошибкой и сдвигает last_at.
@@ -464,8 +512,13 @@ def decide(prev: Optional[Dict], v: Dict, *, now: datetime, limits: Limits,
     api_cont = (open_ep and v.get("reason") == "api_error"
                 and prev.get("reason") == "api_error"
                 and v["state"] in (STATE_QUIET, STATE_OK))
+    # Просроченный срок: короткий ответ на толчок сдвигает last_at, а срок тот же —
+    # это тот же эпизод (иначе толчок каждые N минут).
+    due_cont = (open_ep and v["state"] == STATE_OVERDUE and prev.get("reason") == "overdue"
+                and prev.get("deadline") == rec["deadline"])
+    api_cont = api_cont or due_cont
     same = (prev.get("last_at") == rec["last_at"] and open_ep) or api_cont
-    if v["state"] == STATE_QUIET or api_cont:
+    if v["state"] in (STATE_QUIET, STATE_OVERDUE) or api_cont:
         if same:
             rec["nudged_at"] = prev.get("nudged_at", "")
             rec["episode_at"] = prev.get("episode_at", "")
@@ -542,7 +595,7 @@ def locate(s: dict) -> Dict:
     from .launcher.seed_draft import claude_projects_dir, transcript_path
 
     out: Dict = {"sid": "", "transcript": None, "root": None, "entry": None,
-                 "thread": "", "session": "", "cursor": ""}
+                 "thread": "", "session": "", "cursor": "", "eta": None}
     handle = str(s.get("id") or "")
     sid = str(s.get("agentSessionId") or s.get("agent_session_id") or "").strip()
     if not sid:
@@ -582,6 +635,9 @@ def locate(s: dict) -> Dict:
                 out["thread"] = slug.entry_slug(entry.parent.parent.name)
                 out["session"] = str(entry)
                 out["cursor"] = ball.cursor_of(entry / "arc.md")
+                from . import fields
+
+                out["eta"] = _when(fields.read_field(entry / "arc.md", "eta") or "")
         except Exception:  # noqa: BLE001
             pass
     return out
@@ -716,14 +772,14 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                 act = _activity(s)
                 v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
                              perms=_perms(loc.get("root")), limits=lim, ao=handle,
-                             sid=loc.get("sid", ""))
-                if v["state"] in (STATE_QUIET, STATE_IDLE):
+                             sid=loc.get("sid", ""), eta=loc.get("eta"))
+                if v["state"] in (STATE_QUIET, STATE_IDLE, STATE_OVERDUE):
                     # помощников ищем только когда это что-то меняет (полный транскрипт)
                     live = live_workers(tp) if v["state"] != STATE_OK else []
                     if live:
                         v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
                                      perms=_perms(loc.get("root")), workers=live, limits=lim,
-                                     ao=handle, sid=loc.get("sid", ""))
+                                     ao=handle, sid=loc.get("sid", ""), eta=loc.get("eta"))
                 mgr = is_manager(handle)
                 rec, acts = decide(prev_all.get(handle), v, now=now, limits=lim, manager=mgr)
                 if seeding:

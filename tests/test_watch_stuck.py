@@ -628,3 +628,100 @@ def test_p8_plist_template_mentions_flag_file_not_env():
             / "com.tide.watch-stuck.plist").read_text(encoding="utf-8")
     assert "watch-stuck.off" in text
     assert "TIDE_WATCH_STUCK=off в EnvironmentVariables" not in text
+
+
+# --- п.7 (письмо менеджера 183): срок курсора прошёл, сессия idle -----------------
+
+T_END = datetime(2026, 10, 12, 11, 50, 0, tzinfo=timezone.utc)   # 08:50 по Сан-Паулу
+AFTER = datetime(2026, 10, 12, 17, 0, 0, tzinfo=timezone.utc)    # 14:00 по Сан-Паулу
+
+
+def test_p7_cursor_deadline_passed_and_idle_is_overdue(set_tz):
+    set_tz("America/Sao_Paulo")
+    v = ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS,
+                    cursor="мяч у меня: SOC-247, обход к 09:20")
+    assert v["kind"] == "ended"
+    assert v["state"] == "overdue" and v["reason"] == "overdue"
+    assert "09:20" in v["reason_text"]
+
+
+def test_p7_deadline_uses_local_zone_not_utc(set_tz):
+    set_tz("America/Sao_Paulo")  # 09:20 -03 = 12:20Z: в 12:00Z срок ещё не вышел
+    v = ws.classify(ended_rows(T_END), now=datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc),
+                    activity="idle", limits=LIMITS, cursor="обход к 09:20")
+    assert v["state"] == "ok"
+    v = ws.classify(ended_rows(T_END), now=datetime(2026, 10, 12, 12, 40, tzinfo=timezone.utc),
+                    activity="idle", limits=LIMITS, cursor="обход к 09:20")
+    assert v["state"] == "overdue"
+
+
+def test_p7_deadline_not_passed_or_not_idle_is_ok(set_tz):
+    set_tz("America/Sao_Paulo")
+    cur = "обход к 18:00"
+    assert ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS,
+                       cursor=cur)["state"] == "ok"
+    cur = "обход к 09:20"
+    for act in ("active", "blocked", "waiting_input"):
+        assert ws.classify(ended_rows(T_END), now=AFTER, activity=act, limits=LIMITS,
+                           cursor=cur)["state"] != "overdue", act
+
+
+def test_p7_eta_field_is_deadline(set_tz):
+    set_tz("America/Sao_Paulo")
+    eta = datetime(2026, 10, 12, 12, 20, tzinfo=timezone.utc)
+    v = ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS,
+                    cursor="делаю обход", eta=eta)
+    assert v["state"] == "overdue"
+    v = ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS,
+                    cursor="делаю обход", eta=AFTER + timedelta(hours=1))
+    assert v["state"] == "ok"
+
+
+def test_p7_user_ball_and_rest_cursor_never_overdue(set_tz):
+    set_tz("America/Sao_Paulo")
+    for cur in ("мяч у пользователя: вопрос TG 4600 к 09:20", "отдых по слову пользователя к 09:20"):
+        assert ws.classify(ended_rows(T_END), now=AFTER, activity="idle", limits=LIMITS,
+                           cursor=cur)["state"] != "overdue"
+
+
+def test_p7_nudge_once_and_no_loop_after_short_reply(world, set_tz):
+    set_tz("America/Sao_Paulo")
+    passport = world["entry"] / "arc.md"
+    passport.write_text(passport.read_text(encoding="utf-8").replace(
+        "делаю макет", "мяч у меня: SOC-247, обход к 09:20"), encoding="utf-8")
+    f = Fakes()
+    rows = ended_rows(T_END)
+    write_rows(world["transcript"], rows, world["proj"])
+    s = [session(activity="idle")]
+    ws._save(world["state"], {}, T_END)
+    now = AFTER
+    run(world, f, now, s)
+    assert len(f.said) == 1 and "09:20" in f.said[0][1]
+    # сессия ответила коротким ходом, но срок так и остался в прошлом: нового толчка нет
+    rows = rows + ended_rows(now + timedelta(minutes=1))
+    write_rows(world["transcript"], rows, world["proj"])
+    for m in range(2, 90):
+        run(world, f, now + timedelta(minutes=m), s)
+    assert len(f.said) == 1
+
+
+def test_p7_eta_from_passport_reaches_classify(world, set_tz):
+    set_tz("America/Sao_Paulo")
+    passport = world["entry"] / "arc.md"
+    passport.write_text(passport.read_text(encoding="utf-8").replace(
+        "status: active", "status: active\neta: 2026-10-12T09:20:00-03:00"), encoding="utf-8")
+    f = Fakes()
+    write_rows(world["transcript"], ended_rows(T_END), world["proj"])
+    run(world, f, AFTER, [session(activity="idle")])
+    assert len(f.said) == 1
+
+
+def test_p7_no_nudge_into_dialog(world, set_tz):
+    set_tz("America/Sao_Paulo")
+    passport = world["entry"] / "arc.md"
+    passport.write_text(passport.read_text(encoding="utf-8").replace(
+        "делаю макет", "обход к 09:20"), encoding="utf-8")
+    f = Fakes()
+    write_rows(world["transcript"], ended_rows(T_END), world["proj"])
+    run(world, f, AFTER, [session(activity="waiting_input")])
+    assert f.said == []
