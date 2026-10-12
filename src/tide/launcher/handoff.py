@@ -927,6 +927,13 @@ def run_handoff(
                 _fields.set_field(session_born / "arc.md", "title", title)
             for key, value in (born_fields or {}).items():
                 _fields.set_field(session_born / "arc.md", key, str(value))
+            if mode == FORK_CONTINUE and origin_entry is not None:
+                # SOC-234: цикл и срок идут за нитью — ручной и авто-continue
+                from .. import cycle as _cycle
+
+                for key, value in _cycle.inherited_fields(origin_entry / "arc.md").items():
+                    if key not in (born_fields or {}):
+                        _fields.set_field(session_born / "arc.md", key, value)
             summary_path = session_born / "input" / "handoff-seed.md"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             seed_text = text
