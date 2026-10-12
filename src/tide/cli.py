@@ -549,7 +549,7 @@ def _register_handoffs(sub) -> None:
     register_offer_spawn(hsub)
     from .launcher.handoff_report import register_report
 
-    register_report(hsub)  # SOC-233: отчёт лида в Telegram
+    register_report(hsub)  # SOC-233: алиас tide work-report
     register_autoraise(hsub)  # скрытая: автоподъём вставшей нити (signal_stall)
     from .launcher.reception_watch import register as register_reception_watch
 
@@ -706,6 +706,9 @@ def build_parser() -> argparse.ArgumentParser:
     _register_self_update(subparsers)
     _register_release(subparsers)
     _register_report(subparsers)
+    from .launcher.handoff_report import register_work_report
+
+    register_work_report(subparsers)  # SOC-233: tide work-report
 
     _register_version(subparsers)
     _register_help(subparsers)

@@ -2,7 +2,7 @@
 
 Слово Гриши: «отчеты о проделанной работе на доску от агентов и в телеграм».
 Каждый агент-исполнитель (не сабагент) по готовности работы (итог задачи,
-In Review, конец цикла, хендофф) делает ``tide report --done … --proof … --next …
+In Review, конец цикла, хендофф) делает ``tide work-report --done … --proof … --next …
 --waits … --soc SOC-N``. tide в Telegram НЕ шлёт: он дописывает строку в
 ``<management>/.tide/state/reports.jsonl`` (один источник), пульт читает её и
 шлёт в тему проекта, доска читает её для ленты «Отчёты». В паспорт сессии ставится
@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 from .. import fields, paths, slug
 from ..arc.stream import StreamError
 
-REPORTS_FILE_ENV = "TIDE_REPORTS_FILE"
+REPORTS_FILE_ENV = "TIDE_REPORTS_PATH"
 NO_REPORT_ENV = "TIDE_HANDOFF_NO_REPORT"
 REPORT_FIELD = "report"
 LOG_NAME = "handoff-report.log"
@@ -33,7 +33,7 @@ MANAGEMENT_PROJECT = "management"
 KINDS = ("done", "handoff", "cycle")
 WORK_FLAGS = ("done", "proof", "next", "waits", "soc", "kind")
 
-REPORT_FORMAT = ('tide report --kind handoff --done "…" --proof "<путь или url>" --next "…" '
+REPORT_FORMAT = ('tide work-report --kind handoff --done "…" --proof "<путь или url>" --next "…" '
                  '--waits "…" --soc SOC-N')
 
 
@@ -237,8 +237,16 @@ def add_work_flags(p) -> None:
 
 
 def register_report(hsub) -> None:
-    """``tide handoffs report`` — алиас ``tide report`` с полями работы."""
-    ap = hsub.add_parser("report", help="алиас tide report: отчёт о работе (SOC-233)")
-    ap.add_argument("text", nargs="*", help="текст отчёта")
+    """``tide handoffs report`` — алиас ``tide work-report``."""
+    ap = hsub.add_parser("report", help="алиас tide work-report: отчёт о работе (SOC-233)")
+    ap.add_argument("what", nargs="*", help="текст отчёта (без флагов = --done)")
     add_work_flags(ap)
     ap.set_defaults(func=run_cli, _cmd="handoffs report")
+
+
+def register_work_report(sub) -> None:
+    """Верхнеуровневая ``tide work-report`` (``tide report`` — баг-репорт мейнтейнеру, не трогаем)."""
+    ap = sub.add_parser("work-report", help="отчёт агента о проделанной работе (SOC-233)")
+    ap.add_argument("what", nargs="*", help="текст отчёта (без флагов = --done)")
+    add_work_flags(ap)
+    ap.set_defaults(func=run_cli, _cmd="work-report")

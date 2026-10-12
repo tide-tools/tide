@@ -56,7 +56,7 @@ def test_empty_report_refused(sess):
 def test_cli_tide_report_with_work_flags_and_alias(sess, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-1")
     fields.set_field(sess["entry"] / "arc.md", "claude-session", "sid-1")
-    assert cli.main(["report", "--done", "сделал", "--soc", "SOC-5"]) == 0
+    assert cli.main(["work-report", "--done", "сделал", "--soc", "SOC-5"]) == 0
     assert cli.main(["handoffs", "report", "--done", "ещё"]) == 0
     recs = _lines(sess["reports"])
     assert [r["done"] for r in recs] == ["сделал", "ещё"] and recs[0]["soc"] == ["SOC-5"]
@@ -65,7 +65,7 @@ def test_cli_tide_report_with_work_flags_and_alias(sess, monkeypatch, capsys):
 def test_gate_blocks_without_report_and_passes_with(sess):
     with pytest.raises(hr.ReportError) as e:
         hr.require_report(sess["entry"])
-    assert "tide report" in str(e.value)
+    assert "tide work-report" in str(e.value)
     hr.write_report(sess["entry"], done="итог")
     hr.require_report(sess["entry"])
 
@@ -83,5 +83,28 @@ def test_bypass_env_logs(sess, monkeypatch, tmp_path):
 
 
 def test_templates_have_step_zero_for_every_role(sess):
-    assert "tide report --kind handoff" in context_watch.handoff_steps(sess["entry"])
-    assert "tide report" in autohandoff.report_step(sess["entry"])
+    assert "tide work-report --kind handoff" in context_watch.handoff_steps(sess["entry"])
+    assert "tide work-report" in autohandoff.report_step(sess["entry"])
+
+
+def test_free_text_without_flags_is_done(sess, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-2")
+    fields.set_field(sess["entry"] / "arc.md", "claude-session", "sid-2")
+    assert cli.main(["work-report", "Починил", "X", "SOC-7"]) == 0
+    (rec,) = _lines(sess["reports"])
+    assert rec["done"] == "Починил X SOC-7" and rec["soc"] == ["SOC-7"]
+
+
+def test_tide_report_stays_the_maintainer_bug_report(sess, capsys):
+    cli.main(["report", "--dry-run", "что-то сломалось"])
+    assert "EXACTLY what would be sent" in capsys.readouterr().out
+    assert not sess["reports"].exists()
+
+
+def test_default_path_is_management_state_from_roster(world, monkeypatch, tmp_path):
+    from tide import roster
+    mgmt = tmp_path / "mgmt"
+    (mgmt / ".tide").mkdir(parents=True)
+    roster.add(world["home"], "management", str(mgmt))
+    monkeypatch.delenv(hr.REPORTS_FILE_ENV, raising=False)
+    assert hr.reports_file() == mgmt / ".tide" / "state" / "reports.jsonl"

@@ -125,7 +125,7 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     monkeypatch.setenv("TIDE_MANAGER_FILE", str(tmp_path / "no-manager.json"))
     # SOC-233: test reports never reach the real management reports.jsonl; the handoff
     # report gate is bypassed by default (its own tests delenv TIDE_HANDOFF_NO_REPORT).
-    monkeypatch.setenv("TIDE_REPORTS_FILE", str(tmp_path / "no-reports.jsonl"))
+    monkeypatch.setenv("TIDE_REPORTS_PATH", str(tmp_path / "no-reports.jsonl"))
     monkeypatch.setenv("TIDE_HANDOFF_NO_REPORT", "1")
     monkeypatch.delenv("TIDE_ALERT_CMD", raising=False)
     monkeypatch.setenv("TIDE_AO_DB", str(tmp_path / "no-ao.db"))
