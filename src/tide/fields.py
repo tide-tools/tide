@@ -80,7 +80,8 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         # Auto-handoff (SOC-39): the context watch and `tide handoff continue --auto`.
         "auto-chain",     # auto handoffs in a row without progress that led to this session
         "auto-handoff",   # off — context-watch never blocks Stop nor alerts the manager (SOC-230)
-        "ctx-ping",       # highest context threshold (250|300|500 k) already pinged; 250w — soft, waiting for a calm moment
+        "ctx-ping",       # highest context threshold (150|200|300 k) already pinged; 150w — soft, waiting for a calm moment
+        "cold-ping",      # SOC-237: wake after idle already pinged ("<wake ISO> <idle min> <tokens>")
         "dialog-log",     # thread: path to the external dialog log the auto-seed tails
         "handed-off",     # this session already handed its thread over (the watch stands down)
         "report",         # SOC-233: отчёт о работе записан ("<id> <ISO>")

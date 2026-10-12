@@ -44,7 +44,7 @@ def test_pass_template_labels_all_parse_into_seed_blocks():
 
 
 def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
-    r = cw.watch_reason(world["proj"], _payload(world, 253_000))
+    r = cw.watch_reason(world["proj"], _payload(world, 153_000))
     assert r
     i_pass = r.index('tide offload seam/s1 --cursor "<где стоишь>" --next "<шаги через · >" '
                      '"ПЕРЕДАЧА. Где мы:')
@@ -57,7 +57,7 @@ def test_soft_hook_gives_pass_template_then_layers_then_auto(world):
     assert "<что сделал>" not in r
 
 
-@pytest.mark.parametrize("tokens,word", [(300_000, "жёсткий порог"), (510_000, "ТРЕВОГА")])
+@pytest.mark.parametrize("tokens,word", [(200_000, "жёсткий порог"), (310_000, "ТРЕВОГА")])
 def test_hard_and_alarm_hooks_give_the_same_template(world, tokens, word):
     r = cw.watch_reason(world["proj"], _payload(world, tokens))
     assert word in r and ah.pass_template(world["sess"]) in r

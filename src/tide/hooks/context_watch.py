@@ -2,9 +2,9 @@
 
 Сжатие tide не делает (вердикт Гриши 09.10): переполненная сессия ПЕРЕДАЁТ нить
 свежей. Сама сессия о контексте не думает — её пингует хук. Порог передачи — по
-слову Гриши «Давай А» (SOC-143, 10.10; заменил лестницу 200/300/500):
+слову Гриши 12.10 (SOC-237: передавать раньше; было 250/300/500 по «Давай А», SOC-143):
 
-* ``SOFT`` (250 000) — порог передачи контракта сида
+* ``SOFT`` (150 000) — порог передачи контракта сида
   (:data:`tide.handoff_contract.HANDOFF_TOKENS`): с этого момента сессия передаёт
   работу в ПЕРВЫЙ СПОКОЙНЫЙ МОМЕНТ — воркеры/сабагенты сдали, правки закоммичены.
   Спокойно ли — по транскрипту: живые сабагенты (:func:`busy_workers` — тот же
@@ -13,22 +13,31 @@
   пинг «передай в первый спокойный момент», ступень не засчитана (``ctx-ping:
   250w``): на следующих остановках хук смотрит снова, повтор пинга — не чаще раза
   в ``$TIDE_CTX_CALM_REMIND_MIN`` минут, спокойно — пинг передачи;
-* ``HARD`` (300 000) — жёсткий потолок: передача обязательна сейчас, спокойно или
+* ``HARD`` (200 000) — жёсткий потолок: передача обязательна сейчас, спокойно или
   нет — «доведи текущий шаг, новую работу не бери, хендофф сейчас»;
-* ``ALARM`` (500 000) — тревога сверх потолка: сессия ещё раз получает требование
+* ``ALARM`` (300 000) — тревога сверх потолка: сессия ещё раз получает требование
   хендоффа, и менеджеру уходит сигнал (``$TIDE_ALERT_CMD`` с
   ``TIDE_ALERT_ROUTE=manager``).
 
 На мягком и жёстком пороге тот же текст кратко уходит в ``$TIDE_ALERT_CMD`` с
 ``TIDE_ALERT_ROUTE=log`` (пульт только пишет событие в лог). Нет команды — молча
-пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 250|300|500``):
+пропускаем. Пройденный порог запоминается в паспорте (``ctx-ping: 150|200|300``):
 повторно не пингуем, скачок через несколько порогов — один пинг старшего.
+
+Холодное пробуждение (SOC-237): если перед текущим ходом сессия простояла больше
+``$TIDE_CTX_COLD_MIN`` минут (60), а контекст больше ``$TIDE_CTX_COLD_TOKENS`` (60 000),
+кэш промпта уже остыл — на первом ходе после простоя хук требует ту же передачу, что на
+пороге (:func:`cold_text`). Простой — по транскрипту (:func:`idle_before_turn`): самый
+длинный разрыв между записями текущего хода, считая от конца прошлого (строка
+``stop_hook_summary``). Одно пробуждение — один пинг: штамп ``cold-ping: <время
+пробуждения> <мин> <токены>``.
 
 Счёт — ТОЛЬКО через :mod:`tide.context_fill` (им же рисует доска). Пороги —
 здесь, env: ``$TIDE_CTX_SOFT`` / ``$TIDE_CTX_HARD`` / ``$TIDE_CTX_ALARM``
 (``$TIDE_CTX_NUDGE`` — старый синоним мягкого). Субагенты хендофф не делают (у них
 SubagentStop). Молчит: вне tide-проекта, без арки-сессии, на продолжении после
-блока (``stop_hook_active``). Растворённая или уже передавшая сессия хендофф не
+блока (``stop_hook_active``), с ``auto-handoff: off`` в паспорте (разговор, SOC-230) —
+и пороги, и холодное пробуждение. Растворённая или уже передавшая сессия хендофф не
 получает, но контекст её считается (SOC-98): на потолке — пинг «доведи воркера,
 перешли итог, замолчи», на тревоге — ещё и сигнал менеджеру «закрой её». Любая
 ошибка — молчаливый exit 0.
@@ -39,17 +48,17 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .. import fields, handoff_contract, offload, paths, slug
 
 # Мягкий порог = порог передачи контракта сида: с него — передача в первый спокойный
-# момент; жёсткий — потолок, передача обязательна (Гриша «Давай А», SOC-143 10.10).
+# момент; жёсткий — потолок, передача обязательна (слово Гриши 12.10, SOC-237).
 SOFT_TOKENS = handoff_contract.HANDOFF_TOKENS
-HARD_TOKENS = 300_000
-ALARM_TOKENS = 500_000
+HARD_TOKENS = 200_000
+ALARM_TOKENS = 300_000
 SOFT_ENV = "TIDE_CTX_SOFT"
 HARD_ENV = "TIDE_CTX_HARD"
 ALARM_ENV = "TIDE_CTX_ALARM"
@@ -57,7 +66,15 @@ NUDGE_ENV = "TIDE_CTX_NUDGE"  # старое имя мягкого порога 
 # мягкий порог в неспокойный момент: повтор пинга «передай, как станет спокойно» — не чаще
 CALM_REMIND_ENV = "TIDE_CTX_CALM_REMIND_MIN"
 CALM_REMIND_MIN = 10
-WAIT_MARK = "w"  # ``ctx-ping: 250w …`` — мягкий порог пройден, ждём спокойного момента
+WAIT_MARK = "w"  # ``ctx-ping: 150w …`` — мягкий порог пройден, ждём спокойного момента
+# Холодное пробуждение (SOC-237): простой дольше COLD_MIN минут при контексте больше
+# COLD_TOKENS — на первом ходе после простоя та же передача, что на пороге.
+COLD_MIN_ENV = "TIDE_CTX_COLD_MIN"
+COLD_MIN = 60
+COLD_TOKENS_ENV = "TIDE_CTX_COLD_TOKENS"
+COLD_TOKENS = 60_000
+COLD_PING_FIELD = "cold-ping"
+COLD_TAIL_BYTES = 16 * 1024 * 1024  # хвост транскрипта, где ищем текущий ход
 
 AUTO_CMD = "tide handoff continue --auto"
 CTX_PING_FIELD = "ctx-ping"
@@ -446,8 +463,9 @@ def _alert_manager(root: Path, entry: Path, text: str) -> None:
 
 def _handed_ping(root: Path, entry: Path, session: str, payload: dict,
                  now: Optional[datetime]) -> Optional[str]:
-    """SOC-98: сессия, отдавшая нить, растёт дальше — на 300 тыс. пинг ей, на 500 —
-    ещё и тревога менеджеру. Мягкая ступень (250) ей не нужна (передача уже сделана).
+    """SOC-98: сессия, отдавшая нить, растёт дальше — на потолке (200 тыс.) пинг ей, на
+    тревоге (300) — ещё и тревога менеджеру. Мягкая ступень (150) ей не нужна.
+    Холодное пробуждение ей тоже не нужно (передача уже сделана).
     Один пинг на ступень — тот же штамп ``ctx-ping``."""
     tokens = fill_tokens(payload, session)
     if tokens is None:
@@ -505,9 +523,134 @@ def _soft_wait(root: Path, entry: Path, pp: Path, tokens: int, soft: int, hard: 
     return soft_wait_text(tokens, soft, hard, busy)
 
 
+def _parse_ts(raw) -> Optional[datetime]:
+    """ISO-время записи транскрипта (``…Z`` или со смещением) → наивное UTC; иначе None."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is not None:
+        at = at.astimezone(timezone.utc).replace(tzinfo=None)
+    return at
+
+
+def _tail_rows(path: Path) -> List[dict]:
+    """Записи хвоста транскрипта (до :data:`COLD_TAIL_BYTES`), по порядку."""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        start = max(0, size - COLD_TAIL_BYTES)
+        fh.seek(start)
+        blob = fh.read()
+    lines = blob.splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]  # первая строка обрезана посередине
+    rows = []
+    for raw in lines:
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _is_turn_input(row: dict) -> bool:
+    """Запись, с которой начинается ход: реплика человека, доставка, уведомление —
+    любая ``user``-запись, кроме ответа инструмента."""
+    if row.get("type") != "user":
+        return False
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return False
+    return True
+
+
+def idle_before_turn(path: Path) -> Optional[Tuple[float, datetime]]:
+    """Простой перед текущим ходом по транскрипту: ``(минуты, время пробуждения)`` или None.
+
+    Ход — записи после конца прошлого хода (последняя ``system/stop_hook_summary``,
+    её пишет любой Stop-хук, в tide-сессии — сам сторож); сама граница входит в счёт.
+    Простой — самый длинный разрыв между соседними записями с временем (кроме
+    ``queue-operation``: она штампуется в момент прихода письма, а не хода и
+    сабагентов); время пробуждения — запись после разрыва. Границы нет — весь хвост.
+    В ходе должна быть входная запись (:func:`_is_turn_input`) — иначе None."""
+    rows = [r for r in _tail_rows(path)
+            if not r.get("isSidechain") and r.get("type") != "queue-operation"]
+    start = 0
+    for i, row in enumerate(rows):
+        if row.get("type") == "system" and row.get("subtype") == "stop_hook_summary":
+            start = i
+    turn = rows[start:]
+    if not any(_is_turn_input(r) for r in (turn[1:] if start else turn)):
+        return None
+    best: Optional[Tuple[float, datetime]] = None
+    prev: Optional[datetime] = None
+    for row in turn:
+        at = _parse_ts(row.get("timestamp"))
+        if at is None:
+            continue
+        if prev is not None:
+            gap = (at - prev).total_seconds() / 60.0
+            if best is None or gap > best[0]:
+                best = (gap, at)
+        prev = at if prev is None or at > prev else prev
+    return best
+
+
+def cold_text(entry: Path, tokens: int, idle_min: float) -> str:
+    hours, mins = divmod(int(idle_min), 60)
+    idle = "{0} ч {1} мин".format(hours, mins) if hours else "{0} мин".format(mins)
+    return (
+        "tide: сессия проснулась после простоя {0}, контекст {1} токенов — кэш остыл, "
+        "каждый ход теперь дорогой. Передай работу свежей сессии: новое не начинай, "
+        "доведи текущий шаг (воркеры в работе — дождись их итога), правки закоммить и:\n"
+        "{2}\n"
+        "Новая сессия поднимется сама и продолжит с курсора."
+    ).format(idle, _k(tokens), handoff_steps(entry))
+
+
+def _cold_reason(root: Path, entry: Path, payload: dict, session: str, tokens: int,
+                 now: Optional[datetime]) -> Optional[str]:
+    """Холодное пробуждение (SOC-237): простой > ``COLD_MIN`` минут перед этим ходом и
+    контекст > ``COLD_TOKENS`` — пинг передачи, один на пробуждение (``cold-ping``)."""
+    if tokens <= _env_int(COLD_TOKENS_ENV, COLD_TOKENS):
+        return None
+    try:
+        from .. import context_fill
+        target = payload.get("transcript_path") or ""
+        path = Path(target) if target else context_fill.transcript_for(session)
+        if path is None or not Path(path).is_file():
+            return None
+        idle = idle_before_turn(Path(path))
+    except Exception:  # noqa: BLE001 — сторож не смеет упасть
+        return None
+    if idle is None or idle[0] <= _env_int(COLD_MIN_ENV, COLD_MIN):
+        return None
+    idle_min, woke = idle
+    pp = entry / "arc.md"
+    woke_iso = woke.isoformat(timespec="seconds")
+    if (fields.read_field(pp, COLD_PING_FIELD) or "").strip().split(" ", 1)[0] == woke_iso:
+        return None
+    fields.set_field(pp, COLD_PING_FIELD, "{0} {1} {2}".format(
+        woke_iso, int(idle_min), tokens))
+    try:
+        _send("soft", root, entry, "сессия {0} проснулась после {1} мин простоя на {2} "
+              "тыс. токенов — холодный кэш: хендофф".format(
+                  slug.entry_slug(entry.name), int(idle_min), _kn(tokens)))
+    except Exception:  # noqa: BLE001 — a signal must never break the ping
+        pass
+    return cold_text(entry, tokens, idle_min)
+
+
 def watch_reason(root: Path, payload: dict, *,
                  now: Optional[datetime] = None) -> Optional[str]:
-    """Причина блока остановки — или None. Один пинг на ступень, штамп ``ctx-ping``."""
+    """Причина блока остановки — или None. Один пинг на ступень, штамп ``ctx-ping``;
+    ступени молчат — холодное пробуждение (:func:`_cold_reason`, штамп ``cold-ping``)."""
     session = str(payload.get("session_id") or payload.get("session") or "")
     entry = _session_entry(root, session)
     if entry is None:
@@ -526,6 +669,15 @@ def watch_reason(root: Path, payload: dict, *,
     tokens = fill_tokens(payload, session)
     if tokens is None:
         return None
+    reason = _ladder_reason(root, entry, payload, session, tokens, now)
+    if reason:
+        return reason
+    return _cold_reason(root, entry, payload, session, tokens, now)
+
+
+def _ladder_reason(root: Path, entry: Path, payload: dict, session: str, tokens: int,
+                   now: Optional[datetime]) -> Optional[str]:
+    """Лестница порогов: текст пинга ступени или None (ступени молчат)."""
     ladder = list(thresholds())
     reached = sum(1 for t in ladder if tokens >= t)
     if reached == 0:

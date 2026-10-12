@@ -25,7 +25,7 @@ def test_thirteen_blocks_in_contract_order_none_droppable():
     assert len({b.key for b in hc.BLOCKS}) == 13
     assert all(b.keep_empty and b.empty for b in hc.BLOCKS)
     assert all(b.kind in (hc.PROSE, hc.LIST) for b in hc.BLOCKS)
-    assert hc.JOURNAL_SHARE == 0.30 and hc.HANDOFF_TOKENS == 250_000
+    assert hc.JOURNAL_SHARE == 0.30 and hc.HANDOFF_TOKENS == 150_000
 
 
 def test_empty_block_says_why():
@@ -87,7 +87,7 @@ def test_skill_table_matches_the_contract():
     rows = re.findall(r"(?m)^\| `## ([^`]+)` \|", text)
     assert rows == list(hc.NAMES)
     assert "Других секций в сиде нет" not in text
-    assert "30%" in text and "250 тыс." in text and "300 тыс." in text
+    assert "30%" in text and "150 тыс." in text and "200 тыс." in text
 
 
 def test_pickup_goal_reads_the_next_step_block():
