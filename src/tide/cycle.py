@@ -5,6 +5,9 @@
 (append-only, как ``reports.jsonl`` из SOC-233); доска и control только читают и сворачивают
 события функцией :func:`fold`.
 
+Цикл стартует только с планом (comment-b7831a38): ``plan`` = {ref, steps, not_do, check}
+плюс оценка и «готово когда»; без них :func:`start` отказывает (:class:`PlanMissing`).
+
 События: ``start`` · ``extend`` · ``mode`` (запас под talk/auto) · ``end``
 (``status`` = done | user | stopped). В паспорте сессии рабочего — поле ``cycle: <id>``,
 оно переходит к новой сессии при ``handoff continue``. ``tide work-report --kind done|cycle``
@@ -36,6 +39,16 @@ ACTIVE = "active"
 
 class CycleError(StreamError):
     pass
+
+
+class PlanMissing(CycleError, ValueError):
+    """Цикл без плана: нет разделов или ссылка на план не годится."""
+
+
+# раздел плана → флаг CLI, в порядке вывода
+PLAN_FLAGS = (("plan", "--plan"), ("steps", "--steps"), ("not_do", "--not-do"), ("check", "--check"),
+              ("estimate", "--estimate"), ("done_when", "--done-when"))
+PLAN_HINT = "план цикла — prompts/thread-rules.md"
 
 
 # --- куда писать --------------------------------------------------------------
@@ -84,9 +97,10 @@ def read_events(path: Optional[Path] = None) -> List[Dict[str, object]]:
 def fold(events: Iterable[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
     """События → ``{id: состояние}`` в порядке появления.
 
-    Состояние: поля ``start`` + ``status`` (``active`` | done | user | stopped), ``mode``
-    (по умолчанию ``auto``), ``notes`` (из extend/end), ``ended_at``, ``report``,
-    ``updated_at``. События без своего ``start`` пропускаются."""
+    Состояние: поля ``start`` (в т.ч. ``plan``; у старых карточек его нет) + ``status``
+    (``active`` | done | user | stopped), ``mode`` (по умолчанию ``auto``), ``notes``
+    (из extend/end), ``ended_at``, ``report``, ``updated_at``. События без своего ``start``
+    пропускаются."""
     cards: Dict[str, Dict[str, object]] = {}
     for ev in events:
         cid, kind = ev.get("id"), ev.get("ev")
@@ -174,6 +188,26 @@ def _pct(v) -> Optional[float]:
     return f
 
 
+def _plan_ref(ref: str) -> str:
+    """URL Linear, ``comment-<id>`` или абсолютный путь к существующему ``.md``."""
+    if re.fullmatch(r"https?://linear\.app/\S+", ref) or re.fullmatch(r"comment-[0-9a-zA-Z-]+", ref):
+        return ref
+    f = Path(ref).expanduser()
+    if f.is_absolute() and f.suffix == ".md" and f.is_file():
+        return ref
+    raise PlanMissing("--plan {0!r}: нужен URL Linear, comment-<id> или абсолютный путь к .md, "
+                      "который есть на диске ({1})".format(ref, PLAN_HINT))
+
+
+def check_plan(**parts) -> Dict[str, str]:
+    """Все разделы плана на месте → ``{ref, steps, not_do, check}``; иначе :class:`PlanMissing`."""
+    missing = [flag for key, flag in PLAN_FLAGS if not str(parts.get(key) or "").strip()]
+    if missing:
+        raise PlanMissing("цикл без плана не стартует: нет {0} ({1})".format(", ".join(missing), PLAN_HINT))
+    return {"ref": _plan_ref(str(parts["plan"]).strip()), "steps": str(parts["steps"]).strip(),
+            "not_do": str(parts["not_do"]).strip(), "check": str(parts["check"]).strip()}
+
+
 def _soc(v: str) -> str:
     m = re.fullmatch(r"(?:SOC-)?(\d+)", (v or "").strip(), re.I)
     if not m:
@@ -230,9 +264,12 @@ def resolve_target(thread_arg: Optional[str]) -> Dict[str, object]:
 # --- операции -----------------------------------------------------------------
 
 def start(*, soc: str, thread: Optional[str] = None, done_when: str = "", estimate=None,
-          due: Optional[str] = None, by: str = "lead", path: Optional[Path] = None,
+          due: Optional[str] = None, by: str = "lead", plan: str = "", steps: str = "",
+          not_do: str = "", check: str = "", path: Optional[Path] = None,
           now: Optional[datetime] = None) -> Dict[str, object]:
     soc = _soc(soc)
+    plan_card = check_plan(plan=plan, steps=steps, not_do=not_do, check=check, estimate=estimate,
+                           done_when=done_when)
     if by not in BY:
         raise CycleError("--by: {0}".format(" | ".join(BY)))
     now = (now or _now()).replace(microsecond=0)
@@ -250,8 +287,8 @@ def start(*, soc: str, thread: Optional[str] = None, done_when: str = "", estima
         "session": entry.name if entry is not None else "",
         "ao": (os.environ.get("AO_SESSION_ID") or "").strip() if entry is not None and
               sid and fields.read_field(entry / "arc.md", "claude-session") == sid else "",
-        "by": by, "done_when": done_when or "", "estimate_pct": _pct(estimate),
-        "due": parse_due(due, now),
+        "by": by, "done_when": done_when.strip(), "estimate_pct": _pct(estimate),
+        "due": parse_due(due, now), "plan": plan_card,
     }
     append_event(ev, path)
     if entry is not None:
@@ -348,10 +385,21 @@ def line(c: Dict[str, object]) -> str:
         "идёт" if is_active(c) else c["status"])
 
 
+def _block(label: str, text) -> str:
+    """``label: текст``; строки многострочного текста — с отступом."""
+    return label + ": " + "\n  ".join(str(text).splitlines())
+
+
 def show_text(c: Dict[str, object]) -> str:
-    rows = [line(c), "готово когда: " + (str(c.get("done_when")) or "—"),
-            "поставил: {0} · сессия {1} · режим {2}".format(c.get("by"), c.get("session") or "—", c.get("mode")),
-            "начат: " + _fmt_due(c.get("started_at"))]
+    plan = c.get("plan") if isinstance(c.get("plan"), dict) else None
+    rows = [line(c), "готово когда: " + (str(c.get("done_when") or "") or "—")]
+    if plan:
+        rows += [_block("план", plan.get("ref") or "—"), _block("шаги", plan.get("steps") or "—"),
+                 _block("не делать", plan.get("not_do") or "—"), _block("проверка", plan.get("check") or "—")]
+    else:
+        rows.append("план: —")
+    rows += ["поставил: {0} · сессия {1} · режим {2}".format(c.get("by"), c.get("session") or "—", c.get("mode")),
+             "начат: " + _fmt_due(c.get("started_at"))]
     if c.get("ended_at"):
         rows.append("закрыт: {0}{1}".format(_fmt_due(c["ended_at"]),
                                            " · отчёт " + str(c["report"]) if c.get("report") else ""))
@@ -366,7 +414,8 @@ def run_cli(args) -> int:
     try:
         if cmd == "start":
             ev = start(soc=args.soc, thread=args.thread, done_when=args.done_when or "",
-                       estimate=args.estimate, due=args.due, by=args.by)
+                       estimate=args.estimate, due=args.due, by=args.by, plan=args.plan or "",
+                       steps=args.steps or "", not_do=args.not_do or "", check=args.check or "")
             print("tide: цикл {0} начат ({1}, {2}/{3}); {4}".format(
                 ev["id"], ev["soc"], ev["project"], ev["thread"], cycles_file()))
         elif cmd == "show":
@@ -401,10 +450,16 @@ def register(sub) -> None:
     """``tide cycle start|show|ls|extend|end``."""
     ap = sub.add_parser("cycle", help="карточка автономного цикла (SOC-234)")
     csub = ap.add_subparsers(dest="cycle_cmd", required=True)
-    p = csub.add_parser("start", help="начать цикл по задаче")
+    # разделы плана обязательны, но проверяет их start(): одна строка-отказ со всем недостающим
+    p = csub.add_parser("start", help="начать цикл по задаче (только с планом)")
     p.add_argument("--soc", required=True, help="SOC-N (один активный цикл на задачу)")
-    p.add_argument("--done-when", default=None, help="критерий «готово когда»")
-    p.add_argument("--estimate", default=None, help="оценка, %% общей квоты")
+    p.add_argument("--plan", default=None,
+                   help="обязательно: план — URL Linear-комментария/документа, comment-<id> или абсолютный путь к .md")
+    p.add_argument("--steps", default=None, help="обязательно: шаги — что · где · готово когда шага")
+    p.add_argument("--not-do", dest="not_do", default=None, help="обязательно: что не делать")
+    p.add_argument("--check", default=None, help="обязательно: как проверить вживую")
+    p.add_argument("--done-when", default=None, help="обязательно: критерий «готово когда»")
+    p.add_argument("--estimate", default=None, help="обязательно: оценка, %% общей квоты")
     p.add_argument("--due", default=None, help="срок: «DD.MM HH:MM» или ISO")
     p.add_argument("--by", default="lead", choices=BY, help="кто поставил")
     p.add_argument("--thread", default=None, help="проект/нить рабочего (по умолчанию текущая)")
