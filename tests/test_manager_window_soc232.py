@@ -58,7 +58,7 @@ def test_tell_manager_by_whois_address_is_suppressed(fake_ao, monkeypatch):
 def test_adapter_say_to_manager_is_suppressed(fake_ao):
     from tide.adapters.ao import AoAdapter
 
-    assert AoAdapter().say("management-9", "x") is False
+    assert AoAdapter().say("management-37", "x") is False
     assert not fake_ao.exists()
 
 
