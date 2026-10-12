@@ -285,6 +285,8 @@ def test_seed_header_tells_to_use_thread_mail(tmp_project, monkeypatch):
     assert links[1] == "договорённости: {0}/ (читать на старте)".format(tmp_project / "no-agreements")
     assert links[2] == "грабли всех проектов: {0} (читать на старте)".format(
         grisha_decisions.gotchas_file())
+    from tide import ball
+    assert links[3] == ball.BALL_LINE  # SOC-242: правило мяча — строкой в шапке
     text = "\n".join(head)
     for rule in (escalate_rules.SUBAGENT_RESULT_RULE, escalate_rules.MAIL_RULE,
                  escalate_rules.THROTTLE_RULE, escalate_rules.MODEL_RULE,
