@@ -25,6 +25,14 @@ def fake_ao(tmp_path, monkeypatch):
     return sink
 
 
+@pytest.fixture(autouse=True)
+def _mgr37(monkeypatch):
+    from tide import whois
+
+    monkeypatch.setattr(whois, "manager", lambda **kw: {"ao_session": "management-37"})
+    monkeypatch.delenv("AO_SESSION_ID", raising=False)
+
+
 def test_ao_send_to_manager_is_suppressed_and_logged(fake_ao, tmp_path):
     assert ah._ao_send("management-37", "нить встала") == 0
     assert not fake_ao.exists()                       # ao не вызывали
@@ -82,3 +90,31 @@ def test_cmd_role_gate_blocks_before_decide(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     assert role_gate.cmd_role_gate(type("A", (), {"explain": None, "command": None,
                                                   "file": None})()) == role_gate.BLOCK_EXIT
+
+
+def test_other_management_thread_is_not_manager(fake_ao):
+    assert not manager_guard.is_manager_session("management-40")
+    assert ah._ao_send("management-40", "пинг") == 0
+    assert "management-40" in fake_ao.read_text(encoding="utf-8")
+    assert _bash('ao send --session management-40 --message "x"') is None
+
+
+def test_sendmessage_name_with_suffix_is_manager():
+    assert role_gate.manager_window_refusal("SendMessage", {"to": "management-37-4b"})
+    assert role_gate.manager_window_refusal("SendMessage", {"to": "management-40"}) is None
+
+
+def test_whois_unavailable_falls_back_to_prefix(monkeypatch):
+    from tide import whois
+
+    monkeypatch.setattr(whois, "manager", lambda **kw: {})
+    assert manager_guard.is_manager_session("management-40")
+    def boom(**kw):
+        raise RuntimeError
+    monkeypatch.setattr(whois, "manager", boom)
+    assert manager_guard.is_manager_session("management-40")
+
+
+def test_manager_itself_is_not_blocked(monkeypatch):
+    monkeypatch.setenv("AO_SESSION_ID", "management-37")
+    assert _bash('ao send --session management-37 --message "x"') is None

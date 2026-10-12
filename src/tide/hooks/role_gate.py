@@ -1018,12 +1018,13 @@ def manager_window_refusal(tool_name: str, tool_input: dict) -> Optional[str]:
     try:
         if not isinstance(tool_input, dict):
             return None
-        from ..manager_guard import MANAGER_PREFIX, is_manager_session
+        from ..manager_guard import is_manager_self, is_manager_session
 
+        if is_manager_self():
+            return None
         if tool_name == "SendMessage":
             to = tool_input.get("to", "")
-            if isinstance(to, str) and (to.strip().startswith(MANAGER_PREFIX)
-                                        or is_manager_session(to)):
+            if isinstance(to, str) and is_manager_session(to):
                 return MANAGER_WINDOW_REFUSAL
             return None
         if tool_name != "Bash":

@@ -22,19 +22,33 @@ EVENT = "suppressed-to-manager"
 MANAGER_MAIL_REF = "management/main"
 
 
-def is_manager_session(handle: Optional[str]) -> bool:
-    """*handle* (AO-сессия) — сессия менеджера."""
-    h = (handle or "").strip()
-    if not h:
-        return False
-    if h.startswith(MANAGER_PREFIX):
-        return True
+def _manager_ao() -> str:
     try:
         from . import whois
 
-        return h == str(whois.manager().get("ao_session") or "").strip()
-    except Exception:  # noqa: BLE001 — нет адреса менеджера: решает префикс
+        return str(whois.manager().get("ao_session") or "").strip()
+    except Exception:  # noqa: BLE001 — нет адреса менеджера: решает запасной префикс
+        return ""
+
+
+def is_manager_session(handle: Optional[str]) -> bool:
+    """*handle* (AO-сессия) — сессия менеджера: ``ao_session`` из ``tide whois manager``
+    или имя с ним как префиксом (``<ao>-4b``). Префикс ``management-`` — только запас,
+    когда whois адреса не дал (у других нитей проекта management тоже ``management-N``)."""
+    h = (handle or "").strip()
+    if not h:
         return False
+    mgr = _manager_ao()
+    if mgr:
+        return h == mgr or h.startswith(mgr + "-")
+    return h.startswith(MANAGER_PREFIX)
+
+
+def is_manager_self() -> bool:
+    """Этот процесс — сам менеджер (``$AO_SESSION_ID`` совпадает с его ao_session)."""
+    me = (os.environ.get("AO_SESSION_ID") or "").strip()
+    mgr = _manager_ao()
+    return bool(me and mgr and me == mgr)
 
 
 def log_suppressed(handle: str, text: str, *, source: str = "") -> None:
