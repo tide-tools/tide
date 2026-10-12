@@ -97,6 +97,9 @@ def _isolate_real_tide_home(monkeypatch, tmp_path):
     ``projects/<encoded>/<id>.jsonl`` file under this dir itself.
     """
     monkeypatch.delenv("TIDE_HOME", raising=False)
+    # SOC-232: подавленное в окно менеджера не должно писаться в настоящий ~/.tide
+    from tide import manager_guard
+    monkeypatch.setattr(manager_guard, "fallback_home", lambda: tmp_path / "tide-home")
     # A test must never inherit the developer's LIVE claude session id — else
     # `tide arc new-session` would stamp it into fresh test sessions (cand 93-board-spark),
     # polluting the "a fresh session has no head" assumption across the suite.

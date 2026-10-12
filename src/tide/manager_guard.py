@@ -51,6 +51,10 @@ def is_manager_self() -> bool:
     return bool(me and mgr and me == mgr)
 
 
+def fallback_home() -> Path:
+    return Path(os.environ.get("TIDE_HOME") or Path.home() / ".tide")
+
+
 def log_suppressed(handle: str, text: str, *, source: str = "") -> None:
     """Записать подавленное сообщение в журнал (почта менеджера, иначе файл)."""
     ev = {"ev": EVENT, "type": EVENT, "to": handle, "text": text, "source": source,
@@ -69,7 +73,7 @@ def log_suppressed(handle: str, text: str, *, source: str = "") -> None:
     except Exception:  # noqa: BLE001 — нить не нашли: в файл
         pass
     try:
-        home = Path(os.environ.get("TIDE_HOME") or Path.home() / ".tide")
+        home = fallback_home()
         home.mkdir(parents=True, exist_ok=True)
         with (home / FALLBACK_LOG).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ev, ensure_ascii=False) + "\n")

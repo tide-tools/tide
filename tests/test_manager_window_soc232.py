@@ -20,7 +20,7 @@ def fake_ao(tmp_path, monkeypatch):
                     .format(sys.executable, str(sink)), encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("TIDE_AO_BIN", str(fake))
-    monkeypatch.setenv("TIDE_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(manager_guard, "fallback_home", lambda: tmp_path / "home")
     monkeypatch.setattr("tide.paths.find_tide_root", lambda *a, **k: None)
     return sink
 
