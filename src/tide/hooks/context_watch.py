@@ -254,6 +254,15 @@ def _session_entry(root: Path, session: str) -> Optional[Path]:
     return offload.find_session_by_claude_id(Path(root), session)
 
 
+AUTO_HANDOFF_FIELD = "auto-handoff"
+
+
+def _auto_handoff_off(entry: Path) -> bool:
+    """``auto-handoff: off`` в паспорте — сторож молчит на любом пороге (SOC-230)."""
+    raw = (fields.read_field(entry / "arc.md", AUTO_HANDOFF_FIELD) or "").strip().lower()
+    return raw in ("off", "no", "false", "0")
+
+
 def _stood_down(entry: Path, session: str) -> bool:
     """Растворена (нить у преемника) или уже передала — сторожу тут делать нечего."""
     pp = entry / "arc.md"
@@ -501,6 +510,8 @@ def watch_reason(root: Path, payload: dict, *,
     session = str(payload.get("session_id") or payload.get("session") or "")
     entry = _session_entry(root, session)
     if entry is None:
+        return None
+    if _auto_handoff_off(entry):
         return None
     if payload.get("stop_hook_active"):
         return None
