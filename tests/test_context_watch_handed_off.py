@@ -1,7 +1,7 @@
 """SOC-98: сессия, отдавшая нить, растёт дальше без пингов (designer · 03 дошёл
 до 362 тыс.). Теперь контекст считается и у неё: на 300 тыс. — пинг «доведи
 воркера, перешли итог, замолчи», на 500 — плюс тревога менеджеру «закрой её».
-Один пинг на ступень (штамп ``ctx-ping``), мягкая ступень (250) ей не нужна.
+Один пинг на ступень (штамп ``ctx-ping``), мягкая ступень (150) ей не нужна.
 """
 
 from __future__ import annotations
@@ -43,19 +43,19 @@ def _handed_off(world):
     fields.set_field(pp, cw.HANDED_OFF_FIELD, "2026-10-09T06:35:45 → 01-x")
 
 
-def test_handed_off_pings_only_on_300_and_500(world, sent):
+def test_handed_off_pings_only_on_hard_and_alarm(world, sent):
     _handed_off(world)
-    assert cw.watch_reason(world["proj"], _payload(world, 250_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 180_000)) is None
     assert sent == {"alert": [], "manager": [], "suppressed": []}
 
-    r300 = cw.watch_reason(world["proj"], _payload(world, 320_000))
-    assert r300 == ("tide: ты передала нить, контекст 320 тыс.: доведи воркера, "
+    r300 = cw.watch_reason(world["proj"], _payload(world, 220_000))
+    assert r300 == ("tide: ты передала нить, контекст 220 тыс.: доведи воркера, "
                     "перешли итог новой и замолчи.")
     assert cw.AUTO_CMD not in r300
     assert [route for route, _ in sent["alert"]] == [cw.ROUTE_LOG]
     assert sent["manager"] == []
     # та же ступень второй раз не пингуется
-    assert cw.watch_reason(world["proj"], _payload(world, 340_000)) is None
+    assert cw.watch_reason(world["proj"], _payload(world, 240_000)) is None
 
     r500 = cw.watch_reason(world["proj"], _payload(world, 520_000))
     assert "контекст 520 тыс." in r500
@@ -67,7 +67,7 @@ def test_handed_off_pings_only_on_300_and_500(world, sent):
     assert cw.watch_reason(world["proj"], _payload(world, 600_000)) is None
     assert len(sent["suppressed"]) == 1
     assert (fields.read_field(world["sess"] / "arc.md", cw.CTX_PING_FIELD) or "")\
-        .startswith("500 ")
+        .startswith("300 ")
 
 
 def test_alert_cmd_present_no_double_send(world, monkeypatch):
