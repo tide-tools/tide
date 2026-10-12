@@ -356,7 +356,8 @@ def _worker_expired(w, now: datetime, lim: Limits) -> bool:
     if not isinstance(at, datetime):
         return False
     if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
+        # worker_runs берёт время из arc.dialog._stamp: локальное наивное, не UTC
+        at = at.astimezone()
     return (now - at).total_seconds() > lim.workers_max
 
 

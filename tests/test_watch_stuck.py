@@ -483,3 +483,49 @@ def test_p3_interrupted_session_is_not_nudged(world):
     for m in (21, 32, 60):
         run(world, f, T0 + timedelta(minutes=m), [session(activity="idle")])
     assert f.said == [] and f.mailed == []
+
+
+@pytest.fixture
+def set_tz(monkeypatch):
+    import time
+
+    def _set(name):
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+
+    yield _set
+    monkeypatch.undo()
+    time.tzset()
+
+
+def _bg_worker_transcript(path, at):
+    rows = [user_text(at),
+            tool_use(at, tid="toolu_a", name="Agent",
+                     inp={"description": "проверка", "run_in_background": True}),
+            tool_result(at, tid="toolu_a", text="Async agent launched successfully. agentId: a1b2"),
+            end_turn(at), stop_summary(at)]
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                    encoding="utf-8")
+
+
+@pytest.mark.parametrize("tz", ["America/Sao_Paulo", "Europe/Moscow", "UTC"])
+def test_p4_fresh_worker_not_expired_in_any_timezone(tmp_path, set_tz, tz):
+    set_tz(tz)
+    p = tmp_path / "t.jsonl"
+    _bg_worker_transcript(p, T0)
+    live = ws.live_workers(p)
+    assert [w[0] for w in live] == ["a1b2"]
+    now = T0 + timedelta(minutes=5)
+    assert ws._worker_expired(live[0], now, LIMITS) is False
+    v = ws.classify(ended_rows(T0), now=now, activity="active", workers=live, limits=LIMITS)
+    assert v["state"] == "workers"
+
+
+@pytest.mark.parametrize("tz", ["America/Sao_Paulo", "Europe/Moscow", "UTC"])
+def test_p4_old_worker_expired_in_any_timezone(tmp_path, set_tz, tz):
+    set_tz(tz)
+    p = tmp_path / "t.jsonl"
+    _bg_worker_transcript(p, T0)
+    live = ws.live_workers(p)
+    assert ws._worker_expired(live[0], T0 + timedelta(hours=3, minutes=5), LIMITS) is True
+    assert ws._worker_expired(live[0], T0 + timedelta(hours=2, minutes=55), LIMITS) is False
