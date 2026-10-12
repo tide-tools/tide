@@ -294,6 +294,10 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 def _cmd_report(args) -> int:
+    from .launcher import handoff_report
+
+    if handoff_report.has_work_flags(args):   # SOC-233: отчёт агента о работе
+        return handoff_report.run_cli(args)
     what = " ".join(args.what or []).strip()
     if not what and not args.dry_run:
         print("tide report: say what happened, e.g.")
@@ -375,4 +379,7 @@ def register(subparsers) -> None:
         help="skip doctor's network probe while collecting",
     )
     p.add_argument("--yes", action="store_true", help="skip the send confirmation")
+    from .launcher.handoff_report import add_work_flags
+
+    add_work_flags(p)  # SOC-233: tide report --done … --proof … --soc SOC-N — отчёт агента о работе
     p.set_defaults(func=_cmd_report, _cmd="report")

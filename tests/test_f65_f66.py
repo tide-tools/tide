@@ -126,7 +126,7 @@ def test_hook_empty_main_and_expect(world):
     assert "ожидание Гриши пусто" in r and "«главное» нити пусто" in r
     cmds = [ln.strip().lstrip("0123456789. ") for ln in r.splitlines()
             if ln.strip().lstrip("0123456789. ").startswith("tide ")]
-    assert len(cmds) == 3  # ПЕРЕДАЧА · слои+главное одной командой · автопередача
+    assert len(cmds) == 4  # отчёт (SOC-233) · ПЕРЕДАЧА · слои+главное одной командой · автопередача
     assert any("--main" in c and "--expect" in c for c in cmds)
     for c in cmds:
         assert role_gate._bash_refusal(c) is None, c

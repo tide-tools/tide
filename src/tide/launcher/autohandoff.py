@@ -629,15 +629,10 @@ def pass_template(entry: Path) -> str:
 
 
 def report_step(entry: Path) -> str:
-    """SOC-233: шаг 0 для лида — отчёт в Telegram; не лиду — пустая строка."""
+    """SOC-233: шаг 0 — отчёт о работе (у всех ролей)."""
     from . import handoff_report
 
-    if not handoff_report.is_lead(entry):
-        return ""
-    return ("  0. отчёт Грише в Telegram — первым шагом, без него передача не закроется "
-            "(3–8 строк по-русски, без id сессий: сделано с пруфом · в работе и у кого · "
-            "ждёт решения Гриши · SOC-N):\n"
-            "     {0}\n").format(handoff_report.REPORT_FORMAT)
+    return handoff_report.report_step(entry)
 
 
 def pass_fresh_minutes() -> int:

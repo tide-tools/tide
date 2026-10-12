@@ -1,13 +1,13 @@
-"""SOC-233: отчёт лида в Telegram на хендоффе.
+"""SOC-233: отчёт агента о проделанной работе — запись в ``reports.jsonl``.
 
-Слово Гриши: «Пусть менеджер в конце работы сессии пишет отчёт о работе сюда»,
-«Роли-лиды пусть тоже пишут отчёт на хендоффе». Лид — ведущая нить проекта
-(:data:`LEADS`) или менеджер. Уходящая сессия лида первым шагом передачи шлёт
-``tide handoffs report "<текст>"``: проектный лид — в тему проекта группы «tide
-agents» (``role-topics.json`` пульта, тема с ``route`` этого проекта), менеджер —
-в личку. В паспорт сессии пишется ``handoff-report: sent <ISO>``; без этой
-отметки закрыть передачу лиду нельзя (:func:`require_report`). Не лид — ничего
-не меняется. Аварийный обход — ``TIDE_HANDOFF_NO_REPORT=1`` (в журнал).
+Слово Гриши: «отчеты о проделанной работе на доску от агентов и в телеграм».
+Каждый агент-исполнитель (не сабагент) по готовности работы (итог задачи,
+In Review, конец цикла, хендофф) делает ``tide report --done … --proof … --next …
+--waits … --soc SOC-N``. tide в Telegram НЕ шлёт: он дописывает строку в
+``<management>/.tide/state/reports.jsonl`` (один источник), пульт читает её и
+шлёт в тему проекта, доска читает её для ленты «Отчёты». В паспорт сессии ставится
+``report: <id> <ISO>``. Без него закрыть передачу нельзя (:func:`require_report`);
+аварийно — ``TIDE_HANDOFF_NO_REPORT=1`` (в журнал).
 """
 
 from __future__ import annotations
@@ -15,175 +15,171 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
-import subprocess
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from .. import fields, paths, slug
 from ..arc.stream import StreamError
 
-ALERT_CMD_ENV = "TIDE_ALERT_CMD"
-ROLE_TOPICS_ENV = "TIDE_ROLE_TOPICS"
+REPORTS_FILE_ENV = "TIDE_REPORTS_FILE"
 NO_REPORT_ENV = "TIDE_HANDOFF_NO_REPORT"
-REPORT_FIELD = "handoff-report"
+REPORT_FIELD = "report"
 LOG_NAME = "handoff-report.log"
-GROUP = "pulse"
+REPORTS_NAME = "reports.jsonl"
+MANAGEMENT_PROJECT = "management"
+KINDS = ("done", "handoff", "cycle")
+WORK_FLAGS = ("done", "proof", "next", "waits", "soc", "kind")
 
-# проект (имя в ростере) → нити-лиды (слаг без «NN-@»)
-LEADS: Dict[str, Tuple[str, ...]] = {
-    "app-development": ("main", "techlead"),
-    "music": ("main",),
-    "nochnaya-smena": ("main",),
-    "mitehq": ("main", "bidbook"),
-    "tide-stack": ("main", "board"),
-}
-
-REPORT_FORMAT = ('tide handoffs report "Сделано: … (пруф) · В работе: … у кого · '
-                 'Ждёт решения Гриши: … · SOC-N"')
+REPORT_FORMAT = ('tide report --kind handoff --done "…" --proof "<путь или url>" --next "…" '
+                 '--waits "…" --soc SOC-N')
 
 
 class ReportError(StreamError):
     pass
 
 
-def role_of(entry: Path) -> Optional[Tuple[str, str]]:
-    """``("manager", проект)`` / ``("lead", проект)`` / None — не лид."""
+# --- куда писать --------------------------------------------------------------
+
+def state_dir() -> Path:
+    """``<management>/.tide/state`` (проект management из ростера control-home);
+    нет такого — ``<control-home>/.tide/state``."""
+    from .. import roster
+
+    home = paths.control_home()
     try:
-        from .. import whois
-
-        root = paths.find_tide_root(Path(entry))
-        if root is None:
-            return None
-        thread_dir = Path(entry).parents[1]
-        if whois.is_manager_thread(root, thread_dir):
-            return ("manager", root.name)
-        word = slug.entry_slug(thread_dir.name)
-        if word in LEADS.get(root.name, ()):
-            return ("lead", root.name)
-    except Exception:  # noqa: BLE001 — не лид, а не падение передачи
-        return None
-    return None
+        for e in roster.read_roster(home):
+            if e["name"] == MANAGEMENT_PROJECT:
+                return paths.state_dir(Path(e["path"]).expanduser())
+    except Exception:  # noqa: BLE001
+        pass
+    return paths.state_dir(home)
 
 
-def is_lead(entry: Path) -> bool:
-    return role_of(entry) is not None
+def reports_file() -> Path:
+    env = (os.environ.get(REPORTS_FILE_ENV) or "").strip()
+    return Path(env).expanduser() if env else state_dir() / REPORTS_NAME
 
 
 def _log(line: str) -> None:
     try:
-        d = paths.state_dir(paths.control_home())
+        d = state_dir()
         d.mkdir(parents=True, exist_ok=True)
         with open(d / LOG_NAME, "a", encoding="utf-8") as fh:
-            fh.write("{0} {1}\n".format(datetime.now().isoformat(timespec="seconds"), line))
+            fh.write("{0} {1}\n".format(datetime.now().astimezone().isoformat(timespec="seconds"), line))
     except Exception:  # noqa: BLE001
         pass
 
 
-def role_topics_path() -> Optional[Path]:
-    """role-topics.json пульта: ``$TIDE_ROLE_TOPICS`` или рядом с ``$TIDE_ALERT_CMD``."""
-    env = (os.environ.get(ROLE_TOPICS_ENV) or "").strip()
-    if env:
-        return Path(env).expanduser()
+# --- запись -------------------------------------------------------------------
+
+def _socs(*chunks: str) -> List[str]:
+    out: List[str] = []
+    for c in chunks:
+        for m in re.findall(r"SOC-\d+", c or "", re.I):
+            m = m.upper()
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def build_text(rec: Dict[str, object]) -> str:
+    """Готовый текст 3–8 строк для Telegram из полей записи."""
+    lines = []
+    soc = " ".join(rec.get("soc") or [])
+    head = "{0} · {1}".format(rec.get("project"), rec.get("role"))
+    lines.append(head + (" · " + soc if soc else ""))
+    lines.append("Сделано: " + str(rec.get("done") or "—"))
+    proof = rec.get("proof") or []
+    if proof:
+        lines.append("Пруф: " + "; ".join(proof))
+    lines.append("Дальше: " + str(rec.get("next") or "—"))
+    if rec.get("waits"):
+        lines.append("Ждёт решения: " + str(rec["waits"]))
+    return "\n".join(lines[:8])
+
+
+def make_record(entry: Path, *, done: str = "", proof: Optional[List[str]] = None,
+                next_: str = "", waits: str = "", soc: Optional[List[str]] = None,
+                kind: str = "done", text: str = "",
+                now: Optional[datetime] = None) -> Dict[str, object]:
+    root = paths.find_tide_root(Path(entry))
+    thread_dir = Path(entry).parents[1]
+    now = (now or datetime.now().astimezone()).replace(microsecond=0)
+    rec: Dict[str, object] = {
+        "id": "r-{0}-{1}".format(now.strftime("%Y%m%d-%H%M"), secrets.token_hex(2)),
+        "at": now.isoformat(),
+        "project": root.name if root else "-",
+        "thread": thread_dir.name,
+        "role": slug.entry_slug(thread_dir.name),
+        "session": Path(entry).name,
+        "ao": (os.environ.get("AO_SESSION_ID") or "").strip(),
+        "kind": kind or "done",
+        "soc": _socs(" ".join(soc or []), done, text, next_, waits),
+        "done": done or text,
+        "proof": list(proof or []),
+        "next": next_,
+        "waits": waits,
+    }
+    rec["text"] = text.strip() if (text and done) else build_text(rec)
+    return rec
+
+
+def append_record(rec: Dict[str, object], path: Optional[Path] = None) -> Path:
+    """Одна строка JSON одним ``write`` в режиме append (параллельные писатели не рвут строки)."""
+    path = Path(path) if path else reports_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        first = shlex.split(os.environ.get(ALERT_CMD_ENV) or "")[0]
-    except (ValueError, IndexError):
-        return None
-    cand = Path(first).expanduser().resolve().parent / "role-topics.json"
-    return cand if cand.is_file() else None
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    return path
 
 
-def topic_id_for(project: str, path: Optional[Path] = None) -> Optional[int]:
-    """Тема группы pulse, чей ``route`` — ``<project>/…`` (первая по порядку файла)."""
-    path = path or role_topics_path()
-    if path is None:
-        return None
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    for e in data.get("topics") or []:
-        if (isinstance(e, dict) and e.get("group") == GROUP and e.get("id")
-                and str(e.get("route") or "").split("/", 1)[0] == project):
-            return int(e["id"])
-    return None
+def write_report(entry: Path, **kw) -> Dict[str, object]:
+    if not (kw.get("done") or kw.get("text") or "").strip():
+        raise ReportError("пустой отчёт: нужен --done или текст")
+    rec = make_record(entry, **kw)
+    append_record(rec)
+    fields.set_field(Path(entry) / "arc.md", REPORT_FIELD, "{0} {1}".format(rec["id"], rec["at"]))
+    _log("{0} {1}/{2} {3}".format(rec["id"], rec["thread"], rec["session"], rec["kind"]))
+    return rec
 
 
-def _run_alert(argv: List[str], env: Dict[str, str]) -> Tuple[int, str]:
-    try:
-        p = subprocess.run(argv, env=env, timeout=30, capture_output=True, text=True)
-        return p.returncode, (p.stderr or "").strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        return -1, str(exc)
-
-
-def deliver(entry: Path, text: str) -> str:
-    """Отправить *text* по роли сессии → «куда» (для печати). ReportError — не вышло."""
-    role = role_of(entry)
-    if role is None:
-        raise ReportError("не лид")
-    kind, project = role
-    cmd = (os.environ.get(ALERT_CMD_ENV) or "").strip()
-    if not cmd:
-        raise ReportError("нет ${0} — отправить некуда".format(ALERT_CMD_ENV))
-    argv = shlex.split(cmd)
-    if kind == "manager":
-        where = "личка"
-    else:
-        tid = topic_id_for(project)
-        if tid is None:
-            raise ReportError("в role-topics.json нет темы группы {0} для проекта {1}"
-                              .format(GROUP, project))
-        argv += ["--group", GROUP, "--topic", str(tid)]
-        where = "тема проекта {0} (id {1})".format(project, tid)
-    socs = sorted(set(re.findall(r"SOC-\d+", text)))
-    if socs:
-        argv += ["--soc", ",".join(socs)]
-    argv += ["--", text]
-    env = dict(os.environ, TIDE_ALERT_ROUTE="human",
-               TIDE_ALERT_SOURCE="{0}/{1}".format(
-                   project, slug.entry_slug(Path(entry).parents[1].name)))
-    env.pop("TIDE_ALERT_URGENT", None)
-    rc, err = _run_alert(argv, env)
-    if rc != 0:
-        raise ReportError("tg-alert rc={0}{1}".format(rc, ": " + err if err else ""))
-    return where
-
-
-def send_report(entry: Path, text: str) -> Optional[str]:
-    """Отправить и отметить паспорт. None — не лид (тихо). Иначе «куда»."""
-    if not text.strip():
-        raise ReportError("пустой отчёт")
-    if role_of(entry) is None:
-        return None
-    where = deliver(entry, text.strip())
-    stamp = datetime.now().isoformat(timespec="seconds")
-    fields.set_field(Path(entry) / "arc.md", REPORT_FIELD, "sent {0}".format(stamp))
-    _log("sent {0}/{1}: {2}".format(Path(entry).parents[1].name, Path(entry).name, where))
-    return where
-
+# --- гейт ---------------------------------------------------------------------
 
 def has_report(entry: Path) -> bool:
     val = (fields.read_field(Path(entry) / "arc.md", REPORT_FIELD) or "").strip()
-    return val.startswith("sent")
+    return val.startswith("r-")
 
 
 def require_report(entry: Optional[Path]) -> None:
-    """Гейт передачи: лид без отчёта в паспорте текущей сессии → ReportError."""
-    if entry is None or not is_lead(entry) or has_report(entry):
+    """Гейт передачи: сессия без отчёта в паспорте → ReportError (любая роль)."""
+    if entry is None or has_report(entry):
         return
     if (os.environ.get(NO_REPORT_ENV) or "").strip() in ("1", "true", "yes"):
         _log("bypass {0}=1: {1}/{2}".format(NO_REPORT_ENV, Path(entry).parents[1].name,
                                             Path(entry).name))
-        print("tide: ⚠ отчёт в Telegram пропущен ({0}=1), записано в журнал".format(
-            NO_REPORT_ENV), file=sys.stderr)
+        print("tide: ⚠ отчёт пропущен ({0}=1), записано в журнал".format(NO_REPORT_ENV),
+              file=sys.stderr)
         return
     raise ReportError(
-        "лид закрывает передачу без отчёта в Telegram. Сначала:\n  {0}\n"
-        "(3–8 строк по-русски: что сделано с пруфом, что в работе и у кого, что ждёт "
-        "решения Гриши, SOC-N). Аварийно: {1}=1.".format(REPORT_FORMAT, NO_REPORT_ENV))
+        "передача без отчёта о работе. Сначала:\n  {0}\n"
+        "(сделано с пруфом · дальше · что ждёт решения пользователя · SOC-N; уйдёт в "
+        "Telegram-тему проекта и ленту «Отчёты»). Аварийно: {1}=1.".format(
+            REPORT_FORMAT, NO_REPORT_ENV))
+
+
+def report_step(entry: Path) -> str:
+    """Шаг 0 шаблона передачи — у всех ролей."""
+    return ("  0. отчёт о работе — первым шагом, без него передача не закроется (3–8 строк "
+            "по-русски, без id сессий: сделано с пруфом · дальше · что ждёт пользователя · "
+            "SOC-N; уйдёт в Telegram-тему проекта и ленту «Отчёты» на доске):\n"
+            "     {0}\n").format(REPORT_FORMAT)
 
 
 def current_entry(root: Path, ref: Optional[str] = None) -> Optional[Path]:
@@ -196,32 +192,53 @@ def current_entry(root: Path, ref: Optional[str] = None) -> Optional[Path]:
         return None
 
 
-def _cmd_report(args) -> int:
+# --- CLI ----------------------------------------------------------------------
+
+def has_work_flags(args) -> bool:
+    return any(getattr(args, k, None) for k in WORK_FLAGS)
+
+
+def run_cli(args) -> int:
     root = paths.find_tide_root()
     if root is None:
-        print("tide: handoffs report: не в tide-проекте", file=sys.stderr)
+        print("tide: report: не в tide-проекте", file=sys.stderr)
         return 1
     from . import seed_draft
 
     try:
         entry = seed_draft.resolve_session(root, getattr(args, "session", None))
     except Exception as exc:  # noqa: BLE001
-        print("tide: handoffs report: {0}".format(exc), file=sys.stderr)
+        print("tide: report: {0}".format(exc), file=sys.stderr)
         return 1
-    text = " ".join(args.text) if args.text else sys.stdin.read()
+    words = getattr(args, "what", None) or getattr(args, "text", None) or []
+    text = " ".join(words).strip()
     try:
-        where = send_report(entry, text)
+        rec = write_report(
+            entry, done=(getattr(args, "done", None) or ""), proof=getattr(args, "proof", None),
+            next_=(getattr(args, "next", None) or ""), waits=(getattr(args, "waits", None) or ""),
+            soc=[getattr(args, "soc", None) or ""], kind=(getattr(args, "kind", None) or "done"),
+            text=text)
     except ReportError as exc:
-        print("tide: handoffs report: {0}".format(exc), file=sys.stderr)
+        print("tide: report: {0}".format(exc), file=sys.stderr)
         return 1
-    if where is None:
-        return 0
-    print("tide: отчёт отправлен ({0}); в паспорте {1}".format(where, REPORT_FIELD))
+    print("tide: отчёт {0} записан ({1}); пульс отправит в Telegram, доска покажет в ленте"
+          .format(rec["id"], reports_file()))
     return 0
 
 
+def add_work_flags(p) -> None:
+    p.add_argument("--done", default=None, help="что сделано (отчёт о работе, SOC-233)")
+    p.add_argument("--proof", action="append", default=None, help="пруф: путь или url (много)")
+    p.add_argument("--next", default=None, help="что дальше")
+    p.add_argument("--waits", default=None, help="что ждёт решения пользователя")
+    p.add_argument("--soc", default=None, help="SOC-N (также берутся из текста)")
+    p.add_argument("--kind", default=None, help="done | handoff | cycle")
+    p.add_argument("--session", default=None, help="арка-сессия (по умолчанию своя)")
+
+
 def register_report(hsub) -> None:
-    ap = hsub.add_parser("report", help="отчёт лида в Telegram на хендоффе (SOC-233)")
-    ap.add_argument("text", nargs="*", help="текст отчёта (без аргументов — из stdin)")
-    ap.add_argument("--session", default=None, help="арка-сессия (по умолчанию своя)")
-    ap.set_defaults(func=_cmd_report, _cmd="handoffs report")
+    """``tide handoffs report`` — алиас ``tide report`` с полями работы."""
+    ap = hsub.add_parser("report", help="алиас tide report: отчёт о работе (SOC-233)")
+    ap.add_argument("text", nargs="*", help="текст отчёта")
+    add_work_flags(ap)
+    ap.set_defaults(func=run_cli, _cmd="handoffs report")
