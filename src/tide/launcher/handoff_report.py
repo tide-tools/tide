@@ -221,6 +221,15 @@ def run_cli(args) -> int:
     except ReportError as exc:
         print("tide: report: {0}".format(exc), file=sys.stderr)
         return 1
+    try:
+        from .. import cycle
+
+        closed = cycle.close_by_report(entry, rec)
+    except Exception as exc:  # noqa: BLE001 — отчёт уже записан, цикл не должен его ронять
+        closed = None
+        print("tide: report: цикл не закрыт: {0}".format(exc), file=sys.stderr)
+    if closed:
+        print("tide: цикл {0} сдан".format(closed["id"]))
     print("tide: отчёт {0} записан ({1}); пульс отправит в Telegram, доска покажет в ленте"
           .format(rec["id"], reports_file()))
     return 0

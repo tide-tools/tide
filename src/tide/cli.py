@@ -709,6 +709,9 @@ def build_parser() -> argparse.ArgumentParser:
     from .launcher.handoff_report import register_work_report
 
     register_work_report(subparsers)  # SOC-233: tide work-report
+    from . import cycle as _cycle
+
+    _cycle.register(subparsers)  # SOC-234: tide cycle
 
     _register_version(subparsers)
     _register_help(subparsers)

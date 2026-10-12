@@ -39,7 +39,7 @@ DOMAIN = {
     "whois", "manager_guard",
 }
 API = {"api"}
-LAUNCH = {"launcher", "adapters"}
+LAUNCH = {"launcher", "adapters", "cycle"}  # SOC-234: цикл рядом с handoff_report
 # Everything else (cli, hooks, canon, contract, onboarding, update, mcp, adopt,
 # doctor, …) is an edge and may import anything.
 

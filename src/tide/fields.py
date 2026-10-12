@@ -86,6 +86,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "cold-ping",      # SOC-237: wake after idle already pinged ("<wake ISO> <idle min> <tokens>")
         "dialog-log",     # thread: path to the external dialog log the auto-seed tails
         "handed-off",     # this session already handed its thread over (the watch stands down)
+        "cycle",          # SOC-234: id активного автономного цикла (c-…), переходит при continue
         "report",         # SOC-233: отчёт о работе записан ("<id> <ISO>")
         "handed-told",    # context-watch told the handed-over session once: finish, forward (SOC-101 F21)
         "progress-mark",  # checked work items + acts of the thread when this session was born
