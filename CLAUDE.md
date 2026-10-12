@@ -99,3 +99,7 @@ python3.12 -m pytest -q      # ВЕСЬ прогон только так
 [docs/RELEASING.md](docs/RELEASING.md). Коротко: публикуется только squash,
 перед любым пушем — проверка diff'а на личные маркеры, релиз режет
 `tide release --yes`.
+
+## graphify
+
+Граф кода лежит в graphify-out/ (локальный, в .gitignore). Для вопросов по коду сначала `graphify query "<вопрос>"` (или `graphify explain "<X>"`), потом grep/Read. После правок кода: `graphify update .` (AST, без LLM).

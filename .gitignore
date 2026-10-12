@@ -52,3 +52,6 @@ src/tide/board/instance.env
 # по прямым адресам, поэтому лежат в корне и не трекаются.
 /drafts/
 docs/drafts/
+
+# graphify: локальный граф кода (SOC-239) — пересобирается `graphify update .`
+/graphify-out/
