@@ -454,3 +454,32 @@ def test_p2_api_error_nudged_once_and_mailed_despite_error_after_nudge(world):
     assert len(f.mailed) == 1 and "ошибка API" in f.mailed[0]
     snap = json.loads((world["state"] / ws.STATE_FILE).read_text(encoding="utf-8"))
     assert snap["sessions"]["proj-7"]["state"] == "stuck"
+
+
+def test_p3_interrupted_by_user_ends_turn():
+    intr = {"type": "user", "timestamp": _ts(T0 + timedelta(seconds=5)), "message": {
+        "role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}
+    rows = [user_text(T0), tool_use(T0 + timedelta(seconds=2)), intr]
+    v = ws.classify(rows, now=T0 + timedelta(minutes=45), activity="idle", limits=LIMITS)
+    assert v["kind"] == "ended"
+    assert v["state"] == "ok"
+
+
+def test_p3_interrupted_for_tool_use_in_tool_result_and_plain_string():
+    intr_tool = tool_result(T0 + timedelta(seconds=5), text="[Request interrupted by user for tool use]")
+    v = ws.classify([user_text(T0), tool_use(T0), intr_tool],
+                    now=T0 + timedelta(minutes=45), limits=LIMITS)
+    assert v["kind"] == "ended"
+    plain = user_text(T0 + timedelta(seconds=5), "[Request interrupted by user]")
+    v = ws.classify([user_text(T0), end_turn(T0), plain],
+                    now=T0 + timedelta(minutes=45), limits=LIMITS)
+    assert v["kind"] == "ended"
+
+
+def test_p3_interrupted_session_is_not_nudged(world):
+    f = Fakes()
+    intr = user_text(T0 + timedelta(seconds=5), "[Request interrupted by user]")
+    write_rows(world["transcript"], [user_text(T0), tool_use(T0), intr], world["proj"])
+    for m in (21, 32, 60):
+        run(world, f, T0 + timedelta(minutes=m), [session(activity="idle")])
+    assert f.said == [] and f.mailed == []

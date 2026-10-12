@@ -176,6 +176,31 @@ def _tool_label(block: dict) -> str:
     return "{0} `{1}`".format(name, inp[:160]) if inp else name
 
 
+INTERRUPT_MARK = "[Request interrupted by user"
+
+
+def _interrupted(row: dict) -> bool:
+    """Строка user — след Esc: ``[Request interrupted by user…]`` (текст, блок text или
+    tool_result). После неё Claude Code не пишет ни Stop-хук, ни turn_duration."""
+    if row.get("type") != "user":
+        return False
+    c = (row.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return c.lstrip().startswith(INTERRUPT_MARK)
+    for b in _blocks(row):
+        if b.get("type") == "text" and str(b.get("text") or "").lstrip().startswith(
+                INTERRUPT_MARK):
+            return True
+        if b.get("type") == "tool_result":
+            inner = b.get("content")
+            if isinstance(inner, list):
+                inner = " ".join(str(x.get("text") or "") for x in inner
+                                 if isinstance(x, dict))
+            if str(inner or "").lstrip().startswith(INTERRUPT_MARK):
+                return True
+    return False
+
+
 def _ends_turn(row: dict) -> Optional[bool]:
     """True — строка закрывает ход; False — строка хода; None — служебная."""
     kind = row.get("type")
@@ -194,6 +219,8 @@ def _ends_turn(row: dict) -> Optional[bool]:
         if isinstance(att, dict) and att.get("type") == "hook_blocking_error":
             return False
         return None
+    if kind == "user" and _interrupted(row):
+        return True
     if kind in ("user", "assistant"):
         return False
     return None
