@@ -32,6 +32,9 @@
   (1500 с; 0 — по-старому сразу); сброс — на отправке и на тике
   ``com.tide.orphan-watch``. Сразу, как раньше: письмо от менеджера
   (``tide whois manager``), ``--urgent``, эскалация (``tide escalate``), шов-синк.
+* лок очереди пингов (SOC-277): под ним — только очередь, ждать — не дольше
+  ``$TIDE_MAIL_LOCK_SEC`` (10 с), иначе пинг в лоток ``mail-ping-spool/``; держат
+  дольше минуты или очередь разрослась — тревога менеджеру (раз в 30 мин).
 
 Журнал — append-only JSONL, одна строка на жест: ``sent``, ``ping``, ``ack``,
 ``alert``. Сами письма после отправки не правятся.
@@ -180,7 +183,9 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
     box = inbox(tdir)
     if not box.is_dir():
         return []
-    evs = events(tdir)
+    by_num: Dict[object, List[Dict[str, object]]] = {}
+    for e in events(tdir):   # SOC-277: один проход по журналу, не журнал на каждое письмо
+        by_num.setdefault(e.get("num"), []).append(e)
     succ: Dict[str, List[Dict[str, str]]] = {}
     out: List[Dict[str, object]] = []
     for p in sorted(box.iterdir()):
@@ -188,7 +193,7 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
         if not m or not p.is_file():
             continue
         num = m.group(1)
-        mine = [e for e in evs if e.get("num") == num]
+        mine = by_num.get(num, [])
         sent = next((e for e in mine if e.get("ev") == "sent"), {})
         acks = [e for e in mine if e.get("ev") == "ack"]
         to_session = str(sent.get("to_session") or "")
@@ -608,11 +613,86 @@ def _queue_path(home: Path) -> Path:
     return paths.state_dir(Path(home)) / QUEUE_NAME
 
 
-class _QueueLock:
-    """flock на ``mail-ping-queue.json.lock`` — короткий, только чтение-правка-запись."""
+# --- лок очереди (SOC-277: короткий, с тайм-аутом, с тревогой) ---------------------
+#
+# Живой случай 12.10: держатель лока под ним перечитывал журнал ящика на каждую
+# строку очереди (журнал management/main ~455 КБ, 51 строка → ~22 с на проход), ~65
+# процессов ``tide mail send`` / ``mail watch`` / ``handoff sync`` стояли за ним
+# конвоем до ~50 мин. Теперь под локом — только чтение-правка-запись очереди;
+# журналы — вне лока, один раз на ящик за проход. Ждать лок — не дольше
+# ``$TIDE_MAIL_LOCK_SEC`` (10 с): не дождался — письмо уже лежит в ящике, пинг
+# кладётся файлом в ``mail-ping-spool/`` (без лока) и уходит со следующим сбросом;
+# процесс выходит, не висит. Лок держат дольше ``$TIDE_MAIL_LOCK_ALERT_SEC`` (60 с)
+# или очередь выросла за ``$TIDE_MAIL_QUEUE_ALERT_ROWS`` строк — тревога менеджеру
+# (:func:`tide.launcher.autohandoff.send_alert`, ``route=manager``), не чаще раза в
+# ``$TIDE_MAIL_LOCK_ALERT_MIN`` минут (30).
 
-    def __init__(self, home: Path):
+LOCK_ENV = "TIDE_MAIL_LOCK_SEC"
+LOCK_DEFAULT_SEC = 10.0
+LOCK_ALERT_ENV = "TIDE_MAIL_LOCK_ALERT_SEC"
+LOCK_ALERT_DEFAULT_SEC = 60.0
+QUEUE_ALERT_ENV = "TIDE_MAIL_QUEUE_ALERT_ROWS"
+QUEUE_ALERT_DEFAULT_ROWS = 300
+ALERT_GAP_ENV = "TIDE_MAIL_LOCK_ALERT_MIN"
+ALERT_GAP_DEFAULT_MIN = 30.0
+SPOOL_NAME = "mail-ping-spool"
+QUEUE_ALERT_NAME = "mail-queue-alert.json"
+MARK_LOCK_SEC = 2.0     # витрина окна прямого пинга — ждать её дольше не стоит
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        val = float(raw) if raw else default
+    except ValueError:
+        val = default
+    return val if val >= 0 else default
+
+
+def lock_timeout_sec() -> float:
+    return _env_float(LOCK_ENV, LOCK_DEFAULT_SEC)
+
+
+class QueueBusy(MailError):
+    """Лок очереди пингов не дался за тайм-аут — держит другой процесс."""
+
+    def __init__(self, msg: str, holder: Optional[Dict[str, object]] = None,
+                 held_sec: Optional[float] = None):
+        super().__init__(msg)
+        self.holder = holder or {}
+        self.held_sec = held_sec
+
+
+def _holder_path(home: Path) -> Path:
+    return _queue_path(home).with_suffix(".json.holder")
+
+
+def _read_holder(home: Path) -> Tuple[Dict[str, object], Optional[float]]:
+    """Кто держит лок (pid, cmd, с какого момента) и сколько секунд — по записке держателя."""
+    try:
+        rec = json.loads(_holder_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, None
+    if not isinstance(rec, dict):
+        return {}, None
+    try:
+        held = max(0.0, time.time() - float(rec.get("since") or 0))
+    except (TypeError, ValueError):
+        held = None
+    return rec, held
+
+
+class _QueueLock:
+    """flock на ``mail-ping-queue.json.lock`` — короткий, только чтение-правка-запись.
+
+    *timeout* (с, None — :func:`lock_timeout_sec`): не дался — :class:`QueueBusy`.
+    Держатель оставляет записку ``.json.holder`` (pid, cmd, since) — по ней ждущий
+    видит, сколько лок держат, и тревожит менеджера (:func:`_alarm_busy`)."""
+
+    def __init__(self, home: Path, timeout: Optional[float] = None):
+        self.home = Path(home)
         self.path = _queue_path(home).with_suffix(".json.lock")
+        self.timeout = lock_timeout_sec() if timeout is None else max(0.0, float(timeout))
         self.fh = None
 
     def __enter__(self):
@@ -620,15 +700,42 @@ class _QueueLock:
         self.fh = open(str(self.path), "a+")
         try:
             import fcntl
-
-            fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
-        except (ImportError, OSError):  # pragma: no cover — не POSIX
+        except ImportError:  # pragma: no cover — не POSIX
+            return self
+        deadline = time.monotonic() + self.timeout
+        pause = 0.01
+        while True:
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    self.fh.close()
+                    self.fh = None
+                    holder, held = _read_holder(self.home)
+                    raise QueueBusy("mail: очередь пингов занята {0:g} с (держит pid {1})"
+                                    .format(self.timeout, holder.get("pid") or "?"),
+                                    holder, held) from None
+                time.sleep(pause)
+                pause = min(pause * 2, 0.2)
+            except OSError:  # pragma: no cover — ФС без flock: как раньше, без лока
+                break
+        try:
+            _holder_path(self.home).write_text(json.dumps(
+                {"pid": os.getpid(), "since": time.time(), "at": _iso(_now()),
+                 "cmd": " ".join(sys.argv[1:4])[:120]}, ensure_ascii=False), encoding="utf-8")
+        except OSError:
             pass
         return self
 
     def __exit__(self, *exc):
         if self.fh is not None:
+            try:
+                _holder_path(self.home).unlink()
+            except OSError:
+                pass
             self.fh.close()
+            self.fh = None
 
 
 def _load_queue(home: Path) -> Dict[str, Dict[str, object]]:
@@ -645,9 +752,134 @@ def _load_queue(home: Path) -> Dict[str, Dict[str, object]]:
 
 def _save_queue(home: Path, data: Dict[str, Dict[str, object]]) -> None:
     f = _queue_path(home)
-    tmp = f.with_suffix(".json.tmp")
+    tmp = f.with_suffix(".json.tmp.{0}".format(os.getpid()))
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(str(tmp), str(f))
+
+
+def _queue_rows(data: Dict[str, Dict[str, object]]) -> int:
+    return sum(len(v) for v in data["pending"].values() if isinstance(v, list))
+
+
+# --- запасной лоток: пинг без лока (SOC-277) ---------------------------------------
+
+def _spool_dir(home: Path) -> Path:
+    return paths.state_dir(Path(home)) / SPOOL_NAME
+
+
+def _spool_put(home: Path, targets: List[str], row: Dict[str, object]) -> Path:
+    """Пинг, который не дождался лока, — отдельным файлом (tmp + rename, атомарно);
+    следующий сброс (:func:`_drain_spool`, под локом) переложит его в очередь."""
+    d = _spool_dir(home)
+    d.mkdir(parents=True, exist_ok=True)
+    name = "{0}-{1}-{2}".format(int(time.time() * 1000), os.getpid(),
+                                hashlib.sha256(os.urandom(8)).hexdigest()[:8])
+    tmp = d / (".tmp-" + name)
+    tmp.write_text(json.dumps({"targets": list(targets), "row": row}, ensure_ascii=False),
+                   encoding="utf-8")
+    dst = d / (name + ".json")
+    os.replace(str(tmp), str(dst))
+    return dst
+
+
+def _spool_files(home: Path) -> List[Path]:
+    d = _spool_dir(home)
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.iterdir() if p.suffix == ".json" and not p.name.startswith("."))
+
+
+def _enqueue(data: Dict[str, Dict[str, object]], targets: List[str],
+             row: Dict[str, object]) -> None:
+    for to in targets:
+        cur = data["pending"].setdefault(to, [])
+        if not isinstance(cur, list):
+            cur = data["pending"][to] = []
+        if any(e.get("tdir") == row.get("tdir") and e.get("num") == row.get("num")
+               for e in cur if isinstance(e, dict)):
+            continue   # повтор того же письма: пинг уже ждёт в пачке
+        cur.append(dict(row))
+
+
+def _drain_spool(home: Path, data: Dict[str, Dict[str, object]]) -> int:
+    """Под локом: пинги из лотка — в очередь, файлы лотка — прочь. → сколько файлов."""
+    n = 0
+    for f in _spool_files(home):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(rec, dict) and isinstance(rec.get("row"), dict):
+                _enqueue(data, [str(t) for t in rec.get("targets") or []], rec["row"])
+        except (OSError, ValueError):
+            pass
+        try:
+            f.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+# --- тревога «почта встала» (SOC-277) -----------------------------------------------
+
+def _alarm_due(home: Path, now: float) -> bool:
+    """Не чаще раза в :data:`ALERT_GAP_ENV` минут; отметка — до отправки (без гонки
+    двух ждущих: файл пишет тот, кто взял неблокирующий flock на отметку)."""
+    gap = _env_float(ALERT_GAP_ENV, ALERT_GAP_DEFAULT_MIN) * 60
+    f = paths.state_dir(Path(home)) / QUEUE_ALERT_NAME
+    try:
+        import fcntl
+
+        fh = open(str(f.with_suffix(".json.lock")), "a+")
+    except (ImportError, OSError):
+        return False
+    try:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False   # другой ждущий уже тревожит
+        try:
+            last = float(json.loads(f.read_text(encoding="utf-8")).get("at_ts") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            last = 0.0
+        if now - last < gap:
+            return False
+        f.write_text(json.dumps({"at_ts": now, "at": _iso(_now()), "pid": os.getpid()}),
+                     encoding="utf-8")
+        return True
+    finally:
+        fh.close()
+
+
+def _alarm(home: Path, why: str) -> Optional[int]:
+    """Строка менеджеру «почта tide встала» (срочно — пульт будит сразу). Не падает."""
+    try:
+        if not _alarm_due(home, time.time()):
+            return None
+        from .launcher.autohandoff import send_alert
+
+        text = ("tide: почта встала — {0}. Письма лежат в ящиках, пинги ждут в "
+                "{1} (лоток {2}). Проверь: ps -ef | grep 'tide mail'; tide mail flush"
+                ).format(why, _queue_path(home), _spool_dir(home))
+        return send_alert(text, route="manager", source="tide mail", urgent=True)
+    except Exception:  # noqa: BLE001 — тревога не смеет сломать почту
+        return None
+
+
+def _alarm_busy(home: Path, exc: QueueBusy) -> Optional[int]:
+    """Лок не дался: держат дольше :data:`LOCK_ALERT_ENV` с — тревога."""
+    limit = _env_float(LOCK_ALERT_ENV, LOCK_ALERT_DEFAULT_SEC)
+    if exc.held_sec is None or exc.held_sec < limit:
+        return None
+    h = exc.holder
+    return _alarm(home, "лок очереди пингов держит pid {0} ({1}) уже {2:.0f} с".format(
+        h.get("pid") or "?", h.get("cmd") or "?", exc.held_sec))
+
+
+def _alarm_rows(home: Path, rows: int) -> Optional[int]:
+    limit = int(_env_float(QUEUE_ALERT_ENV, QUEUE_ALERT_DEFAULT_ROWS))
+    if limit <= 0 or rows < limit:
+        return None
+    return _alarm(home, "в очереди пингов {0} строк (порог {1})".format(rows, limit))
 
 
 def _mark_pinged(targets: List[str], when: Optional[datetime] = None) -> None:
@@ -656,11 +888,13 @@ def _mark_pinged(targets: List[str], when: Optional[datetime] = None) -> None:
     if home is None:
         return
     try:
-        with _QueueLock(home):
+        with _QueueLock(home, timeout=MARK_LOCK_SEC):
             data = _load_queue(home)
             for to in targets:
                 data["last"][to] = _iso(when or _now())
             _save_queue(home, data)
+    except QueueBusy as exc:
+        _alarm_busy(home, exc)
     except Exception:  # noqa: BLE001 — витрина окна не смеет сломать пинг
         pass
 
@@ -668,29 +902,33 @@ def _mark_pinged(targets: List[str], when: Optional[datetime] = None) -> None:
 def _queue_ping(home: Path, tdir: Path, rec: Dict[str, object], targets: List[str],
                 addr: str, kind: str, text: str) -> Dict[str, object]:
     """Поставить пинг письма в очереди адресатов; жест ``ping`` с ``queued`` — в
-    журнал (часы повтора идут от постановки). Затем — сброс созревших адресатов."""
+    журнал (часы повтора идут от постановки). Затем — сброс созревших адресатов.
+    Лок не дался (SOC-277) — пинг в лоток, сброса нет (его сделает держатель/тик)."""
     at = _iso(_now())
-    with _QueueLock(home):
-        data = _load_queue(home)
-        for to in targets:
-            row = data["pending"].setdefault(to, [])
-            if not isinstance(row, list):
-                row = data["pending"][to] = []
-            if any(e.get("tdir") == str(tdir) and e.get("num") == rec["num"]
-                   for e in row if isinstance(e, dict)):
-                continue   # повтор того же письма: пинг уже ждёт в пачке
-            row.append({"tdir": str(tdir), "addr": addr, "num": rec["num"],
-                        "sender": rec["sender"], "first": rec["first"], "at": at,
-                        "text": text})
-        _save_queue(home, data)
+    row = {"tdir": str(tdir), "addr": addr, "num": rec["num"], "sender": rec["sender"],
+           "first": rec["first"], "at": at, "text": text}
+    busy: Optional[QueueBusy] = None
+    try:
+        with _QueueLock(home):
+            data = _load_queue(home)
+            _enqueue(data, targets, row)
+            _save_queue(home, data)
+    except QueueBusy as exc:
+        busy = exc
+        _spool_put(home, targets, row)
     ev: Dict[str, object] = {"ev": "ping", "num": rec["num"], "at": at,
                              "to": ", ".join(targets), "code": None, "kind": kind,
                              "queued": True, "bytes": len(text.encode("utf-8"))}
     if len(targets) > 1:
         ev["to_all"] = targets
+    if busy is not None:
+        ev["spooled"] = True
     _append(tdir, ev)
+    if busy is not None:
+        _alarm_busy(home, busy)
+        return ev
     try:
-        flushed = flush_pings(home, only=targets)
+        flushed = flush_pings(home, only=targets, lock_timeout=MARK_LOCK_SEC)
     except Exception:  # noqa: BLE001 — сброс не смеет сломать отправку; добьёт тик
         flushed = []
     sent = [f for f in flushed if f.get("to") in targets and f.get("sent")]
@@ -713,12 +951,40 @@ def batch_text(rows: List[Dict[str, object]]) -> str:
     return text
 
 
+def _acked_map(rows: List[Dict[str, object]]) -> Dict[Tuple[str, str], bool]:
+    """(tdir, num) → прочитано ли; журнал каждого ящика — один раз (SOC-277).
+    Нет письма / нити — в карту не попадает (строка уходит без пинга)."""
+    by_box: Dict[str, Dict[str, bool]] = {}
+    out: Dict[Tuple[str, str], bool] = {}
+    for r in rows:
+        t, n = str(r.get("tdir") or ""), str(r.get("num") or "")
+        if t not in by_box:
+            try:
+                by_box[t] = {str(x["num"]): bool(x["acked"]) for x in letters(Path(t))}
+            except Exception:  # noqa: BLE001 — ящик пропал: пинговать нечего
+                by_box[t] = {}
+        try:
+            key = _num(n)
+        except MailError:
+            continue
+        if key in by_box[t]:
+            out[(t, n)] = by_box[t][key]
+    return out
+
+
 def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None,
-                now: Optional[datetime] = None, force: bool = False) -> List[Dict[str, object]]:
+                now: Optional[datetime] = None, force: bool = False,
+                lock_timeout: Optional[float] = None) -> List[Dict[str, object]]:
     """Отдать созревшие пачки: адресату не пинговали :func:`batch_gap_sec` с →
     один пинг на все его непрочитанные письма из очереди (прочитанные — прочь без
     пинга). → ``[{to, n, sent, code | why}]`` по каждому адресату с очередью.
-    Шлёт вне лока; жест ``ping`` с ``kind: batch`` — в журнал каждого письма."""
+
+    SOC-277: под локом — только очередь. Проход: (1) под локом снимок строк (и
+    лоток — в очередь); (2) без лока — прочитано ли, журнал ящика один раз;
+    (3) под локом заново: прочь прочитанное, созревших — в отправку (строки,
+    пришедшие между (1) и (3), остаются как непрочитанные); (4) без лока — ``ao
+    send``, жест ``ping`` с ``kind: batch`` в журнал каждого письма. Лок не дался
+    за *lock_timeout* — ``[{to: "*", sent: False, why: "очередь занята …"}]``."""
     from .launcher.autohandoff import _ao_send
 
     if home is None:
@@ -726,40 +992,60 @@ def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None
         if home is None:
             return []
     home = Path(home)
-    if not _queue_path(home).is_file():
+    if not _queue_path(home).is_file() and not _spool_files(home):
         return []
     now = now or _now()
     gap = batch_gap_sec()
+    try:
+        with _QueueLock(home, timeout=lock_timeout):
+            data = _load_queue(home)
+            if _drain_spool(home, data):
+                _save_queue(home, data)
+            snap = [r for to, rs in data["pending"].items()
+                    if (only is None or to in only) and isinstance(rs, list)
+                    for r in rs if isinstance(r, dict)]
+            total = _queue_rows(data)
+    except QueueBusy as exc:
+        _alarm_busy(home, exc)
+        return [{"to": "*", "n": 0, "sent": False, "why": "очередь занята — сброс позже"}]
+    _alarm_rows(home, total)
+    acked = _acked_map(snap)
+    seen = {(str(r.get("tdir") or ""), str(r.get("num") or "")) for r in snap}
     due: Dict[str, List[Dict[str, object]]] = {}
     report: List[Dict[str, object]] = []
-    with _QueueLock(home):
-        data = _load_queue(home)
-        for to in list(data["pending"]):
-            if only is not None and to not in only:
-                continue
-            rows = [r for r in data["pending"][to] if isinstance(r, dict)]
-            live: List[Dict[str, object]] = []
-            for r in rows:
-                try:
-                    if not letter(Path(str(r["tdir"])), r["num"])["acked"]:
-                        live.append(r)
-                except Exception:  # noqa: BLE001 — письмо/нить пропали: пинговать нечего
+    try:
+        with _QueueLock(home, timeout=lock_timeout):
+            data = _load_queue(home)
+            _drain_spool(home, data)
+            for to in list(data["pending"]):
+                if only is not None and to not in only:
                     continue
-            if not live:
+                rows = [r for r in data["pending"][to] if isinstance(r, dict)]
+                live: List[Dict[str, object]] = []
+                for r in rows:
+                    key = (str(r.get("tdir") or ""), str(r.get("num") or ""))
+                    if key not in seen:
+                        live.append(r)       # пришла после снимка — проверит следующий проход
+                    elif key in acked and not acked[key]:
+                        live.append(r)
+                if not live:
+                    del data["pending"][to]
+                    report.append({"to": to, "n": 0, "sent": False, "why": "прочитано"})
+                    continue
+                last = _parse_iso(str(data["last"].get(to) or ""))
+                wait = gap - (now - last).total_seconds() if last else 0
+                if wait > 0 and not force:
+                    data["pending"][to] = live
+                    report.append({"to": to, "n": len(live), "sent": False,
+                                   "why": "окно ещё {0} с".format(int(wait))})
+                    continue
+                due[to] = live
                 del data["pending"][to]
-                report.append({"to": to, "n": 0, "sent": False, "why": "прочитано"})
-                continue
-            last = _parse_iso(str(data["last"].get(to) or ""))
-            wait = gap - (now - last).total_seconds() if last else 0
-            if wait > 0 and not force:
-                data["pending"][to] = live
-                report.append({"to": to, "n": len(live), "sent": False,
-                               "why": "окно ещё {0} с".format(int(wait))})
-                continue
-            due[to] = live
-            del data["pending"][to]
-            data["last"][to] = _iso(now)
-        _save_queue(home, data)
+                data["last"][to] = _iso(now)
+            _save_queue(home, data)
+    except QueueBusy as exc:
+        _alarm_busy(home, exc)
+        return [{"to": "*", "n": 0, "sent": False, "why": "очередь занята — сброс позже"}]
     for to, rows in due.items():
         text = batch_text(rows)
         try:
@@ -776,6 +1062,7 @@ def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None
             except Exception:  # noqa: BLE001
                 pass
     return report
+
 
 
 def send(ref: str, text: str, *, sender: Optional[str] = None,
@@ -1141,7 +1428,10 @@ def _cmd_send(args) -> int:
                urgent=args.urgent)
     p = out["ping"] or {}
     if not args.no_ping:
-        if p.get("queued"):
+        if p.get("spooled"):
+            how = ("пинг {0} — в лоток: очередь пингов занята, уйдёт со следующим сбросом "
+                   "(тик orphan-watch / tide mail flush)").format(p["to"])
+        elif p.get("queued"):
             how = ("пинг {0} — в пачку: уйдёт одним пингом не позже чем через {1} мин "
                    "(срочное — --urgent)").format(p["to"], max(1, batch_gap_sec() // 60))
         elif p.get("to"):
@@ -1271,7 +1561,7 @@ def register(subparsers) -> None:
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
-__all__ = ["BATCH_ENV", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
+__all__ = ["LOCK_ENV", "QueueBusy", "lock_timeout_sec", "BATCH_ENV", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
            "from_manager", "is_urgent", "CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
            "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
