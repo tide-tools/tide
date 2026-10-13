@@ -39,6 +39,10 @@ def session(tmp_project):
     "мяч у пользователя: жду его ответа",
     "мяч у меня: жду отчёт помощника",            # нет ни задачи, ни срока
     "мяч у меня: SOC-240, жду отчёт помощника",   # нет срока
+    "мяч у менеджера",                            # SOC-265: нет «что ждём» и письма
+    "мяч у менеджера: ок на поправки",            # нет письма
+    "мяч у менеджера: жду ответа",                # нет письма
+    "мяч у менеджера · письмо 459",               # нет «что ждём»
 ])
 def test_wait_without_open_question_is_a_violation(cursor):
     assert ball.violation(cursor) is not None
@@ -49,6 +53,9 @@ def test_wait_without_open_question_is_a_violation(cursor):
     "Мяч у пользователя — вопрос тг 4610, жду только выкат",
     "мяч у меня: SOC-240, жду отчёт помощника к 03:30",
     "мяч у меня: работа 12, жду письмо board · 18 к 07:30",
+    "мяч у менеджера: ок на поправки · письмо 459",     # SOC-265: четвёртая форма
+    "мяч у main: ревью плана, жду вердикт · письмо 12",
+    "Мяч у нити 03-@qa: прогон на стенде · письмо №77",
     "отдых по слову пользователя",
     "отдых по слову Гриши до 09:00, жду утра",
     "чиню Stop-хук, который ловит «жду» без вопроса",   # «жду» в кавычках — цитата
@@ -94,11 +101,24 @@ def test_stop_hook_blocks_wait_without_question(tmp_project, session, monkeypatc
 @pytest.mark.parametrize("cursor", [
     "мяч у пользователя: вопрос TG 4582",
     "мяч у меня: SOC-240, жду отчёт помощника к 03:30",
+    "мяч у менеджера: ок на поправки · письмо 459",
     "отдых по слову пользователя",
 ])
 def test_stop_hook_silent_on_legit_ball(tmp_project, session, monkeypatch, capsys, cursor):
     offload.offload(tmp_project, "night/smena", cursor=cursor)
     assert _stop(monkeypatch, capsys, tmp_project).out.strip() == ""
+
+
+@pytest.mark.parametrize("cursor", ["жду ответа", "мяч у менеджера", "мяч у менеджера: ок на поправки"])
+def test_stop_hook_blocks_bare_wait_and_incomplete_other(tmp_project, session, monkeypatch, capsys, cursor):
+    offload.offload(tmp_project, "night/smena", cursor=cursor)
+    assert json.loads(_stop(monkeypatch, capsys, tmp_project).out)["decision"] == "block"
+
+
+def test_other_ball_side_and_no_deadline():
+    assert ball.side("мяч у менеджера: ок на поправки · письмо 459")[0] == ball.OTHER
+    from tide import watch_stuck
+    assert watch_stuck.cursor_deadline("мяч у нити 03-@qa: ждём прогон · письмо 7 к 03:30", None) is None
 
 
 def test_stop_hook_anti_loop(tmp_project, session, monkeypatch, capsys):

@@ -262,8 +262,6 @@ def _perm_after(perms: Sequence[dict], since: Optional[datetime], ao: str, sid: 
     return None
 
 
-_OTHER_BALL_RE = re.compile(r"мяч\s+у\s+(?:менеджер\w*|main\b|helper\w*|помощник\w*)",
-                           re.IGNORECASE)
 _CURSOR_DUE_RE = re.compile(r"(?<!\w)к\s*(\d{1,2}):(\d{2})(?![\d:])", re.IGNORECASE)
 
 
@@ -278,7 +276,7 @@ def cursor_deadline(cursor: str, anchor: Optional[datetime],
     # срок — только обещание самой сессии; если курсор про чужой ход (жду…, мяч у
     # пользователя/менеджера), просрочка не её сдача — и eta тут срок ожидания, не сдачи
     if (ball._USER_BALL_RE.search(text) or ball._REST_RE.search(text)
-            or ball._WAIT_RE.search(text) or _OTHER_BALL_RE.search(text)):
+            or ball._WAIT_RE.search(text) or ball.other_ball(text)):
         return None
     marks = _CURSOR_DUE_RE.findall(text)
     if marks and anchor is not None:
