@@ -37,17 +37,30 @@ SEED_TITLE = "# tide session seed"
 # has one — an inherited goal, so the seed no longer asks the agent to build the floor,
 # only to make it speak: sharpen the words and do the first pulse. The offload nudge
 # (Stop hook) enforces the pulse half.
-_START_GATE = (
-    "**Старт-гейт — до первого хода работы.** Паспорт уже рождён с именем сессии "
-    "(`title:` «проект — нить · NN», тот же текст, что в списке сессий AO — его не "
-    "меняй) и целью нити — сделай цель живой под ЭТУ сессию: "
-    "`tide arc set-goal <сессия> -p <нить> \"<цель>\"`; "
-    "впиши в `<нить>/plan.md` раздел «## главное — читать первым» — минимум три "
-    "строки вместо подсказок: SOC-N · кому и каким каналом сдавать · с кем не "
-    "дублировать (решение № 24; у новой нити без них первый пульс не пройдёт); "
-    "затем первый `tide offload <нить>/<сессия> --cursor \"<что делаешь сейчас>\" "
-    "--next \"<шаги через · >\"`. Только потом — работа."
-)
+def _start_gate(thread: str, session: str, role: str = ROLE_ORCHESTRATOR) -> str:
+    """Старт-гейт с ГОТОВЫМИ командами (SOC-286 эксп. 1): ref нити и сессии подставлены,
+    метки пересказа — из :data:`tide.handoff_queue.RETELL_ITEMS`. Голове-оркестратору
+    role-gate запрещает писать файлы — plan.md вписывает помощник (Agent)."""
+    from .. import handoff_queue as _hq, slug as _slug  # lazy: keep the seed module light
+
+    thread, session = _slug.entry_slug(thread), _slug.entry_slug(session)
+    goal_cmd, offload_cmd = _hq.start_gate_commands(thread, session)
+    plan = ("попроси помощника (Agent) вписать в" if role == ROLE_ORCHESTRATOR
+            else "впиши в")
+    return (
+        "**Старт-гейт — до первого хода работы.** Паспорт уже рождён с именем сессии "
+        "(`title:` «проект — нить · NN», тот же текст, что в списке сессий AO — его не "
+        "меняй) и целью нити — сделай цель живой под ЭТУ сессию:\n"
+        "`{0}`\n"
+        "{2} `{3}/plan.md` раздел «## главное — читать первым» — минимум три "
+        "строки вместо подсказок: SOC-N · кому и каким каналом сдавать · с кем не "
+        "дублировать (решение № 24; у новой нити без них первый пульс не пройдёт); "
+        "затем первый пульс — пересказ своими словами (каждую метку заполни; чего не "
+        "знаешь — «нет»):\n"
+        "`{1}`\n"
+        "Только потом — работа."
+    ).format(goal_cmd, offload_cmd, plan, thread)
+
 
 # Закон 47 — план нити. Greet (спарк/хендофф) велит свежей сессии «построй план по
 # закону 47», но до cand 127 ОПРЕДЕЛЕНИЕ жило только в read_plan доски
@@ -200,7 +213,7 @@ def build_seed(
                 "session's `## cursor`; keep the cursor + `## context` updated as you "
                 "work so the next session can pick up.".format(thread_name),
                 "",
-                _START_GATE,
+                _start_gate(thread_name, arc_ref, role),
                 "",
                 LAW_47_PLAN,
                 "",

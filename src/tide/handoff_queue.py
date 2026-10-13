@@ -592,6 +592,25 @@ def retell_hint(gaps: List[str], ref: str, seed: Optional[object] = None) -> str
             + "\n".join(tips))
 
 
+def retell_template() -> str:
+    """Метки пересказа §4.2 одной строкой «Ожидание: … · Ждёт Гришу: … · Нельзя: …» —
+    из :data:`RETELL_ITEMS`, чтобы шаблон в сиде и гейт не разошлись (SOC-286 эксп. 1)."""
+    return " · ".join("{0}: …".format(label) for _name, label, _rx in RETELL_ITEMS)
+
+
+def start_gate_commands(thread: str, session: str) -> List[str]:
+    """Готовые команды старт-гейта с подставленными ref нити и сессии (SOC-286 эксп. 1).
+
+    Baseline приёма: каждая новая сессия искала синтаксис через ``--help``, а первый
+    offload в 4 из 5 передач проваливал гейт пересказа. Сид несёт обе строки целиком:
+    цель сессии и первый пульс с метками пересказа."""
+    return [
+        "tide arc set-goal {0} -p {1} \"<цель этой сессии>\"".format(session, thread),
+        "tide offload {0}/{1} \"{2}\" --cursor \"<что делаешь сейчас>\" "
+        "--next \"<шаги через · >\"".format(thread, session, retell_template()),
+    ]
+
+
 def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:
     """Confirm pickup of offer *key* ATOMICALLY: flip the registry AND close the seam.
 

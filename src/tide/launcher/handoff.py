@@ -255,6 +255,18 @@ def _who_line(thread_entry: Path, session_born: Path, from_slug: str) -> str:
     return "ты — {0}, продолжаешь после {1}".format(me, prev or "сессии {0}".format(from_slug))
 
 
+def _start_gate_line(thread_entry: Path, session_born: Path) -> str:
+    """Готовые команды старт-гейта для шапки сида (SOC-286 эксп. 1): ref нити и сессии
+    подставлены, метки пересказа — из ``handoff_queue.RETELL_ITEMS``. Новая сессия не
+    ищет синтаксис через ``--help`` и не проваливает гейт пересказа первым offload."""
+    from .. import handoff_queue as _hq
+    goal_cmd, offload_cmd = _hq.start_gate_commands(
+        slug.entry_slug(Path(thread_entry).name), slug.entry_slug(Path(session_born).name))
+    return ("старт-гейт (до первого хода работы): цель сессии — `{0}`; первый пульс — "
+            "пересказ своими словами, каждую метку заполни (чего в сиде нет — «нет»): "
+            "`{1}`".format(goal_cmd, offload_cmd))
+
+
 def _manager_header_line() -> str:
     from .. import whois
 
@@ -335,6 +347,7 @@ def _seed_and_archive(thread_entry: Path, session_born: Path, distil: str,
         goal = _MANAGER_CLAUSE.sub("", goal).strip()
         from_slug = (fields.read_field(session_born / "arc.md", "from") or "").strip()
         who = _who_line(thread_entry, session_born, from_slug)
+        start = _start_gate_line(thread_entry, session_born)
         manager = _manager_header_line().replace("отчитываешься менеджеру: ", "менеджер: ")
         from .. import ball as _ball
         links = " · ".join((_esc.rules_line(), _gd.agreements_line(), _gd.gotchas_line(),
@@ -348,7 +361,7 @@ def _seed_and_archive(thread_entry: Path, session_born: Path, distil: str,
         if _sb.is_contract_seed(distil):
             shaped = _sb.build(
                 distil, head=_sb.Head(title=title, goal=goal, who=who, manager=manager,
-                                      links=links, decisions_label=dec[0] if dec else "",
+                                      links=links, start=start, decisions_label=dec[0] if dec else "",
                                       decisions=tuple(dec[1:])),
                 persona=persona, budget=budget, thread_entry=Path(thread_entry),
                 origin=origin, born=Path(session_born), archive_path=apath,
@@ -357,7 +370,7 @@ def _seed_and_archive(thread_entry: Path, session_born: Path, distil: str,
         lines = ["## нить (throughline — держи за шагом)"]
         if goal:
             lines.append("идёт к: {0}".format(goal))
-        lines += [who + "; " + manager, links]
+        lines += [who + "; " + manager, start, links]
         if dec:
             lines += dec
         head = "\n".join(lines)
