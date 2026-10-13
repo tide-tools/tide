@@ -402,7 +402,7 @@ def _ao_send(handle: str, text: str, *, force: bool = False) -> Optional[int]:
     from ..manager_guard import suppress_if_manager
 
     _LAST_ERR.pop(handle, None)
-    # SOC-289: force=True — осознанный пинг менеджеру (TIDE_ASK_WAKE_FORCE=1), мимо SOC-232
+    # SOC-289: force=True — осознанный пинг менеджеру по --ask (TIDE_ASK_WAKE_FORCE, по умолчанию вкл), мимо SOC-232
     if not force and suppress_if_manager(handle, text, source="_ao_send"):
         return 0
     if not _ao.ao_available():

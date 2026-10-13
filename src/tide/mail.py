@@ -81,7 +81,7 @@ ASK_WAKE_ENV = "TIDE_ASK_WAKE_MIN"
 ASK_WAKE_DEFAULT_MIN = 15.0
 ASK_BOARD_ENV = "TIDE_ASK_BOARD_MIN"
 ASK_BOARD_DEFAULT_MIN = 30.0
-ASK_FORCE_ENV = "TIDE_ASK_WAKE_FORCE"  # =1: пинг менеджеру в обход SOC-232 (suppress_if_manager)
+ASK_FORCE_ENV = "TIDE_ASK_WAKE_FORCE"  # по умолчанию вкл: пинг по --ask-письму менеджеру идёт в обход SOC-232; =0 выключает
 ASK_SWEEP_ENV = "TIDE_ASK_SWEEP"       # =off: обход выключен
 ASK_MAX_AGE_MIN = 24 * 60.0
 ASK_MAX_CARDS = 3
@@ -1665,8 +1665,9 @@ def ask_sweep(now: Optional[datetime] = None, wake_min: Optional[float] = None,
               tdir: Optional[Path] = None) -> List[Dict[str, object]]:
     """Обход ящика менеджера: просьбы (``kind=ask``) без квитанции, close и ответа.
 
-    Старше *wake_min* (15) — пинг менеджеру + ``ask-wake`` (пинг уходит только при
-    ``TIDE_ASK_WAKE_FORCE=1``: иначе его глушит SOC-232, в журнал идёт только событие);
+    Старше *wake_min* (15) — пинг менеджеру + ``ask-wake`` (пинг идёт в обход SOC-232 по
+    умолчанию; ``TIDE_ASK_WAKE_FORCE=0`` выключает исключение — тогда пинг глушит SOC-232,
+    в журнал идёт только событие);
     старше *board_min* (30) — ❓ на доску через tg-alert + ``ask-board`` (q-id); ответили
     после карточки — ``tg-alert --close`` + ``ask-board-closed``. Старше суток не
     поднимаем; не больше :data:`ASK_MAX_CARDS` карточек за вызов. Идемпотентно.
@@ -1736,7 +1737,7 @@ def ask_sweep(now: Optional[datetime] = None, wake_min: Optional[float] = None,
 def _ask_wake(tdir: Path, rec: Dict[str, object], now: datetime, age: float) -> None:
     from .launcher.autohandoff import _ao_send
 
-    force = (os.environ.get(ASK_FORCE_ENV) or "").strip() == "1"
+    force = (os.environ.get(ASK_FORCE_ENV) or "").strip().lower() not in ("0", "off", "no", "false")
     handle = ""
     code: Optional[int] = None
     if force:

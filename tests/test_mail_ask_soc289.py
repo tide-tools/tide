@@ -84,7 +84,8 @@ def test_send_ask_is_urgent_and_letters_expose_it(world):
     assert sent["kind"] == "ask"
 
 
-def test_wake_at_16_min_no_ping_by_default(world):
+def test_wake_force_off_no_ping(world, monkeypatch):
+    monkeypatch.setenv(mail.ASK_FORCE_ENV, "0")
     tdir, num, t0 = _ask()
     rows = mail.ask_sweep(now=t0 + timedelta(minutes=16))
     assert rows[0]["action"] == "wake"
@@ -94,8 +95,7 @@ def test_wake_at_16_min_no_ping_by_default(world):
     assert not world["aocalls"].exists() or "management-9" not in world["aocalls"].read_text()
 
 
-def test_wake_force_pings_through_suppress(world, monkeypatch):
-    monkeypatch.setenv(mail.ASK_FORCE_ENV, "1")
+def test_wake_pings_through_suppress_by_default(world):
     tdir, num, t0 = _ask()
     world["aocalls"].write_text("")
     mail.ask_sweep(now=t0 + timedelta(minutes=16))
