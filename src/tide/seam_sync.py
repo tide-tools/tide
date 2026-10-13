@@ -71,7 +71,14 @@ ITEM_BLOCKS = (
     ("topic", "топик", ()),
 )
 AWAITING_HEADS = ("ждёт гришу", "ждет гришу")
-WHERE_HEADS = ("где мы",)
+# «где мы»: старый сид — «## где мы», бюджетный (seed_budget LAYOUT "today") —
+# «## сегодня — обещания, сдано, где мы» (SOC-286 эксп. 2)
+WHERE_HEADS = ("где мы", "сегодня")
+# строка ПЕРЕДАЧИ в «где мы»: «ПЕРЕДАЧА» заглавными где угодно или «<штамп> — передача»
+# любым регистром (бюджетный сид: «02:05 — передача: …»)
+_PASSING = re.compile(r"(?-i:ПЕРЕДАЧА)|^(?:\d{4}-\d{2}-\d{2}T)?\d{1,2}:\d{2}(?::\d{2})?\S*\s*—\s*(передача)\b",
+                      re.I)
+_ARCHIVE_REF = re.compile(r"см\.\s*архив", re.I)
 
 # строка карты входа: «- топик: <имя> — страница топика отстала на N ч — освежи …»
 # и «- топик: <имя> — страница топика: сверено нечитаемо — проверь дату» (seed_draft.TOPIC_UNREADABLE_TAIL)
@@ -107,6 +114,8 @@ _STOP = {
     "итоги", "итогам", "строка", "строки", "работе", "начат", "начато", "начаты", "проверен",
     "проверено", "закрыто", "закрыт", "жив", "живой", "поручение", "поручено", "воркер",
     "следом", "также", "здесь",
+    # связки пересказа (SOC-286 эксп. 2): «первым делом … своей …» — не смысл пункта
+    "первым", "делом", "своей", "своим", "своих", "затем", "потом",
 }
 
 
@@ -222,13 +231,32 @@ def awaiting_items(seed_text: str, items: Optional[Dict[str, List[str]]] = None)
     return out
 
 
-def done_lines(seed_text: str, limit: int = 3) -> List[str]:
-    """«Сделано» по ПЕРЕДАЧЕ старой из блока «где мы» сида: метка «Сделано:», иначе
+def _passing_in(text: str) -> "tuple[str, str]":
+    """(строка ПЕРЕДАЧИ, её тело после слова) из блока «где мы» *text*; нет — пусто."""
+    for ln in _block(text, WHERE_HEADS):
+        m = _PASSING.search(ln)
+        if m:
+            return ln, ln[m.end():].lstrip(" .:")
+    return "", ""
+
+
+def passing_line(seed_text: str, archive_text: str = "") -> "tuple[str, str]":
+    """ПЕРЕДАЧА старой → ``(строка, тело)``: из «где мы» сида; нет её там или там
+    отсылка «см. архив» — из ``## где мы`` архива сида (input/seed-archive.md)."""
+    line, body = _passing_in(seed_text)
+    if (not line or _ARCHIVE_REF.search(body)) and archive_text:
+        a_line, a_body = _passing_in(archive_text)
+        if a_line:
+            return a_line, a_body
+    return line, body
+
+
+def done_lines(seed_text: str, limit: int = 3, archive_text: str = "") -> List[str]:
+    """«Сделано» по ПЕРЕДАЧЕ старой (:func:`passing_line`): метка «Сделано:», иначе
     «Где мы:», иначе вся ПЕРЕДАЧА; нет ПЕРЕДАЧИ — «итог сессии»."""
     where = _block(seed_text, WHERE_HEADS)
-    passing = next((ln for ln in where if "ПЕРЕДАЧА" in ln), "")
+    passing, body = passing_line(seed_text, archive_text)
     if passing:
-        body = passing.split("ПЕРЕДАЧА", 1)[1].lstrip(" .:")
         m = (re.search(r"Сделано:\s*(.+?)(?=\s+(?:Дальше|В полёте|В полете|Хвосты|Ждёт|Ждет)\s*:|$)", body)
              or re.search(r"Где мы:\s*(.+?)(?=\s+(?:Сделано|Дальше|В полёте|В полете|Хвосты|Ждёт|Ждет)\s*:|$)", body))
         body = m.group(1) if m else body
@@ -281,6 +309,27 @@ def first_pulses(passport_text: str, n: int = 0,
         out.append((m.group(1), m.group(2)))
         if 0 < n <= len(out):
             break
+    return out
+
+
+def passport_plan(passport_text: str) -> List[str]:
+    """Что новая назвала вне пульсов (SOC-286 эксп. 2): ``goal:`` (старт-гейт
+    set-goal), секции ``## cursor`` и ``## next`` паспорта — туда offload кладёт
+    ``--cursor``/``--next``, в ``## context`` идёт только note. Заглушки «<…>» — мимо."""
+    out: List[str] = []
+    sec = None
+    for ln in (passport_text or "").splitlines():
+        if ln.startswith("## "):
+            head = ln[3:].strip().lower()
+            sec = "cursor" if head.startswith("cursor") else "next" if head == "next" else "-"
+            continue
+        body = ln.strip()
+        if sec is None and body.lower().startswith("goal:"):
+            body = body[5:].strip()
+        elif sec not in ("cursor", "next"):
+            continue
+        if body and not body.startswith(("<", "#")):
+            out.append(body)
     return out
 
 
@@ -397,12 +446,14 @@ def done_evidence(seed_text: str, pulses: Sequence["tuple[str, str]"],
     return out
 
 
-def passing_at(seed_text: str) -> Optional[datetime]:
-    """Штамп ПЕРЕДАЧИ старой из «где мы» сида."""
-    for line in _block(seed_text, WHERE_HEADS):
-        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s*—\s*ПЕРЕДАЧА", line)
-        if m:
-            return _parse_ts(m.group(1))
+def passing_at(seed_text: str, archive_text: str = "") -> Optional[datetime]:
+    """Штамп ПЕРЕДАЧИ старой из «где мы» сида, иначе из ``## где мы`` архива сида
+    (в бюджетном сиде штамп без даты — «02:05 — передача»)."""
+    for text in (seed_text, archive_text):
+        for line in _block(text, WHERE_HEADS):
+            m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)\S*\s*—\s*ПЕРЕДАЧА", line, re.I)
+            if m:
+                return _parse_ts(m.group(1))
     return None
 
 
@@ -449,15 +500,19 @@ def _drop_for(item: str, dropped: Sequence["tuple[str, str]"]) -> Optional["tupl
 # --- сверка --------------------------------------------------------------------
 
 def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
-              since: object = None, commits: Sequence[str] = ()) -> Dict[str, object]:
+              since: object = None, commits: Sequence[str] = (),
+              archive_text: str = "") -> Dict[str, object]:
     """Сверка пересказа новой с сидом → ``{items: [{block, label, text, status, by,
     why}], done, awaiting, pulses, gaps}``; status — dropped | done (F-N сделаны после
     ПЕРЕДАЧИ: коммиты *commits*, пульсы с хешами) | closed (поручение закрыто) | named
-    | missing. *n* ≤ 0 — все пульсы после приёма."""
+    | missing. *n* ≤ 0 — все пульсы после приёма. Названным считается и сказанное в
+    ``goal:``, ``## cursor``, ``## next`` паспорта (:func:`passport_plan`);
+    *archive_text* — архив сида, там ПЕРЕДАЧА, если в сиде её нет."""
     items = seed_items(seed_text)
     pulses = first_pulses(passport_text, n, since)
-    said = " \n".join(t for _a, t in pulses)
-    dropped = drops(pulses)
+    plan = passport_plan(passport_text)
+    said = " \n".join([t for _a, t in pulses] + plan)
+    dropped = drops(list(pulses) + [("", t) for t in plan])
     proof = done_evidence(seed_text, pulses, commits)
     rows: List[Dict[str, object]] = []
     seen = set()
@@ -484,7 +539,8 @@ def reconcile(seed_text: str, passport_text: str, *, n: int = 0,
                 if ok:
                     row.update(status="named", by=by)
             rows.append(row)
-    return {"items": rows, "done": done_lines(seed_text), "awaiting": items["awaiting"],
+    return {"items": rows, "done": done_lines(seed_text, archive_text=archive_text),
+            "awaiting": items["awaiting"],
             "pulses": pulses, "gaps": sum(1 for r in rows if r["status"] == "missing")}
 
 
@@ -832,6 +888,16 @@ def ping_text(thread: str, num: str, addr: str, new_dir: Path, gaps: int) -> str
             'tide handoff sync fix {4} "…"').format(thread, num, gaps, addr, ref)
 
 
+def read_archive(seed: Path) -> str:
+    """Архив сида рядом с ним (``input/seed-archive.md``) — пусто, если нет."""
+    from .handoff_contract import SEED_ARCHIVE_NAME
+    arch = Path(seed).parent / SEED_ARCHIVE_NAME
+    try:
+        return arch.read_text(encoding="utf-8") if arch.is_file() else ""
+    except OSError:
+        return ""
+
+
 def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
           n: Optional[int] = None, seed: Optional[Path] = None,
           send_mail: Optional[Callable[..., Dict[str, object]]] = None,
@@ -856,15 +922,16 @@ def check(new_dir: Path, *, home: Optional[Path] = None, dry_run: bool = False,
             home = None
     rec = offer_of(home, new_dir)
     seed_text = seed.read_text(encoding="utf-8")
+    archive_text = read_archive(seed)
     if commits is None:
         try:
-            since = passing_at(seed_text) or _parse_ts((rec or {}).get("created"))
+            since = passing_at(seed_text, archive_text) or _parse_ts((rec or {}).get("created"))
             commits = git_commits(code_repos(seed_text), since)
         except Exception:  # noqa: BLE001 — без коммитов сверка всё равно идёт
             commits = []
     rep = reconcile(seed_text, p["passport"].read_text(encoding="utf-8"),
                     n=_pulses_n() if n is None else n, since=(rec or {}).get("taken_at"),
-                    commits=commits)
+                    commits=commits, archive_text=archive_text)
     rep["commits"] = len(commits)
     origin = (fields.read_field(p["passport"], "from") or "").strip()
     title = "{0}{1} (нить {2}{3})".format(
@@ -1341,5 +1408,6 @@ def alias_argv(argv: List[str]) -> List[str]:
 __all__ = ["FIRST_PULSES", "NO_ANSWER_MIN", "SeamSyncError", "alias_argv", "answer",
            "auto_check", "awaiting_items", "check", "code_repos", "confirmer", "done_evidence",
            "done_in_line", "done_lines", "drops", "due", "f_ids", "first_pulses", "git_commits",
-           "ids", "mentions", "on_prompt", "order_closed", "passing_at", "reconcile",
+           "ids", "mentions", "on_prompt", "order_closed", "passing_at", "passing_line",
+           "passport_plan", "read_archive", "reconcile",
            "register_sync", "remind", "render", "seed_items", "status", "wrap_offload"]
