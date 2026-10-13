@@ -736,6 +736,7 @@ class AutoResult:
     warning: Optional[str] = None           # слои нити пусты (SOC-101) — не блок
     pass_warning: Optional[str] = None      # нет свежего пульса ПЕРЕДАЧА (F44)
     signal: Optional[Dict[str, object]] = None
+    start_gate: Optional[str] = None        # dry-run: строка старт-гейта сида (SOC-286)
 
 
 def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] = None,
@@ -771,6 +772,10 @@ def run_auto(root: Path, *, mode: str = "continue", session_ref: Optional[str] =
     if res.warning:
         print(res.warning, file=sys.stderr)  # предупреждение, не блок
     if dry_run:
+        try:  # строка старт-гейта, как в шапке сида, — только показать (SOC-286 эксп. 2)
+            res.start_gate = _handoff.start_gate_preview(thread)
+        except Exception as exc:  # noqa: BLE001 — превью не валит dry-run
+            res.start_gate = "старт-гейт: не собрался ({0})".format(exc)
         return res
     owner = _project_root(entry)
     sid = (fields.read_field(entry / "arc.md", offload.CLAUDE_SESSION_FIELD) or "").strip()
@@ -809,6 +814,8 @@ def render_dry_run(res: AutoResult) -> str:
             AUTO_CHAIN_FIELD, d.chain, PROGRESS_MARK_FIELD, d.progress),
         "  ничего не записано: ни оффера, ни дистилла, ни сигнала",
     ]
+    if res.start_gate:
+        lines.append("  в шапке сида будет: {0}".format(res.start_gate))
     if res.pass_warning:
         lines.append("  ⚠ пульса ПЕРЕДАЧА нет — шаблон: {0}".format(
             pass_template(res.session)))

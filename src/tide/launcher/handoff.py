@@ -268,6 +268,25 @@ def _start_gate_line(thread_entry: Path, session_born: Path) -> str:
             "`{1}`".format(goal_cmd, offload_cmd))
 
 
+def future_session_placeholder(thread_entry: Path) -> str:
+    """Имя будущей сессии нити для dry-run — заглушка ``<NN-слаг>``: следующий NN папки
+    и слаг, как его даст передача (:func:`_unique_pickup_slug`); ничего не пишет."""
+    entry = Path(thread_entry)
+    arcs = entry / "arcs"
+    nums = [int(m.group(1)) for d in (arcs.iterdir() if arcs.is_dir() else [])
+            for m in [re.match(r"^(\d+)-", d.name)] if d.is_dir() and m]
+    tslug = slug.entry_slug(entry.name)
+    return "<{0:02d}-{1}>".format(max(nums, default=0) + 1,
+                                   _unique_pickup_slug(entry, base=tslug))
+
+
+def start_gate_preview(thread_entry: Path) -> str:
+    """Строка старт-гейта, как её получит шапка сида, с заглушкой будущей сессии —
+    для ``handoff --auto --dry-run`` (SOC-286 эксп. 2): там сессия ещё не рождена."""
+    entry = Path(thread_entry)
+    return _start_gate_line(entry, entry / "arcs" / future_session_placeholder(entry))
+
+
 def _manager_header_line() -> str:
     from .. import whois
 
