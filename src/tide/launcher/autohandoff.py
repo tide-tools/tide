@@ -378,16 +378,30 @@ def stall_manager_text(project: str, thread: str, detail: str, *,
     return head + " Оффера нет."
 
 
+MODE_MISMATCH = "SESSION_MODE_MISMATCH"   # SOC-256: ao не доставил в сессию другого режима
+_AO_ERR_CODE = re.compile(r"\(([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\)")
+_LAST_ERR: Dict[str, str] = {}            # AO-id → слова ao о последней неудаче (успех стирает)
+SILENT_FAIL_CODE = 2                      # ao вернул 0, но в выводе — код ошибки: не «успех»
+
+
+def last_send_error(handle: str) -> str:
+    """Слова ao о последней неудачной отправке в *handle* ("" — удачной или не было)."""
+    return _LAST_ERR.get(handle, "")
+
+
 def _ao_send(handle: str, text: str) -> Optional[int]:
     """``ao send --session <handle> --message <text>`` → код возврата.
 
     Бинарь — тот же, что у адаптера AO (:func:`tide.adapters.ao.ao_bin`,
     ``$TIDE_AO_BIN``). None — ao не установлен; -1 — не запустилась.
     SOC-232: в сессию менеджера не шлём — строка уходит в журнал, код 0.
-    Никогда не падает."""
+    SOC-256: вывод ao читаем: код ошибки вида ``(SESSION_MODE_MISMATCH)`` в выводе —
+    неудача, даже если процесс вернул 0 (код :data:`SILENT_FAIL_CODE`); слова ao
+    лежат в :func:`last_send_error`. Никогда не падает."""
     from ..adapters import ao as _ao
     from ..manager_guard import suppress_if_manager
 
+    _LAST_ERR.pop(handle, None)
     if suppress_if_manager(handle, text, source="_ao_send"):
         return 0
     if not _ao.ao_available():
@@ -396,9 +410,16 @@ def _ao_send(handle: str, text: str) -> Optional[int]:
     try:
         proc = subprocess.run([exe, "send", "--session", handle, "--message", text],
                               capture_output=True, text=True, timeout=60)
-        return proc.returncode
     except (OSError, ValueError, subprocess.SubprocessError):
+        _LAST_ERR[handle] = "ao не запустился"
         return -1
+    out = ((proc.stderr or "") + " " + (proc.stdout or "")).strip()
+    code = proc.returncode
+    if code == 0 and _AO_ERR_CODE.search(out):
+        code = SILENT_FAIL_CODE
+    if code != 0:
+        _LAST_ERR[handle] = out[-300:] or "exit {0}".format(code)
+    return code
 
 
 def tell_manager(text: str) -> Dict[str, object]:

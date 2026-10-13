@@ -33,6 +33,10 @@
   ``com.tide.orphan-watch``. Сразу, как раньше: письмо от менеджера
   (``tide whois manager``), ``--urgent``, эскалация (``tide escalate``), шов-синк.
 
+* «не слышит» (SOC-256): пинг, который ``ao send`` не доставил, не глотается —
+  см. раздел ниже (журнал ``err``/``deaf``, ``mail-deaf.json``, тревога менеджеру,
+  код 1 у ``tide mail send``/``flush``, ``tide mail deaf``).
+
 Журнал — append-only JSONL, одна строка на жест: ``sent``, ``ping``, ``ack``,
 ``alert``. Сами письма после отправки не правятся.
 """
@@ -519,24 +523,156 @@ def ping(tdir: Path, num: str, *, kind: str = "ping") -> Dict[str, object]:
         return _queue_ping(home, tdir, rec, targets, addr, kind, text)
     codes: List[Optional[int]] = []
     _mark_pinged(targets)
+    errs: List[str] = []
     for to in targets:
         try:
             codes.append(_ao_send(to, text))
         except Exception:  # noqa: BLE001
             codes.append(-1)
+        errs.append(_send_err(to) if codes[-1] else "")
     code: Optional[int] = None
     if codes:
         code = next((c for c in codes if c), codes[0])
+    err = next((e for c, e in zip(codes, errs) if c), "")
+    failed = False
+    for to, c, e in zip(targets, codes, errs):
+        failed = _note_delivery(to, c, e, tdir, str(rec["num"])) or failed
     ev: Dict[str, object] = {"ev": "ping", "num": rec["num"], "at": _iso(_now()),
                              "to": ", ".join(targets) or None, "code": code,
                              "kind": kind, "bytes": len(text.encode("utf-8"))}
     if len(targets) > 1:
         ev["to_all"] = targets
         ev["codes"] = codes
+    if failed:
+        ev["err"] = err or "код {0}".format(code)
+        ev["deaf"] = True
     if moved:
         ev["redirected_from"] = moved
     _append(tdir, ev)
     return ev
+
+
+# --- «не слышит» (SOC-256) -------------------------------------------------------
+#
+# ``ao send`` не доставил пинг (SESSION_MODE_MISMATCH и любой другой отказ): письмо
+# лежит файлом, но голова адресата о нём не знает. Тихо это не оставляем:
+#   * пинг в журнале письма с ``code`` ≠ 0, ``err`` (слова ao) и ``deaf: true``;
+#   * адресат (AO-id) попадает в ``<control-home>/.tide/state/mail-deaf.json`` —
+#     оттуда доска читает «роль не слышит»; пропадает при первом удачном пинге
+#     или квитанции этой сессии (``tide mail read``);
+#   * первый отказ адресату — тревога менеджеру сразу (route=manager, urgent);
+#   * ``tide mail send`` / ``tide mail flush`` выходят с кодом 1.
+
+DEAF_NAME = "mail-deaf.json"
+MODE_MISMATCH = "SESSION_MODE_MISMATCH"
+
+
+def _deaf_path(home: Path) -> Path:
+    return paths.state_dir(Path(home)) / DEAF_NAME
+
+
+def _deaf_home() -> Optional[Path]:
+    try:
+        home = paths.control_home()
+    except Exception:  # noqa: BLE001 — нет control-home: флаг некуда писать
+        return None
+    return home if paths.state_dir(home).parent.is_dir() else None
+
+
+def deaf_sessions(home: Optional[Path] = None) -> Dict[str, Dict[str, object]]:
+    """Кто сейчас «не слышит»: ``{ao-id: {since, at, code, err, mode_mismatch, n,
+    letters:[{addr, num}]}}``. Читает и доска."""
+    home = home or _deaf_home()
+    if home is None:
+        return {}
+    try:
+        data = json.loads(_deaf_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    rows = data.get("deaf") if isinstance(data, dict) else None
+    return rows if isinstance(rows, dict) else {}
+
+
+def _save_deaf(home: Path, rows: Dict[str, Dict[str, object]]) -> None:
+    f = _deaf_path(home)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"deaf": rows, "updated": _iso(_now())},
+                              ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(str(tmp), str(f))
+
+
+def deaf_clear(to: str) -> bool:
+    """Снять флаг с AO-id *to* (пинг дошёл / сессия прочла письмо). → был ли флаг."""
+    home = _deaf_home()
+    if home is None or not to:
+        return False
+    try:
+        with _QueueLock(home):
+            rows = deaf_sessions(home)
+            if to not in rows:
+                return False
+            del rows[to]
+            _save_deaf(home, rows)
+            return True
+    except Exception:  # noqa: BLE001 — витрина не смеет сломать почту
+        return False
+
+
+def _note_delivery(to: str, code: Optional[int], err: str, tdir: Path, num: str) -> bool:
+    """Итог пинга в *to* → состояние «не слышит». → True, если отказ (code ≠ 0).
+    Первый отказ адресату — тревога менеджеру сразу. Не падает."""
+    if code is None:
+        return False
+    if code == 0:
+        deaf_clear(to)
+        return False
+    home = _deaf_home()
+    if home is None:
+        return True
+    mismatch = MODE_MISMATCH in (err or "")
+    addr = address_of(tdir)
+    first = False
+    try:
+        with _QueueLock(home):
+            rows = deaf_sessions(home)
+            cur = rows.get(to) if isinstance(rows.get(to), dict) else None
+            first = cur is None
+            cur = cur or {"since": _iso(_now()), "n": 0, "letters": []}
+            cur.update(at=_iso(_now()), code=code, err=(err or "")[-300:],
+                       mode_mismatch=mismatch or bool(cur.get("mode_mismatch")))
+            cur["n"] = int(cur.get("n") or 0) + 1
+            if not any(l.get("addr") == addr and l.get("num") == num
+                       for l in cur["letters"] if isinstance(l, dict)):
+                cur["letters"] = (cur["letters"] + [{"addr": addr, "num": num}])[-20:]
+            rows[to] = cur
+            _save_deaf(home, rows)
+    except Exception:  # noqa: BLE001
+        return True
+    if first:
+        try:
+            from .launcher.autohandoff import send_alert
+
+            why = ("терминальная сессия: ao send письмо не принимает ({0})".format(MODE_MISMATCH)
+                   if mismatch else "ao send вернул код {0}: {1}".format(code, (err or "—")[-120:]))
+            text = ("tide: пинг почты {0} в {1} не дошёл — {2}. Окно {1} не слышит почту; "
+                    "письмо лежит непрочитанным: tide mail read {3} {0}. "
+                    "Состояние: {4}").format(num, to, why, addr, _deaf_path(home))
+            ac = send_alert(text, route="manager", source=addr, urgent=True)
+            _append(tdir, {"ev": "alert", "num": num, "at": _iso(_now()),
+                           "route": "manager", "code": ac, "why": "deaf", "to": to})
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
+def _send_err(to: str) -> str:
+    try:
+        from .launcher.autohandoff import last_send_error
+
+        return last_send_error(to)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # --- пинг пачкой (SOC-179, токеномика правило 3) ----------------------------------
@@ -696,6 +832,8 @@ def _queue_ping(home: Path, tdir: Path, rec: Dict[str, object], targets: List[st
     sent = [f for f in flushed if f.get("to") in targets and f.get("sent")]
     if sent:
         ev = dict(ev, queued=False, code=sent[0].get("code"), batch=True)
+        if sent[0].get("deaf"):
+            ev.update(err=sent[0].get("err"), deaf=True)
     return ev
 
 
@@ -766,15 +904,26 @@ def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None
             code = _ao_send(to, text)
         except Exception:  # noqa: BLE001
             code = -1
-        report.append({"to": to, "n": len(rows), "sent": True, "code": code})
+        err = _send_err(to) if code else ""
+        row: Dict[str, object] = {"to": to, "n": len(rows), "sent": True, "code": code}
+        if code:
+            row["err"] = err or "код {0}".format(code)
+            row["deaf"] = True
+        report.append(row)
         for r in rows:
+            ev: Dict[str, object] = {
+                "ev": "ping", "num": r["num"], "at": _iso(now), "to": to,
+                "code": code, "kind": "batch", "batch": len(rows),
+                "bytes": len(text.encode("utf-8"))}
+            if code:
+                ev.update(err=row["err"], deaf=True)
             try:
-                _append(Path(str(r["tdir"])), {
-                    "ev": "ping", "num": r["num"], "at": _iso(now), "to": to,
-                    "code": code, "kind": "batch", "batch": len(rows),
-                    "bytes": len(text.encode("utf-8"))})
+                _append(Path(str(r["tdir"])), ev)
+                _note_delivery(to, code, err, Path(str(r["tdir"])), str(r["num"]))
             except Exception:  # noqa: BLE001
                 pass
+        if not code:
+            deaf_clear(to)
     return report
 
 
@@ -852,6 +1001,9 @@ def read(ref: str, num: object, *, by: Optional[str] = None,
            "by": (by or "").strip() or _who_am_i(),
            "file_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]}
     _append(tdir, ack)
+    reader = (os.environ.get(AO_SESSION_ENV) or "").strip()
+    if reader:
+        deaf_clear(reader)   # SOC-256: прочла сама — значит слышит
     return text, ack
 
 
@@ -1155,7 +1307,15 @@ def _cmd_send(args) -> int:
     if out.get("redirected_from"):
         how += " · {0} передала нить — письмо преемнику {1}".format(
             out["redirected_from"], out["to_session"])
+    failed = (not args.no_ping) and bool(p.get("deaf"))
+    if failed:
+        how = "пинг {0} НЕ ДОШЁЛ (код {1}: {2}) — адресат не слышит, менеджер оповещён".format(
+            p.get("to"), p.get("code"), str(p.get("err") or "").strip()[-160:])
     print("почта {0} → {1} ({2} Б) · {3}".format(out["num"], out["path"], out["bytes"], how))
+    if failed:
+        print("письмо лежит непрочитанным; адресат: tide mail read {0} {1}".format(
+            args.thread, out["num"]), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1213,7 +1373,24 @@ def flush_line(res: List[Dict[str, object]]) -> str:
 
 
 def _cmd_flush(args) -> int:
-    print(flush_line(flush_pings(force=args.force)))
+    res = flush_pings(force=args.force)
+    print(flush_line(res))
+    return 1 if any(r.get("sent") and r.get("code") for r in res) else 0
+
+
+def _cmd_deaf(args) -> int:
+    rows = deaf_sessions()
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
+    elif not rows:
+        print("не слышат: никто")
+    else:
+        for to, r in sorted(rows.items()):
+            print("{0}: не слышит с {1} · отказов {2} · {3} · письма: {4}".format(
+                to, r.get("since"), r.get("n"),
+                MODE_MISMATCH if r.get("mode_mismatch") else "код {0}".format(r.get("code")),
+                ", ".join("{0} {1}".format(l.get("addr"), l.get("num"))
+                          for l in r.get("letters") or [] if isinstance(l, dict))))
     return 0
 
 
@@ -1229,7 +1406,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "mail", help="thread mail: letters as files in the thread's inbox, ack on read, "
                      "re-ping until read (SOC-143)")
-    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|flush|watch>")
+    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|flush|deaf|watch>")
 
     s = sub.add_parser("send", help="drop a letter into <thread>/inbox and ping its holder")
     s.add_argument("thread", help="<нить> | <проект>/<нить>[@<ao-id | сессия>] — "
@@ -1268,10 +1445,15 @@ def register(subparsers) -> None:
     fl.add_argument("--force", action="store_true")
     fl.set_defaults(func=_cmd_flush, _cmd="mail flush")
 
+    df = sub.add_parser("deaf", help="sessions whose mail ping failed (ao send refused, e.g. "
+                                     "SESSION_MODE_MISMATCH): the 'does not hear' state (SOC-256)")
+    df.add_argument("--json", action="store_true")
+    df.set_defaults(func=_cmd_deaf, _cmd="mail deaf")
+
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
-__all__ = ["BATCH_ENV", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
+__all__ = ["BATCH_ENV", "DEAF_NAME", "MODE_MISMATCH", "deaf_clear", "deaf_sessions", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
            "from_manager", "is_urgent", "CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
            "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
