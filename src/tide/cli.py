@@ -591,6 +591,10 @@ def _register_whois(sub) -> None:
     from .whois import register as register_whois
 
     register_whois(sub)
+    # SOC-271: `tide idle` / `tide why` / `tide gc sessions` — сессии глазами головы менеджера
+    from .session_view import register as register_session_view
+
+    register_session_view(sub)
 
 
 def _register_mail(sub) -> None:
