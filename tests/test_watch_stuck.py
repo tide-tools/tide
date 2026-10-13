@@ -251,6 +251,9 @@ def world(tmp_path, monkeypatch):
     ws._save(state, {}, T0 - timedelta(days=1))  # state уже есть: не первый запуск (п.7)
     for k in list(ws.ENV_KEYS):
         monkeypatch.delenv(k, raising=False)
+    # дежурный (SOC-278): настоящих писем супервайзеру и ❓ в тестах не шлём
+    monkeypatch.setattr(ws, "default_mail_to", lambda ref, text: True)
+    monkeypatch.setattr(ws._duty, "default_alert", lambda text, source: True)
     return {"proj": proj, "entry": entry, "transcript": tdir / "{0}.jsonl".format(SID),
             "state": state}
 
@@ -301,7 +304,7 @@ def test_one_nudge_then_one_mail(world):
     assert rec["transcript"] == str(world["transcript"])
     events = [json.loads(x) for x in
               (world["state"] / ws.EVENTS_FILE).read_text(encoding="utf-8").splitlines()]
-    assert [e["ev"] for e in events] == ["nudge", "stuck"]
+    assert [e["ev"] for e in events if not e["ev"].startswith("duty_")] == ["nudge", "stuck"]
 
 
 def test_new_activity_starts_new_episode(world):
@@ -702,7 +705,8 @@ def test_p7_nudge_once_and_no_loop_after_short_reply(world, set_tz):
     write_rows(world["transcript"], rows, world["proj"])
     for m in range(2, 90):
         run(world, f, now + timedelta(minutes=m), s)
-    assert len(f.said) == 1
+    # дежурный (SOC-278) может будить отдельно, это не петля сторожа
+    assert len([t for _h, t in f.said if t.startswith("сторож:")]) == 1
 
 
 def test_p7_eta_from_passport_reaches_classify(world, set_tz):

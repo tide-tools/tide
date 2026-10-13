@@ -22,6 +22,10 @@
 * **ждёт** — ход закончен, курсор «жду…» / «мяч у пользователя», без событий (любая
   запись транскрипта, письмо тоже) ≥ :attr:`Limits.wait` (4 ч): письмо менеджеру
   «ждёт N ч: <курсор>», повтор не чаще :attr:`Limits.wait_repeat`.
+* **дежурный** (SOC-278, :mod:`tide.duty`) — к вердикту каждой сессии добавлены ``ball``
+  (у кого мяч) и ``next`` (шаг из паспорта); стоящих с мячом будит, диалоги несёт
+  пользователю ❓, нерешённое — супервайзеру. Статус ролей — ``duty.json`` (формат в
+  докстринге :mod:`tide.duty`).
 * **помощники** — живые фоновые сабагенты (``Agent run_in_background`` без итога):
   ход формально закончен или висит на их ожидании, транскрипт молчит — это не простой.
   Освобождение действует :attr:`Limits.workers_max` (3 ч) от запуска помощника.
@@ -45,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
+from . import duty as _duty
 from . import paths
 
 OFF_ENV = "TIDE_WATCH_STUCK"
@@ -73,6 +78,9 @@ _LIMIT_ENV = {
     "workers_max": "TIDE_WATCH_WORKERS_MAX_SEC",
     "overdue": "TIDE_WATCH_OVERDUE_SEC",
     "keep_missing": "TIDE_WATCH_KEEP_SEC",
+    "duty_nudge_gap": "TIDE_DUTY_NUDGE_GAP_SEC",
+    "duty_mail_gap": "TIDE_DUTY_MAIL_GAP_SEC",
+    "duty_escalate": "TIDE_DUTY_ESCALATE_SEC",
 }
 ENV_KEYS = tuple(_LIMIT_ENV.values()) + (OFF_ENV, STATE_DIR_ENV, MAIL_CMD_ENV)
 
@@ -110,6 +118,11 @@ class Limits:
     # сессия выпала из выдачи ``ao session ls`` (сбой/усечённый ответ): запись живёт в state
     # столько секунд, чтобы эпизод не стал «новым» и не дал шквал толчков
     keep_missing: int = 3600
+    # дежурный (SOC-278, :mod:`tide.duty`): толчок «мяч у тебя» — не чаще 30 мин на сессию,
+    # письмо «мяч у менеджера» — 60 мин, разбор супервайзеру — через 30 мин после пинка
+    duty_nudge_gap: int = 30 * 60
+    duty_mail_gap: int = 60 * 60
+    duty_escalate: int = 30 * 60
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "Limits":
@@ -645,6 +658,13 @@ def locate(s: dict) -> Dict:
                 out["session"] = str(entry)
                 out["cursor"] = ball.cursor_of(entry / "arc.md")
                 from . import fields
+                try:
+                    from .session_view import section
+
+                    out["next"] = section(entry / "arc.md", "next")
+                    out["title"] = (fields.read_field(entry / "arc.md", "title") or "").strip()
+                except Exception:  # noqa: BLE001 — паспорт без next/title не беда
+                    pass
 
                 out["eta"] = _when(fields.read_field(entry / "arc.md", "eta") or "")
         except Exception:  # noqa: BLE001
@@ -679,9 +699,14 @@ def _tide_argv() -> List[str]:
 def default_mail(text: str) -> bool:
     """``tide mail send management/main --from tide-watch -`` (текст — stdin).
     ``$TIDE_WATCH_MAIL_CMD`` — своя команда (тест, живая проверка без писем)."""
+    return default_mail_to(MANAGER_REF, text)
+
+
+def default_mail_to(ref: str, text: str) -> bool:
+    """То же письмо адресату *ref* (``management/supervisor`` — разбор дежурного)."""
     raw = (os.environ.get(MAIL_CMD_ENV) or "").strip()
     argv = shlex.split(raw) if raw else _tide_argv() + ["mail", "send"]
-    argv = argv + [MANAGER_REF, "--from", SENDER, "-"]
+    argv = argv + [ref, "--from", SENDER, "-"]
     try:
         proc = subprocess.run(argv, input=text, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
@@ -752,7 +777,9 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
              state_dir: Optional[Path] = None, dry_run: bool = False,
              env: Optional[Dict[str, str]] = None,
              locator: Callable[[dict], Dict] = None,
-             assume_state: bool = False) -> List[Dict]:
+             assume_state: bool = False,
+             mail_to: Optional[Callable[[str, str], bool]] = None,
+             alert: Optional[Callable[[str, str], bool]] = None) -> List[Dict]:
     """Один проход по живым AO-сессиям → записи (с ``actions``). Идемпотентен:
     повторный проход без новых событий ничего не шлёт. Пустая выдача AO / сбой ``ao`` —
     проход ничего не делает и state не трогает. *assume_state* (только с *dry_run*) —
@@ -767,6 +794,8 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
         return []  # пауза файлом: ``touch <state>/watch-stuck.off`` / ``rm`` — без перезагрузки агента
     say = say or default_say
     mail = mail or default_mail
+    mail_to = mail_to or default_mail_to
+    alert = alert or _duty.default_alert
     locator = locator or locate
     lock = None
     if not dry_run:
@@ -790,6 +819,12 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
         seeding = loaded is None and not (assume_state and dry_run)  # нет истории — не слать накопленное разом
         prev_all = loaded or {}
         out: List[Dict] = []
+        try:
+            prev_duty = _duty.load(sdir)
+        except Exception:  # noqa: BLE001
+            prev_duty = {}
+        new_duty: Dict[str, Dict] = {}
+        duty_budget = _duty.MAX_ACTIONS
         for s in rows_in:
             if s.get("isTerminated") or _activity(s) == "exited":
                 continue
@@ -811,6 +846,9 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                         v = classify(rows, now=now, activity=act, cursor=loc.get("cursor", ""),
                                      perms=_perms(loc.get("root")), workers=live, limits=lim,
                                      ao=handle, sid=loc.get("sid", ""), eta=loc.get("eta"))
+                bk, bl = _duty.ball_of(loc.get("cursor", ""))
+                nxt = _duty.next_step(loc.get("next"))
+                v["ball"], v["ball_label"], v["next"] = bk, bl, nxt
                 mgr = is_manager(handle)
                 rec, acts = decide(prev_all.get(handle), v, now=now, limits=lim, manager=mgr)
                 if seeding:
@@ -834,6 +872,8 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                     "transcript": str(tp),
                     "ao_activity": act,
                     "cursor": _clip(loc.get("cursor", ""), 200),
+                    "title": loc.get("title", ""),
+                    "ball": bk, "ball_label": bl, "next": nxt,
                     "manager": mgr,
                     "updated": _iso(now),
                 })
@@ -859,6 +899,15 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                                   "project": rec["project"], "thread": rec["thread"],
                                   "reason": rec["reason"], "reason_text": rec["reason_text"],
                                   "quiet_min": rec["quiet_min"], "transcript": rec["transcript"]})
+                try:  # дежурный (SOC-278): сбой его части не трогает сторож
+                    duty_budget = _duty_step(
+                        handle, rec, v, loc, sent, acts, mgr, bk, bl, nxt, prev_duty,
+                        new_duty, now, lim, dry_run=dry_run, seeding=seeding, say=say,
+                        mail=mail, mail_to=mail_to, alert=alert, sdir=sdir,
+                        budget=duty_budget)
+                except Exception:  # noqa: BLE001
+                    if handle in prev_duty:
+                        new_duty[handle] = prev_duty[handle]
                 rec["actions"] = sent
                 new_all[handle] = {k: x for k, x in rec.items() if k != "actions"}
                 out.append(rec)
@@ -872,6 +921,10 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
         if not dry_run:
             _save(sdir, new_all, now)
             saved = True
+            try:
+                _duty.save(sdir, new_duty, _duty.mail_status(sdir, now), now)
+            except Exception:  # noqa: BLE001 — статус дежурного не роняет тик
+                pass
         return out
     finally:
         if armed and not dry_run and not saved:
@@ -881,6 +934,50 @@ def run_once(*, sessions: Optional[Iterable[dict]] = None, now: Optional[datetim
                 pass
         if lock is not None:
             lock.close()
+
+
+def _duty_step(handle, rec, v, loc, sent, watch_acts, mgr, bk, bl, nxt, prev_duty,
+               new_duty, now, lim, *, dry_run, seeding, say, mail, mail_to, alert, sdir,
+               budget) -> int:
+    """Дежурный по одной сессии: решение (:func:`tide.duty.decide`), доставка, запись в
+    *new_duty*. → остаток бюджета действий на проход."""
+    cursor = loc.get("cursor", "")
+    dlg = in_dialog(v)
+    d, dacts = _duty.decide(prev_duty.get(handle), rec, v, ball_kind=bk, ball_label=bl,
+                            nxt=nxt, cursor=cursor, now=now, limits=lim, manager=mgr,
+                            dialog=dlg, watch_acts=watch_acts, budget=budget)
+    if seeding:
+        dacts = []
+    source = "{0}/{1}/{2}".format(rec.get("project") or "?", rec.get("thread") or "?", handle)
+    for a in dacts:
+        if dry_run:
+            sent.append(a)
+            continue
+        ok = False
+        try:
+            if a == _duty.ACT_NUDGE:
+                ok = bool(say(handle, _duty.nudge_text(rec, v, nxt, cursor)))
+            elif a == _duty.ACT_MAIL_MGR:
+                ok = bool(mail(_duty.manager_letter(rec, v, nxt, cursor)))
+            elif a == _duty.ACT_ALERT:
+                ok = bool(alert(_duty.alert_text(rec, v), source))
+            elif a == _duty.ACT_ESCALATE:
+                ok = bool(mail_to(_duty.SUPERVISOR_REF,
+                                  _duty.escalate_letter(rec, v, d, nxt, cursor)))
+        except Exception:  # noqa: BLE001 — доставка не роняет проход
+            ok = False
+        sent.append(a)
+        _duty.apply_done(d, a, ok, now)
+        if a != _duty.ACT_ALERT:
+            budget -= 1
+        _event_safe(sdir, {"ev": a, "at": _iso(now), "ok": ok, "ao_session": handle,
+                           "project": rec.get("project"), "thread": rec.get("thread"),
+                           "reason": rec.get("reason"), "quiet_min": rec.get("quiet_min"),
+                           "ball": bk})
+    if dry_run:
+        budget -= sum(1 for a in dacts if a != _duty.ACT_ALERT)
+    new_duty[handle] = _duty.board_row(rec, d, ball_kind=bk, ball_label=bl, nxt=nxt, v=v)
+    return budget
 
 
 def line(recs: Sequence[Dict], *, now: Optional[datetime] = None) -> str:
