@@ -857,12 +857,23 @@ def launch_handoff(
             pass  # best-effort: the spawn must not fail over a title
     keep_title = (" Заголовок сессии «{0}» уже стоит — не меняй его: в старт-гейте "
                   "ставь только цель.".format(title) if title else "")
+    # SOC-286 эксп. 1: готовые команды старт-гейта прямо в первом ходе — ref нити и
+    # сессии подставлены, метки пересказа из handoff_queue.RETELL_ITEMS.
+    gate = ""
+    try:
+        from .. import handoff_queue as _hq
+        goal_cmd, offload_cmd = _hq.start_gate_commands(
+            session_dir.parent.parent.name, session_dir.name)
+        gate = " Команды готовы: `{0}`, затем `{1}` — каждую метку пересказа " \
+               "заполни своими словами (чего в сиде нет — «нет»).".format(goal_cmd, offload_cmd)
+    except Exception:  # noqa: BLE001  подсказка не смеет сорвать запуск
+        gate = ""
     pickup_trigger = (
         "Ты — свежая сессия, принявшая нить «{0}» по тёплому хендоффу ({2}). "
         "Начни с первого шага из сида: прими нить (дистилл прошлой сессии, точка "
-        "хендоффа) и закрой старт-гейт первым tide offload.{1} Приём подтверждаешь "
-        "сама — разрешения не спрашивай, пересказ состояния не нужен."
-    ).format(slug, keep_title, _raise_log.how(raised_by, after=raised_after, via=via))
+        "хендоффа) и закрой старт-гейт первым tide offload.{3}{1} Приём подтверждаешь "
+        "сама — разрешения не спрашивай, пересказывать человеку не нужно."
+    ).format(slug, keep_title, _raise_log.how(raised_by, after=raised_after, via=via), gate)
     # ONE launch path (wave 3): sid pinned before spawn, the offer RESERVED for that
     # sid — the flip to taken happens on the session's first message (signed A:
     # reception is real only when the terminal actually said hello; a failed spawn

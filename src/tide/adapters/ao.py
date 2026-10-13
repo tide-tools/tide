@@ -219,7 +219,9 @@ def build_prompt(spec: AoLaunch, *, main_tree: Optional[str] = None) -> str:
         parts.append(
             "Приём: `tide hook handoff-confirm </dev/null` — id сессии tide возьмёт "
             "сам; если хук уже подтвердил, команда промолчит. Нить станет твоей с "
-            "первым tide offload, сказанным своими словами."
+            "первым tide offload, сказанным своими словами. Готовые команды "
+            "старт-гейта (set-goal и offload с метками пересказа) — в сиде, строка "
+            "«старт-гейт»: --help не нужен."
         )
     if spec.resumed_from:
         parts.append(

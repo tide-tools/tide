@@ -815,6 +815,7 @@ class Head(NamedTuple):
     links: str = ""                    # правила нити · договорённости · грабли
     decisions_label: str = ""          # «решения Гриши по проекту … за 3 суток (журнал …):»
     decisions: Tuple[str, ...] = ()
+    start: str = ""                    # готовые команды старт-гейта (SOC-286 эксп. 1)
 
 
 class Shaped(NamedTuple):
@@ -897,7 +898,7 @@ def build(distil: str, *, head: Head, persona: str = "", budget: int = ROLE_BUDG
     head_items = [Item(x, raw=True, pinned=True) for x in (
         "идёт к: " + head.goal if head.goal else "",
         head.who + ("; " + head.manager if head.manager else ""),
-        head.links) if x.strip()]
+        head.start, head.links) if x.strip()]
     main_body = _body(secs, "main")
     mains = main_items(main_body)
     head_block = Block("head", [Group("", head_items, 0.0, dated=False),
