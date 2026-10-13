@@ -593,6 +593,13 @@ def _register_whois(sub) -> None:
     register_whois(sub)
 
 
+def _register_head_ops(sub) -> None:
+    # SOC-271: `tide ok` / `tide task` — быстрые команды головы менеджера
+    from .head_ops import register as register_head_ops
+
+    register_head_ops(sub)
+
+
 def _register_mail(sub) -> None:
     # SOC-143: `tide mail send|read|ls` — почта нити с квитанцией и повтором пинга
     from .mail import register as register_mail
@@ -736,6 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_offload(subparsers)
     _register_whois(subparsers)
     _register_mail(subparsers)
+    _register_head_ops(subparsers)
     _register_lookback(subparsers)
     _register_truth(subparsers)
     _register_canon(subparsers)
