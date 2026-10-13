@@ -191,6 +191,7 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
     for e in events(tdir):   # SOC-277: один проход по журналу, не журнал на каждое письмо
         by_num.setdefault(e.get("num"), []).append(e)
     succ: Dict[str, List[Dict[str, str]]] = {}
+    taken_box: List[List[Dict[str, object]]] = []   # SOC-278: очередь офферов — один раз
     out: List[Dict[str, object]] = []
     for p in sorted(box.iterdir()):
         m = _LETTER.match(p.name)
@@ -210,7 +211,9 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
                         for a in acks)
             if not acked and acks:
                 if to_session not in succ:
-                    succ[to_session] = succession(tdir, to_session)
+                    if not taken_box:
+                        taken_box.append(_taken_offers())
+                    succ[to_session] = succession(tdir, to_session, taken_box[0])
                 acked = any(_ack_by_addressee(str(a.get("by") or ""), s["name"], s["ao"])
                             for s in succ[to_session] for a in acks)
         out.append({
@@ -440,10 +443,27 @@ def resolve_session(tdir: Path, want: str) -> Dict[str, object]:
 SUCCESSION_MAX = 50
 
 
-def succession(tdir: Path, name: str) -> List[Dict[str, str]]:
+def _taken_offers() -> List[Dict[str, object]]:
+    """Принятые офферы очереди хендоффов; очередь не читается — пусто."""
+    from . import handoff_queue as hq
+
+    home = _home()
+    if home is None:
+        return []
+    try:
+        return hq.list_offers(home, status=hq.STATUS_TAKEN)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def succession(tdir: Path, name: str,
+               taken: Optional[List[Dict[str, object]]] = None) -> List[Dict[str, str]]:
     """Преемники сессии *name* (имя арки) нити по цепочке принятых хендоффов — от
     ближнего к нынешнему: ``[{name, ao}]``. [] — не передавала или приём не
-    подтверждён. Цепочка только внутри нити: преемник в другой нити её обрывает."""
+    подтверждён. Цепочка только внутри нити: преемник в другой нити её обрывает.
+
+    *taken* — уже прочитанные принятые офферы (SOC-278): без него каждый шаг цепочки
+    заново разбирал всю очередь (80 тыс. файлов, ``tide mail send`` ~50 с)."""
     from . import fields
     from . import handoff_queue as hq
 
@@ -457,7 +477,9 @@ def succession(tdir: Path, name: str) -> List[Dict[str, str]]:
     while sid and sid not in seen and len(out) < SUCCESSION_MAX:
         seen.add(sid)
         try:
-            rec = hq.is_dissolved(home, sid)
+            if taken is None:
+                taken = hq.list_offers(home, status=hq.STATUS_TAKEN)
+            rec = hq.is_dissolved(home, sid, taken)
         except Exception:  # noqa: BLE001 — очередь не читается: адресат как есть
             rec = None
         seed = str((rec or {}).get("seed") or "-")

@@ -659,7 +659,8 @@ def _prune_untouched_session(rec: Dict[str, object]) -> bool:
     return True
 
 
-def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, object]]:
+def is_dissolved(home: Path, session: Optional[str],
+                 taken: Optional[List[Dict[str, object]]] = None) -> Optional[Dict[str, object]]:
     """If *session* offered a handoff that was then TAKEN, return that record — the
     session has DISSOLVED into a successor and must NOT keep orchestrating this thread
     (one holder per thread; the 'Mickey 17' multiple). None when it still holds.
@@ -668,7 +669,8 @@ def is_dissolved(home: Path, session: Optional[str]) -> Optional[Dict[str, objec
     to do. This never mutates the queue, so it cannot break an in-flight handoff."""
     if not session:
         return None
-    taken = list_offers(home, status=STATUS_TAKEN)
+    if taken is None:   # SOC-278: вызывающий, обходящий цепочку, даёт список один раз
+        taken = list_offers(home, status=STATUS_TAKEN)
     # SOC-101 F21: the same claude id can give a thread away and LATER take another
     # (an AO session reused / a chat resumed into a new thread). The newest event
     # wins: a take after the giveaway means the session holds a thread again — the

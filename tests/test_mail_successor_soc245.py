@@ -128,3 +128,20 @@ def test_cli_send_and_ls_name_the_successor(chain, capsys):
     assert cli.main(["mail", "ls", "techlead"]) == 0
     assert "НЕ ПРОЧИТАНО адресатом {0}".format(chain["s"][30].name) in \
         capsys.readouterr().out
+
+
+def test_letters_read_handoff_queue_once_not_per_letter(chain, monkeypatch):
+    """SOC-278: ``tide mail send`` у дежурного шёл ~50 с (таймаут 60 с → ok:false при
+    уже лежащем письме): ``succession`` на каждом письме с чужой квитанцией заново
+    разбирал всю очередь офферов. Очередь читается один раз за ``letters()``."""
+    chain["hand"](29, 30)
+    for i in range(4):
+        mail.send("techlead@proj-86", "письмо {0}".format(i), sender="music-33", do_ping=False)
+    for n in ("001", "002", "003", "004"):
+        mail.read("techlead", n, by="кто-то-чужой")   # квитанция не от адресата
+    calls = []
+    real = hq.list_offers
+    monkeypatch.setattr(hq, "list_offers", lambda *a, **k: calls.append(1) or real(*a, **k))
+    recs = mail.letters(chain["tdir"])
+    assert len(recs) == 4
+    assert len(calls) == 1
