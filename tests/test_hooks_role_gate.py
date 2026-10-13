@@ -1134,3 +1134,17 @@ def test_refusal_is_two_lines_what_and_how():
     assert "отдай её через Agent" in lines[1] and role_gate.ALLOWED_SURFACE in lines[1]
     _, reason = role_gate.decide("Write", {"file_path": "/tmp/x"}, "orchestrator")
     assert len(reason.split("\n")) == 2
+
+
+# SOC-271 / SOC-270: голове разрешены быстрые команды менеджера
+@pytest.mark.parametrize("command", [
+    'tide say "x"',
+    "tide say --file /tmp/a.png --reply-to 12 'текст'",
+    "tide topic ls",
+    "tide topic new topics Тест --to management/signing",
+    "tide topic close topics Тест",
+    "tide spark management --new-thread x --topic --dry-run",
+])
+def test_orchestrator_allows_manager_quick_commands(command):
+    allow, reason = role_gate.decide("Bash", {"command": command}, "orchestrator")
+    assert allow is True, reason

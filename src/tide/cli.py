@@ -591,6 +591,17 @@ def _register_whois(sub) -> None:
     from .whois import register as register_whois
 
     register_whois(sub)
+    # SOC-271: `tide idle` / `tide why` / `tide gc sessions` — сессии глазами головы менеджера
+    from .session_view import register as register_session_view
+
+    register_session_view(sub)
+
+
+def _register_head_ops(sub) -> None:
+    # SOC-271: `tide ok` / `tide task` — быстрые команды головы менеджера
+    from .head_ops import register as register_head_ops
+
+    register_head_ops(sub)
 
 
 def _register_mail(sub) -> None:
@@ -719,6 +730,11 @@ def build_parser() -> argparse.ArgumentParser:
     from . import notify as _notify
 
     _notify.register(subparsers)  # SOC-238: tide notify — уровень Telegram нити
+    from . import say as _say, topic as _topic
+
+    _say.register(subparsers)  # SOC-271: tide say — сразу в личку Telegram
+    _topic.register(subparsers)  # SOC-270: tide topic — темы Telegram через пульт
+    _topic.register_spark_topic(subparsers)  # SOC-270: tide spark --topic
 
     _register_version(subparsers)
     _register_help(subparsers)
@@ -736,6 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_offload(subparsers)
     _register_whois(subparsers)
     _register_mail(subparsers)
+    _register_head_ops(subparsers)
     _register_lookback(subparsers)
     _register_truth(subparsers)
     _register_canon(subparsers)
