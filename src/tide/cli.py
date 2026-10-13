@@ -602,6 +602,10 @@ def _register_mail(sub) -> None:
     from .escalate import register as register_escalate
 
     register_escalate(sub)
+    # SOC-247: `tide watch-stuck` — сторож «агент молчит»: толчок, письмо менеджеру, state для доски
+    from .watch_stuck import register as register_watch_stuck
+
+    register_watch_stuck(sub)
     # SOC-166: `tide throttle status|check` — пауза, потолок агентов, правило 85% (файл доски)
     from .throttle import register as register_throttle
 
