@@ -134,3 +134,31 @@ def cursor_of(passport: Path) -> str:
         if inside and ln.strip() and not ln.strip().startswith("<"):
             out.append(ln.strip())
     return " ".join(out)
+
+
+MINE, USER, REST, OTHER, NONE = "mine", "user", "rest", "other", "none"
+_ANY_BALL_RE = re.compile(r"мяч\s+у\s+([\w@-]+)", re.IGNORECASE)
+
+
+def side(cursor: str, *, eta: str = "") -> "tuple[str, str]":
+    """У кого мяч по курсору (SOC-271, ``tide idle``/``tide why``) → ``(вид, подпись)``.
+
+    *вид*: :data:`MINE` / :data:`USER` / :data:`REST` / :data:`OTHER` («мяч у
+    менеджера/main/…») / :data:`NONE` (курсора нет или он без мяча). Нарушение правила (:func:`violation`) — в подписи «⚠ …»."""
+    text = " ".join(_unquoted(cursor or "").split())
+    if not text:
+        return NONE, "—"
+    bad = violation(cursor, eta=eta)
+    flag = " ⚠ {0}".format(bad) if bad else ""
+    if _REST_RE.search(text):
+        return REST, "отдых"
+    if _USER_BALL_RE.search(text):
+        m = _TG_REF_RE.search(text)
+        return USER, ("у пользователя ({0})".format(" ".join(m.group(0).split()))
+                      if m else "у пользователя") + flag
+    if _MINE_RE.search(text):
+        return MINE, "у меня" + flag
+    m = _ANY_BALL_RE.search(text)
+    if m:
+        return OTHER, "у " + m.group(1) + flag
+    return NONE, ("не выставлен" + flag).strip()
