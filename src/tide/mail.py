@@ -76,6 +76,18 @@ BATCH_DEFAULT_SEC = 1500
 QUEUE_NAME = "mail-ping-queue.json"
 SEAM_SENDER = "шов-синк"              # tide.seam_sync.SENDER — его пинги приёма срочные
 ESCALATION_KIND = "escalation"        # tide.escalate.KIND
+ASK_KIND = "ask"                      # SOC-289: просьба роли менеджеру — эскалация без ответа
+ASK_WAKE_ENV = "TIDE_ASK_WAKE_MIN"
+ASK_WAKE_DEFAULT_MIN = 15.0
+ASK_BOARD_ENV = "TIDE_ASK_BOARD_MIN"
+ASK_BOARD_DEFAULT_MIN = 30.0
+ASK_FORCE_ENV = "TIDE_ASK_WAKE_FORCE"  # =1: пинг менеджеру в обход SOC-232 (suppress_if_manager)
+ASK_SWEEP_ENV = "TIDE_ASK_SWEEP"       # =off: обход выключен
+ASK_MAX_AGE_MIN = 24 * 60.0
+ASK_MAX_CARDS = 3
+ASK_CLOSED_EV = "ask-closed"
+ASK_REPLY_EV = "ask-reply"
+ALERT_CMD_ENV = "TIDE_ALERT_CMD"
 
 _LETTER = re.compile(r"^(\d{3,})-от-(.+)\.md$")
 
@@ -226,6 +238,14 @@ def letters(tdir: Path) -> List[Dict[str, object]]:
             "alert_after": _alert_after(sent.get("alert_after")),
             "kind": str(sent.get("kind") or ""),
             "urgent": bool(sent.get("urgent")),   # SOC-179: --urgent — пинг сразу, не в пачку
+            # SOC-289: просьба менеджеру (--ask), ссылка «ответ на NNN» и состояние обхода
+            "ask": str(sent.get("kind") or "") == ASK_KIND,
+            "re": str(sent.get("re") or ""),
+            "ask_closed": next((e for e in mine if e.get("ev") == ASK_CLOSED_EV), None),
+            "ask_reply": next((e for e in mine if e.get("ev") == ASK_REPLY_EV), None),
+            "ask_wake": next((e for e in mine if e.get("ev") == "ask-wake"), None),
+            "ask_board": next((e for e in mine if e.get("ev") == "ask-board"), None),
+            "ask_board_closed": next((e for e in mine if e.get("ev") == "ask-board-closed"), None),
             # SOC-157: эскалацию закрыли явно (``tide escalate --close``) — None, если нет
             "closed": next((e for e in mine if e.get("ev") == CLOSED_EV), None),
         })
@@ -729,7 +749,7 @@ def from_manager(sender: str) -> bool:
 
 def is_urgent(rec: Dict[str, object]) -> bool:
     """Пинг письма — сразу: ``--urgent``, эскалация, шов-синк, письмо от менеджера."""
-    return (bool(rec.get("urgent")) or rec.get("kind") == ESCALATION_KIND
+    return (bool(rec.get("urgent")) or rec.get("kind") in (ESCALATION_KIND, ASK_KIND)
             or str(rec.get("first") or "").startswith("эскалация:")
             or str(rec.get("sender") or "") == SEAM_SENDER
             or from_manager(str(rec.get("sender") or "")))
@@ -1217,12 +1237,15 @@ def flush_pings(home: Optional[Path] = None, *, only: Optional[List[str]] = None
 def send(ref: str, text: str, *, sender: Optional[str] = None,
          root: Optional[Path] = None, do_ping: bool = True,
          watch: Optional[bool] = None, alert_after_min: Optional[float] = None,
-         kind: str = "", urgent: bool = False) -> Dict[str, object]:
+         kind: str = "", urgent: bool = False,
+         re_num: Optional[object] = None) -> Dict[str, object]:
     """Положить письмо в ящик нити, пингнуть ведущую сессию, завести ожидальщика.
 
     *alert_after_min* (SOC-157, ``tide escalate``): без квитанции столько минут от
     отправки — ожидальщик сразу шлёт тревогу менеджеру, не дожидаясь повторов.
-    *urgent* (SOC-179): пинг сразу, мимо пачки (и повторы тоже)."""
+    *urgent* (SOC-179): пинг сразу, мимо пачки (и повторы тоже).
+    *re_num* (SOC-289): «ответ на письмо NNN»; от менеджера — гасит просьбу NNN
+    в его ящике (событие ``ask-reply``)."""
     if not (text or "").strip():
         raise MailError("mail: пустое письмо")
     tdir, want = target(ref, root)
@@ -1253,8 +1276,11 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
                                   "first": _first_line(text)[:200]}
     if kind:
         sent_ev["kind"] = kind
-    if urgent:
+    if urgent or kind == ASK_KIND:
         sent_ev["urgent"] = True
+    re_n = _num(re_num) if re_num not in (None, "") else ""
+    if re_n:
+        sent_ev["re"] = re_n
     if to_row is not None:
         sent_ev["to_session"] = str(to_row["name"])
         if to_row["ao"]:
@@ -1264,6 +1290,12 @@ def send(ref: str, text: str, *, sender: Optional[str] = None,
     if _alert_after(alert_after_min):
         sent_ev["alert_after"] = float(alert_after_min)  # type: ignore[arg-type]
     _append(tdir, sent_ev)
+    if re_n and from_manager(who):
+        try:   # SOC-289: менеджер ответил на просьбу делом — отметка в его ящике
+            _append(_manager_tdir(), {"ev": ASK_REPLY_EV, "num": re_n, "at": at,
+                                      "by": who, "to": address_of(tdir), "letter": num})
+        except Exception:  # noqa: BLE001
+            pass
     out: Dict[str, object] = {"num": num, "path": str(path), "bytes": len(raw), "ping": None,
                               "watcher": None}
     if moved is not None:
@@ -1554,6 +1586,227 @@ def cmd_prompt_hook(args) -> int:
     return rc
 
 
+# --- просьбы менеджеру без ответа (SOC-289) -----------------------------------------
+
+def _manager_tdir() -> Path:
+    from . import whois
+
+    return thread_dir(os.environ.get(whois.MANAGER_THREAD_ENV) or whois.MANAGER_THREAD)
+
+
+def ask_close(ref: str, num: object, *, word: str = "", by: Optional[str] = None,
+              root: Optional[Path] = None) -> Dict[str, object]:
+    """Закрыть просьбу *num* ящика *ref*: ответили делом, а не письмом."""
+    tdir = target(ref, root)[0]
+    rec = letter(tdir, num)
+    ev = {"ev": ASK_CLOSED_EV, "num": rec["num"], "at": _iso(_now()),
+          "by": (by or "").strip() or _who_am_i(), "word": word}
+    _append(tdir, ev)
+    return ev
+
+
+def _ask_minutes(env: str, default: float, given: Optional[float]) -> float:
+    if given is not None:
+        return float(given)
+    return _env_float(env, default)
+
+
+def _letter_body(path: Path) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.match(r"^---\n.*?\n---\n", text, re.S)
+    return text[m.end():] if m else text
+
+
+def _ask_card_text(tdir: Path, rec: Dict[str, object], age_min: float) -> str:
+    body = _letter_body(Path(str(rec["path"])))
+    first = _first_line(body) or str(rec.get("first") or "")
+    return ("❓ Просьба {0} к менеджеру без ответа {1} мин. Почему: «{2}». "
+            "Предлагаю: ответить роли или взять решение. Письмо: {3}, "
+            "прочесть: tide mail read {4} {5}").format(
+                rec["sender"], int(age_min), first[:200], rec["path"],
+                "management/main", rec["num"])
+
+
+_SOC_RE = re.compile(r"\bSOC-\d+\b")
+
+
+def _alert_argv() -> List[str]:
+    from . import tg_pult   # $TIDE_ALERT_CMD, иначе <пульт>/tg-alert из ростера
+
+    return tg_pult.alert_cmd()
+
+
+def _run_alert(args: List[str], *, source: str) -> Tuple[Optional[int], str]:
+    env = dict(os.environ, TIDE_ALERT_SOURCE=source)
+    env.pop("TIDE_ALERT_URGENT", None)
+    try:
+        proc = subprocess.run(_alert_argv() + args, env=env, timeout=30,
+                              capture_output=True, text=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return -1, ""
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _ask_answered(rec: Dict[str, object]) -> str:
+    if rec["acked"]:
+        return "прочитано"
+    if rec.get("ask_closed"):
+        return "закрыто"
+    if rec.get("ask_reply"):
+        return "ответ"
+    return ""
+
+
+def ask_sweep(now: Optional[datetime] = None, wake_min: Optional[float] = None,
+              board_min: Optional[float] = None, dry: bool = False,
+              tdir: Optional[Path] = None) -> List[Dict[str, object]]:
+    """Обход ящика менеджера: просьбы (``kind=ask``) без квитанции, close и ответа.
+
+    Старше *wake_min* (15) — пинг менеджеру + ``ask-wake`` (пинг уходит только при
+    ``TIDE_ASK_WAKE_FORCE=1``: иначе его глушит SOC-232, в журнал идёт только событие);
+    старше *board_min* (30) — ❓ на доску через tg-alert + ``ask-board`` (q-id); ответили
+    после карточки — ``tg-alert --close`` + ``ask-board-closed``. Старше суток не
+    поднимаем; не больше :data:`ASK_MAX_CARDS` карточек за вызов. Идемпотентно.
+    → строки ``{num, sender, age_min, state, action, done}``; *dry* ничего не делает."""
+    if (os.environ.get(ASK_SWEEP_ENV) or "").strip().lower() in ("off", "0", "no", "false"):
+        return []
+    now = now or _now()
+    wake = _ask_minutes(ASK_WAKE_ENV, ASK_WAKE_DEFAULT_MIN, wake_min)
+    board = _ask_minutes(ASK_BOARD_ENV, ASK_BOARD_DEFAULT_MIN, board_min)
+    if tdir is None:
+        tdir = _manager_tdir()
+    out: List[Dict[str, object]] = []
+    cards = 0
+    for rec in letters(tdir):    # один проход по журналу; лок очереди не берём
+        if not rec["ask"]:
+            continue
+        sent_at = _parse_iso(str(rec["sent"]))
+        if sent_at is None:
+            continue
+        age = (now - sent_at).total_seconds() / 60.0
+        row: Dict[str, object] = {"num": rec["num"], "sender": rec["sender"],
+                                  "age_min": int(age), "state": "открыта",
+                                  "action": "", "done": False}
+        answered = _ask_answered(rec)
+        board_ev = rec.get("ask_board")
+        if answered:
+            row["state"] = answered
+            if board_ev and not rec.get("ask_board_closed"):
+                row["action"] = "снять карточку {0}".format(board_ev.get("qid"))
+                if not dry:
+                    qid = str(board_ev.get("qid") or "")
+                    code: Optional[int] = 0
+                    if qid:
+                        code, _o = _run_alert(["--close", qid, "ответили"],
+                                              source=address_of(tdir))
+                    if code == 0:
+                        _append(tdir, {"ev": "ask-board-closed", "num": rec["num"],
+                                       "at": _iso(now), "qid": qid, "why": answered})
+                        row["done"] = True
+                out.append(row)
+            continue
+        if age > ASK_MAX_AGE_MIN:
+            continue
+        acts = []
+        if age >= wake and not rec.get("ask_wake"):
+            acts.append("wake")
+        if age >= board and not board_ev and cards < ASK_MAX_CARDS:
+            acts.append("board")
+            cards += 1
+        if not acts:
+            if age < board or board_ev:
+                row["state"] = "открыта" + (", карточка " + str(board_ev.get("qid"))
+                                            if board_ev else "")
+            out.append(row)
+            continue
+        row["action"] = " + ".join(acts)
+        if not dry:
+            if "wake" in acts:
+                _ask_wake(tdir, rec, now, age)
+            if "board" in acts:
+                _ask_board(tdir, rec, now, age)
+            row["done"] = True
+        out.append(row)
+    return out
+
+
+def _ask_wake(tdir: Path, rec: Dict[str, object], now: datetime, age: float) -> None:
+    from .launcher.autohandoff import _ao_send
+
+    force = (os.environ.get(ASK_FORCE_ENV) or "").strip() == "1"
+    handle = ""
+    code: Optional[int] = None
+    if force:
+        try:
+            from . import whois
+
+            handle = str(whois.manager().get("ao_session") or "").strip()
+            if handle:
+                code = _ao_send(handle, "tide: просьба {0} от {1} без ответа {2} мин. "
+                                "Прочесть: tide mail read management/main {0}".format(
+                                    rec["num"], rec["sender"], int(age)), force=True)
+        except Exception:  # noqa: BLE001
+            code = -1
+    _append(tdir, {"ev": "ask-wake", "num": rec["num"], "at": _iso(now),
+                   "forced": force, "to": handle, "code": code,
+                   "pinged": bool(force and handle and code == 0)})
+
+
+def _ask_board(tdir: Path, rec: Dict[str, object], now: datetime, age: float) -> None:
+    text = _ask_card_text(tdir, rec, age)
+    socs = sorted(set(_SOC_RE.findall(_letter_body(Path(str(rec["path"]))) + " "
+                                      + str(rec.get("first") or ""))))
+    args = ["--soc", ",".join(socs[:3])] if socs else []
+    code, out = _run_alert(args + [text], source=address_of(tdir))
+    if code != 0:
+        return   # карточка не встала — повторим на следующем тике
+    m = re.search(r"\bq-[0-9a-f]+\b", out)
+    _append(tdir, {"ev": "ask-board", "num": rec["num"], "at": _iso(now),
+                   "qid": m.group(0) if m else ""})
+
+
+def ask_line(rows: List[Dict[str, object]]) -> str:
+    acts = [r for r in rows if r.get("action") and r.get("done")]
+    return "mail-ask: " + ("; ".join("{0} от {1} {2} мин → {3}".format(
+        r["num"], r["sender"], r["age_min"], r["action"]) for r in acts) or "нечего")
+
+
+def _parse_now(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    dt = _parse_iso(raw)
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            raise MailError("mail: --now — ISO-время, не {0!r}".format(raw)) from None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _cmd_asks(args) -> int:
+    rows = ask_sweep(now=_parse_now(args.now), dry=args.dry_run)
+    if not rows:
+        print("просьб без ответа нет")
+        return 0
+    for r in rows:
+        print("  {0} от {1} · {2} мин · {3} · {4}".format(
+            r["num"], r["sender"], r["age_min"], r["state"],
+            ("сделал бы: " if args.dry_run else "сделано: ") + str(r["action"])
+            if r["action"] else "ничего"))
+    return 0
+
+
+def _cmd_close(args) -> int:
+    ev = ask_close(args.thread, args.num, word=args.word or "", by=args.by)
+    print("просьба {0} закрыта ({1}): {2}".format(ev["num"], ev["by"], ev["word"] or "—"))
+    return 0
+
+
 # --- CLI -------------------------------------------------------------------------
 
 def _revive_cli(ref: Optional[str] = None) -> None:
@@ -1577,7 +1830,8 @@ def _cmd_send(args) -> int:
         text = args.text
     _revive_cli()
     out = send(args.thread, text, sender=args.sender, do_ping=not args.no_ping,
-               urgent=args.urgent)
+               urgent=args.urgent, kind=ASK_KIND if getattr(args, "ask", False) else "",
+               re_num=getattr(args, "re", None))
     p = out["ping"] or {}
     if not args.no_ping:
         if p.get("spooled"):
@@ -1639,6 +1893,18 @@ def _cmd_ls(args) -> int:
                 state += " · тревога менеджеру"
         if r.get("closed"):
             state += " · эскалация закрыта"
+        if r.get("ask"):   # SOC-289
+            state += " · ПРОСЬБА"
+            if r.get("ask_closed"):
+                state += " закрыта: {0}".format(r["ask_closed"].get("word") or "—")
+            elif r.get("ask_reply"):
+                state += " отвечена письмом {0}".format(r["ask_reply"].get("letter"))
+            if r.get("ask_wake"):
+                state += " · пинг менеджеру"
+            if r.get("ask_board"):
+                state += " · на доске {0}".format(r["ask_board"].get("qid"))
+        if r.get("re"):
+            state += " · ответ на {0}".format(r["re"])
         print("  {0} от {1} · {2} · {3} Б · {4} · {5}".format(
             r["num"], r["sender"], r["sent"], r["bytes"], state, r["first"][:80]))
     return 0
@@ -1696,7 +1962,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "mail", help="thread mail: letters as files in the thread's inbox, ack on read, "
                      "re-ping until read (SOC-143)")
-    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|flush|deaf|watch>")
+    sub = p.add_subparsers(dest="mail_cmd", metavar="<send|read|ls|retry|flush|deaf|asks|close|watch>")
 
     s = sub.add_parser("send", help="drop a letter into <thread>/inbox and ping its holder")
     s.add_argument("thread", help="<нить> | <проект>/<нить>[@<ao-id | сессия>] — "
@@ -1708,6 +1974,11 @@ def register(subparsers) -> None:
     s.add_argument("--urgent", action="store_true",
                    help="ping now, not in the batch (SOC-179: non-urgent pings go out "
                         "together at most once per $TIDE_MAIL_BATCH_SEC, 1500 s)")
+    s.add_argument("--ask", action="store_true",
+                   help="SOC-289: a request to the manager — urgent ping; unanswered it "
+                        "escalates (15 min: ping, 30 min: a card on the board)")
+    s.add_argument("--re", help="SOC-289: reply to letter NNN (a manager's reply with --re "
+                                "settles the ask NNN)")
     s.set_defaults(func=_cmd_send, _cmd="mail send")
 
     r = sub.add_parser("read", help="print a letter and record the ack")
@@ -1740,11 +2011,24 @@ def register(subparsers) -> None:
     df.add_argument("--json", action="store_true")
     df.set_defaults(func=_cmd_deaf, _cmd="mail deaf")
 
+    ak = sub.add_parser("asks", help="SOC-289: open asks to the manager and what the sweep "
+                                     "does (the orphan-watch tick runs it every 2 min)")
+    ak.add_argument("--dry-run", action="store_true", help="show only, do nothing")
+    ak.add_argument("--now", help="ISO time instead of now (e.g. 2026-10-13T12:16:00Z)")
+    ak.set_defaults(func=_cmd_asks, _cmd="mail asks")
+
+    cl = sub.add_parser("close", help="SOC-289: close an ask — answered by deed, not a letter")
+    cl.add_argument("thread")
+    cl.add_argument("num")
+    cl.add_argument("--word", help="why / what was done")
+    cl.add_argument("--by", help="who closes (default: $AO_SESSION_ID)")
+    cl.set_defaults(func=_cmd_close, _cmd="mail close")
+
     p.set_defaults(func=lambda a: (p.print_help() or 0), _cmd="mail")
 
 
 __all__ = ["LOCK_ENV", "QueueBusy", "lock_timeout_sec", "BATCH_ENV", "DEAF_NAME", "MODE_MISMATCH", "deaf_clear", "deaf_sessions", "batch_gap_sec", "batch_text", "flush_line", "flush_pings",
-           "from_manager", "is_urgent", "CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
+           "ask_sweep", "ask_close", "ask_line", "ASK_KIND", "from_manager", "is_urgent", "CLOSED_EV", "LIVE_NOTE", "MAX_RETRIES", "MailError", "live_sessions", "resolve_session",
            "target", "thread_sessions", "RETRY_ENV", "WATCH_ENV", "address_of",
            "cmd_prompt_hook", "letters", "ping", "ping_text", "read", "register",
            "pending", "retry_minutes", "revive", "revive_project", "send", "session_line", "step", "thread_dir", "unread", "watch",
