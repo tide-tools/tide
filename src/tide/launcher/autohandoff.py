@@ -389,7 +389,7 @@ def last_send_error(handle: str) -> str:
     return _LAST_ERR.get(handle, "")
 
 
-def _ao_send(handle: str, text: str) -> Optional[int]:
+def _ao_send(handle: str, text: str, *, force: bool = False) -> Optional[int]:
     """``ao send --session <handle> --message <text>`` → код возврата.
 
     Бинарь — тот же, что у адаптера AO (:func:`tide.adapters.ao.ao_bin`,
@@ -402,7 +402,8 @@ def _ao_send(handle: str, text: str) -> Optional[int]:
     from ..manager_guard import suppress_if_manager
 
     _LAST_ERR.pop(handle, None)
-    if suppress_if_manager(handle, text, source="_ao_send"):
+    # SOC-289: force=True — осознанный пинг менеджеру по --ask (TIDE_ASK_WAKE_FORCE, по умолчанию вкл), мимо SOC-232
+    if not force and suppress_if_manager(handle, text, source="_ao_send"):
         return 0
     if not _ao.ao_available():
         return None

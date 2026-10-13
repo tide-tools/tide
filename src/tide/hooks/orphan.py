@@ -759,6 +759,17 @@ def cmd_orphan_tick(args) -> int:
     except Exception as exc:  # noqa: BLE001 — таймер не падает
         print("{0} mail-batch: ошибка: {1}".format(
             datetime.now().isoformat(timespec="seconds"), exc), flush=True)
+    # SOC-289: просьбы менеджеру без ответа — 15 мин пинг, 30 мин ❓ на доску
+    try:
+        from .. import mail
+
+        rows = mail.ask_sweep()
+        if any(r.get("done") for r in rows):
+            print("{0} {1}".format(datetime.now().isoformat(timespec="seconds"),
+                                   mail.ask_line(rows)), flush=True)
+    except Exception as exc:  # noqa: BLE001 — таймер не падает
+        print("{0} mail-ask: ошибка: {1}".format(
+            datetime.now().isoformat(timespec="seconds"), exc), flush=True)
     return 0
 
 
