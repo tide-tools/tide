@@ -38,14 +38,39 @@ def test_template_carries_every_retell_label_and_passes_the_gate():
 
 
 def test_launch_seed_has_ready_commands_with_refs():
-    out = seed.build_seed(project_name="demo", canon_text="c", arc_ref="03-pickup",
-                          arc_text="goal: x", thread_name="04-@main")
-    assert 'tide arc set-goal pickup -p main "' in out
-    cmd = _offload_cmd(out, "main/pickup")
+    out = seed.build_seed(project_name="demo", canon_text="c", arc_ref="pickup",
+                          arc_text="goal: x", thread_name="main",
+                          gate_thread="04-@main", gate_session="03-pickup")
+    assert 'tide arc set-goal 03-pickup -p 04-@main "' in out
+    cmd = _offload_cmd(out, "04-@main/03-pickup")
     for label in _labels():
         assert label + ":" in cmd
     assert "--cursor" in cmd and "--next" in cmd
     assert "<сессия>" not in out and "<нить>/<сессия>" not in out
+
+
+def _resolves(root, out, sess):
+    """Обе команды из сида резолвятся в arc.md именно этой сессии (без записи)."""
+    import re
+    from tide import resolve
+    from tide.arc import stream as st
+    m = re.search(r"tide arc set-goal (\S+) -p (\S+) ", out)
+    assert st._resolve(st._open_goal_substream(root, m.group(2)), m.group(1),
+                       closed=False) == sess
+    m = re.search(r"tide offload (\S+) ", out)
+    assert resolve.find_session(root, m.group(1)) == sess
+
+
+def test_seed_for_project_uses_nn_dir_names_that_resolve(tmp_project):
+    stream.new_thread(tmp_project, "main", goal="главная нить")
+    sess = stream.new_session(tmp_project, "main", "main-3", goal="шаг")
+    out = seed.seed_for_project(tmp_project, arc_ref="main-3", thread_name="main",
+                                arc_text="goal: шаг")
+    thread_dir = sess.parent.parent.name
+    assert thread_dir[:2].isdigit() and sess.name[:2].isdigit()  # NN-префиксы
+    assert "tide offload {0}/{1} ".format(thread_dir, sess.name) in out
+    assert "tide arc set-goal {0} -p {1} ".format(sess.name, thread_dir) in out
+    _resolves(tmp_project, out, sess)
 
 
 def test_launch_seed_plan_line_depends_on_role():
@@ -69,7 +94,9 @@ def test_handoff_seed_has_ready_commands_with_refs(tmp_project, monkeypatch):
     assert sb.is_contract_seed(_contract_distil())
     for distil in ("# сид\n\nсвободный текст\n", _contract_distil()):
         out = handoff._with_throughline(thread, new, distil)
-        assert 'tide arc set-goal main-4 -p main "' in out
-        cmd = _offload_cmd(out, "main/main-4")
+        assert 'tide arc set-goal {0} -p {1} "'.format(new.name, thread.name) in out
+        assert new.name[:2].isdigit() and thread.name[:2].isdigit()  # NN-префиксы
+        cmd = _offload_cmd(out, "{0}/{1}".format(thread.name, new.name))
         for label in _labels():
             assert label + ":" in cmd
+        _resolves(tmp_project, out, new)

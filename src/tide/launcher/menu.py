@@ -861,10 +861,9 @@ def launch_handoff(
     # сессии подставлены, метки пересказа из handoff_queue.RETELL_ITEMS.
     gate = ""
     try:
-        from .. import handoff_queue as _hq, slug as _slug_mod
+        from .. import handoff_queue as _hq
         goal_cmd, offload_cmd = _hq.start_gate_commands(
-            _slug_mod.entry_slug(session_dir.parent.parent.name),
-            _slug_mod.entry_slug(session_dir.name))
+            session_dir.parent.parent.name, session_dir.name)
         gate = " Команды готовы: `{0}`, затем `{1}` — каждую метку пересказа " \
                "заполни своими словами (чего в сиде нет — «нет»).".format(goal_cmd, offload_cmd)
     except Exception:  # noqa: BLE001  подсказка не смеет сорвать запуск

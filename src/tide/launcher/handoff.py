@@ -260,8 +260,9 @@ def _start_gate_line(thread_entry: Path, session_born: Path) -> str:
     подставлены, метки пересказа — из ``handoff_queue.RETELL_ITEMS``. Новая сессия не
     ищет синтаксис через ``--help`` и не проваливает гейт пересказа первым offload."""
     from .. import handoff_queue as _hq
+    # имена папок с NN (12-@continuity/01-continuity): сессия уже рождена передачей
     goal_cmd, offload_cmd = _hq.start_gate_commands(
-        slug.entry_slug(Path(thread_entry).name), slug.entry_slug(Path(session_born).name))
+        Path(thread_entry).name, Path(session_born).name)
     return ("старт-гейт (до первого хода работы): цель сессии — `{0}`; первый пульс — "
             "пересказ своими словами, каждую метку заполни (чего в сиде нет — «нет»): "
             "`{1}`".format(goal_cmd, offload_cmd))

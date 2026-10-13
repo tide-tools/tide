@@ -38,12 +38,13 @@ SEED_TITLE = "# tide session seed"
 # only to make it speak: sharpen the words and do the first pulse. The offload nudge
 # (Stop hook) enforces the pulse half.
 def _start_gate(thread: str, session: str, role: str = ROLE_ORCHESTRATOR) -> str:
-    """Старт-гейт с ГОТОВЫМИ командами (SOC-286 эксп. 1): ref нити и сессии подставлены,
+    """Старт-гейт с ГОТОВЫМИ командами (SOC-286 эксп. 1): ref нити и сессии подставлены
+    как ИМЕНА ПАПОК с NN (``12-@continuity``/``01-continuity``) — точная форма, которую
+    резолвят и ``tide arc set-goal -p``, и ``tide offload <нить>/<сессия>``;
     метки пересказа — из :data:`tide.handoff_queue.RETELL_ITEMS`. Голове-оркестратору
     role-gate запрещает писать файлы — plan.md вписывает помощник (Agent)."""
-    from .. import handoff_queue as _hq, slug as _slug  # lazy: keep the seed module light
+    from .. import handoff_queue as _hq  # lazy: keep the seed module light
 
-    thread, session = _slug.entry_slug(thread), _slug.entry_slug(session)
     goal_cmd, offload_cmd = _hq.start_gate_commands(thread, session)
     plan = ("попроси помощника (Agent) вписать в" if role == ROLE_ORCHESTRATOR
             else "впиши в")
@@ -170,6 +171,8 @@ def build_seed(
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
     decisions_text: Optional[str] = None,
+    gate_thread: Optional[str] = None,
+    gate_session: Optional[str] = None,
 ) -> str:
     """Assemble the seed string from already-resolved pieces (pure, no I/O).
 
@@ -213,7 +216,7 @@ def build_seed(
                 "session's `## cursor`; keep the cursor + `## context` updated as you "
                 "work so the next session can pick up.".format(thread_name),
                 "",
-                _start_gate(thread_name, arc_ref, role),
+                _start_gate(gate_thread or thread_name, gate_session or arc_ref, role),
                 "",
                 LAW_47_PLAN,
                 "",
@@ -315,6 +318,17 @@ def seed_for_project(
         roster_name = project_name
     decisions_text = _gd.seed_text(roster_name)
 
+    # SOC-286: ref старт-гейта — имена папок нити и сессии (с NN), а не голые slug'и.
+    gate_thread = gate_session = None
+    if arc_ref and thread_name:
+        try:
+            from .. import resolve as _resolve
+            sess = _resolve.find_session(root, "{0}/{1}".format(thread_name, arc_ref))
+        except Exception:  # noqa: BLE001  нет сессии — ref как есть
+            sess = None
+        if sess is not None:
+            gate_thread, gate_session = sess.parent.parent.name, sess.name
+
     return build_seed(
         project_name=project_name,
         role=role,
@@ -326,4 +340,6 @@ def seed_for_project(
         prompt_text=prompt_text,
         launch_cmd=launch_command(project_name, arc_ref),
         decisions_text=decisions_text,
+        gate_thread=gate_thread,
+        gate_session=gate_session,
     )
