@@ -146,10 +146,16 @@ def test_dialog_alert_retried_when_delivery_fails(world):
     assert len(f.alerts) == 3
 
 
-def test_dialog_by_ao_activity_immediately(world):
+def test_dialog_by_ao_activity_alert_not_before_20min(world):
+    """D-115: ❓ пользователю не раньше 20 минут тишины (7 и 19 — нет, 20 — есть)."""
     f = F()
     write_rows(world["transcript"], ended_rows(T0), world["proj"])
-    go(world, f, 1, [session(activity="waiting_input")])
+    for m in (1, 7, 19):
+        go(world, f, m, [session(activity="waiting_input")])
+        assert f.alerts == [], m
+    go(world, f, 20, [session(activity="waiting_input")])
+    assert len(f.alerts) == 1
+    go(world, f, 25, [session(activity="waiting_input")])
     assert len(f.alerts) == 1
 
 

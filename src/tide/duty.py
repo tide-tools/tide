@@ -159,7 +159,10 @@ def decide(prev: Optional[Dict], rec: Dict, v: Dict, *, ball_kind: str, ball_lab
         mark("письмо менеджеру", "mail_stuck")
 
     # 3. диалог → ❓ пользователю, один раз на диалог
-    if dialog:
+    # ❓ пользователю не раньше limits.duty_alert_quiet тишины (по умолчанию 20 мин, D-115)
+    if dialog and v.get("quiet_sec", 0) < getattr(limits, "duty_alert_quiet", 0):
+        pass  # рано: ключ не ставим, сработает, когда тишина дойдёт до порога
+    elif dialog:
         key = "{0}:{1}".format(v.get("reason") or v.get("activity") or "dialog", last_at)
         if d["alert_key"] != key:
             acts.append(ACT_ALERT)

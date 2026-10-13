@@ -81,6 +81,7 @@ _LIMIT_ENV = {
     "duty_nudge_gap": "TIDE_DUTY_NUDGE_GAP_SEC",
     "duty_mail_gap": "TIDE_DUTY_MAIL_GAP_SEC",
     "duty_escalate": "TIDE_DUTY_ESCALATE_SEC",
+    "duty_alert_quiet": "TIDE_DUTY_ALERT_QUIET_SEC",
 }
 ENV_KEYS = tuple(_LIMIT_ENV.values()) + (OFF_ENV, STATE_DIR_ENV, MAIL_CMD_ENV)
 
@@ -123,6 +124,8 @@ class Limits:
     duty_nudge_gap: int = 30 * 60
     duty_mail_gap: int = 60 * 60
     duty_escalate: int = 30 * 60
+    # ❓ пользователю (только он) — не раньше стольких секунд тишины сессии (D-115)
+    duty_alert_quiet: int = 20 * 60
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "Limits":
